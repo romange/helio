@@ -1,0 +1,16 @@
+
+add_library(proactor_lib accept_server.cc fiber_sched_algo.cc fiber_socket_base.cc
+            listener_interface.cc prebuilt_asio.cc proactor_base.cc proactor_pool.cc
+            sliding_counter.cc varz.cc)
+cxx_link(proactor_lib base absl::flat_hash_map Boost::fiber Boost::headers)
+
+cxx_test(accept_server_test uring_fiber_lib epoll_fiber_lib http_beast_prebuilt LABELS CI)
+
+add_subdirectory(fibers)
+add_subdirectory(epoll)
+add_subdirectory(uring)
+add_subdirectory(html)
+add_subdirectory(metrics)
+add_subdirectory(tls)
+add_subdirectory(http)
+
