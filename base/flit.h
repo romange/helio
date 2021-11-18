@@ -269,7 +269,7 @@ inline unsigned Encode64(uint64_t v, uint8_t* dest) {
   return EncodeT<uint64_t>(v, dest);
 }
 
-// dest must have at least 8 bytes.
+// dest must have at least 5 bytes.
 inline unsigned Encode32(uint32_t v, uint8_t* dest) {
   return EncodeT<uint32_t>(v, dest);
 }
