@@ -21,6 +21,7 @@ template <typename T> class RingBuffer {
     return tail_ - head_;
   }
 
+  // Try to inserts into tail of the buffer.
   template <typename U> bool TryEmplace(U&& u) {
     // due to how 2s compliment work, this check works even in case of overflows.
     // for example,
@@ -37,6 +38,18 @@ template <typename T> class RingBuffer {
     return false;
   }
 
+
+  // Gets the pointer to the next tail entry, or null if buffer is full
+  T* GetTail() {
+    T* res = nullptr;
+    if (tail_ - head_ < capacity_) {
+      res = buf_.get() + (tail_ & mask_);
+      ++tail_;
+    }
+    return res;
+  }
+
+  // Tries to pull out of buffer's head.
   bool TryDeque(T& t) {
     if (size() == 0) {
       return false;
@@ -48,6 +61,17 @@ template <typename T> class RingBuffer {
 
   unsigned capacity() const {
     return capacity_;
+  }
+
+  // Zero-copy deque interface.
+  // Returns pointer to array of length size().
+  T* GetItem(unsigned index) {
+    return buf_.get() + ((head_ + index) & mask_);
+  }
+
+  // Requires: n <= size()
+  void ConsumeHead(unsigned n) {
+    head_ += n;
   }
 
  private:
