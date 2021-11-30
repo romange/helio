@@ -76,7 +76,7 @@ void AppendLabelTupple(absl::Span<const metrics::Label> label_names,
     return;
 
   for (size_t i  = 0; i < label_names.size(); ++i) {
-    absl::StrAppend(dest, label_names[i].name(), "=", label_values[i], ",");
+    absl::StrAppend(dest, label_names[i].name(), "=\"", label_values[i], "\",");
   }
   dest->pop_back();
 }
