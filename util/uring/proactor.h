@@ -99,6 +99,7 @@ class Proactor : public ProactorBase {
   void SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) final;
   void PeriodicCb(IoResult res, int64_t task_id, std::shared_ptr<PeriodicItem> item);
   void CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) final;
+  void WakeRing() final;
 
   io_uring ring_;
 

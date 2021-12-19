@@ -62,6 +62,13 @@ class SubmitEntry {
     sqe_->rw_flags = flags;
   }
 
+  void PrepWrite(int fd, const void* buf, unsigned size, size_t offset) {
+    PrepFd(IORING_OP_WRITE, fd);
+    sqe_->addr = (unsigned long)buf;
+    sqe_->len = size;
+    sqe_->off = offset;
+  }
+
   void PrepWriteV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
                   unsigned flags = 0) {
     PrepFd(IORING_OP_WRITEV, fd);

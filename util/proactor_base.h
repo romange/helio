@@ -165,7 +165,7 @@ class ProactorBase {
   };
 
   // Called only from external threads.
-  void WakeRing();
+  virtual void WakeRing();
 
   void WakeupIfNeeded();
   virtual void SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) = 0;

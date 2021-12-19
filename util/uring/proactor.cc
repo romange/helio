@@ -612,6 +612,22 @@ void Proactor::VerifyTimeoutSupport() {
   io_uring_cq_advance(&ring_, 1);
 }
 
+const static uint64_t wake_val = 1;
+void Proactor::WakeRing() {
+  DVLOG(2) << "WakeRing " << tq_seq_.load(std::memory_order_relaxed);
+
+  tq_wakeup_ev_.fetch_add(1, std::memory_order_relaxed);
+
+  Proactor* caller = static_cast<Proactor*>(ProactorBase::me());
+  if (caller) {
+    SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
+    se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
+  } else {
+    uint64_t val = 1;
+    CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
+  }
+}
+
 FiberCall::FiberCall(Proactor* proactor, uint32_t timeout_msec) : me_(fibers::context::active()) {
   auto waker = [this](Proactor::IoResult res, uint32_t flags, int64_t, Proactor* mgr) {
     io_res_ = res;
