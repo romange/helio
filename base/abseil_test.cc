@@ -8,7 +8,6 @@
 
 #include <absl/debugging/internal/vdso_support.h>
 #include <absl/debugging/stacktrace.h>
-
 #include <gperftools/stacktrace.h>
 #include <ucontext.h>
 
@@ -19,6 +18,8 @@ namespace base {
 
 using namespace absl;
 using namespace std;
+
+constexpr size_t kSzStr = sizeof(string);
 
 class AbseilTest : public testing::Test {
  public:

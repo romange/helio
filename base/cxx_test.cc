@@ -1,8 +1,10 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2021, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "base/string_view_sso.h"
+#include <absl/container/flat_hash_set.h>
 
 using namespace std;
 
@@ -112,6 +114,23 @@ TEST_F(CxxTest, UnderDebugger) {
   vector<int> ints(1024);
   table.emplace_back(HasVector{.vals = move(ints)});
   table.emplace_back();  // verified that HasVector was moved without copying the array.
+}
+
+TEST_F(CxxTest, StringViewSSO) {
+  constexpr string_view_sso s1("aaaa");
+  static_assert(-1 == s1.compare("bbbb"));
+  string s2("cccc");
+  string_view_sso s3(s2);
+
+  EXPECT_EQ(s3, s2);
+  EXPECT_NE(s1, s2);
+  EXPECT_NE(s1, s3);
+  absl::flat_hash_set<string_view_sso> set;
+  set.emplace("a");
+  set.emplace("b");
+  set.emplace("b");
+  set.emplace(string_view{"foo"});
+  EXPECT_EQ(3, set.size());
 }
 
 }  // namespace base
