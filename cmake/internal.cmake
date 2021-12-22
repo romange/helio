@@ -63,7 +63,8 @@ set(COMPILE_OPTS "${COMPILE_OPTS} -fno-omit-frame-pointer -Wno-unused-parameter"
 if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
   set(COMPILE_OPTS "${COMPILE_OPTS} -march=armv8.2-a+fp16+rcpc+dotprod+crypto")
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-  set(COMPILE_OPTS "${COMPILE_OPTS} -march=skylake")
+  # Github actions use DSv2 that may use haswell cpus.
+  set(COMPILE_OPTS "${COMPILE_OPTS} -march=haswell")
 else()
   MESSAGE(FATAL_ERROR "Unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
 endif()

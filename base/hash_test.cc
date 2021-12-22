@@ -6,7 +6,6 @@
 #include <absl/random/random.h>
 #include "base/gtest.h"
 #include "base/logging.h"
-#include "base/aquahash.h"
 #include "base/zipf_gen.h"
 
 using namespace std;
@@ -21,11 +20,13 @@ class HashTest : public testing::Test {
 TEST_F(HashTest, Basic) {
   EXPECT_EQ(187264267u, XXHash32(32));
 
+#if SKYLAKE_DEFINED
   const uint8_t* ptr = reinterpret_cast<const uint8_t*>("foo");
   __m128i res = AquaHash::SmallKeyAlgorithm(ptr, 3);
   __int128 val;
   _mm_store_si128((__m128i*)&val, res);
   EXPECT_NE(0, val);
+#endif
 }
 
 TEST_F(HashTest, Zipf) {

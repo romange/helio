@@ -44,5 +44,10 @@ jobs:
       working-directory: ${{github.workspace}}/build
       run: |
           # echo ${env.TESTS_LIST }
+          cat /proc/cpuinfo
           ninja $(echo ${{ env.TESTS_LIST }}) -k 10
-          ctest -V -L CI
+          GLOG_logtostderr=1 ctest -V -L CI
+          # ninja proactor_test
+          # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
+
+

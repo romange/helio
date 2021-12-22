@@ -36,6 +36,7 @@ class ProactorTest : public testing::Test {
   void SetUp() final {
     proactor_ = std::make_unique<Proactor>();
     proactor_thread_ = thread{[this] {
+      proactor_->SetIndex(0);
       proactor_->Init(kRingDepth);
       proactor_->Run();
     }};
@@ -187,29 +188,38 @@ TEST_F(ProactorTest, AsyncEvent) {
 }
 
 TEST_F(ProactorTest, Migrate) {
-  unique_ptr<Proactor> second = std::make_unique<Proactor>();
-  pid_t second_tid;
+  unique_ptr<Proactor> dest = std::make_unique<Proactor>();
+  pid_t dest_tid = 0;
 
-  thread second_thread = thread{[&] {
-    second_tid = gettid();
-    second->Init(kRingDepth);
-    second->Run();
+  mutex mu;
+  condition_variable cv;
+  thread dest_thread = thread{[&] {
+    dest->SetIndex(1);
+    dest->Init(kRingDepth);
+    dest_tid = gettid();
+    LOG(INFO) << "Running dest thread " << dest_tid;
+    mu.lock();
+    cv.notify_all();
+    mu.unlock();
+    dest->Run();
   }};
 
+  unique_lock lk(mu);
+  cv.wait(lk, [&] { return dest_tid != 0;});
 
   fibers::fiber fb = proactor_->LaunchFiber([&] {
     // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
     // thus it allows compiler to eliminate subsequent calls to this function.
     // Therefore I use syscall variant to get fresh values.
     pid_t tid1 = gettid();
-    LOG(INFO) << "Source pid " << tid1;
-    proactor_->Migrate(second.get());
-    LOG(INFO) << "Dest pid " << second_tid;
-    ASSERT_EQ(second_tid, gettid());
+    LOG(INFO) << "Source pid " << tid1 << ", dest pid " << dest_tid;
+    proactor_->Migrate(dest.get());
+    LOG(INFO) << "After migrate";
+    ASSERT_EQ(dest_tid, gettid());
   });
   fb.join();
-  second->Stop();
-  second_thread.join();
+  dest->Stop();
+  dest_thread.join();
 }
 
 TEST_F(ProactorTest, Pool) {

@@ -619,12 +619,14 @@ void Proactor::WakeRing() {
   tq_wakeup_ev_.fetch_add(1, std::memory_order_relaxed);
 
   Proactor* caller = static_cast<Proactor*>(ProactorBase::me());
-  if (caller) {
+
+  // Disabled because it deadlocks in github actions.
+  // It could be kernel issue or a bug in my code - needs investigation.
+  if (false && caller) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
     se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
   } else {
-    uint64_t val = 1;
-    CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
+    CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
   }
 }
 
