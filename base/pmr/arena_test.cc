@@ -1,27 +1,28 @@
-// Copyright (c) 2011 The LevelDB Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file. See the AUTHORS file for names of contributors.
+// Copyright 2021, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
+//
 
-#include "base/arena.h"
+#include "base/pmr/arena.h"
 
 #include <sys/mman.h>
 #include <random>
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "strings/human_readable.h"
 
 namespace base {
 
-class ArenaTest { };
+class PmrArenaTest { };
 
-TEST(ArenaTest, Empty) {
-  Arena arena;
+TEST(PmrArenaTest, Empty) {
+  PmrArena arena;
 }
 
-TEST(ArenaTest, Simple) {
+TEST(PmrArenaTest, Simple) {
   std::default_random_engine rand(301);
   std::vector<std::pair<size_t, char*> > allocated;
-  Arena arena;
+  PmrArena arena;
   const int N = 100000;
   size_t bytes = 0;
   for (int i = 0; i < N; i++) {

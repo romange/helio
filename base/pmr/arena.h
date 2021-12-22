@@ -1,22 +1,22 @@
-// Copyright (c) 2011 The LevelDB Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file. See the AUTHORS file for names of contributors.
-// integrated here by Roman Gershman (romange@gmail.com)
+// Copyright 2021, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
+//
 
-#ifndef _BASE_UTIL_ARENA_H_
-#define _BASE_UTIL_ARENA_H_
+#pragma once
 
-#include <cstddef>
-#include <vector>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
+#include <memory_resource>
+#include <vector>
 
 namespace base {
 
-class Arena {
+// Used to allocate small blobs with size upto 4GB.
+class PmrArena {
  public:
-  Arena();
-  ~Arena();
+  PmrArena(std::pmr::memory_resource* mr = std::pmr::get_default_resource());
+  ~PmrArena();
 
   // Return a pointer to a newly allocated memory block of "bytes" bytes.
   char* Allocate(size_t bytes);
@@ -31,28 +31,37 @@ class Arena {
     return blocks_memory_ + blocks_.capacity() * sizeof(char*);
   }
 
-  void Swap(Arena& other);
+  void Swap(PmrArena& other);
 
  private:
   char* AllocateFallback(size_t bytes);
-  char* AllocateNewBlock(size_t block_bytes);
+  char* AllocateNewBlock(uint32_t block_bytes);
+
+  std::pmr::memory_resource* mr_;
 
   // Allocation state
-  char* alloc_ptr_;
-  size_t alloc_bytes_remaining_;
-
-  // Array of new[] allocated memory blocks
-  std::vector<char*> blocks_;
+  char* alloc_ptr_ = nullptr;
+  size_t alloc_bytes_remaining_ = 0;
 
   // Bytes of memory in blocks allocated so far
-  size_t blocks_memory_;
+  size_t blocks_memory_ = 0;
+
+  struct Block {
+    char* ptr;
+    uint32_t sz;
+  } __attribute__((packed));
+
+  static_assert(sizeof(Block) == 12);
+
+  // Array of the allocated memory blocks
+  std::pmr::vector<Block> blocks_;
 
   // No copying allowed
-  Arena(const Arena&);
-  void operator=(const Arena&);
+  PmrArena(const PmrArena&) = delete;
+  void operator=(const PmrArena&) = delete;
 };
 
-inline char* Arena::Allocate(size_t bytes) {
+inline char* PmrArena::Allocate(size_t bytes) {
   // The semantics of what to return are a bit messy if we allow
   // 0-byte allocations, so we disallow them here (we don't need
   // them for our internal use).
@@ -67,5 +76,3 @@ inline char* Arena::Allocate(size_t bytes) {
 }
 
 }  // namespace base
-
-#endif  // _BASE_UTIL_ARENA_H_

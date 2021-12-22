@@ -1,11 +1,12 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2021, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #pragma once
 
-#include "absl/container/flat_hash_map.h"
 #include <string_view>
-#include "base/arena.h"
+
+#include "absl/container/flat_hash_map.h"
 #include "base/varz_node.h"
 #include "util/sliding_counter.h"
 
@@ -22,7 +23,9 @@ class VarzQps : public base::VarzListNode {
     val_.Init(pp);
   }
 
-  void Shutdown() { val_.Shutdown(); }
+  void Shutdown() {
+    val_.Shutdown();
+  }
 
   void Inc() {
     val_.Inc();
@@ -73,9 +76,7 @@ class VarzMapAverage : public base::VarzListNode {
   std::unique_ptr<Map[]> avg_map_;
 };
 
-
 class VarzCount : public base::VarzListNode {
-
  public:
   explicit VarzCount(const char* varname) : base::VarzListNode(varname) {
   }
