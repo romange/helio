@@ -209,12 +209,13 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20210324.2.zip
+  URL https://github.com/abseil/abseil-cpp/archive/20211102.0.zip
 )
 FetchContent_GetProperties(abseil_cpp)
 if(NOT abseil_cpp_POPULATED)
   FetchContent_Populate(abseil_cpp)
   set(BUILD_TESTING OFF)
+  set(ABSL_PROPAGATE_CXX_STD ON)
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
 endif()
 
