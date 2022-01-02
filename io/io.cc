@@ -85,4 +85,13 @@ Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {
   return res;
 }
 
+::io::Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
+  size_t res = 0;
+  for (size_t i = 0; i < len; ++i) {
+    str_.append((char*)ptr[i].iov_base, ptr[i].iov_len);
+    res += ptr[i].iov_len;
+  }
+  return res;
+}
+
 }  // namespace io

@@ -158,6 +158,22 @@ class NullSink final : public Sink {
   Result<size_t> WriteSome(const iovec* v, uint32_t len);
 };
 
+class StringSink final : public ::io::Sink {
+ public:
+  ::io::Result<size_t> WriteSome(const iovec* v, uint32_t len);
+
+  const std::string& str() const {
+    return str_;
+  }
+
+  void Clear() {
+    str_.clear();
+  }
+
+ private:
+  std::string str_;
+};
+
 template <typename SomeFunc>
 std::error_code ApplyExactly(const iovec* v, uint32_t len, SomeFunc&& func) {
   const iovec* endv = v + len;

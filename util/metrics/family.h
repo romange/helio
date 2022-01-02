@@ -105,6 +105,7 @@ class Family {
   using LabelMap = absl::flat_hash_map<uint64_t, DenseId>;
 
   void InitBase(ProactorPool* pp, std::initializer_list<Label> list);
+  void ShutdownBase();
 
   std::pair<DenseId, bool> Emplace(uint64_t hash, absl::Span<const std::string_view> label_values,
                                    LabelMap* per_thread);

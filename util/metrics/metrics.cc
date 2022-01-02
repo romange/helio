@@ -22,6 +22,11 @@ void SingleFamily::Init(ProactorPool* pp, initializer_list<Label> list) {
   per_thread_.reset(new PerThread[pp->size()]);
 }
 
+void SingleFamily::Shutdown() {
+  ShutdownBase();
+  per_thread_.reset();
+}
+
 void SingleFamily::IncBy(absl::Span<const std::string_view> labels, double val) {
   CHECK_EQ(label_names_.size(), labels.size());
   int32_t index = ProactorBase::GetIndex();

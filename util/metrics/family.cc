@@ -24,19 +24,13 @@ Family::Family(const char* name, const char* help) : name_(name), help_(help) {
 
 Family::~Family() {
   lock_guard lk(list_mu);
-  if (family_list == this) {
+  if (next_)
+    next_->prev_ = prev_;
+
+  if (prev_)
+    prev_->next_ = next_;
+  else if (family_list == this)
     family_list = next_;
-    if (family_list) {
-      family_list->prev_ = nullptr;
-    }
-  } else {
-    if (next_) {
-      next_->prev_ = prev_;
-    }
-    if (prev_) {
-      prev_->next_ = next_;
-    }
-  }
 }
 
 void Family::InitBase(ProactorPool* pp, initializer_list<Label> list) {
@@ -50,6 +44,19 @@ void Family::InitBase(ProactorPool* pp, initializer_list<Label> list) {
     next_->prev_ = this;
   }
   family_list = this;
+}
+
+void Family::ShutdownBase() {
+  lock_guard lk(list_mu);
+  if (next_)
+    next_->prev_ = prev_;
+
+  if (prev_)
+    prev_->next_ = next_;
+  else if (family_list == this)
+    family_list = next_;
+  next_ = prev_ = nullptr;
+  pp_ = nullptr;
 }
 
 auto Family::Emplace(uint64_t hash, absl::Span<const std::string_view> label_values,

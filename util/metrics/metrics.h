@@ -41,6 +41,7 @@ class SingleFamily : public Family {
   }
 
   void Init(ProactorPool* pp, std::initializer_list<Label> list);
+  void Shutdown();
 
   void Inc(absl::Span<const std::string_view> label_values) {
     IncBy(label_values, 1);
