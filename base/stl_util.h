@@ -20,6 +20,16 @@ template<typename T> std::ostream& operator<<(std::ostream& o, const std::vector
   return o;
 }
 
+template<typename T> std::ostream& operator<<(std::ostream& o, std::initializer_list<T> vec) {
+  o << "[";
+  for (auto it = vec.begin(); it != vec.end(); ++it) {
+    o << *it;
+    if (it + 1 != vec.end()) o << ",";
+  }
+  o << "]";
+  return o;
+}
+
 namespace base {
 
 template<typename T, typename U> bool _in(const T& t,
