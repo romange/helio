@@ -33,7 +33,7 @@ class Proactor : public ProactorBase {
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
-  using CbType = std::function<void(IoResult, uint32_t, int64_t, Proactor*)>;
+  using CbType = std::function<void(IoResult, uint32_t, int64_t)>;
 
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.

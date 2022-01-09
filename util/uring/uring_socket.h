@@ -14,7 +14,7 @@ namespace uring {
 
 class UringSocket : public LinuxSocketBase {
  public:
-  template<typename T> using Result = io::Result<T>;
+  template <typename T> using Result = io::Result<T>;
 
   UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p) {
   }
@@ -24,7 +24,7 @@ class UringSocket : public LinuxSocketBase {
 
   virtual ~UringSocket();
 
-  ABSL_MUST_USE_RESULT accept_result Accept() final;
+  ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
   ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
@@ -38,8 +38,21 @@ class UringSocket : public LinuxSocketBase {
 
   using FiberSocketBase::IsConnClosed;
 
+  //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
+  //! When and an event occurs, the cb will be called with the mask of actual events
+  //! that trigerred it.
+  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
+  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb);
+
+  //! Cancels the poll event. id must be the id returned by PollEvent function.
+  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
+  //! in process of completing.
+  uint32_t CancelPoll(uint32_t id);
+
  private:
-  Proactor* GetProactor() { return static_cast<Proactor*>(proactor()); }
+  Proactor* GetProactor() {
+    return static_cast<Proactor*>(proactor());
+  }
 };
 
 }  // namespace uring

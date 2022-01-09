@@ -415,7 +415,7 @@ void Proactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
       e.val = next_free_ce_;
       next_free_ce_ = index;
 
-      func(cqe.res, cqe.flags, payload, this);
+      func(cqe.res, cqe.flags, payload);
       continue;
     }
 
@@ -515,7 +515,7 @@ void Proactor::ArmWakeupEvent() {
 
 void Proactor::SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) {
   SubmitEntry se = GetSubmitEntry(
-      [this, item](IoResult res, uint32_t flags, int64_t task_id, Proactor* mgr) {
+      [this, item](IoResult res, uint32_t flags, int64_t task_id) {
         this->PeriodicCb(res, task_id, std::move(item));
       },
       id);
@@ -541,7 +541,7 @@ void Proactor::PeriodicCb(IoResult res, int64_t task_id, std::shared_ptr<Periodi
 
 void Proactor::CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) {
   auto* me = fibers::context::active();
-  auto cb = [me](IoResult res, uint32_t flags, int64_t task_id, Proactor* mgr) {
+  auto cb = [me](IoResult res, uint32_t flags, int64_t task_id) {
     fibers::context::active()->schedule(me);
   };
   SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
@@ -631,11 +631,12 @@ void Proactor::WakeRing() {
 }
 
 FiberCall::FiberCall(Proactor* proactor, uint32_t timeout_msec) : me_(fibers::context::active()) {
-  auto waker = [this](Proactor::IoResult res, uint32_t flags, int64_t, Proactor* mgr) {
+  auto waker = [this](Proactor::IoResult res, uint32_t flags, int64_t) {
     io_res_ = res;
     res_flags_ = flags;
     fibers::context::active()->schedule(me_);
   };
+
   if (timeout_msec != UINT32_MAX) {
     proactor->WaitTillAvailable(2);
   }
@@ -651,7 +652,6 @@ FiberCall::FiberCall(Proactor* proactor, uint32_t timeout_msec) : me_(fibers::co
     ts_.tv_nsec = (timeout_msec % 1000) * 1000000;
     tm_.PrepLinkTimeout(&ts_);  // relative timeout.
   }
-
 }
 
 FiberCall::~FiberCall() {

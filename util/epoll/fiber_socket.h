@@ -18,7 +18,7 @@ class FiberSocket : public LinuxSocketBase {
 
   virtual ~FiberSocket();
 
-  ABSL_MUST_USE_RESULT accept_result Accept() final;
+  ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
   ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
   ABSL_MUST_USE_RESULT error_code Close() final;

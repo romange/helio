@@ -67,7 +67,7 @@ void ListenerInterface::RunAcceptLoop() {
   PreAcceptLoop(sock_->proactor());
 
   while (true) {
-    FiberSocketBase::accept_result res = sock_->Accept();
+    FiberSocketBase::AcceptResult res = sock_->Accept();
     if (!res.has_value()) {
       FiberSocketBase::error_code ec = res.error();
       if (ec != errc::connection_aborted) {

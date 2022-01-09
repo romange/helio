@@ -56,8 +56,7 @@ auto UringSocket::Close() -> error_code {
   return ec;
 }
 
-
-auto UringSocket::Accept() -> accept_result {
+auto UringSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
   sockaddr_in client_addr;
@@ -116,7 +115,6 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   CHECK(p->HasFastPoll());  // We do not support uring versions before that.
   FiberCall fc(p, timeout());
   fc->PrepConnect(dense_id, (const sockaddr*)ep.data(), ep.size());
-
 
   io_res = fc.Get();
 
@@ -197,7 +195,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
     DVSOCK(1) << "Got " << res;
 
     res = -res;
-    if (res == EAGAIN) { // EAGAIN can happen in case of CQ overflow.
+    if (res == EAGAIN) {  // EAGAIN can happen in case of CQ overflow.
       if (flags & MSG_DONTWAIT)
         break;
       continue;
@@ -216,6 +214,29 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 
   return nonstd::make_unexpected(std::move(ec));
+}
+
+uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
+  int fd = fd_ & FD_MASK;
+  Proactor* p = GetProactor();
+
+  auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, int64_t) { cb(res); };
+
+  SubmitEntry se = p->GetSubmitEntry(std::move(se_cb), 0);
+  se.PrepPollAdd(fd, event_mask);
+
+  return se.sqe()->user_data;
+}
+
+uint32_t UringSocket::CancelPoll(uint32_t id) {
+  FiberCall fc(GetProactor());
+  fc->PrepPollRemove(id);
+
+  IoResult io_res = fc.Get();
+  if (io_res < 0)
+    io_res = -io_res;
+
+  return io_res;
 }
 
 }  // namespace uring

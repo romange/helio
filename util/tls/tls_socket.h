@@ -26,7 +26,7 @@ class TlsSocket : public FiberSocketBase {
 
   error_code Shutdown(int how) final;
 
-  accept_result Accept() final;
+  AcceptResult Accept() final;
 
   error_code Connect(const endpoint_type& ep) final;
 

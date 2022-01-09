@@ -20,6 +20,10 @@ class UringSocketTest : public testing::Test {
 
   void TearDown() final {
     listen_socket_.reset();
+    server_socket_.reset();
+    if (accept_fb_.joinable()) {
+      accept_fb_.join();
+    }
     proactor_->Stop();
     proactor_thread_.join();
     proactor_.reset();
@@ -34,6 +38,7 @@ class UringSocketTest : public testing::Test {
   unique_ptr<Proactor> proactor_;
   thread proactor_thread_;
   unique_ptr<LinuxSocketBase> listen_socket_;
+  unique_ptr<LinuxSocketBase> server_socket_;
   uint16_t listen_port_ = 0;
   fibers::fiber accept_fb_;
   std::error_code accept_ec_;
@@ -57,7 +62,9 @@ void UringSocketTest::SetUp() {
   accept_fb_ = proactor_->LaunchFiber([this] {
     auto accept_res = listen_socket_->Accept();
     if (accept_res) {
-      delete *accept_res;
+      FiberSocketBase* sock = *accept_res;
+      server_socket_.reset(static_cast<LinuxSocketBase*>(sock));
+      server_socket_->SetProactor(proactor_.get());
     } else {
       accept_ec_ = accept_res.error();
     }
@@ -95,9 +102,7 @@ TEST_F(UringSocketTest, Timeout) {
   unique_ptr<LinuxSocketBase> tm_sock(proactor_->CreateSocket());
   tm_sock->set_timeout(5);
 
-  error_code tm_ec = proactor_->AwaitBlocking([&] {
-    return tm_sock->Connect(listen_ep_);
-  });
+  error_code tm_ec = proactor_->AwaitBlocking([&] { return tm_sock->Connect(listen_ep_); });
   EXPECT_EQ(tm_ec, errc::operation_canceled);
 
   // sock[0] was accepted and then its peer was deleted.
@@ -105,6 +110,40 @@ TEST_F(UringSocketTest, Timeout) {
   uint8_t buf[16];
   io::Result<size_t> read_res = proactor_->AwaitBlocking([&] { return sock[1]->Recv(buf); });
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
+}
+
+TEST_F(UringSocketTest, Poll) {
+  unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
+  struct linger ling;
+  ling.l_onoff = 1;
+  ling.l_linger = 0;
+
+  proactor_->AwaitBlocking([&] {
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    // We enforce RST event on server socket by setting linger option with timeout=0.
+    // This way, client socket won't send any FIN notifications and will jus disappear.
+    // See https://stackoverflow.com/a/13088864/2280111
+    CHECK_EQ(0, setsockopt(sock->native_handle(), SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
+  });
+  accept_fb_.join();
+
+  auto poll_cb = [](uint32_t mask) {
+    LOG(INFO) << "Res: " << mask;
+    EXPECT_TRUE((POLLRDHUP | POLLHUP) & mask);
+    EXPECT_TRUE(POLLERR & mask);
+  };
+
+  proactor_->AwaitBlocking([&] {
+    UringSocket* us = static_cast<UringSocket*>(this->server_socket_.get());
+    us->PollEvent(POLLHUP | POLLERR, poll_cb);
+  });
+
+  proactor_->AwaitBlocking([&] {
+    sock->Close();
+  });
+  usleep(100);
 }
 
 }  // namespace uring

@@ -74,7 +74,7 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   return error_code{};
 }
 
-auto TlsSocket::Accept() -> accept_result {
+auto TlsSocket::Accept() -> AcceptResult {
   DCHECK(engine_);
 
   while (true) {

@@ -29,7 +29,7 @@ void UringFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {
   using namespace chrono;
   DCHECK(time_point::max() != abs_time);
 
-  auto cb = [this](Proactor::IoResult res, uint32_t /*flags*/, int64_t payload, Proactor*) {
+  auto cb = [this](Proactor::IoResult res, uint32_t /*flags*/, int64_t payload) {
     // If io_uring does not support timeout, then this callback will be called
     // earlier than needed and dispatch won't awake the sleeping fiber.
     // This will cause deadlock.

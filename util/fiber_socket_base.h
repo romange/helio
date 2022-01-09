@@ -27,11 +27,11 @@ class FiberSocketBase : public ::io::SyncStreamInterface, public io::Sink {
  public:
   using endpoint_type = ::boost::asio::ip::tcp::endpoint;
   using error_code = std::error_code;
-  using accept_result = ::io::Result<FiberSocketBase*>;
+  using AcceptResult = ::io::Result<FiberSocketBase*>;
 
   ABSL_MUST_USE_RESULT virtual error_code Shutdown(int how) = 0;
 
-  ABSL_MUST_USE_RESULT virtual accept_result Accept() = 0;
+  ABSL_MUST_USE_RESULT virtual AcceptResult Accept() = 0;
 
   ABSL_MUST_USE_RESULT virtual error_code Connect(const endpoint_type& ep) = 0;
 

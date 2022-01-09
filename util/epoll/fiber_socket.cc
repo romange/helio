@@ -68,7 +68,7 @@ void FiberSocket::OnSetProactor() {
   }
 }
 
-auto FiberSocket::Accept() -> accept_result {
+auto FiberSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
   sockaddr_in client_addr;

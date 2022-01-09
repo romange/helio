@@ -92,7 +92,7 @@ TEST_F(ProactorTest, SqeOverflow) {
 
   constexpr size_t kMaxPending = kRingDepth * 100;
   fibers_ext::BlockingCounter bc(kMaxPending);
-  auto cb = [&bc](IoResult, uint32_t, int64_t payload, Proactor*) { bc.Dec(); };
+  auto cb = [&bc](IoResult, uint32_t, int64_t payload) { bc.Dec(); };
 
   proactor_->AsyncFiber([&]() mutable {
     for (unsigned i = 0; i < kMaxPending; ++i) {
@@ -178,7 +178,7 @@ TEST_F(ProactorTest, SqPoll) {
 TEST_F(ProactorTest, AsyncEvent) {
   fibers_ext::Done done;
 
-  auto cb = [done](IoResult, uint32_t, int64_t payload, Proactor* p) mutable { done.Notify(); };
+  auto cb = [done](IoResult, uint32_t, int64_t payload) mutable { done.Notify(); };
 
   proactor_->AsyncBrief([&] {
     SubmitEntry se = proactor_->GetSubmitEntry(std::move(cb), 1);

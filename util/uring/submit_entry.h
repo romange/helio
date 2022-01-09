@@ -34,9 +34,18 @@ class SubmitEntry {
   }
 
   // mask is a bit-OR of POLLXXX flags.
-  void PrepPollAdd(int fd, short mask) {
+  void PrepPollAdd(int fd, unsigned mask) {
     PrepFd(IORING_OP_POLL_ADD, fd);
-    sqe_->poll_events = mask;
+
+#if __BYTE_ORDER == __BIG_ENDIAN
+	  mask = __swahw32(mask);
+#endif
+    sqe_->poll32_events = mask;
+  }
+
+  void PrepPollRemove(uint64_t uid) {
+    PrepFd(IORING_OP_POLL_REMOVE, -1);
+    sqe_->addr = uid;
   }
 
   void PrepRecvMsg(int fd, const struct msghdr* msg, unsigned flags) {
