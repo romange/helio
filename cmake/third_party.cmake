@@ -132,7 +132,7 @@ endfunction()
 FetchContent_Declare(
   gflags
   URL https://github.com/gflags/gflags/archive/v2.2.2.zip
-  SOURCE_DIR gflags
+  # SOURCE_DIR gflags
   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/gflags-v2.2.2.patch"
 )
 
