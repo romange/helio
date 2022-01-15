@@ -52,6 +52,17 @@ if (SUPPORT_USAN)
 endif()
 set(CMAKE_REQUIRED_FLAGS "")
 
+check_cxx_source_compiles("
+#include <string.h>
+int main() {
+ rawmemchr((const void*)8, 13);
+ return 0;
+}" HAS_RAWMEMCHR)
+
+if (HAS_RAWMEMCHR)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DHAS_RAWMEMCHR")
+endif()
+
 # ---[ Color diagnostics
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
 #  -fsanitize=address has a bug with clang: multiple definition of `operator delete(void*)

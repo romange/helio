@@ -34,13 +34,12 @@ Result<vector<StatShort>> StatFiles(std::string_view path) {
     }
   }
 
-  struct statx sbuf;
-  constexpr unsigned kMask = STATX_MTIME | STATX_SIZE | STATX_TYPE | STATX_MODE;
-
+  struct stat sbuf;
+  // statx is not implemented in musl-dev
   for (size_t i = 0; i < glob_result.gl_pathc; i++) {
-    if (statx(AT_FDCWD, glob_result.gl_pathv[i], AT_STATX_SYNC_AS_STAT, kMask, &sbuf) == 0) {
-      time_t ns = sbuf.stx_mtime.tv_sec * 1000000000ULL + sbuf.stx_mtime.tv_nsec;
-      StatShort sshort{glob_result.gl_pathv[i], ns, sbuf.stx_size, sbuf.stx_mode};
+    if (fstatat(AT_FDCWD, glob_result.gl_pathv[i], &sbuf, 0) == 0) {
+      time_t ns = sbuf.st_mtim.tv_sec * 1000000000ULL + sbuf.st_mtim.tv_nsec;
+      StatShort sshort{glob_result.gl_pathv[i], ns, uint64_t(sbuf.st_size), sbuf.st_mode};
       res.emplace_back(std::move(sshort));
     } else {
       LOG(WARNING) << "Bad stat for " << glob_result.gl_pathv[i] << " " << strerror(errno);

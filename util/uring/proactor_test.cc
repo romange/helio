@@ -109,11 +109,6 @@ TEST_F(ProactorTest, SqeOverflow) {
 }
 
 TEST_F(ProactorTest, SqPoll) {
-  if (geteuid() != 0) {
-    LOG(INFO) << "Requires root permissions";
-    return;
-  }
-
   io_uring_params params;
   memset(&params, 0, sizeof(params));
 
@@ -122,7 +117,13 @@ TEST_F(ProactorTest, SqPoll) {
   params.flags |= IORING_SETUP_SQPOLL;
   io_uring ring;
 
-  ASSERT_EQ(0, io_uring_queue_init_params(16, &ring, &params));
+  int res = io_uring_queue_init_params(16, &ring, &params);
+  if (res != 0) {
+    int err = errno;
+    LOG(INFO) << "IORING_SETUP_SQPOLL not supported " << err;
+    return;
+  }
+
   io_uring_sqe* sqe = io_uring_get_sqe(&ring);
   io_uring_prep_nop(sqe);
   sqe->user_data = 42;
@@ -151,7 +152,7 @@ TEST_F(ProactorTest, SqPoll) {
   serv_addr.sin_port = htons(10200);
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-  int res = bind(srv_fd, (sockaddr*)&serv_addr, sizeof(serv_addr));
+  res = bind(srv_fd, (sockaddr*)&serv_addr, sizeof(serv_addr));
   ASSERT_EQ(0, res) << strerror(errno) << " " << errno;
 
   // Issue recv command

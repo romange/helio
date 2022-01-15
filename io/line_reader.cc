@@ -2,6 +2,8 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
+#include <cstring>  // for rawmemchr
+
 #include "io/line_reader.h"
 #include "io/file.h"
 
@@ -32,8 +34,11 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
   const char* const eof_page = buf_.get() + page_size_ - 1;
   while (true) {
     // Common case: search of EOL.
+#ifdef HAS_RAWMEMCHR
     char* ptr =  reinterpret_cast<char*>(rawmemchr(next_, '\n'));
-
+#else
+    char* ptr =  reinterpret_cast<char*>(memchr(next_, '\n', end_ - next_ + 1));
+#endif
     if (ptr < end_) {  // Found EOL.
       ++line_num_;
 
