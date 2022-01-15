@@ -226,24 +226,15 @@ Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_V
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)
 
 
-# TODO: On aarch64 heap profiler does not work, need to investigate it.
-if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
-  set(PERF_TOOLS_LIB "libprofiler.a")
-  set(PERF_TOOLS_OPTS --enable-libunwind --disable-heap-checker --disable-debugalloc)
-else()
-  set(PERF_TOOLS_OPTS --disable-libunwind --disable-heap-checker --disable-debugalloc --disable-heap-profiler)
-  set(PERF_TOOLS_LIB "libprofiler.a")
-endif()
-
 add_third_party(
   gperf
-  URL https://github.com/gperftools/gperftools/releases/download/gperftools-2.9.1/gperftools-2.9.1.zip
-  PATCH_COMMAND autoreconf -i
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers --enable-static=yes
-                    "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}"
-                    --disable-deprecated-pprof --enable-aggressive-decommit-by-default
-                    --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
-  LIB ${PERF_TOOLS_LIB}
+  GIT_REPOSITORY https://github.com/gperftools/gperftools
+  GIT_TAG gperftools-2.9.1
+  GIT_SHALLOW TRUE
+  CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
+                    -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
+                    gperftools_build_benchmark=OFF"
+  LIB libprofiler.a
 )
 
 set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
