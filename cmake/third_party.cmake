@@ -226,14 +226,30 @@ Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_V
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)
 
 
+# gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
+# Until it's fixed, I use the old configure based build.
+
+if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+  set(PERF_TOOLS_OPTS --enable-libunwind )
+else()
+  set(PERF_TOOLS_OPTS --disable-libunwind)
+endif()
+
 add_third_party(
   gperf
   GIT_REPOSITORY https://github.com/gperftools/gperftools
   GIT_TAG gperftools-2.9.1
   GIT_SHALLOW TRUE
-  CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
-                    -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
-                    gperftools_build_benchmark=OFF"
+  PATCH_COMMAND autoreconf -i   # update runs every time for some reason
+  # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
+  #                   -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
+  #                   -Dgperftools_build_benchmark=OFF"
+  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers --enable-static=yes
+                      "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}"
+                      --disable-heap-checker --disable-debugalloc --disable-heap-profiler
+                      --disable-deprecated-pprof --enable-aggressive-decommit-by-default
+                      --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
+  INSTALL_COMMAND make install-exec install-data
   LIB libprofiler.a
 )
 
