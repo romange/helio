@@ -25,7 +25,8 @@
                 "${workspaceFolder}/build-opt/_deps/benchmark-src/include",
                 "${default}"
             ],
-            "compileCommands": "${workspaceFolder}/build-dbg/compile_commands.json"
+            "compileCommands": "${workspaceFolder}/build-dbg/compile_commands.json",
+            "configurationProvider": "ms-vscode.cmake-tools"
         }
     ],
     "version": 4

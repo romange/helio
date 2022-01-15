@@ -8,6 +8,7 @@
 #include <gmock/gmock.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #include "absl/time/clock.h"
 #include "base/gtest.h"
@@ -205,7 +206,7 @@ TEST_F(ProactorTest, Migrate) {
   }};
 
   unique_lock lk(mu);
-  cv.wait(lk, [&] { return dest_tid != 0;});
+  cv.wait(lk, [&] { return dest_tid != 0; });
 
   fibers::fiber fb = proactor_->LaunchFiber([&] {
     // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
