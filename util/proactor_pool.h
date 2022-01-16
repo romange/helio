@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
@@ -58,33 +58,34 @@ class ProactorPool {
   /*! @brief Runs func in all IO threads asynchronously.
    *
    * The task must be CPU-only non IO-blocking code because it runs directly in
-   * IO-fiber. AsyncOnAll runs asynchronously and will exit before  the task
+   * IO-fiber. DispatchBrief runs asynchronously and will exit before  the task
    * finishes. The 'func' must accept Proactor& as its argument.
    */
-  template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void AsyncOnAll(Func&& func) {
+  template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
+  void DispatchBrief(Func&& func) {
     CheckRunningState();
     for (unsigned i = 0; i < size(); ++i) {
       ProactorBase* p = proactor_[i];
       // func must be copied, it can not be moved, because we dsitribute it into
       // multiple Proactors.
-      p->AsyncBrief([p, func]() mutable { func(p); });
+      p->DispatchBrief([p, func]() mutable { func(p); });
     }
   }
 
   /*! @brief Runs func in all IO threads asynchronously.
    *
    * The task must be CPU-only non IO-blocking code because it runs directly in
-   * IO-loop. AsyncOnAll runs asynchronously and will exit once func is
+   * IO-loop. DispatchBrief runs asynchronously and will exit once func is
    * submitted but before it has finished running. The 'func' must accept
    * unsigned int (io context index) and Proactor& as its arguments.
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
-  void AsyncOnAll(Func&& func) {
+  void DispatchBrief(Func&& func) {
     CheckRunningState();
     for (unsigned i = 0; i < size(); ++i) {
       ProactorBase* p = proactor_[i];
       // Copy func on purpose, see above.
-      p->AsyncBrief([p, i, func]() mutable { func(i, p); });
+      p->DispatchBrief([p, i, func]() mutable { func(i, p); });
     }
   }
 
@@ -94,13 +95,13 @@ class ProactorPool {
    *
    * Func must accept "ProactorBase&" and it should not block.
    */
-  template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void AwaitOnAll(Func&& func) {
+  template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void Await(Func&& func) {
     fibers_ext::BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
       bc.Dec();
     };
-    AsyncOnAll(std::move(cb));
+    DispatchBrief(std::move(cb));
     bc.Wait();
   }
 
@@ -110,13 +111,13 @@ class ProactorPool {
    *
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
-  void AwaitOnAll(Func&& func) {
+  void Await(Func&& func) {
     fibers_ext::BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
       bc.Dec();
     };
-    AsyncOnAll(std::move(cb));
+    DispatchBrief(std::move(cb));
     bc.Wait();
   }
 
@@ -129,8 +130,8 @@ class ProactorPool {
    * 'func' callback runs inside a wrapping fiber.
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
-  void AsyncFiberOnAll(Func&& func) {
-    AsyncOnAll([func = std::forward<Func>(func)](unsigned i, ProactorBase* context) {
+  void DispatchOnAll(Func&& func) {
+    DispatchBrief([func = std::forward<Func>(func)](unsigned i, ProactorBase* context) {
       ::boost::fibers::fiber(func, i, context).detach();
     });
   }
@@ -144,8 +145,8 @@ class ProactorPool {
    * 'func' callback runs inside a wrapping fiber.
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
-  void AsyncFiberOnAll(Func&& func) {
-    AsyncOnAll([func = std::forward<Func>(func)](ProactorBase* context) {
+  void DispatchOnAll(Func&& func) {
+    DispatchBrief([func = std::forward<Func>(func)](ProactorBase* context) {
       ::boost::fibers::fiber(func, context).detach();
     });
   }
@@ -165,7 +166,7 @@ class ProactorPool {
       func(i, context);
       bc.Dec();
     };
-    AsyncFiberOnAll(std::move(cb));
+    DispatchOnAll(std::move(cb));
     bc.Wait();
   }
 
@@ -184,7 +185,7 @@ class ProactorPool {
       func(context);
       bc.Dec();
     };
-    AsyncFiberOnAll(std::move(cb));
+    DispatchOnAll(std::move(cb));
     bc.Wait();
   }
 

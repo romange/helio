@@ -93,7 +93,7 @@ void ListenerInterface::RunAcceptLoop() {
     };
 
     // Run cb in its Proactor thread.
-    next->AsyncFiber(std::move(cb));
+    next->Dispatch(std::move(cb));
   }
 
   PreShutdown();
@@ -102,7 +102,7 @@ void ListenerInterface::RunAcceptLoop() {
   unsigned cnt = safe_list.list.size();
   fibers_ext::BlockingCounter bc{cnt};
   for (auto& val : safe_list.list) {
-    val.socket()->proactor()->AsyncFiber([conn = &val, bc] () mutable {
+    val.socket()->proactor()->Dispatch([conn = &val, bc] () mutable {
       conn->Shutdown();
       DVSOCK(1, *conn->socket()) << "Shutdown";
       bc.Dec();

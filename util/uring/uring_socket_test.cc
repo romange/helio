@@ -74,7 +74,7 @@ void UringSocketTest::SetUp() {
 TEST_F(UringSocketTest, Basic) {
   unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
 
-  proactor_->AwaitBlocking([&] {
+  proactor_->Await([&] {
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
     accept_fb_.join();
@@ -90,7 +90,7 @@ TEST_F(UringSocketTest, Timeout) {
     sock[i]->set_timeout(5);  // we set timeout that won't supposed to trigger.
   }
 
-  proactor_->AwaitBlocking([&] {
+  proactor_->Await([&] {
     for (size_t i = 0; i < 2; ++i) {
       error_code ec = sock[i]->Connect(listen_ep_);
       EXPECT_FALSE(ec);
@@ -102,13 +102,13 @@ TEST_F(UringSocketTest, Timeout) {
   unique_ptr<LinuxSocketBase> tm_sock(proactor_->CreateSocket());
   tm_sock->set_timeout(5);
 
-  error_code tm_ec = proactor_->AwaitBlocking([&] { return tm_sock->Connect(listen_ep_); });
+  error_code tm_ec = proactor_->Await([&] { return tm_sock->Connect(listen_ep_); });
   EXPECT_EQ(tm_ec, errc::operation_canceled);
 
   // sock[0] was accepted and then its peer was deleted.
   // therefore, we read from sock[1] that was opportunistically accepted with the ack from peer.
   uint8_t buf[16];
-  io::Result<size_t> read_res = proactor_->AwaitBlocking([&] { return sock[1]->Recv(buf); });
+  io::Result<size_t> read_res = proactor_->Await([&] { return sock[1]->Recv(buf); });
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
@@ -118,7 +118,7 @@ TEST_F(UringSocketTest, Poll) {
   ling.l_onoff = 1;
   ling.l_linger = 0;
 
-  proactor_->AwaitBlocking([&] {
+  proactor_->Await([&] {
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
 
@@ -135,12 +135,12 @@ TEST_F(UringSocketTest, Poll) {
     EXPECT_TRUE(POLLERR & mask);
   };
 
-  proactor_->AwaitBlocking([&] {
+  proactor_->Await([&] {
     UringSocket* us = static_cast<UringSocket*>(this->server_socket_.get());
     us->PollEvent(POLLHUP | POLLERR, poll_cb);
   });
 
-  proactor_->AwaitBlocking([&] {
+  proactor_->Await([&] {
     sock->Close();
   });
   usleep(100);

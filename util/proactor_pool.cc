@@ -1,12 +1,11 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/proactor_pool.h"
 
 #include "base/logging.h"
 #include "base/pthread_utils.h"
-// #include "util/uring/proactor.h"
 
 DEFINE_uint32(proactor_threads, 0, "Number of io threads in the pool");
 
@@ -55,7 +54,7 @@ void ProactorPool::CheckRunningState() {
 void ProactorPool::Run() {
   SetupProactors();
 
-  AwaitOnAll([](unsigned index, auto*) {
+  Await([](unsigned index, auto*) {
     // It seems to simplify things in kernel for io_uring.
     // https://github.com/axboe/liburing/issues/218
     // I am not sure what's how it impacts higher application levels.

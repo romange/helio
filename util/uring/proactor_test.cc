@@ -61,7 +61,7 @@ class ProactorTest : public testing::Test {
 
 TEST_F(ProactorTest, AsyncCall) {
   for (unsigned i = 0; i < 10000; ++i) {
-    proactor_->AsyncBrief([] {});
+    proactor_->DispatchBrief([] {});
   }
   usleep(5000);
 }
@@ -77,7 +77,7 @@ TEST_F(ProactorTest, Await) {
 }
 
 TEST_F(ProactorTest, Sleep) {
-  proactor_->AwaitBlocking([] {
+  proactor_->Await([] {
     LOG(INFO) << "Before Sleep";
     this_fiber::sleep_for(20ms);
     LOG(INFO) << "After Sleep";
@@ -95,7 +95,7 @@ TEST_F(ProactorTest, SqeOverflow) {
   fibers_ext::BlockingCounter bc(kMaxPending);
   auto cb = [&bc](IoResult, uint32_t, int64_t payload) { bc.Dec(); };
 
-  proactor_->AsyncFiber([&]() mutable {
+  proactor_->Dispatch([&]() mutable {
     for (unsigned i = 0; i < kMaxPending; ++i) {
       SubmitEntry se = proactor_->GetSubmitEntry(cb, unique_id++);
       se.PrepRead(fd, buf, sizeof(buf), 0);
@@ -182,7 +182,7 @@ TEST_F(ProactorTest, AsyncEvent) {
 
   auto cb = [done](IoResult, uint32_t, int64_t payload) mutable { done.Notify(); };
 
-  proactor_->AsyncBrief([&] {
+  proactor_->DispatchBrief([&] {
     SubmitEntry se = proactor_->GetSubmitEntry(std::move(cb), 1);
     se.sqe()->opcode = IORING_OP_NOP;
   });
@@ -278,7 +278,7 @@ TEST_F(ProactorTest, SlidingCounter) {
   pool.Run();
   SlidingCounter<4> sc2;
   sc2.Init(&pool);
-  pool.AwaitOnAll([&](auto*) { sc2.Inc(); });
+  pool.Await([&](auto*) { sc2.Inc(); });
   cnt = sc2.Sum();
   EXPECT_EQ(2, cnt);
 }
@@ -294,7 +294,7 @@ TEST_F(ProactorTest, Varz) {
 
   vector<pair<string, uint32_t>> vals;
   auto cb = [&vals](const char* str, VarzValue&& v) { vals.emplace_back(str, v.num); };
-  pool[0].AwaitBlocking([&] { qps.Iterate(cb); });
+  pool[0].Await([&] { qps.Iterate(cb); });
 
   EXPECT_THAT(vals, ElementsAre(Pair("test1", 0)));
 }
@@ -305,7 +305,7 @@ TEST_F(ProactorTest, Periodic) {
 
   uint32_t id = proactor_->AwaitBrief([&] { return proactor_->AddPeriodic(1, cb); });
   usleep(20000);
-  proactor_->AwaitBlocking([&] { return proactor_->CancelPeriodic(id); });
+  proactor_->Await([&] { return proactor_->CancelPeriodic(id); });
   unsigned num = count;
   ASSERT_TRUE(count >= 15 && count <= 25) << count;
   usleep(20000);
@@ -345,17 +345,17 @@ TEST_F(ProactorTest, File) {
   string path = base::GetTestTempPath("foo.txt");
   LOG(INFO) << "writing to path " << path;
 
-  io::Result<io::WriteFile*> res = proactor_->AwaitBlocking([&] { return OpenWrite(path); });
+  io::Result<io::WriteFile*> res = proactor_->Await([&] { return OpenWrite(path); });
   ASSERT_TRUE(res) << res.error().message();
 
   unique_ptr<io::WriteFile> file(res.value());
   string str(1u << 18, 'a');
-  error_code ec = proactor_->AwaitBlocking([&] { return file->Write(str); });
+  error_code ec = proactor_->Await([&] { return file->Write(str); });
   ASSERT_FALSE(ec) << ec;
 
   str.assign(1u << 18, 'b');
-  ec = proactor_->AwaitBlocking([&] { return file->Write(str); });
-  ec = proactor_->AwaitBlocking([&] { return file->Close(); });
+  ec = proactor_->Await([&] { return file->Write(str); });
+  ec = proactor_->Await([&] { return file->Close(); });
   struct statx sbuf;
   ASSERT_EQ(0, statx(0, path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_SIZE, &sbuf));
   ASSERT_EQ(1 << 19, sbuf.stx_size);
@@ -369,7 +369,7 @@ void BM_AsyncCall(benchmark::State& state) {
   });
 
   while (state.KeepRunning()) {
-    proactor.AsyncBrief([] {});
+    proactor.DispatchBrief([] {});
   }
   proactor.Stop();
   t.join();

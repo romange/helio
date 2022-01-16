@@ -94,12 +94,23 @@ class ProactorBase {
     tl_info_.proactor_index = index;
   }
 
-  //! Fire and forget - does not wait for the function to be called.
+  //! Fire and forget - does not wait for the function to run called.
   //! `f` should not block, lock on mutexes or Await.
   //! Might block the calling fiber if the queue is full.
-  template <typename Func> void AsyncBrief(Func&& brief);
+  template <typename Func> void DispatchBrief(Func&& brief);
 
-  //! Similarly to AsyncBrief but waits 'f' to return.
+  //! Similarly to DispatchBrief but 'f' is wrapped in fiber.
+  //! f is allowed to fiber-block or await.
+  template <typename Func, typename... Args> void Dispatch(Func&& f, Args&&... args) {
+    // Ideally we want to forward args into lambda but it's too complicated before C++20.
+    // So I just copy them into capture.
+    // We forward captured variables so we need lambda to be mutable.
+    DispatchBrief([f = std::forward<Func>(f), args...]() mutable {
+      ::boost::fibers::fiber(std::forward<Func>(f), std::forward<Args>(args)...).detach();
+    });
+  }
+
+  //! Similarly to DispatchBrief but waits 'f' to return.
   template <typename Func> auto AwaitBrief(Func&& brief) -> decltype(brief());
 
   // Runs possibly awating function 'f' safely in Proactor thread and waits for it to finish,
@@ -107,18 +118,8 @@ class ProactorBase {
   // runs it wrapped in a fiber. Should be used instead of 'AwaitBrief' when 'f' itself
   // awaits on something.
   // To summarize: 'f' may not block its thread, but allowed to block its fiber.
-  template <typename Func> auto AwaitBlocking(Func&& f) -> decltype(f());
+  template <typename Func> auto Await(Func&& f) -> decltype(f());
 
-  //! Similarly to AsyncBrief but 'f' but wraps 'f' in fiber.
-  //! f is allowed to fiber-block or await.
-  template <typename Func, typename... Args> void AsyncFiber(Func&& f, Args&&... args) {
-    // Ideally we want to forward args into lambda but it's too complicated before C++20.
-    // So I just copy them into capture.
-    // We forward captured variables so we need lambda to be mutable.
-    AsyncBrief([f = std::forward<Func>(f), args...]() mutable {
-      ::boost::fibers::fiber(std::forward<Func>(f), std::forward<Args>(args)...).detach();
-    });
-  }
 
   // Please note that this function uses Await, therefore can not be used inside
   // Proactor main fiber (i.e. Async callbacks).
@@ -147,7 +148,7 @@ class ProactorBase {
   uint32_t AddPeriodic(uint32_t ms, PeriodicTask f);
 
   //! Blocking until the task has been cancelled. Should not be run from I/O loop
-  //! i.e. only from AwaitBlocking or another fiber.
+  //! i.e. only from Await or another fiber.
   void CancelPeriodic(uint32_t id);
 
   // Migrates the calling fibers to the destination proactor.
@@ -246,7 +247,7 @@ inline void ProactorBase::WakeupIfNeeded() {
   }
 }
 
-template <typename Func> void ProactorBase::AsyncBrief(Func&& f) {
+template <typename Func> void ProactorBase::DispatchBrief(Func&& f) {
   if (EmplaceTaskQueue(std::forward<Func>(f)))
     return;
 
@@ -277,7 +278,7 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
   fibers_ext::detail::ResultMover<ResultType> mover;
 
   // Store done-ptr by value to increase the refcount while lambda is running.
-  AsyncBrief([&mover, f = std::forward<Func>(f), done]() mutable {
+  DispatchBrief([&mover, f = std::forward<Func>(f), done]() mutable {
     mover.Apply(f);
     done.Notify();
   });
@@ -291,7 +292,7 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
 // runs it wrapped in a fiber. Should be used instead of 'Await' when 'f' itself
 // awaits on something.
 // To summarize: 'f' should not block its thread, but allowed to block its fiber.
-template <typename Func> auto ProactorBase::AwaitBlocking(Func&& f) -> decltype(f()) {
+template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
   if (InMyThread()) {
     return f();
   }

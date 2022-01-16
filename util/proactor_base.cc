@@ -40,7 +40,7 @@ void SigAction(int signal, siginfo_t*, void*) {
   auto cb = [signal, &item] { item.cb(signal); };
 
   if (item.proactor && item.cb) {
-    item.proactor->AsyncFiber(std::move(cb));
+    item.proactor->Dispatch(std::move(cb));
   } else {
     LOG(ERROR) << "Tangling signal handler " << signal;
   }
@@ -72,7 +72,7 @@ ProactorBase::~ProactorBase() {
 }
 
 void ProactorBase::Stop() {
-  AsyncBrief([this] { is_stopped_ = true; });
+  DispatchBrief([this] { is_stopped_ = true; });
   VLOG(1) << "Proactor::StopFinish";
 }
 

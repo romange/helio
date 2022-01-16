@@ -40,7 +40,7 @@ void AcceptServer::Run() {
 
     for (auto& lw : list_interface_) {
       ProactorBase* proactor = lw->sock_->proactor();
-      proactor->AsyncFiber([li = lw.get(), this] {
+      proactor->Dispatch([li = lw.get(), this] {
         li->RunAcceptLoop();
         ref_bc_.Dec();
       });
@@ -97,7 +97,7 @@ unsigned short AcceptServer::AddListener(unsigned short port, ListenerInterface*
 void AcceptServer::BreakListeners() {
   for (auto& lw : list_interface_) {
     ProactorBase* proactor = lw->sock_->proactor();
-    proactor->AsyncFiber([sock = lw->sock_.get()] { sock->Shutdown(SHUT_RDWR); });
+    proactor->Dispatch([sock = lw->sock_.get()] { sock->Shutdown(SHUT_RDWR); });
   }
   VLOG(1) << "AcceptServer::BreakListeners finished";
 }

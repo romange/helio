@@ -94,7 +94,7 @@ void AcceptServerTest::SetUp() {
   auto address = boost::asio::ip::make_address("127.0.0.1");
   FiberSocketBase::endpoint_type ep{address, kPort};
 
-  pb->AwaitBlocking([&] {
+  pb->Await([&] {
     FiberSocketBase::error_code ec = client_sock_->Connect(ep);
     CHECK(!ec) << ec;
   });
@@ -118,7 +118,7 @@ void RunClient(FiberSocketBase* fs, BlockingCounter* bc) {
 
 TEST_F(AcceptServerTest, Basic) {
   fibers_ext::BlockingCounter bc(1);
-  client_sock_->proactor()->AsyncFiber(&RunClient, client_sock_.get(), &bc);
+  client_sock_->proactor()->Dispatch(&RunClient, client_sock_.get(), &bc);
 
   bc.Wait();
 }

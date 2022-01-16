@@ -48,7 +48,7 @@ class EvControllerTest : public testing::Test {
 
 TEST_F(EvControllerTest, AsyncCall) {
   for (unsigned i = 0; i < 1000; ++i) {
-    ev_cntrl_->AsyncBrief([] {});
+    ev_cntrl_->DispatchBrief([] {});
   }
   usleep(5000);
 }
@@ -64,7 +64,7 @@ TEST_F(EvControllerTest, Await) {
 }
 
 TEST_F(EvControllerTest, Sleep) {
-  ev_cntrl_->AwaitBlocking([] {
+  ev_cntrl_->Await([] {
     LOG(INFO) << "Before Sleep";
     this_fiber::sleep_for(20ms);
     LOG(INFO) << "After Sleep";
@@ -110,7 +110,7 @@ TEST_F(EvControllerTest, Periodic) {
   uint32_t id = ev_cntrl_->AwaitBrief([&] { return ev_cntrl_->AddPeriodic(1, cb); });
 
   usleep(20000);
-  ev_cntrl_->AwaitBlocking([&] { return ev_cntrl_->CancelPeriodic(id); });
+  ev_cntrl_->Await([&] { return ev_cntrl_->CancelPeriodic(id); });
   unsigned num = count;
   ASSERT_TRUE(count >= 15 && count <= 25) << count;
   usleep(20000);
@@ -122,7 +122,7 @@ void BM_AsyncCall(benchmark::State& state) {
   std::thread t([&] { proactor.Run(); });
 
   while (state.KeepRunning()) {
-    proactor.AsyncBrief([] {});
+    proactor.DispatchBrief([] {});
   }
   proactor.Stop();
   t.join();
