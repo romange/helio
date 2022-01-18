@@ -1,0 +1,15 @@
+sse2neon.h is from https://github.com/DLTcollab/sse2neon/ and is distributed under MIT license.
+libdivide.h is taken from https://github.com/ridiculousfish/libdivide and is distributed under Boost and zlib licenses.
+
+RWSpinlock.h is taken from https://github.com/facebook/folly and it's distributed under Apache 2.0 license
+function2.hpp is taken from https://github.com/Naios/function2 and is distributed under Boost license (BSL-1.0)
+
+pmr/pod_array.h is based on Clickhouse PodArray : https://github.com/ClickHouse/ClickHouse/ and it's distributed 
+under Apache 2.0 license.
+
+mpmc_bounded_queue.h is based on D.Vyukov's implementation http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
+and is distributed under simplified BSD license.
+
+histogram.* is taken from https://github.com/google/leveldb and is distributed under BSD 3-clause license.
+
+expected.hpp is distributed under BSL 1.0 (boost) and is taken from https://github.com/martinmoene/expected-lite
