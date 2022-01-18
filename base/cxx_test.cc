@@ -1,10 +1,11 @@
 // Copyright 2021, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
+#include <absl/container/flat_hash_set.h>
+
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/string_view_sso.h"
-#include <absl/container/flat_hash_set.h>
 
 using namespace std;
 
@@ -75,9 +76,10 @@ class MyType {
   std::string mName;
 };
 
-template<typename T> class Wrapper {
-public:
-  Wrapper(T s) : t(move(s)) {}
+template <typename T> class Wrapper {
+ public:
+  Wrapper(T s) : t(move(s)) {
+  }
 
   T t;
 };
@@ -88,6 +90,31 @@ Wrapper<MyType> GetWrapper() {
 
 struct HasVector {
   vector<int> vals;
+};
+
+class Pointer1 {
+  int ival_;
+  string sval_;
+
+ public:
+  Pointer1(int i, string s) : ival_(i), sval_(s) {}
+
+  class Wrapper {
+   public:
+    Wrapper(int& a, string& b) : first(a), second(b) {
+    }
+
+    Wrapper* operator->() {
+      return this;
+    }
+
+    int& first;
+    string& second;
+  };
+
+  Wrapper operator->() {
+    return Wrapper{ival_, sval_};
+  }
 };
 
 TEST_F(CxxTest, Move) {
@@ -131,6 +158,12 @@ TEST_F(CxxTest, StringViewSSO) {
   set.emplace("b");
   set.emplace(string_view{"foo"});
   EXPECT_EQ(3, set.size());
+}
+
+TEST_F(CxxTest, Arrow) {
+  Pointer1 p1{5, "roman"};
+  EXPECT_EQ(5, p1->first);
+  EXPECT_EQ("roman", p1->second);
 }
 
 }  // namespace base
