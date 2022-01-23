@@ -210,6 +210,7 @@ endif ()
 FetchContent_Declare(
   abseil_cpp
   URL https://github.com/abseil/abseil-cpp/archive/20211102.0.zip
+  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20211102.patch"
 )
 FetchContent_GetProperties(abseil_cpp)
 if(NOT abseil_cpp_POPULATED)

@@ -8,6 +8,8 @@
 
 #include <absl/debugging/internal/vdso_support.h>
 #include <absl/debugging/stacktrace.h>
+#include <absl/strings/str_format.h>
+
 #include <gperftools/stacktrace.h>
 #include <ucontext.h>
 
@@ -50,6 +52,11 @@ TEST_F(AbseilTest, Stacktrace) {
   void* stack[256];
   int res = absl::GetStackTraceWithContext(stack, 255, 1, NULL, NULL);
   ASSERT_GT(res, 5);
+}
+
+TEST_F(AbseilTest, SNPrintF) {
+  char buf[16];
+  absl::SNPrintF(buf, sizeof(buf), "FOOBAR%04d", 42);
 }
 
 }  // namespace base

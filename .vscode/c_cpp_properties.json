@@ -2,29 +2,9 @@
     "configurations": [
         {
             "name": "Linux",
-            "defines": [
-                "_TEST_BASE_FILE_=\"mytest.cc\"",
-                "OPENSSL_VERSION_NUMBER=0x1010100fL",
-                "ABSL_INTERNAL_ENABLE_FORMAT_CHECKER=0"
-            ],
             "cppStandard": "c++17",
-            "intelliSenseMode": "gcc-x64",
-            "includePath": [
-                "${workspaceFolder}",
-                "${workspaceFolder}/genfiles",
-                "${workspaceFolder}/third_party/uring/include",
-                "${workspaceFolder}/third_party/gperf/include",
-                "${workspaceFolder}/third_party/xxhash/include",
-                "${workspaceFolder}/third_party/mimalloc/include",
-                "${workspaceFolder}/third_party/jemalloc/include",
-                "${workspaceFolder}/build-opt/_deps/abseil_cpp-src",
-                "${workspaceFolder}/build-opt/_deps/gflags-build/include",
-                "${workspaceFolder}/build-opt/_deps/gtest-src/googletest/include",
-                "${workspaceFolder}/build-opt/_deps/gtest-src/googlemock/include",
-                "${workspaceFolder}/build-opt/_deps/glog-build",
-                "${workspaceFolder}/build-opt/_deps/benchmark-src/include",
-                "${default}"
-            ],
+            "cStandard": "c17",
+            "intelliSenseMode": "${default}",
             "compileCommands": "${workspaceFolder}/build-dbg/compile_commands.json",
             "configurationProvider": "ms-vscode.cmake-tools"
         }

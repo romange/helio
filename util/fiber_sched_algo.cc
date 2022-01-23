@@ -106,7 +106,7 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
     ProactorBase::tl_info_.monotonic_time = now;
     uint64_t delta_micros = (now - props->awaken_ts_) / 1000;
     if (delta_micros > 30000) {
-      LOG(INFO) << "Took " << delta_micros / 1000 << " msec from awaken "
+      LOG(INFO) << "Took " << delta_micros / 1000 << " ms since it woke and till became active "
                 << fibers_ext::short_id(ctx) << ":" << props->name();
     }
   } else {
