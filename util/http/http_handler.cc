@@ -106,18 +106,18 @@ void MetricsHandler(const QueryArgs& args, HttpContext* send) {
 }  // namespace
 
 HttpListenerBase::HttpListenerBase() {
-  favicon_ =
-      "https://rawcdn.githack.com/romange/async/master/util/http/"
+  favicon_url_ =
+      "https://rawcdn.githack.com/romange/helio/master/util/http/"
       "favicon-32x32.png";
-  resource_prefix_ = "https://cdn.jsdelivr.net/gh/romange/async/util/http";
+  resource_prefix_ = "https://cdn.jsdelivr.net/gh/romange/helio/util/http";
 }
 
 bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx) const {
   std::string_view target = as_absl(request.target());
   if (target == "/favicon.ico") {
     h2::response<h2::string_body> resp = MakeStringResponse(h2::status::moved_permanently);
-    resp.set(h2::field::location, favicon_);
-    resp.set(h2::field::server, "ASYNC");
+    resp.set(h2::field::location, favicon_url_);
+    resp.set(h2::field::server, "HELIO");
     resp.keep_alive(request.keep_alive());
 
     cntx->Invoke(std::move(resp));
@@ -163,12 +163,15 @@ bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
   return res.second;
 }
 
-HttpHandler2::HttpHandler2(const HttpListenerBase* base) : base_(base) {
+HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base) {
 }
 
-void HttpHandler2::HandleRequests() {
+void HttpConnection::HandleRequests() {
   CHECK(socket_->IsOpen());
   ::boost::beast::flat_buffer buffer;
+
+  buffer.max_size(4096);  // Limit the parsing buffer to 4K.
+
   RequestType request;
 
   ::boost::system::error_code ec;
@@ -181,15 +184,16 @@ void HttpHandler2::HandleRequests() {
     }
     HttpContext cntx(asa);
     VLOG(1) << "Full Url: " << request.target();
-    HandleOne(request, &cntx);
+    HandleSingleRequest(request, &cntx);
   }
-  VLOG(1) << "HttpHandler2 exit";
+  VLOG(1) << "HttpConnection exit " << ec.message();
+  LOG_IF(INFO, !FiberSocketBase::IsConnClosed(ec)) << "Http error " << ec.message();
 }
 
-void HttpHandler2::HandleOne(const RequestType& req, HttpContext* cntx) {
-  CHECK(base_);
+void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cntx) {
+  CHECK(owner_);
 
-  if (base_->HandleRoot(req, cntx)) {
+  if (owner_->HandleRoot(req, cntx)) {
     return;
   }
   std::string_view target = as_absl(req.target());
@@ -197,8 +201,8 @@ void HttpHandler2::HandleOne(const RequestType& req, HttpContext* cntx) {
   tie(path, query) = ParseQuery(target);
   VLOG(2) << "Searching for " << path;
 
-  auto it = base_->cb_map_.find(path);
-  if (it == base_->cb_map_.end()) {
+  auto it = owner_->cb_map_.find(path);
+  if (it == owner_->cb_map_.end()) {
     h2::response<h2::string_body> resp(h2::status::unauthorized, req.version());
     return cntx->Invoke(std::move(resp));
   }

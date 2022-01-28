@@ -361,6 +361,47 @@ TEST_F(ProactorTest, File) {
   ASSERT_EQ(1 << 19, sbuf.stx_size);
 }
 
+#if 0
+TEST_F(ProactorTest, Splice) {
+  string path = base::GetTestTempPath("input.txt");
+  constexpr auto kFlags = O_CLOEXEC | O_CREAT | O_TRUNC | O_RDWR;
+  unique_ptr<LinuxFile> from, to;
+  string to_path = base::GetTestTempPath("output.txt");
+
+  int pipefd[2];
+  ASSERT_EQ(0, pipe(pipefd));
+  int res = fcntl(pipefd[0], F_GETPIPE_SZ);
+  ASSERT_GT(res, 4096);
+
+  proactor_->Await([&] {
+    auto res = uring::OpenLinux(path, kFlags, 0600);
+    ASSERT_TRUE(res);
+    from = std::move(res).value();
+    error_code ec = from->Write(io::Buffer(string(4096, 'b')), 0, 0);
+    ASSERT_FALSE(ec);
+
+    res = uring::OpenLinux(to_path, kFlags, 0600);
+    ASSERT_TRUE(res);
+    to = std::move(res).value();
+  });
+
+  FiberCall::IoResult io_res = proactor_->Await([&] {
+    uring::SubmitEntry se1 = proactor_->GetSubmitEntry(nullptr, 0);
+    se1.PrepSplice(from->fd(), 0, pipefd[1], -1, 4096, SPLICE_F_MOVE);
+    se1.sqe()->flags |= IOSQE_IO_LINK;
+
+    FiberCall fc(proactor_.get());
+    fc->PrepSplice(pipefd[0], -1, to->fd(), -1, 4096, SPLICE_F_MOVE);
+    return fc.Get();
+  });
+  ASSERT_EQ(4096, io_res);
+  proactor_->Await([&] {
+    from.reset();
+    to.reset();
+  });
+}
+#endif
+
 void BM_AsyncCall(benchmark::State& state) {
   Proactor proactor;
   std::thread t([&] {

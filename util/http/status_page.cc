@@ -15,11 +15,10 @@
 namespace util {
 namespace http {
 using namespace std;
-using namespace boost;
 using base::VarzListNode;
-using beast::http::field;
+using boost::beast::http::field;
 
-namespace h2 = beast::http;
+namespace h2 = ::boost::beast::http;
 typedef h2::response<h2::string_body> StringResponse;
 
 namespace {
@@ -39,9 +38,10 @@ string StatusLine(const string& name, const string& val) {
   res.append(name).append(":<span class='key_text'>").append(val).append("</span></div>\n");
   return res;
 }
+
 }  // namespace
 
-StringResponse BuildStatusPage(const QueryArgs& args, const char* resource_prefix) {
+StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefix) {
   StringResponse response(h2::status::ok, 11);
 
   bool output_json = false;

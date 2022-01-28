@@ -44,10 +44,10 @@ class HttpContext {
 // Should be one per process. Represents http server interface.
 // Currently does not support on the fly updates - requires
 // multi-threading support.
-class HttpHandler2;
+class HttpConnection;
 
 class HttpListenerBase : public ListenerInterface {
-  friend class HttpHandler2;
+  friend class HttpConnection;
 
  public:
   using RequestType = ::boost::beast::http::request<::boost::beast::http::string_body>;
@@ -58,11 +58,12 @@ class HttpListenerBase : public ListenerInterface {
   // Returns true if a callback was registered.
   bool RegisterCb(std::string_view path, RequestCb cb);
 
-  void set_resource_prefix(const char* prefix) {
+  void set_resource_prefix(std::string_view prefix) {
     resource_prefix_ = prefix;
   }
-  void set_favicon(const char* favicon) {
-    favicon_ = favicon;
+
+  void set_favicon(std::string_view url) {
+    favicon_url_ = url;
   }
 
   void enable_metrics() {
@@ -77,30 +78,30 @@ class HttpListenerBase : public ListenerInterface {
   };
   absl::flat_hash_map<std::string_view, CbInfo> cb_map_;
 
-  const char* favicon_;
-  const char* resource_prefix_;
+  std::string favicon_url_;
+  std::string resource_prefix_;
   bool enable_metrics_ = false;
 };
 
-class HttpHandler2 : public Connection {
+class HttpConnection : public Connection {
  public:
   using RequestType = ::boost::beast::http::request<::boost::beast::http::string_body>;
 
-  HttpHandler2(const HttpListenerBase* base);
+  HttpConnection(const HttpListenerBase* base);
 
   void HandleRequests() final;
 
  protected:
-  void HandleOne(const RequestType& req, HttpContext* cntx);
+  void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
 
  private:
-  const HttpListenerBase* base_;
+  const HttpListenerBase* owner_;
 };
 
 // http Listener + handler factory. By default creates HttpHandler.
-template <typename Handler = HttpHandler2> class HttpListener : public HttpListenerBase {
+template <typename Handler = HttpConnection> class HttpListener : public HttpListenerBase {
  public:
-  static_assert(std::is_base_of<HttpHandler2, Handler>::value,
+  static_assert(std::is_base_of<HttpConnection, Handler>::value,
                 "Handler must be derived from HttpHandler");
 
   Connection* NewConnection(ProactorBase*) final {

@@ -45,7 +45,7 @@ QueryParam ParseQuery(std::string_view str);
 QueryArgs SplitQuery(std::string_view query);
 StringResponse ParseFlagz(const QueryArgs& args);
 
-StringResponse BuildStatusPage(const QueryArgs& args, const char* resource_prefix);
+StringResponse BuildStatusPage(const QueryArgs& args, std::string_view resource_prefix);
 StringResponse ProfilezHandler(const QueryArgs& args);
 
 using FileResponse = ::boost::beast::http::response<::boost::beast::http::file_body>;
