@@ -3,7 +3,6 @@
 //
 #include "util/http/http_handler.h"
 
-#include <boost/beast/core.hpp>  // for flat_buffer.
 #include <boost/beast/http.hpp>
 
 #include "base/logging.h"
@@ -75,7 +74,7 @@ void AppendLabelTupple(absl::Span<const metrics::Label> label_names,
   if (label_names.empty())
     return;
 
-  for (size_t i  = 0; i < label_names.size(); ++i) {
+  for (size_t i = 0; i < label_names.size(); ++i) {
     absl::StrAppend(dest, label_names[i].name(), "=\"", label_values[i], "\",");
   }
   dest->pop_back();
@@ -102,6 +101,8 @@ void MetricsHandler(const QueryArgs& args, HttpContext* send) {
       [&res](const auto& od, auto vals) { AppendObservation(od, std::move(vals), &res); });
   return send->Invoke(std::move(res));
 }
+
+using ParserType = ::boost::beast::http::parser<true, HttpConnection::RequestType::body_type>;
 
 }  // namespace
 
@@ -164,28 +165,72 @@ bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
 }
 
 HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base) {
+  req_buffer_.max_size(4096);  // Limit the parsing buffer to 4K.
 }
 
-void HttpConnection::HandleRequests() {
-  CHECK(socket_->IsOpen());
-  ::boost::beast::flat_buffer buffer;
+error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
+  DCHECK(socket_);
 
-  buffer.max_size(4096);  // Limit the parsing buffer to 4K.
-
+  boost::system::error_code ec;
   RequestType request;
 
-  ::boost::system::error_code ec;
   AsioStreamAdapter<> asa(*socket_);
 
-  while (true) {
-    h2::read(asa, buffer, request, ec);
-    if (ec) {
+  while (!buf.empty()) {
+    ParserType parser{move(request)};
+    parser.eager(true);
+
+    size_t consumed = parser.put(boost::asio::const_buffer{buf.data(), buf.size()}, ec);
+    if (ec)
       break;
-    }
+    buf.remove_prefix(consumed);
+    request = parser.release();
+
     HttpContext cntx(asa);
     VLOG(1) << "Full Url: " << request.target();
     HandleSingleRequest(request, &cntx);
   }
+
+  if (ec == h2::error::need_more) {
+    if (buf.size() > req_buffer_.max_size()) {
+      return make_error_code(errc::value_too_large);
+    }
+
+    if (!buf.empty()) {
+      auto mb = req_buffer_.prepare(buf.size());
+      memcpy(mb.data(), buf.data(), buf.size());
+      req_buffer_.commit(buf.size());
+    }
+    return error_code{};
+  }
+
+  return ec;
+}
+
+void HttpConnection::HandleRequests() {
+  CHECK(socket_->IsOpen());
+
+  ::boost::system::error_code ec;
+
+  AsioStreamAdapter<> asa(*socket_);
+  RequestType request;
+
+  while (true) {
+    ParserType parser{move(request)};
+    parser.eager(true);
+
+    h2::read(asa, req_buffer_, parser, ec);
+    if (ec) {
+      break;
+    }
+
+    request = parser.release();
+
+    HttpContext cntx(asa);
+    VLOG(1) << "Full Url: " << request.target();
+    HandleSingleRequest(request, &cntx);
+  }
+
   VLOG(1) << "HttpConnection exit " << ec.message();
   LOG_IF(INFO, !FiberSocketBase::IsConnClosed(ec)) << "Http error " << ec.message();
 }

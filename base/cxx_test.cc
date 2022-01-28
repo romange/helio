@@ -143,6 +143,8 @@ TEST_F(CxxTest, UnderDebugger) {
   table.emplace_back();  // verified that HasVector was moved without copying the array.
 }
 
+
+#if 0
 TEST_F(CxxTest, StringViewSSO) {
   constexpr string_view_sso s1("aaaa");
   static_assert(-1 == s1.compare("bbbb"));
@@ -159,6 +161,7 @@ TEST_F(CxxTest, StringViewSSO) {
   set.emplace(string_view{"foo"});
   EXPECT_EQ(3, set.size());
 }
+#endif
 
 TEST_F(CxxTest, Arrow) {
   Pointer1 p1{5, "roman"};

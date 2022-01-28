@@ -24,32 +24,36 @@ class Connection {
   virtual ~Connection() {
   }
 
-  void SetSocket(LinuxSocketBase* s) {
+  void SetSocket(FiberSocketBase* s) {
     socket_.reset(s);
-  }
-  auto native_handle() const {
-    return socket_->native_handle();
   }
 
   // Must be called from the fiber that runs HandleRequests() function.
   // Moves the calling fiber to run within dest proactor thread. Updates socket_ accordingly.
   void Migrate(ProactorBase* dest);
 
-  LinuxSocketBase* socket() {
+  FiberSocketBase* socket() {
     return socket_.get();
   }
 
- protected:
-  void Shutdown() {
-    socket_->Shutdown(SHUT_RDWR);
-    OnShutdown();
+  const FiberSocketBase* socket() const {
+    return socket_.get();
   }
+
+  FiberSocketBase* ReleaseSocket() {
+    return socket_.release();
+  }
+
+ protected:
+  void Shutdown();
 
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;
-  virtual void OnShutdown() {}
 
-  std::unique_ptr<LinuxSocketBase> socket_;
+  virtual void OnShutdown() {
+  }
+
+  std::unique_ptr<FiberSocketBase> socket_;
   friend class ListenerInterface;
 };
 

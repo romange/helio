@@ -9,21 +9,35 @@
 #include <boost/fiber/operations.hpp>
 
 #include "base/logging.h"
+#include "util/accept_server.h"
 #include "util/fiber_sched_algo.h"
 #include "util/proactor_pool.h"
-#include "util/accept_server.h"
 
-#define VSOCK(verbosity, sock) VLOG(verbosity) << "sock[" << (sock).native_handle() << "] "
-#define DVSOCK(verbosity, sock) DVLOG(verbosity) << "sock[" << (sock).native_handle() << "] "
+#define VSOCK(verbosity, sock) VLOG(verbosity) << "sock[" << native_handle(sock) << "] "
+#define DVSOCK(verbosity, sock) DVLOG(verbosity) << "sock[" << native_handle(sock) << "] "
 
 namespace util {
 
 using namespace boost;
 using namespace std;
 
+namespace {
+
+auto native_handle(const LinuxSocketBase& sock) {
+  return sock.native_handle();
+}
+
+auto native_handle(const Connection& conn) {
+  const LinuxSocketBase* ls = static_cast<const LinuxSocketBase*>(conn.socket());
+  return ls->native_handle();
+}
+
 using ListType =
     intrusive::slist<Connection, Connection::member_hook_t, intrusive::constant_time_size<true>,
                      intrusive::cache_last<false>>;
+
+}  // namespace
+
 
 struct ListenerInterface::SafeConnList {
   ListType list;
@@ -88,9 +102,7 @@ void ListenerInterface::RunAcceptLoop() {
     safe_list.Link(conn);
 
     // mutable because we move peer.
-    auto cb = [conn, &safe_list] {
-      RunSingleConnection(conn, &safe_list);
-    };
+    auto cb = [conn, &safe_list] { RunSingleConnection(conn, &safe_list); };
 
     // Run cb in its Proactor thread.
     next->Dispatch(std::move(cb));
@@ -100,11 +112,12 @@ void ListenerInterface::RunAcceptLoop() {
 
   safe_list.mu.lock();
   unsigned cnt = safe_list.list.size();
+
   fibers_ext::BlockingCounter bc{cnt};
   for (auto& val : safe_list.list) {
-    val.socket()->proactor()->Dispatch([conn = &val, bc] () mutable {
+    val.socket()->proactor()->Dispatch([conn = &val, bc]() mutable {
       conn->Shutdown();
-      DVSOCK(1, *conn->socket()) << "Shutdown";
+      DVSOCK(1, *conn) << "Shutdown";
       bc.Dec();
     });
   }
@@ -155,6 +168,13 @@ void Connection::Migrate(ProactorBase* dest) {
 
   src->Migrate(dest);
   socket_->SetProactor(dest);
+}
+
+void Connection::Shutdown() {
+  auto ec = socket_->Shutdown(SHUT_RDWR);
+  VLOG_IF(1, ec) << "Error during shutdown " << ec.message();
+
+  OnShutdown();
 }
 
 }  // namespace util

@@ -6,6 +6,7 @@
 
 #include <absl/container/flat_hash_map.h>
 
+#include <boost/beast/core.hpp>  // for flat_buffer.
 #include <boost/beast/http/serializer.hpp>
 #include <boost/beast/http/write.hpp>
 
@@ -89,13 +90,21 @@ class HttpConnection : public Connection {
 
   HttpConnection(const HttpListenerBase* base);
 
+  // Parses one or more http request from the buffer.
+  // In case that there is a leftover - keeps it so that
+  // HandleRequest could continue parsing from the same point via socket.
+  // In any case, buf is fully consumed or the error is returned.
+  std::error_code ParseFromBuffer(::io::Bytes buf);
+
   void HandleRequests() final;
 
  protected:
   void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
 
  private:
+
   const HttpListenerBase* owner_;
+  ::boost::beast::flat_buffer req_buffer_;
 };
 
 // http Listener + handler factory. By default creates HttpHandler.
