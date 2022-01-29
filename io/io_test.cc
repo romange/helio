@@ -27,15 +27,14 @@ class FakeSink : public Sink {
 };
 
 
-class StringSource final : public Source {
+class StringSource : public Source {
  public:
-  StringSource(string buf, size_t read_sz = UINT64_MAX) : buf_(buf), read_sz_(read_sz) {}
+  StringSource(string buf) : buf_(buf) {}
 
-  Result<size_t> ReadSome(const MutableBytes& dest);
+  Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
 
  protected:
   std::string buf_;
-  size_t read_sz_;
   off_t offs_ = 0;
 };
 
@@ -62,13 +61,19 @@ Result<size_t> FakeSink::WriteSome(const iovec* v, uint32_t len) {
   return io_res;
 }
 
-Result<size_t> StringSource::ReadSome(const MutableBytes& dest) {
-  size_t read_sz = min(read_sz_, dest.size());
-  read_sz = min(read_sz, buf_.size() - offs_);
-  memcpy(dest.data(), buf_.data() + offs_, read_sz);
-  offs_ += read_sz;
+Result<size_t> StringSource::ReadSome(const iovec* v, uint32_t len) {
+  ssize_t read_total = 0;
+  while (size_t(offs_) < buf_.size() && len > 0) {
+    size_t read_sz = min(buf_.size() - offs_, v->iov_len);
+    memcpy(v->iov_base, buf_.data() + offs_, read_sz);
+    read_total += read_sz;
+    offs_ += read_sz;
 
-  return read_sz;
+    ++v;
+    --len;
+  }
+
+  return read_total;
 }
 
 

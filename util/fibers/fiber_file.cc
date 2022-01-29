@@ -1,4 +1,4 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include "util/fibers/fiber_file.h"
@@ -22,46 +22,12 @@ using namespace boost;
 
 namespace {
 
-ssize_t read_all(int fd, const iovec* iov, int iovcnt, size_t offset) {
-  size_t left = std::accumulate(iov, iov + iovcnt, 0,
-                                [](size_t a, const iovec& i2) { return a + i2.iov_len; });
-
-  ssize_t completed = 0;
-  iovec tmp_iov[iovcnt];
-
-  std::copy(iov, iov + iovcnt, tmp_iov);
-  iovec* next_iov = tmp_iov;
-  while (true) {
-    ssize_t read = preadv(fd, next_iov, iovcnt, offset);
-    if (read <= 0) {
-      return read == 0 ? completed : read;
-    }
-
-    left -= read;
-    completed += read;
-    if (left == 0)
-      break;
-
-    offset += read;
-    while (next_iov->iov_len <= static_cast<size_t>(read)) {
-      read -= next_iov->iov_len;
-      ++next_iov;
-      --iovcnt;
-    }
-    next_iov->iov_len -= read;
-  }
-  return completed;
-}
-
 class FiberReadFile : public ReadonlyFile {
  public:
   FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next,
                 util::fibers_ext::FiberQueueThreadPool* tp);
 
-  // Reads upto length bytes and updates the result to point to the data.
-  // May use buffer for storing data. In case, EOF reached sets result.size() < length but still
-  // returns Status::OK.
-  SizeOrError Read(size_t offset, const MutableBytes& range) final;
+  SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
 
   // releases the system handle for this file.
   ::std::error_code Close() final;
@@ -184,7 +150,7 @@ auto FiberReadFile::ReadAndPrefetch(size_t offset, const MutableBytes& range) ->
 
     // We issue 2 read requests: to fill user buffer and our prefetch buffer.
     tp_->Add([&] {
-      total_read = read_all(next_->Handle(), io, 2, offset);
+      total_read = ReadAllPosix(next_->Handle(), offset, io, 2);
       done_.Notify();
     });
     done_.Wait(AND_RESET);
@@ -224,8 +190,8 @@ auto FiberReadFile::ReadAndPrefetch(size_t offset, const MutableBytes& range) ->
   // We must keep reference to done_ in pending because of the shutdown flow.
   prefetch_start_ts_ = absl::Now();
   tp_->Add([this, pending = std::move(pending)]() mutable {
-    prefetch_res_.store(read_all(next_->Handle(), &pending.io, 1, pending.offs),
-                        std::memory_order_release);
+    auto all_res = ReadAllPosix(next_->Handle(), pending.offs, &pending.io, 1);
+    prefetch_res_.store(all_res, std::memory_order_release);
     done_.Notify();
   });
 
@@ -298,19 +264,22 @@ void FiberReadFile::HandleActivePrefetch() {
   prefetch_ptr_ = nullptr;
 }
 
-auto FiberReadFile::Read(size_t offset, const MutableBytes& range) -> SizeOrError {
+auto FiberReadFile::Read(size_t offset, const iovec* v, uint32_t len) -> SizeOrError {
   SizeOrError res;
 
   if (buf_) {  // prefetch enabled.
+    // For simplicity I read
+    MutableBytes range(reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len);
     res = ReadAndPrefetch(offset, range);
     VLOG(2) << "ReadAndPrefetch " << offset << "/" << res.value();
     return res;
   }
 
   tp_->Add([&] {
-    res = next_->Read(offset, range);
+    res = next_->Read(offset, v, len);
     done_.Notify();
   });
+
   done_.Wait(AND_RESET);
   VLOG(1) << "Read " << offset << "/" << res.value();
   return res;

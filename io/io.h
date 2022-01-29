@@ -1,4 +1,4 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 
@@ -50,7 +50,12 @@ class Source {
    * @param dest - destination buffer. Should be non-empty.
    * @return Result<size_t>
    */
-  virtual Result<size_t> ReadSome(const MutableBytes& dest) = 0;
+  Result<size_t> ReadSome(const MutableBytes& dest) {
+    iovec v{.iov_base = dest.data(), .iov_len = dest.size()};
+    return ReadSome(&v, 1);
+  }
+
+  virtual Result<size_t> ReadSome(const iovec* v, uint32_t len) = 0;
 
   /**
    * @brief Tries to read at least min_size bytes and at most dest.size() into dest.
@@ -141,7 +146,7 @@ class PrefixSource : public Source {
   PrefixSource(Bytes prefix, Source* upstream) : prefix_(prefix), upstream_(upstream) {
   }
 
-  Result<size_t> ReadSome(const MutableBytes& dest) final;
+  Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
 
   Bytes unused_prefix() const {
     return offs_ >= prefix_.size() ? Bytes{} : prefix_.subspan(offs_);

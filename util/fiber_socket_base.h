@@ -53,7 +53,7 @@ class FiberSocketBase : public ::io::SyncStreamInterface, public io::Sink {
     return Send(&v, 1);
   }
 
-  ::io::Result<size_t> Recv(iovec* ptr, size_t len) override;
+  ::io::Result<size_t> Recv(const iovec* ptr, size_t len) override;
 
   ::io::Result<size_t> Recv(const io::MutableBytes& mb) {
     iovec v{mb.data(), mb.size()};
@@ -135,8 +135,8 @@ class SocketSource : public io::Source {
   SocketSource(FiberSocketBase* sock) : sock_(sock) {
   }
 
-  io::Result<size_t> ReadSome(const io::MutableBytes& dest) final {
-    return sock_->Recv(dest);
+  io::Result<size_t> ReadSome(const iovec* v, uint32_t len) final {
+    return sock_->Recv(v, len);
   }
 
  private:

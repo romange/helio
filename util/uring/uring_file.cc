@@ -19,71 +19,27 @@ using nonstd::make_unexpected;
 
 namespace {
 
-error_code CloseFile(int fd, Proactor* p) {
-  if (fd > 0) {
-    FiberCall fc(p);
-    fc->PrepClose(fd);
-    FiberCall::IoResult io_res = fc.Get();
-    if (io_res < 0) {
-      return error_code{-io_res, system_category()};
-    }
-  }
-  return error_code{};
-}
-
-io::Result<size_t> WriteSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                     unsigned flags, Proactor* p) {
-  CHECK_GE(fd, 0);
-  CHECK_GT(iovcnt, 0u);
-
-  FiberCall fc(p);
-  fc->PrepWriteV(fd, iov, iovcnt, offset, flags);
-  FiberCall::IoResult io_res = fc.Get();
-  if (io_res < 0) {
-    return make_unexpected(error_code{-io_res, system_category()});
-  }
-  return io_res;
-}
-
-io::Result<size_t> ReadSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                    unsigned flags, Proactor* p) {
-  CHECK_GE(fd, 0);
-  CHECK_GT(iovcnt, 0u);
-
-  FiberCall fc(p);
-  fc->PrepReadV(fd, iov, iovcnt, offset, flags);
-  FiberCall::IoResult io_res = fc.Get();
-  if (io_res < 0) {
-    return make_unexpected(error_code{-io_res, system_category()});
-  }
-  return io_res;
-}
-
-class ReadFileImpl final : public ReadonlyFile {
+class ReadFileImpl : public ReadonlyFile {
  public:
   ReadFileImpl(int fd, size_t sz, Proactor* proactor)
       : fd_(fd), file_size_(sz), proactor_(proactor) {
   }
 
-  virtual ~ReadFileImpl() {
-    CloseFile(fd_, proactor_);
-  }
+  virtual ~ReadFileImpl();
 
-  error_code Close();
+  error_code Close() final;
 
-  SizeOrError Read(size_t offset, const MutableBytes& range);
+  SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
 
-  size_t Size() const {
+  size_t Size() const final {
     return file_size_;
   }
 
-  int Handle() const {
+  int Handle() const final {
     return fd_;
   };
 
  private:
-  ssize_t ReadSome(off_t offset, const MutableBytes& range);
-
   int fd_;
   const size_t file_size_;
   Proactor* proactor_;
@@ -142,37 +98,132 @@ class LinuxFileImpl : public LinuxFile {
 //                 |_|
 */
 
+error_code CloseFile(int fd, Proactor* p) {
+  if (fd > 0) {
+    FiberCall fc(p);
+    fc->PrepClose(fd);
+    FiberCall::IoResult io_res = fc.Get();
+    if (io_res < 0) {
+      return error_code{-io_res, system_category()};
+    }
+  }
+  return error_code{};
+}
+
+io::Result<size_t> WriteSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
+                                     unsigned flags, Proactor* p) {
+  CHECK_GE(fd, 0);
+  CHECK_GT(iovcnt, 0u);
+
+  FiberCall fc(p);
+  fc->PrepWriteV(fd, iov, iovcnt, offset, flags);
+  FiberCall::IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    return make_unexpected(error_code{-io_res, system_category()});
+  }
+  return io_res;
+}
+
+io::Result<size_t> ReadSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
+                                    unsigned flags, Proactor* p) {
+  CHECK_GE(fd, 0);
+  CHECK_GT(iovcnt, 0u);
+
+  FiberCall fc(p);
+  fc->PrepReadV(fd, iov, iovcnt, offset, flags);
+  FiberCall::IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    return make_unexpected(error_code{-io_res, system_category()});
+  }
+  return io_res;
+}
+
+io::Result<size_t> ReadAll(int fd, size_t offset, uint8_t* next, size_t len, Proactor* p) {
+  DCHECK_GT(len, 0u);
+
+  ssize_t read_total = 0;
+  while (true) {
+    FiberCall fc(p);
+    fc->PrepRead(fd, next, len, offset);
+    FiberCall::IoResult io_res = fc.Get();
+    if (io_res < 0) {
+      return make_unexpected(error_code{-io_res, system_category()});
+    }
+
+    if (io_res == 0) {
+      return read_total;
+    }
+
+    read_total += io_res;
+
+    if (size_t(read_total) == len)
+      break;
+
+    offset += io_res;
+    next += io_res;
+  }
+
+  return read_total;
+}
+
+ReadFileImpl::~ReadFileImpl() {
+  CloseFile(fd_, proactor_);
+}
+
 error_code ReadFileImpl::Close() {
   error_code ec = CloseFile(fd_, proactor_);
   fd_ = -1;
   return ec;
 }
 
-io::Result<size_t> ReadFileImpl::Read(size_t offset, const MutableBytes& range) {
+io::SizeOrError ReadFileImpl::Read(size_t offset, const iovec* v, uint32_t len) {
   DCHECK_GE(fd_, 0);
 
-  MutableBytes left = range;
-  while (!left.empty()) {
-    ssize_t read = ReadSome(offset, left);
-    if (read <= 0) {
-      if (read < 0) {
-        return make_unexpected(error_code{int(-read), system_category()});
-      } else {
-        break;
-      }
+  if (len == 0)
+    return 0;
+
+  ssize_t read_total = 0;
+
+  do {
+    io::SizeOrError res = ReadSomeInternal(fd_, v, len, offset + read_total, 0, proactor_);
+
+    if (!res)
+      return res;
+
+    size_t read = *res;
+    if (read == 0)
+      return read_total;
+
+    read_total += read;
+
+    while (v->iov_len <= read) {  // pass through all completed entries.
+      --len;
+      read -= v->iov_len;
+      ++v;
     }
-    left.remove_prefix(read);
-    offset += read;
-  }
-  return range.size() - left.size();
-}
 
-ssize_t ReadFileImpl::ReadSome(off_t offset, const MutableBytes& range) {
-  FiberCall fc(proactor_);
-  fc->PrepRead(fd_, range.data(), range.size(), offset);
-  FiberCall::IoResult io_res = fc.Get();
+    if (read > 0) {  // we read through part of the entry.
+      DCHECK_GT(len, 0u);
 
-  return io_res;
+      // Finish the rest of the entry.
+      uint8_t* next = reinterpret_cast<uint8_t*>(v->iov_base) + read;
+      size_t count = v->iov_len - read;
+      res = ReadAll(fd_, offset + read_total, next, count, proactor_);
+
+      if (!res)
+        return res;
+
+      read_total += *res;
+      if (*res < count) {  // eof
+        return read_total;
+      }
+
+      ++v;
+      --len;
+    }
+  } while (len > 0);
+
+  return read_total;
 }
 
 WriteFileImpl::~WriteFileImpl() {

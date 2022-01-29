@@ -47,7 +47,7 @@ void FiberSocketBase::SetProactor(ProactorBase* p) {
   OnSetProactor();
 }
 
-Result<size_t> FiberSocketBase::Recv(iovec* ptr, size_t len) {
+Result<size_t> FiberSocketBase::Recv(const iovec* ptr, size_t len) {
   CHECK_GT(len, 0U);
 
   msghdr msg;

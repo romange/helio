@@ -1,4 +1,4 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include "io/io.h"
@@ -50,16 +50,17 @@ Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
   return to_read;
 }
 
-Result<size_t> PrefixSource::ReadSome(const MutableBytes& dest) {
-  CHECK(!dest.empty());
+Result<size_t> PrefixSource::ReadSome(const iovec* v, uint32_t len) {
+  CHECK(len > 0 && v != nullptr);
 
   if (offs_ < prefix_.size()) {
-    size_t sz = std::min(prefix_.size() - offs_, dest.size());
-    memcpy(dest.data(), prefix_.data() + offs_, sz);
+    size_t sz = std::min(prefix_.size() - offs_, v->iov_len);
+    memcpy(v->iov_base, prefix_.data() + offs_, sz);
     offs_ += sz;
     return sz;
   }
-  return upstream_->ReadSome(dest);
+
+  return upstream_->ReadSome(v, len);
 }
 
 error_code Sink::Write(const iovec* v, uint32_t len) {

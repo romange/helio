@@ -16,7 +16,7 @@ class SyncStreamInterface {
   }
 
   virtual Result<size_t> Send(const iovec* ptr, size_t len) = 0;
-  virtual Result<size_t> Recv(iovec* ptr, size_t len) = 0;
+  virtual Result<size_t> Recv(const iovec* ptr, size_t len) = 0;
 };
 
 class NullSinkStream final : public SyncStreamInterface {
