@@ -1,4 +1,4 @@
-add_library(io file.cc file_util.cc io.cc line_reader.cc)
+add_library(io file.cc file_util.cc io.cc line_reader.cc proc_reader.cc)
 cxx_link(io base)
 
 add_library(file ALIAS io)

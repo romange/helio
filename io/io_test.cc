@@ -10,6 +10,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "io/line_reader.h"
+#include "io/proc_reader.h"
 
 using namespace std;
 using ::testing::_;
@@ -110,6 +111,14 @@ TEST_F(IoTest, LineReader) {
 
   EXPECT_TRUE(lr.Next(&result));
   EXPECT_EQ("three", result);
+}
+
+TEST_F(IoTest, ProcReader) {
+  auto sdata = ReadStatusInfo();
+  ASSERT_TRUE(sdata.has_value());
+  LOG(INFO) << sdata->vm_peak << " " << sdata->vm_size << " " << sdata->vm_rss;
+
+  EXPECT_GT(sdata->vm_size, sdata->vm_rss);
 }
 
 }  // namespace io
