@@ -34,15 +34,15 @@ class VarzQps : public base::VarzListNode {
  private:
   virtual AnyValue GetData() const override;
 
-  using Counter = SlidingCounter<7>;
+  using Counter = SlidingCounterDist<7>;
 
   // 7-seconds window. We gather data based on the fully filled 6.
   Counter val_;
 };
 
 class VarzMapAverage : public base::VarzListNode {
-  using Counter = SlidingCounterTL<7>;
-  using SumCnt = std::pair<SlidingCounterTL<7, uint64_t>, Counter>;
+  using Counter = SlidingCounter<7>;
+  using SumCnt = std::pair<SlidingCounter<7, uint64_t>, Counter>;
   using Map = absl::flat_hash_map<std::string_view, SumCnt>;
 
  public:

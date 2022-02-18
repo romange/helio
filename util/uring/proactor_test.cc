@@ -269,14 +269,14 @@ TEST_F(ProactorTest, DispatchTest) {
 }
 
 TEST_F(ProactorTest, SlidingCounter) {
-  SlidingCounterTL<10> sc;
+  SlidingCounter<10> sc;
   proactor_->AwaitBrief([&] { sc.Inc(); });
   uint32_t cnt = proactor_->AwaitBrief([&] { return sc.Sum(); });
   EXPECT_EQ(1, cnt);
 
   UringPool pool{16, 2};
   pool.Run();
-  SlidingCounter<4> sc2;
+  SlidingCounterDist<4> sc2;
   sc2.Init(&pool);
   pool.Await([&](auto*) { sc2.Inc(); });
   cnt = sc2.Sum();

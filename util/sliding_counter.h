@@ -33,13 +33,13 @@ class SlidingCounterBase {
  * @tparam NUM
  */
 template <unsigned NUM, typename T = int32_t>
-class SlidingCounterTL {
+class SlidingCounter {
   static_assert(NUM > 1, "Invalid window size");
 
   mutable std::array<T, NUM> count_;
 
  public:
-  SlidingCounterTL() {
+  SlidingCounter() {
     Reset();
   }
 
@@ -74,13 +74,13 @@ class SlidingCounterTL {
 };
 
 // Requires proactor_pool initialize all the proactors.
-template <unsigned NUM> class SlidingCounter : protected detail::SlidingCounterBase {
-  using Counter = SlidingCounterTL<NUM>;
+template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCounterBase {
+  using Counter = SlidingCounter<NUM>;
 
  public:
   enum { WIN_SIZE = NUM };
 
-  SlidingCounter() = default;
+  SlidingCounterDist() = default;
 
   void Init(ProactorPool* pp) {
     InitInternal(pp);
@@ -126,7 +126,7 @@ template <unsigned NUM> class SlidingCounter : protected detail::SlidingCounterB
  Implementation section.
 **********************************************/
 
-template <unsigned NUM, typename T> auto SlidingCounterTL<NUM, T>::SumTail() const -> T {
+template <unsigned NUM, typename T> auto SlidingCounter<NUM, T>::SumTail() const -> T {
   int32_t start = MoveTsIfNeeded() + 1;  // the tail is one after head.
 
   T sum = 0;
@@ -137,7 +137,7 @@ template <unsigned NUM, typename T> auto SlidingCounterTL<NUM, T>::SumTail() con
 }
 
 template <unsigned NUM, typename T>
-uint32_t SlidingCounterTL<NUM, T>::MoveTsIfNeeded() const {
+uint32_t SlidingCounter<NUM, T>::MoveTsIfNeeded() const {
   uint32_t current_sec = time(NULL);
   if (last_ts_ + NUM <= current_sec) {
     count_.fill(0);
