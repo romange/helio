@@ -193,9 +193,8 @@ void Proactor::Run() {
         total_fetched += cqe_count;
       };
 
-      for (uint32_t task_id : schedule_periodic_list_) {
-        auto it = periodic_map_.find(task_id);
-        SchedulePeriodic(task_id, it->second);
+      for (auto& task_pair : schedule_periodic_list_) {
+        SchedulePeriodic(task_pair.first, task_pair.second);
       }
       schedule_periodic_list_.clear();
       sqe_avail_.notifyAll();
@@ -513,39 +512,40 @@ void Proactor::ArmWakeupEvent() {
   sqe->user_data = kWakeIndex;
 }
 
-void Proactor::SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) {
+void Proactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   SubmitEntry se = GetSubmitEntry(
       [this, item](IoResult res, uint32_t flags, int64_t task_id) {
+        DCHECK_GE(task_id, 0);
         this->PeriodicCb(res, task_id, std::move(item));
       },
       id);
 
-  se.PrepTimeout(&item->ts, false);
+  se.PrepTimeout(&item->period, false);
   item->val1 = se.sqe()->user_data;
 }
 
-void Proactor::PeriodicCb(IoResult res, int64_t task_id, std::shared_ptr<PeriodicItem> item) {
-  if (res == -ECANCELED) {
+void Proactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item) {
+  if (!item->in_map) { // has been removed from the map.
+    delete item;
     return;
   }
-  CHECK_EQ(res, -ETIME);
-  if (item.unique())
-    return;  // has been removed from the map.
 
-  auto it = periodic_map_.find(task_id);
-  if (it == periodic_map_.end())
-    return;
+  // -ECANCELED can happen only if in_map is false and it's handled above.
+  CHECK_EQ(res, -ETIME);
+
+  DCHECK(periodic_map_.find(task_id) != periodic_map_.end());
   item->task();
-  schedule_periodic_list_.push_back(task_id);
+
+  schedule_periodic_list_.emplace_back(task_id, item);
 }
 
-void Proactor::CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) {
+void Proactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   auto* me = fibers::context::active();
   auto cb = [me](IoResult res, uint32_t flags, int64_t task_id) {
     fibers::context::active()->schedule(me);
   };
   SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
-  se.PrepTimeoutRemove(item->val1);
+  se.PrepTimeoutRemove(val1);  // cancel using userdata id sent to io-uring.
   me->suspend();
 }
 

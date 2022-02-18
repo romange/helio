@@ -41,8 +41,8 @@ class EvController : public ProactorBase {
   void DispatchCompletions(struct epoll_event* cevents, unsigned count);
 
   LinuxSocketBase* CreateSocket(int fd = -1) final;
-  void SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) final;
-  void CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) final;
+  void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
+  void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
 
 
   void RegrowCentries();

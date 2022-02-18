@@ -230,32 +230,45 @@ LinuxSocketBase* EvController::CreateSocket(int fd) {
   return res;
 }
 
-void EvController::SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) {
+void EvController::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   CHECK_GE(tfd, 0);
   itimerspec ts;
-  ts.it_value = item->ts;
-  ts.it_interval = item->ts;
+  ts.it_value = item->period;
+  ts.it_interval = item->period;
   item->val1 = tfd;
 
   auto cb = [item](uint32_t event_mask, EvController*) {
-    if (item.unique())
+    if (!item->in_map) {
+      delete item;
       return;
+    }
+
     item->task();
     uint64_t res;
     if (read(item->val1, &res, sizeof(res)) == -1) {
       LOG(ERROR) << "Error reading from timer, errno " << errno;
     }
   };
+
   unsigned arm_id = Arm(tfd, std::move(cb), EPOLLIN);
   item->val2 = arm_id;
 
   CHECK_EQ(0, timerfd_settime(tfd, 0, &ts, NULL));
 }
 
-void EvController::CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) {
-  Disarm(item->val1, item->val2);
-  if (close(item->val1) == -1) {
+void EvController::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
+  auto arm_index = val2;
+
+  // we call the callback one more time explicitly in order to make sure it
+  // deleted PeriodicItem.
+  if (centries_[arm_index].cb) {
+    centries_[arm_index].cb(0, this);
+    centries_[arm_index].cb = nullptr;
+  }
+
+  Disarm(val1, val2);
+  if (close(val1) == -1) {
     LOG(ERROR) << "Could not close timer, error " << errno;
   }
 }

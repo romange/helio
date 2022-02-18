@@ -160,17 +160,23 @@ class ProactorBase {
 
   struct PeriodicItem {
     PeriodicTask task;
-    timespec ts;    // task period.
-    uint32_t val1;  // implementation dependent payload.
-    uint32_t val2;  // implementation dependent payload.
+
+    // We must keep it as timespec because io-uring accesses timespec asynchronously
+    // after the submition.
+    timespec period;
+
+    uint32_t val1;       // implementation dependent payload.
+    uint32_t val2;       // implementation dependent payload.
+    bool in_map = true;
   };
 
   // Called only from external threads.
   virtual void WakeRing();
 
   void WakeupIfNeeded();
-  virtual void SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) = 0;
-  virtual void CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) = 0;
+
+  virtual void SchedulePeriodic(uint32_t id, PeriodicItem* item) = 0;
+  virtual void CancelPeriodicInternal(uint32_t val1, uint32_t val2) = 0;
 
   static uint64_t GetClockNanos() {
     timespec ts;
@@ -210,9 +216,7 @@ class ProactorBase {
 
   absl::flat_hash_map<uint32_t, IdleTask> idle_map_;
   absl::flat_hash_map<uint32_t, IdleTask>::const_iterator idle_it_;
-
-  static_assert(sizeof(PeriodicItem) == 56);
-  absl::flat_hash_map<uint32_t, std::shared_ptr<PeriodicItem>> periodic_map_;
+  absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
 
   struct TLInfo {
     int32_t proactor_index = -1;

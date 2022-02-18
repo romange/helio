@@ -12,6 +12,7 @@
 
 using namespace boost;
 namespace ctx = boost::context;
+using namespace std;
 
 namespace util {
 
@@ -86,24 +87,29 @@ uint32_t ProactorBase::AddIdleTask(IdleTask f) {
 uint32_t ProactorBase::AddPeriodic(uint32_t ms, PeriodicTask f) {
   auto id = next_task_id_++;
 
-  std::shared_ptr<PeriodicItem> item = std::make_shared<PeriodicItem>();
+  PeriodicItem* item = new PeriodicItem;
   item->task = std::move(f);
-  item->ts.tv_sec = ms / 1000;
-  item->ts.tv_nsec = (ms % 1000) * 1000000;
+  item->period.tv_sec = ms / 1000;
+  item->period.tv_nsec = (ms % 1000) * 1000000;
 
-  auto res = periodic_map_.emplace(id, std::move(item));
-  CHECK(res.second);
+  auto [it, inserted] = periodic_map_.emplace(id, item);
+  CHECK(inserted);
 
-  SchedulePeriodic(id, res.first->second);
+  SchedulePeriodic(id, item);
+
   return id;
 }
 
 void ProactorBase::CancelPeriodic(uint32_t id) {
   auto it = periodic_map_.find(id);
   CHECK(it != periodic_map_.end());
-  auto item = std::move(it->second);
+  uint32_t val1 = it->second->val1;
+  uint32_t val2 = it->second->val2;
+  it->second->in_map = false;
+
+  // we never deallocate here since there is a callback that holds pointer to the item.
   periodic_map_.erase(it);
-  CancelPeriodicInternal(std::move(item));
+  CancelPeriodicInternal(val1, val2);
 }
 
 void ProactorBase::Migrate(ProactorBase* dest) {

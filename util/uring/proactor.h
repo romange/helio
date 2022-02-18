@@ -96,9 +96,11 @@ class Proactor : public ProactorBase {
 
   void RegrowCentries();
   void ArmWakeupEvent();
-  void SchedulePeriodic(uint32_t id, std::shared_ptr<PeriodicItem> item) final;
-  void PeriodicCb(IoResult res, int64_t task_id, std::shared_ptr<PeriodicItem> item);
-  void CancelPeriodicInternal(std::shared_ptr<PeriodicItem> item) final;
+  void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
+  void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
+
+  void PeriodicCb(IoResult res, uint32_t task_id, PeriodicItem* item);
+
   void WakeRing() final;
 
   io_uring ring_;
@@ -127,7 +129,7 @@ class Proactor : public ProactorBase {
 
   std::vector<CompletionEntry> centries_;
   std::vector<int> register_fds_;
-  std::vector<uint32_t> schedule_periodic_list_;
+  std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
   int32_t next_free_ce_ = -1;
   uint32_t next_free_fd_ = 0;
