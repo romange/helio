@@ -13,6 +13,7 @@
 #include "absl/time/clock.h"
 #include "base/gtest.h"
 #include "base/logging.h"
+
 #include "util/accept_server.h"
 #include "util/fibers/fibers_ext.h"
 #include "util/sliding_counter.h"
@@ -167,7 +168,7 @@ TEST_F(ProactorTest, SqPoll) {
   // Issue connect command. Cpnnect/accept are not supported by uring/sqpoll.
   res = connect(clientfd, (sockaddr*)&serv_addr, sizeof(serv_addr));
   ASSERT_EQ(0, res);
-  write(clientfd, buf, 1);
+  res = write(clientfd, buf, 1);
 
   ASSERT_EQ(0, io_uring_wait_cqe_nr(&ring, &cqe, 1));
   ASSERT_EQ(43, cqe[0].user_data);
@@ -356,9 +357,11 @@ TEST_F(ProactorTest, File) {
   str.assign(1u << 18, 'b');
   ec = proactor_->Await([&] { return file->Write(str); });
   ec = proactor_->Await([&] { return file->Close(); });
-  struct statx sbuf;
-  ASSERT_EQ(0, statx(0, path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_SIZE, &sbuf));
-  ASSERT_EQ(1 << 19, sbuf.stx_size);
+
+  struct stat sbuf;
+
+  ASSERT_EQ(0, stat(path.c_str(), &sbuf));
+  ASSERT_EQ(1 << 19, sbuf.st_size);
 }
 
 #if 0

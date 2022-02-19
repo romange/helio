@@ -2,6 +2,7 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include <jemalloc/jemalloc.h>
+#include <malloc.h>
 #include <mimalloc.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -171,6 +172,15 @@ TEST_F(MallocTest, LargeAlloc) {
   }
 }
 
+TEST_F(MallocTest, Stats) {
+  size_t rss, active;
+  size_t sz = sizeof(rss);
+  je_mallctl("stats.active", &active, &sz, NULL, 0);
+  je_mallctl("stats.resident", &rss, &sz, NULL, 0);
+  EXPECT_GT(active, 0);
+  EXPECT_GT(rss, active);
+}
+
 /* mimalloc notes:
   segment allocates itself from arena. by default only MI_MEMID_OS is being used for allocations
   which is OS backed proxy arena.
@@ -178,4 +188,47 @@ TEST_F(MallocTest, LargeAlloc) {
   dev-slice branch (latest 2.0.2 tag) does not have region.c in its codebase.
   Segments allocate directly from arena.
 */
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+static void BM_MallocStats(benchmark::State& state) {
+  while (state.KeepRunning()) {
+    mallinfo();  // mallinfo2 is not present on u20.04.
+  }
+}
+BENCHMARK(BM_MallocStats);
+
+static void BM_MimallocProcessInfo(benchmark::State& state) {
+  size_t elapsed_msecs, user_msecs, system_msecs, current_rss, peak_rss, current_commit,
+      peak_commit, page_faults;
+
+  // mi_process_info uses getrusage underneath for linux systems.
+  while (state.KeepRunning()) {
+    mi_process_info(&elapsed_msecs, &user_msecs, &system_msecs, &current_rss, &peak_rss,
+                    &current_commit, &peak_commit, &page_faults);
+  }
+}
+BENCHMARK(BM_MimallocProcessInfo);
+
+static bool VisitArena(const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
+                       size_t block_size, void* arg) {
+  return true;
+}
+
+static void BM_MimallocHeapVisit(benchmark::State& state) {
+  void* ptr[10];
+
+  for (unsigned i = 10; i < 20; ++i) {
+    ptr[i - 10] = mi_malloc(1 << i);
+  }
+
+  while (state.KeepRunning()) {
+    mi_heap_visit_blocks(mi_heap_get_default(), false, &VisitArena, nullptr);
+  }
+
+  for (unsigned i = 10; i < 20; ++i) {
+    mi_free(ptr[i - 10]);
+  }
+}
+BENCHMARK(BM_MimallocHeapVisit);
+
 }  // namespace base
