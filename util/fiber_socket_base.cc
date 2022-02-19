@@ -5,7 +5,7 @@
 #include "util/fiber_socket_base.h"
 
 #include <netinet/in.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 #include <boost/fiber/context.hpp>
 

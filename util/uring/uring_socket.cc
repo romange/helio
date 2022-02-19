@@ -5,7 +5,7 @@
 #include "util/uring/uring_socket.h"
 
 #include <netinet/in.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 #include <boost/fiber/context.hpp>
 

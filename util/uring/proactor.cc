@@ -7,7 +7,7 @@
 #include <liburing.h>
 #include <string.h>
 #include <sys/eventfd.h>
-#include <sys/poll.h>
+#include <poll.h>
 
 #include <boost/fiber/operations.hpp>
 #include <boost/fiber/scheduler.hpp>
@@ -25,8 +25,8 @@ DEFINE_bool(proactor_register_fd, false, "If true tries to register file descrip
     int __res_val = (x);                                                         \
     if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                     \
       char buf[128];                                                             \
-      char* str = strerror_r(-__res_val, buf, sizeof(buf));                      \
-      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': " << str; \
+      strerror_r(-__res_val, buf, sizeof(buf));                      \
+      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': " << buf; \
     }                                                                            \
   } while (false)
 

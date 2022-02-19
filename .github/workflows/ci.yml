@@ -16,10 +16,13 @@ jobs:
     # cross-platform coverage.
     # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Test of these containers
+        container: ["ubuntu-dev", "alpine-dev"]
     timeout-minutes: 90
     container: 
-      # we do not compile on alpine-dev yet
-      image: ghcr.io/${{ github.actor }}/ubuntu-dev:latest
+      image: ghcr.io/${{ github.actor }}/${{ matrix.container }}:latest
     steps:
     - uses: actions/checkout@v2
     - name: Cache build deps

@@ -4,7 +4,7 @@
 
 #include "util/uring/uring_fiber_algo.h"
 
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/timerfd.h>
 
 #include "base/logging.h"

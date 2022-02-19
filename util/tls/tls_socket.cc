@@ -120,7 +120,7 @@ auto TlsSocket::Close() -> error_code {
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
-  DCHECK_GT(msg.msg_iovlen, 0u);
+  DCHECK_GT(size_t(msg.msg_iovlen), 0u);
 
   DLOG_IF(INFO, flags) << "Flags argument is not supported " << flags;
 

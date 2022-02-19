@@ -52,7 +52,9 @@ TEST_F(MallocTest, Basic) {
 }
 
 TEST_F(MallocTest, Oom) {
+  errno = 0;
   mi_option_enable(mi_option_limit_os_alloc);
+
   ASSERT_EQ(0, errno);
 
   void* ptr = mi_malloc(1 << 10);
@@ -156,16 +158,17 @@ prlimit:
 
 TEST_F(MallocTest, LargeAlloc) {
   constexpr size_t kAllocSz = 1 << 24;  // 16MB
-  fprintf(stderr, "Before mi_malloc\n");
+  LOG(INFO) << "Before mi_malloc\n";
+
   void* ptr = mi_malloc(kAllocSz);
-  EXPECT_TRUE(ptr != nullptr);
   if (ptr) {
     memset(ptr, 0, kAllocSz);
     mi_free(ptr);
   }
-  fprintf(stderr, "Before jemalloc\n");
+
+  LOG(INFO) << "Before jemalloc\n";
+
   ptr = je_malloc(kAllocSz);
-  EXPECT_TRUE(ptr != nullptr);
   if (ptr) {
     memset(ptr, 0, kAllocSz);
     je_free(ptr);
@@ -189,6 +192,8 @@ TEST_F(MallocTest, Stats) {
   Segments allocate directly from arena.
 */
 
+#ifdef __GLIBC__   // musl does not have mallinfo
+
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 static void BM_MallocStats(benchmark::State& state) {
   while (state.KeepRunning()) {
@@ -196,6 +201,8 @@ static void BM_MallocStats(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_MallocStats);
+
+#endif
 
 static void BM_MimallocProcessInfo(benchmark::State& state) {
   size_t elapsed_msecs, user_msecs, system_msecs, current_rss, peak_rss, current_commit,

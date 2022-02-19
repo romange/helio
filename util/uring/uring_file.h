@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <sys/types.h>  // for mode_t
+
 #include "io/file.h"
 
 namespace util {

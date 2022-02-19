@@ -202,7 +202,7 @@ auto FiberSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
 auto FiberSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GE(fd_, 0);
-  CHECK_GT(msg.msg_iovlen, 0U);
+  CHECK_GT(size_t(msg.msg_iovlen), 0U);
 
   if (fd_ & IS_SHUTDOWN) {
     return nonstd::make_unexpected(std::make_error_code(std::errc::connection_aborted));

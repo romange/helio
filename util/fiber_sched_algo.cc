@@ -4,7 +4,7 @@
 
 #include "util/fiber_sched_algo.h"
 
-#include <sys/poll.h>
+#include <poll.h>
 #include <sys/timerfd.h>
 
 #include "base/logging.h"
@@ -47,7 +47,7 @@ void FiberSchedAlgo::awakened(FiberContext* ctx, FiberProps& props) noexcept {
 
     if (ctx != main_cntx_ && MainHasSwitched() && !main_cntx_->ready_is_linked()) {
       uint64_t delta_us = (now - suspend_main_ts_) / 1000;
-      if (delta_us > 1000) { // 1ms
+      if (delta_us > 1000) {  // 1ms
         DVLOG(2) << "Preemptively awakened io_loop after " << delta_us << " usec";
         ++ready_cnt_;
         main_cntx_->ready_link(rqueue_);
@@ -94,12 +94,13 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
     --ready_cnt_;
     FiberProps* props = (FiberProps*)ctx->get_properties();
 
-    DVLOG(1) << "Switching to " << fibers_ext::short_id(ctx) << ":" << props->name();  // TODO: to switch to RAW_LOG.
+    DVLOG(1) << "Switching to " << fibers_ext::short_id(ctx) << ":"
+             << props->name();  // TODO: to switch to RAW_LOG.
 
-    uint64_t last_dur_usec = prev_pick_ts_? (now - prev_pick_ts_) / 1000 : 0;
+    uint64_t last_dur_usec = prev_pick_ts_ ? (now - prev_pick_ts_) / 1000 : 0;
     if (last_dur_usec > 3000) {
-      VLOG(1) << "Execution of " << fibers_ext::short_id(prev_picked_)
-              << " took too long " << last_dur_usec << " usec";
+      VLOG(1) << "Execution of " << fibers_ext::short_id(prev_picked_) << " took too long "
+              << last_dur_usec << " usec";
     }
 
     props->resume_ts_ = now;
@@ -110,7 +111,8 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
                 << fibers_ext::short_id(ctx) << ":" << props->name();
     }
   } else {
-    DVLOG(1) << "Switching to dispatch " << fibers_ext::short_id(ctx);  // TODO: to switch to RAW_LOG.
+    DVLOG(1) << "Switching to dispatch "
+             << fibers_ext::short_id(ctx);  // TODO: to switch to RAW_LOG.
   }
 
   prev_picked_ = ctx;
@@ -165,7 +167,8 @@ void FiberSchedAlgo::suspend_until(time_point const& abs_time) noexcept {
 
   DCHECK(cur_cntx->is_context(fibers::type::dispatcher_context));
   CHECK_EQ(IOLOOP_SUSPENDED, mask_ & IOLOOP_SUSPENDED) << "Deadlock is detected";
-  DVLOG(1) << "suspend_until abs_time " << time_point_cast<nanoseconds>(abs_time).time_since_epoch().count();
+  DVLOG(1) << "suspend_until abs_time "
+           << time_point_cast<nanoseconds>(abs_time).time_since_epoch().count();
 
   mask_ |= SUSPEND_UNTIL_CALLED;
 

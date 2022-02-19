@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include "absl/time/clock.h"
 #include "base/gtest.h"
