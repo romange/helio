@@ -32,7 +32,7 @@ class EvControllerTest : public testing::Test {
     ev_cntrl_thread_ = thread{[this] { ev_cntrl_->Run(); }};
   }
 
-  void TearDown() {
+  void TearDown() override {
     ev_cntrl_->Stop();
     ev_cntrl_thread_.join();
     ev_cntrl_.reset();

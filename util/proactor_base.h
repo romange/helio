@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include <boost/fiber/fiber.hpp>
+#include <cstring>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress"
@@ -120,7 +121,6 @@ class ProactorBase {
   // To summarize: 'f' may not block its thread, but allowed to block its fiber.
   template <typename Func> auto Await(Func&& f) -> decltype(f());
 
-
   // Please note that this function uses Await, therefore can not be used inside
   // Proactor main fiber (i.e. Async callbacks).
   template <typename... Args> boost::fibers::fiber LaunchFiber(Args&&... args) {
@@ -165,8 +165,8 @@ class ProactorBase {
     // after the submition.
     timespec period;
 
-    uint32_t val1;       // implementation dependent payload.
-    uint32_t val2;       // implementation dependent payload.
+    uint32_t val1;  // implementation dependent payload.
+    uint32_t val2;  // implementation dependent payload.
     bool in_map = true;
   };
 
@@ -308,5 +308,25 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
 
   return std::move(mover).get();
 }
+
+namespace detail {
+
+// GLIBC/MUSL has 2 flavors of strerror_r.
+// this wrappers work around these incompatibilities.
+inline char const* strerror_r_helper(char const* r, char const*) noexcept {
+  return r;
+}
+
+inline char const* strerror_r_helper(int r, char const* buffer) noexcept {
+  return r == 0 ? buffer : "Unknown error";
+}
+
+inline std::string SafeErrorMessage(int ev) noexcept {
+  char buf[128];
+
+  return strerror_r_helper(strerror_r(ev, buf, sizeof(buf)), buf);
+}
+
+}  // namespace detail
 
 }  // namespace util

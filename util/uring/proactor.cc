@@ -24,9 +24,8 @@ DEFINE_bool(proactor_register_fd, false, "If true tries to register file descrip
   do {                                                                           \
     int __res_val = (x);                                                         \
     if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                     \
-      char buf[128];                                                             \
-      strerror_r(-__res_val, buf, sizeof(buf));                      \
-      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': " << buf; \
+      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': "         \
+                 << detail::SafeErrorMessage(-__res_val);                        \
     }                                                                            \
   } while (false)
 

@@ -20,9 +20,8 @@
   do {                                                                           \
     int __res_val = (x);                                                         \
     if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                     \
-      char buf[128];                                                             \
-      char* str = strerror_r(-__res_val, buf, sizeof(buf));                      \
-      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': " << str; \
+      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': "         \
+                 << detail::SafeErrorMessage(-__res_val);                        \
     }                                                                            \
   } while (false)
 
@@ -33,10 +32,6 @@ namespace util {
 namespace epoll {
 
 namespace {
-
-inline uint64_t GetClockNanos() {
-  return absl::GetCurrentTimeNanos();
-}
 
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kNopIndex = 2;
