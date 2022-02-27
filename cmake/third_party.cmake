@@ -267,12 +267,13 @@ endif()
 add_third_party(mimalloc
   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.2.tar.gz
 
-  # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug -DMI_SECURE=ON
+  # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
                     -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=${MI_OVERRIDE} -DCMAKE_C_FLAGS=-g"
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
+  # LIB libmimalloc-debug.a
 )
 
 add_third_party(jemalloc
@@ -312,5 +313,5 @@ add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES
                       INTERFACE_INCLUDE_DIRECTORIES "${RAPIDJSON_INCLUDE_DIR}")
 set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
-file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/_deps ${CMAKE_SOURCE_DIR}/_deps SYMBOLIC)
-file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/third_party/libs/ ${CMAKE_SOURCE_DIR}/third_party SYMBOLIC)
+# file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/_deps ${CMAKE_SOURCE_DIR}/_deps SYMBOLIC)
+# file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/third_party/libs/ ${CMAKE_SOURCE_DIR}/third_party SYMBOLIC)

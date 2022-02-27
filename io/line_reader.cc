@@ -29,7 +29,7 @@ LineReader::~LineReader() {
 }
 
 bool LineReader::Next(std::string_view* result, std::string* scratch) {
-  bool use_scratch = false;
+  bool touched_scratch = false;
 
   const char* const eof_page = buf_.get() + page_size_ - 1;
   while (true) {
@@ -49,7 +49,7 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
       }
       *ptr = '\0';
 
-      if (use_scratch) {
+      if (touched_scratch) {
         scratch->append(next_, ptr);
         *result = *scratch;
       } else {
@@ -61,15 +61,28 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
     }
 
     if (next_ != end_) {
+      size_t part_len = end_ - next_;
+
       // Our internal buffer was not empty, but we did not find EOL yet.
       // Now we've reach end of buffer, so we must copy the data to accomodate the broken line.
-      if (!use_scratch) {
+      if (!touched_scratch) {
+        if (part_len >= line_len_limit_) {
+          status_ = make_error_code(errc::message_size);
+          return false;
+        }
+
+
         if (scratch == nullptr)
           scratch = &scratch_;
 
         scratch->assign(next_, end_);
-        use_scratch = true;
+        touched_scratch = true;
       } else {
+        if (part_len + scratch->size() >= line_len_limit_) {
+          status_ = make_error_code(errc::message_size);
+          return false;
+        }
+
         scratch->append(next_, end_);
       }
       next_ = end_;
@@ -101,7 +114,7 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
     *end_ = '\n';  // sentinel.
   }
 
-  if (use_scratch) {
+  if (touched_scratch) {
     *result = *scratch;
     ++line_num_;
 

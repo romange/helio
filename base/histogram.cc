@@ -15,6 +15,8 @@
 
 namespace base {
 
+using namespace std;
+
 const double Histogram::kBucketLimit[kNumBuckets] = {
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 45,
   50, 60, 70, 80, 90, 100, 120, 140, 160, 180, 200, 250, 300, 350, 400, 450,
@@ -36,8 +38,9 @@ const double Histogram::kBucketLimit[kNumBuckets] = {
   1e200,
 };
 
-inline std::pair<double, double> Histogram::BucketLimits(unsigned b) {
-  return std::make_pair((b == 0) ? 0.0 : kBucketLimit[b-1], kBucketLimit[b]);
+inline pair<double, double> Histogram::BucketLimits(unsigned b) {
+  double low = (b == 0) ? 0.0 : kBucketLimit[b-1];
+  return pair<double, double>(low, kBucketLimit[b]);
 }
 
 inline double Histogram::BucketAverage(unsigned b) {
@@ -61,8 +64,8 @@ void Histogram::Clear() {
 }
 
 void Histogram::Add(double value, uint32 count) {
-  auto it = std::upper_bound(kBucketLimit, kBucketLimit + kNumBuckets - 1, value);
-  std::size_t b = it - kBucketLimit;
+  auto it = upper_bound(kBucketLimit, kBucketLimit + kNumBuckets - 1, value);
+  size_t b = it - kBucketLimit;
   if (buckets_.size() <= b) {
     buckets_.resize(absl::bit_ceil(b + 1));
   }
@@ -166,8 +169,8 @@ double Histogram::SumFirstK(unsigned bucket, ulong position) const {
 }
 #endif
 
-std::string Histogram::ToString() const {
-  std::string r;
+string Histogram::ToString() const {
+  string r;
   char buf[300];
   snprintf(buf, sizeof(buf),
            "Count: %" PRIu32 " Average: %.4f  StdDev: %.2f\n",

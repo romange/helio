@@ -35,11 +35,19 @@ class LineReader {
     return status_;
   }
 
+  void set_line_len_limit(uint64_t lim) {
+    line_len_limit_ = lim;
+  }
+
+  uint64_t line_len_limit() const { return line_len_limit_; }
+
  private:
   void Init(uint32_t buf_log);
 
   Source* source_;
   uint64_t line_num_ = 0;  // MSB bit means EOF was reached.
+  uint64_t line_len_limit_ = -1;
+
   std::unique_ptr<char[]> buf_;
   char *next_, *end_;
 
