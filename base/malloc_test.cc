@@ -128,6 +128,38 @@ TEST_F(MallocTest, OS) {
   munmap(map, ps * n);
 }
 
+TEST_F(MallocTest, MimallocVisit) {
+  // in version 2.0.2 "area->used" is number of used blocks and not bytes.
+  // to get bytes one needs to multiple by block_size reported to the visitor.
+  auto cb_visit = [](const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
+                     size_t block_size, void* arg) {
+    LOG(INFO) << "block_size " << block_size << "/" << area->block_size << ", reserved "
+              << area->reserved << " comitted " << area->committed << " used: " << area->used;
+    return true;
+  };
+  auto* myheap = mi_heap_new();
+  void* p1 = mi_heap_malloc(myheap, 64);
+  for (size_t i = 0; i < 50; ++i)
+    p1 = mi_heap_malloc(myheap, 128);
+  (void)p1;
+
+  void* ptr[50];
+
+  // allocate 50
+  for (size_t i = 0; i < 50; ++i) {
+    ptr[i] = mi_heap_malloc(myheap, 256);
+  }
+
+  // free 50/50 -
+  for (size_t i = 0; i < 50; ++i) {
+    mi_free(ptr[i]);
+  }
+
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, cb_visit, nullptr);
+
+  mi_heap_destroy(myheap);
+}
+
 /* Setup to test various resource limiting frameworks:
 
 cgroup2:
@@ -192,7 +224,7 @@ TEST_F(MallocTest, Stats) {
   Segments allocate directly from arena.
 */
 
-#ifdef __GLIBC__   // musl does not have mallinfo
+#ifdef __GLIBC__  // musl does not have mallinfo
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 static void BM_MallocStats(benchmark::State& state) {
