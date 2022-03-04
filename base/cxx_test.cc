@@ -6,6 +6,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/string_view_sso.h"
+#include "base/random.h"
 
 using namespace std;
 
@@ -167,6 +168,11 @@ TEST_F(CxxTest, Arrow) {
   Pointer1 p1{5, "roman"};
   EXPECT_EQ(5, p1->first);
   EXPECT_EQ("roman", p1->second);
+}
+
+TEST_F(CxxTest, Random) {
+  SplitMix64 rand1;
+  Xoroshiro128p rand2;
 }
 
 }  // namespace base
