@@ -15,6 +15,7 @@ class ListenerInterface;
 class Connection {
   using connection_hook_t = ::boost::intrusive::slist_member_hook<
       ::boost::intrusive::link_mode<::boost::intrusive::normal_link>>;
+
   connection_hook_t hook_;
 
  public:
@@ -27,10 +28,6 @@ class Connection {
   void SetSocket(FiberSocketBase* s) {
     socket_.reset(s);
   }
-
-  // Must be called from the fiber that runs HandleRequests() function.
-  // Moves the calling fiber to run within dest proactor thread. Updates socket_ accordingly.
-  void Migrate(ProactorBase* dest);
 
   FiberSocketBase* socket() {
     return socket_.get();

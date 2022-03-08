@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "util/fiber_socket_base.h"
+#include <unordered_map>
 
 namespace util {
 
@@ -49,6 +50,18 @@ class ListenerInterface {
 
   virtual ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
 
+  using TraverseCB = std::function<void(Connection*)>;
+
+  // traverses all client connections in all threads. cb must be thread safe.
+  // cb should not keep Connection* pointers beyond the run of this function because
+  // Connection* are valid only during the call to cb.
+  void TraverseConnections(TraverseCB cb);
+
+  // Must be called from the connection fiber (that runs HandleRequests() function).
+  // Moves the calling fiber from its thread to to dest proactor thread.
+  // Updates socket_ and listener interface bookeepings.
+  void Migrate(Connection* conn, ProactorBase* dest);
+
  protected:
   ProactorPool* pool() {
     return pool_;
@@ -59,11 +72,13 @@ class ListenerInterface {
   }
 
  private:
-  struct SafeConnList;
-
   void RunAcceptLoop();
 
-  static void RunSingleConnection(Connection* conn, SafeConnList* list);
+  void RunSingleConnection(Connection* conn);
+
+  struct TLConnList;  // threadlocal connection list. contains connections for that thread.
+
+  static thread_local std::unordered_map<ListenerInterface*, TLConnList*> conn_list;
 
   std::unique_ptr<LinuxSocketBase> sock_;
 

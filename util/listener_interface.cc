@@ -38,36 +38,33 @@ using ListType =
 
 }  // namespace
 
-
-struct ListenerInterface::SafeConnList {
+struct ListenerInterface::TLConnList {
   ListType list;
-  fibers::mutex mu;
-  fibers::condition_variable cond;
+  fibers::condition_variable_any empty_cv;
 
   void Link(Connection* c) {
-    std::lock_guard<fibers::mutex> lk(mu);
     list.push_front(*c);
     DVLOG(3) << "List size " << list.size();
   }
 
   void Unlink(Connection* c) {
-    std::lock_guard<fibers::mutex> lk(mu);
     auto it = list.iterator_to(*c);
     list.erase(it);
     DVLOG(3) << "List size " << list.size();
-
     if (list.empty()) {
-      cond.notify_one();
+      empty_cv.notify_one();
     }
   }
 
   void AwaitEmpty() {
-    std::unique_lock<fibers::mutex> lk(mu);
     DVLOG(1) << "AwaitEmpty: List size: " << list.size();
 
-    cond.wait(lk, [this] { return list.empty(); });
+    fibers_ext::Await(empty_cv, [this] { return this->list.empty(); });
   }
 };
+
+thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
+    ListenerInterface::conn_list;
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
@@ -76,9 +73,10 @@ void ListenerInterface::RunAcceptLoop() {
 
   auto ep = sock_->LocalEndpoint();
   VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
-  SafeConnList safe_list;
 
   PreAcceptLoop(sock_->proactor());
+
+  pool_->Await([this](auto*) { conn_list.emplace(this, new TLConnList{}); });
 
   while (true) {
     FiberSocketBase::AcceptResult res = sock_->Accept();
@@ -89,7 +87,8 @@ void ListenerInterface::RunAcceptLoop() {
       }
       break;
     }
-    std::unique_ptr<LinuxSocketBase> peer{static_cast<LinuxSocketBase*>(res.value())};
+
+    unique_ptr<LinuxSocketBase> peer{static_cast<LinuxSocketBase*>(res.value())};
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
@@ -99,33 +98,33 @@ void ListenerInterface::RunAcceptLoop() {
     peer->SetProactor(next);
     Connection* conn = NewConnection(next);
     conn->SetSocket(peer.release());
-    safe_list.Link(conn);
-
-    // mutable because we move peer.
-    auto cb = [conn, &safe_list] { RunSingleConnection(conn, &safe_list); };
 
     // Run cb in its Proactor thread.
-    next->Dispatch(std::move(cb));
+    next->Dispatch([this, conn] { RunSingleConnection(conn); });
   }
 
   PreShutdown();
 
-  safe_list.mu.lock();
-  unsigned cnt = safe_list.list.size();
+  atomic_uint32_t cur_conn_cnt{0};
 
-  fibers_ext::BlockingCounter bc{cnt};
-  for (auto& val : safe_list.list) {
-    val.socket()->proactor()->Dispatch([conn = &val, bc]() mutable {
-      conn->Shutdown();
-      DVSOCK(1, *conn) << "Shutdown";
-      bc.Dec();
-    });
-  }
-  bc.Wait();
-  safe_list.mu.unlock();
+  pool_->AwaitFiberOnAll([&](auto* pb) {
+    auto* clist = conn_list.find(this)->second;
 
-  VLOG(1) << "Waiting for " << cnt << " connections to close";
-  safe_list.AwaitEmpty();
+    cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
+    for (auto& conn : clist->list) {
+      conn.Shutdown();
+      DVSOCK(1, conn) << "Shutdown";
+    }
+  });
+
+  VLOG(1) << "Waiting for " << cur_conn_cnt << " connections to close";
+
+  pool_->AwaitFiberOnAll([&](auto* pb) {
+    auto it = conn_list.find(this);
+    it->second->AwaitEmpty();
+    delete it->second;
+    conn_list.erase(this);
+  });
 
   PostShutdown();
 
@@ -136,10 +135,13 @@ ListenerInterface::~ListenerInterface() {
   VLOG(1) << "Destroying ListenerInterface " << this;
 }
 
-void ListenerInterface::RunSingleConnection(Connection* conn, SafeConnList* conns) {
+void ListenerInterface::RunSingleConnection(Connection* conn) {
   VSOCK(2, *conn) << "Running connection ";
 
-  std::unique_ptr<Connection> guard(conn);
+  unique_ptr<Connection> guard(conn);
+  auto* clist = conn_list.find(this)->second;
+  clist->Link(conn);
+
   try {
     conn->HandleRequests();
     VSOCK(2, *conn) << "After HandleRequests";
@@ -147,7 +149,8 @@ void ListenerInterface::RunSingleConnection(Connection* conn, SafeConnList* conn
   } catch (std::exception& e) {
     LOG(ERROR) << "Uncaught exception " << e.what();
   }
-  conns->Unlink(conn);
+
+  clist->Unlink(conn);
 }
 
 void ListenerInterface::RegisterPool(ProactorPool* pool) {
@@ -162,12 +165,33 @@ ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
   return pool_->GetNextProactor();
 }
 
-void Connection::Migrate(ProactorBase* dest) {
-  ProactorBase* src = socket_->proactor();
+void ListenerInterface::TraverseConnections(TraverseCB cb) {
+  pool_->AwaitFiberOnAll([&](auto* pb) {
+    auto it = conn_list.find(this);
+
+    for (auto& conn : it->second->list) {
+      cb(&conn);
+    }
+  });
+}
+
+void ListenerInterface::Migrate(Connection* conn, ProactorBase* dest) {
+  ProactorBase* src = conn->socket()->proactor();
   CHECK(src->InMyThread());
 
+  if (src == dest)
+    return;
+
+  auto* clist = conn_list.find(this)->second;
+  clist->Unlink(conn);
+
   src->Migrate(dest);
-  socket_->SetProactor(dest);
+
+  DCHECK(dest->InMyThread());  // We are running in the updated thread.
+  conn->socket()->SetProactor(dest);
+
+  clist = conn_list.find(this)->second;
+  clist->Link(conn);
 }
 
 void Connection::Shutdown() {
