@@ -75,7 +75,7 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   uint32_t ready_cnt_ = 0;
   int timer_fd_ = -1;
 
-  enum : uint8_t {
+  enum : unsigned {
     IOLOOP_SUSPENDED = 1,  // io loop fiber is suspended
     IOLOOP_YIELDED = 2,    // while suspended, ioloop switched to another fiber.
     IOLOOP_WAKENED = 4,

@@ -21,7 +21,7 @@ jobs:
         # Test of these containers
         container: ["ubuntu-dev", "alpine-dev"]
     timeout-minutes: 90
-    container: 
+    container:
       image: ghcr.io/${{ github.actor }}/${{ matrix.container }}:latest
     steps:
     - uses: actions/checkout@v2
@@ -46,7 +46,10 @@ jobs:
           cd ${{github.workspace}}/build
           cat /proc/cpuinfo
           ninja base/all io/all strings/all util/all
+          GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \
+             ./accept_server_test || true
           GLOG_logtostderr=1 ctest -V -L CI
           # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
+
 
 

@@ -100,17 +100,26 @@ void ListenerInterface::RunAcceptLoop() {
     conn->SetSocket(peer.release());
 
     // Run cb in its Proactor thread.
-    next->Dispatch([this, conn] { RunSingleConnection(conn); });
+    next->Dispatch([this, conn] {
+      RunSingleConnection(conn); });
   }
 
   PreShutdown();
 
+  // I am not a fan of "almost works" solutions. Here, I wait for Dispatch() calls
+  // to start running and decrease the probability we continue without the up to date conn_list.
+  // Since we are during the shutdown phase, waiting for 10ms is "probably" enough to let all the
+  // callback to unwind and run.
+  this_fiber::sleep_for(10ms);
   atomic_uint32_t cur_conn_cnt{0};
 
   pool_->AwaitFiberOnAll([&](auto* pb) {
     auto* clist = conn_list.find(this)->second;
 
     cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
+
+    // This is correctly atomic because Shutdown() does not block the fiber or yields.
+    // However once we implement Shutdown via io_uring, this code becomes unsafe.
     for (auto& conn : clist->list) {
       conn.Shutdown();
       DVSOCK(1, conn) << "Shutdown";
@@ -151,6 +160,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   }
 
   clist->Unlink(conn);
+  guard.reset();
 }
 
 void ListenerInterface::RegisterPool(ProactorPool* pool) {
