@@ -520,6 +520,8 @@ void Proactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
       id);
 
   se.PrepTimeout(&item->period, false);
+  DVLOG(1) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
+
   item->val1 = se.sqe()->user_data;
 }
 
@@ -544,6 +546,8 @@ void Proactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
     fibers::context::active()->schedule(me);
   };
   SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
+
+  DVLOG(1) << "Cancel timer " << val1 << ", cb userdata: " << se.sqe()->user_data;
   se.PrepTimeoutRemove(val1);  // cancel using userdata id sent to io-uring.
   me->suspend();
 }

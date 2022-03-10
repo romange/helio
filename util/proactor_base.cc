@@ -78,6 +78,8 @@ void ProactorBase::Stop() {
 }
 
 uint32_t ProactorBase::AddIdleTask(IdleTask f) {
+  DCHECK(InMyThread());
+
   auto id = next_task_id_++;
   auto res = idle_map_.emplace(id, std::move(f));
   CHECK(res.second);
@@ -85,6 +87,8 @@ uint32_t ProactorBase::AddIdleTask(IdleTask f) {
 }
 
 uint32_t ProactorBase::AddPeriodic(uint32_t ms, PeriodicTask f) {
+  DCHECK(InMyThread());
+
   auto id = next_task_id_++;
 
   PeriodicItem* item = new PeriodicItem;
@@ -101,6 +105,8 @@ uint32_t ProactorBase::AddPeriodic(uint32_t ms, PeriodicTask f) {
 }
 
 void ProactorBase::CancelPeriodic(uint32_t id) {
+  DCHECK(InMyThread());
+
   auto it = periodic_map_.find(id);
   CHECK(it != periodic_map_.end());
   uint32_t val1 = it->second->val1;

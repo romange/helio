@@ -138,16 +138,19 @@ class ProactorBase {
    * @brief Adds a task that should run when Proactor loop is idle. The task should return
    *        true if keep it running or false if it finished its job.
    *
+   *        Must be called from the proactor thread.
    * @tparam Func
    * @param f
    * @return uint64_t an unique ids denoting this task. Can be used for cancellation.
    */
   uint32_t AddIdleTask(IdleTask f);
 
+  //! Must be called from the proactor thread.
   //! PeriodicTask should not block since it runs from I/O loop.
   uint32_t AddPeriodic(uint32_t ms, PeriodicTask f);
 
-  //! Blocking until the task has been cancelled. Should not be run from I/O loop
+  //! Must be called from the proactor thread.
+  //! Blocking until the task has been cancelled. Should not run directly from I/O loop
   //! i.e. only from Await or another fiber.
   void CancelPeriodic(uint32_t id);
 
