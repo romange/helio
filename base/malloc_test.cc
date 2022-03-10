@@ -4,6 +4,10 @@
 #include <jemalloc/jemalloc.h>
 #include <malloc.h>
 #include <mimalloc.h>
+
+// we expose internal types of mimalloc to access its statistics.
+// Currently it's not supported officially by the library.
+#include <mimalloc-types.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 
@@ -35,7 +39,7 @@ class MallocTest : public testing::Test {
   }
 };
 
-TEST_F(MallocTest, Basic) {
+TEST_F(MallocTest, GoodSize) {
   EXPECT_EQ(32, mi_good_size(24));
 
   // when jemalloc is configured --with-lg-quantum=3 it produces tight allocations.
@@ -128,17 +132,33 @@ TEST_F(MallocTest, OS) {
   munmap(map, ps * n);
 }
 
+extern "C" mi_stats_t _mi_stats_main;
+
 TEST_F(MallocTest, MimallocVisit) {
   // in version 2.0.2 "area->used" is number of used blocks and not bytes.
   // to get bytes one needs to multiple by block_size reported to the visitor.
+  struct Sum {
+    size_t reserved = 0, used = 0, committed = 0;
+  } sum;
+
   auto cb_visit = [](const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
                      size_t block_size, void* arg) {
+    Sum* s = (Sum*)arg;
+
     LOG(INFO) << "block_size " << block_size << "/" << area->block_size << ", reserved "
               << area->reserved << " comitted " << area->committed << " used: " << area->used;
+
+    s->reserved += area->reserved;
+    s->used += area->used * block_size;
+    s->committed += area->committed;
+
     return true;
   };
+
   auto* myheap = mi_heap_new();
+
   void* p1 = mi_heap_malloc(myheap, 64);
+
   for (size_t i = 0; i < 50; ++i)
     p1 = mi_heap_malloc(myheap, 128);
   (void)p1;
@@ -155,8 +175,20 @@ TEST_F(MallocTest, MimallocVisit) {
     mi_free(ptr[i]);
   }
 
-  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, cb_visit, nullptr);
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, cb_visit, &sum);
 
+  mi_collect(false);
+  mi_stats_print_out(NULL, NULL);
+
+#define LOG_STATS(x) LOG(INFO) << #x ": " << _mi_stats_main.x.current
+
+  LOG(INFO) << "visit: committed/reserved/used: " << sum.committed << "/" << sum.reserved << "/"
+            << sum.used;
+
+  LOG_STATS(committed);
+  LOG_STATS(malloc);
+  LOG_STATS(reserved);
+  LOG_STATS(normal);
   mi_heap_destroy(myheap);
 }
 

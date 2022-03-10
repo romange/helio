@@ -193,7 +193,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.6.0.zip
+  URL https://github.com/google/benchmark/archive/v1.6.1.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -209,7 +209,7 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20211102.0.zip
+  URL https://github.com/abseil/abseil-cpp/archive/20211102.0.tar.gz
   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20211102.patch"
 )
 
@@ -239,8 +239,9 @@ endif()
 
 add_third_party(
   gperf
-  GIT_REPOSITORY https://github.com/gperftools/gperftools
-  GIT_TAG gperftools-2.9.1
+  URL https://github.com/gperftools/gperftools/archive/gperftools-2.9.1.tar.gz
+  #GIT_REPOSITORY https://github.com/gperftools/gperftools
+  #GIT_TAG gperftools-2.9.1
   GIT_SHALLOW TRUE
   PATCH_COMMAND autoreconf -i   # update runs every time for some reason
   # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
@@ -265,7 +266,7 @@ else()
 endif()
 
 add_third_party(mimalloc
-  URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.2.tar.gz
+  URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.5.tar.gz
 
   # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
@@ -273,6 +274,8 @@ add_third_party(mimalloc
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
+  COMMAND cp <SOURCE_DIR>/include/mimalloc-types.h <SOURCE_DIR>/include/mimalloc-atomic.h
+          ${MIMALLOC_INCLUDE_DIR}/
   # LIB libmimalloc-debug.a
 )
 
@@ -285,7 +288,7 @@ add_third_party(jemalloc
 
 add_third_party(
   xxhash
-  URL https://github.com/Cyan4973/xxHash/archive/v0.8.0.zip
+  URL https://github.com/Cyan4973/xxHash/archive/v0.8.0.tar.gz
   SOURCE_SUBDIR cmake_unofficial
   CMAKE_PASS_FLAGS "-DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF"
 )
