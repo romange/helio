@@ -95,7 +95,9 @@ class LinuxSocketBase : public FiberSocketBase {
   virtual ~LinuxSocketBase();
 
   native_handle_type native_handle() const {
-    return fd_ < 0 ? fd_ : fd_ & FD_MASK;
+    static_assert(int32_t(-1) >> 3 == -1);
+
+    return fd_ >> 3;
   }
 
   // sock_opts are the bit mask of sockopt values shifted left, i.e.
@@ -113,20 +115,20 @@ class LinuxSocketBase : public FiberSocketBase {
   //! IsOpen does not promise that the socket is TCP connected or live,
   // just that the file descriptor is valid and its state is open.
   bool IsOpen() const final {
-    return fd_ >= 0 && (fd_ & IS_SHUTDOWN) == 0;
+    return (fd_ & IS_SHUTDOWN) == 0;
   }
 
   endpoint_type LocalEndpoint() const;
   endpoint_type RemoteEndpoint() const;
 
  protected:
-  LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd) {
+  LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd > 0 ? fd << 3 : fd) {
   }
 
-  // Gives me 512M descriptors.
-  enum { FD_MASK = 0x1fffffff };
-  enum { IS_SHUTDOWN = 0x20000000 };
+  enum { IS_SHUTDOWN = 0x1 };
 
+  // 3 low bits are used for masking the state of fd.
+  // gives me 512M descriptors.
   int32_t fd_;
 };
 

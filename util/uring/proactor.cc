@@ -5,9 +5,9 @@
 #include "util/uring/proactor.h"
 
 #include <liburing.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/eventfd.h>
-#include <poll.h>
 
 #include <boost/fiber/operations.hpp>
 #include <boost/fiber/scheduler.hpp>
@@ -20,13 +20,13 @@
 
 DEFINE_bool(proactor_register_fd, false, "If true tries to register file descriptors");
 
-#define URING_CHECK(x)                                                           \
-  do {                                                                           \
-    int __res_val = (x);                                                         \
-    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                     \
-      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': "         \
-                 << detail::SafeErrorMessage(-__res_val);                        \
-    }                                                                            \
+#define URING_CHECK(x)                                                                \
+  do {                                                                                \
+    int __res_val = (x);                                                              \
+    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                          \
+      LOG(FATAL) << "Error " << (-__res_val)                                          \
+                 << " evaluating '" #x "': " << detail::SafeErrorMessage(-__res_val); \
+    }                                                                                 \
   } while (false)
 
 #ifndef __NR_io_uring_enter
@@ -326,12 +326,13 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   base::sys::KernelVersion kver;
   base::sys::GetKernelVersion(&kver);
 
-  CHECK(kver.kernel > 5 || (kver.kernel = 5 && kver.major >= 4))
-      << "Versions 5.4 or higher are supported";
+  CHECK(kver.kernel > 5 || (kver.kernel = 5 && kver.major >= 8))
+      << "Versions 5.8 or higher are supported";
 
   io_uring_params params;
   memset(&params, 0, sizeof(params));
 
+#if 0
   if (FLAGS_proactor_register_fd && geteuid() == 0) {
     params.flags |= IORING_SETUP_SQPOLL;
     LOG_FIRST_N(INFO, 1) << "Root permissions - setting SQPOLL flag";
@@ -342,6 +343,7 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
     params.flags |= IORING_SETUP_ATTACH_WQ;
     params.wq_fd = wq_fd;
   }
+#endif
 
   // it seems that SQPOLL requires registering each fd, including sockets fds.
   // need to check if its worth pursuing.
@@ -351,8 +353,11 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
 
   // If this fails with 'can not allocate memory' most probably you need to increase maxlock limit.
   URING_CHECK(io_uring_queue_init_params(ring_size, &ring_, &params));
-  fast_poll_f_ = (params.features & IORING_FEAT_FAST_POLL) != 0;
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
+
+  unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
+  CHECK_EQ(req_feats, params.features & req_feats)
+      << "required feature feature is not present in the kernel";
 
   wake_fixed_fd_ = wake_fd_;
   register_fd_ = FLAGS_proactor_register_fd;
@@ -364,24 +369,15 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
     absl::Time start = absl::Now();
     int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
     absl::Duration duration = absl::Now() - start;
-    VLOG(1) << "io_uring_register_files took " << absl::ToInt64Milliseconds(duration) << "ms";
-    if (res < 0) {
-      register_fd_ = 0;
-      register_fds_ = decltype(register_fds_){};
-    }
+    VLOG(1) << "io_uring_register_files took " << absl::ToInt64Microseconds(duration) << " usec";
+    CHECK_EQ(0, res);
   }
 
-  CHECK(fast_poll_f_);
-  CHECK(params.features & IORING_FEAT_NODROP)
-      << "IORING_FEAT_NODROP feature is not present in the kernel";
-
-  CHECK(params.features & IORING_FEAT_SINGLE_MMAP);
   size_t sz = ring_.sq.ring_sz + params.sq_entries * sizeof(struct io_uring_sqe);
   LOG_FIRST_N(INFO, 1) << "IORing with " << params.sq_entries << " entries, allocated " << sz
                        << " bytes, cq_entries is " << *ring_.cq.kring_entries;
   CHECK_EQ(ring_size, params.sq_entries);  // Sanity.
 
-  VerifyTimeoutSupport();
   ArmWakeupEvent();
   centries_.resize(params.sq_entries);  // .val = -1
   next_free_ce_ = 0;
@@ -421,7 +417,7 @@ void Proactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
       continue;
 
     if (cqe.user_data == kWakeIndex) {
-      // We were woken up. Need to rearm wake_fd_ poller.
+      // We were woken up. Need to rearm wakeup poller.
       DCHECK_EQ(cqe.res, 8);
       DVLOG(2) << "PRO[" << tl_info_.proactor_index << "] Wakeup " << cqe.res << "/" << cqe.flags;
 
@@ -500,15 +496,18 @@ void Proactor::ArmWakeupEvent() {
   CHECK_NOTNULL(sqe);
 
   io_uring_prep_poll_add(sqe, wake_fixed_fd_, POLLIN);
+  uint8_t flag = register_fd_ ? IOSQE_FIXED_FILE : 0;
   sqe->user_data = kIgnoreIndex;
-  sqe->flags |= (register_fd_ ? IOSQE_FIXED_FILE : 0);
-  sqe->flags |= IOSQE_IO_LINK;
+  sqe->flags |= (flag | IOSQE_IO_LINK);
   sqe = io_uring_get_sqe(&ring_);
 
   // drain the signal.
-  static uint64_t donot_care;
+  // we do not have to use threadlocal but we use it for performance reasons
+  // to reduce cache thrashing.
+  static thread_local uint64_t donot_care;
   io_uring_prep_read(sqe, wake_fixed_fd_, &donot_care, 8, 0);
   sqe->user_data = kWakeIndex;
+  sqe->flags |= flag;
 }
 
 void Proactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
@@ -526,7 +525,7 @@ void Proactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
 }
 
 void Proactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item) {
-  if (!item->in_map) { // has been removed from the map.
+  if (!item->in_map) {  // has been removed from the map.
     delete item;
     return;
   }
@@ -553,6 +552,8 @@ void Proactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
 }
 
 unsigned Proactor::RegisterFd(int source_fd) {
+  DCHECK(register_fd_);
+
   if (!register_fd_)
     return source_fd;
 
@@ -564,6 +565,7 @@ unsigned Proactor::RegisterFd(int source_fd) {
     next_free_fd_ = prev_sz + 1;
 
     CHECK_EQ(0, io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size()));
+
     return prev_sz;
   }
 
@@ -576,6 +578,8 @@ unsigned Proactor::RegisterFd(int source_fd) {
 }
 
 void Proactor::UnregisterFd(unsigned fixed_fd) {
+  DCHECK(register_fd_);
+
   if (!register_fd_)
     return;
 
@@ -589,33 +593,8 @@ void Proactor::UnregisterFd(unsigned fixed_fd) {
   }
 }
 
-void Proactor::VerifyTimeoutSupport() {
-  io_uring_sqe* sqe = CHECK_NOTNULL(io_uring_get_sqe(&ring_));
-  timespec ts = {.tv_sec = 0, .tv_nsec = 10000};
-  static_assert(sizeof(__kernel_timespec) == sizeof(timespec));
-
-  io_uring_prep_timeout(sqe, (__kernel_timespec*)&ts, 0, IORING_TIMEOUT_ABS);
-  sqe->user_data = 2;
-  int submitted = io_uring_submit(&ring_);
-  CHECK_EQ(1, submitted);
-
-  io_uring_cqe* cqe = nullptr;
-  while (true) {
-    int res = io_uring_wait_cqe(&ring_, &cqe);
-    if (res == 0)
-      break;
-    if (res != -EINTR) {
-      LOG(FATAL) << "Unexpected error " << strerror(-res);
-    }
-  }
-
-  CHECK_EQ(2U, cqe->user_data);
-
-  CHECK(cqe->res == -ETIME || cqe->res == 0);
-  io_uring_cq_advance(&ring_, 1);
-}
-
 const static uint64_t wake_val = 1;
+
 void Proactor::WakeRing() {
   DVLOG(2) << "WakeRing " << tq_seq_.load(std::memory_order_relaxed);
 
@@ -629,6 +608,7 @@ void Proactor::WakeRing() {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
     se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
   } else {
+    // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
   }
 }

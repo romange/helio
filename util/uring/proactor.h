@@ -64,11 +64,6 @@ class Proactor : public ProactorBase {
     return sqe_avail_.await([&] {  return GetSubmitRingAvailability() >= threshold; });
   }
 
-  // Uring configuration options.
-  bool HasFastPoll() const {
-    return fast_poll_f_;
-  }
-
   bool HasSqPoll() const {
     return sqpoll_f_;
   }
@@ -92,7 +87,6 @@ class Proactor : public ProactorBase {
 
  private:
   void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
-  void VerifyTimeoutSupport();
 
   void RegrowCentries();
   void ArmWakeupEvent();
@@ -107,10 +101,9 @@ class Proactor : public ProactorBase {
 
   int wake_fixed_fd_;
 
-  uint8_t fast_poll_f_ : 1;
   uint8_t sqpoll_f_ : 1;
   uint8_t register_fd_ : 1;
-  uint8_t reserved_f_ : 5;
+  uint8_t reserved_f_ : 6;
 
   EventCount sqe_avail_;
   ::boost::fibers::context* main_loop_ctx_ = nullptr;

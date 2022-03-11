@@ -73,14 +73,14 @@ error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog, uint32_t soc
   CHECK_EQ(fd_, -1) << "Close socket before!";
 
   error_code ec;
-  fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-  if (posix_err_wrap(fd_, &ec) < 0)
+  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
   const int val = 1;
   for (int opt = 0; sock_opts_mask; ++opt) {
     if (sock_opts_mask & 1) {
-      if (setsockopt(fd_, SOL_SOCKET, opt, &val, sizeof(val)) < 0) {
+      if (setsockopt(fd, SOL_SOCKET, opt, &val, sizeof(val)) < 0) {
         LOG(WARNING) << "setsockopt: could not set opt " << opt << ", " << strerror(errno);
       }
     }
@@ -93,12 +93,17 @@ error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog, uint32_t soc
   server_addr.sin_port = htons(port);
   server_addr.sin_addr.s_addr = INADDR_ANY;
 
-  if (posix_err_wrap(bind(fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)), &ec) < 0)
+  if (posix_err_wrap(bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)), &ec) < 0) {
+    close(fd);
     return ec;
+  }
+
 
   VSOCK(1) << "Listening";
 
-  posix_err_wrap(listen(fd_, backlog), &ec);
+  posix_err_wrap(listen(fd, backlog), &ec);
+
+  fd_ = fd << 3;
 
   OnSetProactor();
   return ec;
@@ -112,6 +117,7 @@ auto LinuxSocketBase::Shutdown(int how) -> error_code {
   error_code ec;
   if (fd_ & IS_SHUTDOWN)
     return ec;
+
   int fd = native_handle();
 
   posix_err_wrap(::shutdown(fd, how), &ec);

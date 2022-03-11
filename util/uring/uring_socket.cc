@@ -48,8 +48,12 @@ auto UringSocket::Close() -> error_code {
     DVSOCK(1) << "Closing socket";
 
     int fd = native_handle();
-    if (GetProactor())
-      GetProactor()->UnregisterFd(fd_ & FD_MASK);
+    Proactor* p = GetProactor();
+    if ((fd_ & REGISTER_FD) && p) {
+      unsigned fixed_fd = fd;
+      fd = p->TranslateFixedFd(fixed_fd);
+      p->UnregisterFd(fixed_fd);
+    }
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
   }
@@ -64,13 +68,15 @@ auto UringSocket::Accept() -> AcceptResult {
 
   error_code ec;
 
-  int real_fd = native_handle();
+  int fd = native_handle();
+  int real_fd = (fd_ & REGISTER_FD) ? GetProactor()->TranslateFixedFd(fd) : fd;
+
   while (true) {
     int res =
         accept4(real_fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       UringSocket* fs = new UringSocket{nullptr};
-      fs->fd_ = res;
+      fs->fd_ = res << 3;
       return fs;
     }
 
@@ -78,7 +84,8 @@ auto UringSocket::Accept() -> AcceptResult {
 
     if (errno == EAGAIN) {
       FiberCall fc(GetProactor());
-      fc->PrepPollAdd(fd_ & FD_MASK, POLLIN);
+      fc->PrepPollAdd(fd, POLLIN);
+      fc->sqe()->flags |= register_flag();
       IoResult io_res = fc.Get();
 
       if (io_res == POLLERR) {
@@ -99,23 +106,28 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   error_code ec;
 
-  fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (posix_err_wrap(fd_, &ec) < 0)
+  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
   Proactor* p = GetProactor();
-  if (p->HasSqPoll()) {
-    LOG(FATAL) << "Not supported with SQPOLL, TBD";
+  CHECK(!p->HasSqPoll()) << "Not supported with SQPOLL, TBD";
+
+  unsigned dense_id = fd;
+
+  if (p->HasRegisterFd()) {
+    dense_id = p->RegisterFd(fd);
+    fd_ = (dense_id << 3) | REGISTER_FD;
+  } else {
+    fd_ = (dense_id << 3);
   }
 
-  unsigned dense_id = p->RegisterFd(fd_);
   IoResult io_res;
   ep.data();
 
-  CHECK(p->HasFastPoll());  // We do not support uring versions before that.
   FiberCall fc(p, timeout());
   fc->PrepConnect(dense_id, (const sockaddr*)ep.data(), ep.size());
-
+  fc->sqe()->flags |= register_flag();
   io_res = fc.Get();
 
   if (io_res < 0) {  // In that case connect returns -errno.
@@ -124,7 +136,7 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
     // Not sure if this check is needed, to be on the safe side.
     int serr = 0;
     socklen_t slen = sizeof(serr);
-    CHECK_EQ(0, getsockopt(fd_, SOL_SOCKET, SO_ERROR, &serr, &slen));
+    CHECK_EQ(0, getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen));
     CHECK_EQ(0, serr);
   }
   return ec;
@@ -145,11 +157,14 @@ auto UringSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
   msg.msg_iovlen = len;
 
   ssize_t res;
-  int fd = fd_ & FD_MASK;
+  int fd = native_handle();
   Proactor* p = GetProactor();
+
   while (true) {
     FiberCall fc(p, timeout());
     fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
+    fc->sqe()->flags |= register_flag();
+
     res = fc.Get();  // Interrupt point
     if (res >= 0) {
       return res;  // Fastpath
@@ -180,13 +195,15 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   if (fd_ & IS_SHUTDOWN) {
     return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
   }
-  int fd = fd_ & FD_MASK;
+  int fd = native_handle();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
+
   ssize_t res;
   while (true) {
     FiberCall fc(p, timeout());
     fc->PrepRecvMsg(fd, &msg, flags);
+    fc->sqe()->flags |= register_flag();
     res = fc.Get();
 
     if (res > 0) {
@@ -217,13 +234,14 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 }
 
 uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
-  int fd = fd_ & FD_MASK;
+  int fd = native_handle();
   Proactor* p = GetProactor();
 
   auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, int64_t) { cb(res); };
 
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb), 0);
   se.PrepPollAdd(fd, event_mask);
+  se.sqe()->flags |= register_flag();
 
   return se.sqe()->user_data;
 }

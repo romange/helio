@@ -50,8 +50,14 @@ class UringSocket : public LinuxSocketBase {
   uint32_t CancelPoll(uint32_t id);
 
  private:
+  enum {REGISTER_FD = 2};
+
   Proactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
+  }
+
+  uint8_t register_flag() const {
+    return fd_ & REGISTER_FD ? IOSQE_FIXED_FILE : 0;
   }
 };
 

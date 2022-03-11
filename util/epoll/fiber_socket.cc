@@ -164,7 +164,7 @@ auto FiberSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
   msg.msg_iovlen = len;
 
   ssize_t res;
-  int fd = fd_ & FD_MASK;
+  int fd = native_handle();
   current_context_ = fibers::context::active();
 
   while (true) {
