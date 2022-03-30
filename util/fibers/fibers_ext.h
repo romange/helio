@@ -193,16 +193,20 @@ class BlockingCounter {
   explicit BlockingCounter(unsigned count) : impl_(new Impl(count)) {
   }
 
+  void Inc() {
+    Add(1);
+  }
+
   void Dec() {
     impl_->Dec();
   }
 
-  void Wait() {
-    impl_->Wait();
-  }
-
   void Add(unsigned delta) {
     impl_->count_.fetch_add(delta, std::memory_order_acq_rel);
+  }
+
+  void Wait() {
+    impl_->Wait();
   }
 
  private:

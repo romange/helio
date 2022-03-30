@@ -100,7 +100,7 @@ void AcceptServerTest::SetUp() {
   });
 }
 
-void RunClient(FiberSocketBase* fs, BlockingCounter* bc) {
+void RunClient(FiberSocketBase* fs) {
   LOG(INFO) << ": Ping-client started";
   AsioStreamAdapter<> asa(*fs);
 
@@ -111,16 +111,11 @@ void RunClient(FiberSocketBase* fs, BlockingCounter* bc) {
   req.prepare_payload();
   h2::write(asa, req);
 
-  bc->Dec();
-
   LOG(INFO) << ": echo-client stopped";
 }
 
 TEST_F(AcceptServerTest, Basic) {
-  fibers_ext::BlockingCounter bc(1);
-  client_sock_->proactor()->Dispatch(&RunClient, client_sock_.get(), &bc);
-
-  bc.Wait();
+  client_sock_->proactor()->Await([&] { RunClient(client_sock_.get()); });
 }
 
 TEST_F(AcceptServerTest, Break) {

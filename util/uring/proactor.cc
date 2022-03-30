@@ -519,7 +519,7 @@ void Proactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
       id);
 
   se.PrepTimeout(&item->period, false);
-  DVLOG(1) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
+  DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
 
   item->val1 = se.sqe()->user_data;
 }

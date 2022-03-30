@@ -48,6 +48,8 @@ TEST_F(MallocTest, GoodSize) {
   EXPECT_EQ(8, mi_good_size(5));
   EXPECT_EQ(8, je_nallocx(5, 0));
 
+  EXPECT_EQ(512, mi_good_size(512));
+  EXPECT_EQ(640, mi_good_size(513));
   EXPECT_EQ(16384, mi_good_size(16136));
   EXPECT_EQ(16384, mi_good_size(15240));
   EXPECT_EQ(14336, mi_good_size(13064));

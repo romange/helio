@@ -54,6 +54,7 @@ class ProactorBase {
     return pthread_self() == thread_id_;
   }
 
+  // pthread id.
   auto thread_id() const {
     return thread_id_;
   }
