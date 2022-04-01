@@ -113,14 +113,15 @@ void EchoConnection::HandleRequests() {
   uint8_t buf[8];
 
   int yes = 1;
-  CHECK_EQ(0, setsockopt(socket_->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
+  LinuxSocketBase* sock = (LinuxSocketBase*)socket_.get();
+  CHECK_EQ(0, setsockopt(sock->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
 
   connections.IncBy(1);
   AsioStreamAdapter<FiberSocketBase> asa(*socket_);
   vec[0].iov_base = buf;
   vec[0].iov_len = 8;
 
-  auto ep = socket_->RemoteEndpoint();
+  auto ep = sock->RemoteEndpoint();
   LOG(INFO) << "Waiting for size from " << ep;
   auto es = socket_->Recv(buf);
   if (!es.has_value()) {
@@ -144,7 +145,7 @@ void EchoConnection::HandleRequests() {
   while (true) {
     ec = ReadMsg(&sz);
     if (FiberSocketBase::IsConnClosed(ec)) {
-      LOG(INFO) << "Closing " << socket_->RemoteEndpoint();
+      LOG(INFO) << "Closing " << ep;
       break;
     }
     CHECK(!ec) << ec;
@@ -156,7 +157,8 @@ void EchoConnection::HandleRequests() {
     vec[1].iov_base = work_buf_.get();
     vec[1].iov_len = sz;
     auto res = socket_->Send(vec, 2);
-    CHECK(res.has_value());
+    if (!res)
+      break;
   }
   connections.IncBy(-1);
 }
@@ -194,7 +196,7 @@ class Driver {
   Driver(ProactorBase* p);
 
   void Connect(unsigned index, const tcp::endpoint& ep);
-  void Run(base::Histogram* dest);
+  size_t Run(base::Histogram* dest);
 
  private:
   uint8_t buf_[8];
@@ -248,7 +250,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
   VLOG(1) << "Driver::Connect-End " << index;
 }
 
-void Driver::Run(base::Histogram* dest) {
+size_t Driver::Run(base::Histogram* dest) {
   base::Histogram hist;
 
   std::unique_ptr<uint8_t[]> msg(new uint8_t[FLAGS_size]);
@@ -265,17 +267,32 @@ void Driver::Run(base::Histogram* dest) {
   AsioStreamAdapter<> adapter(*socket_);
   io::Result<size_t> es;
 
-  for (unsigned i = 0; i < FLAGS_n; ++i) {
+  bool conn_close = false;
+  size_t i = 0;
+  for (; i < FLAGS_n; ++i) {
     auto start = absl::GetCurrentTimeNanos();
+
     for (size_t j = 0; j < FLAGS_p; ++j) {
       es = socket_->Send(io::Bytes{msg.get(), FLAGS_size});
+      if (!es && FiberSocketBase::IsConnClosed(es.error())) {
+        conn_close = true;
+        break;
+      }
       CHECK(es.has_value()) << es.error();
       CHECK_EQ(es.value(), FLAGS_size);
     }
 
+    if (conn_close)
+      break;
+
     for (size_t j = 0; j < FLAGS_p; ++j) {
       // DVLOG(1) << "Recv " << lep << " " << i;
       es = socket_->Recv(vec, 1);
+      if (!es && FiberSocketBase::IsConnClosed(es.error())) {
+        conn_close = true;
+        break;
+      }
+
       CHECK(es.has_value()) << "RecvError: " << es.error() << "/" << lep;
 
       ::boost::system::error_code ec;
@@ -283,12 +300,18 @@ void Driver::Run(base::Histogram* dest) {
       CHECK(!ec) << ec;
       CHECK_EQ(sz, FLAGS_size);
     }
+
     uint64_t dur = absl::GetCurrentTimeNanos() - start;
+
     hist.Add(dur / 1000);
+    if (conn_close)
+      break;
   }
 
   socket_->Shutdown(SHUT_RDWR);
   dest->Merge(hist);
+
+  return i;
 }
 
 mutex lat_mu;
@@ -309,7 +332,7 @@ class TLocalClient {
   }
 
   void Connect(tcp::endpoint ep);
-  void Run();
+  size_t Run();
 };
 
 void TLocalClient::Connect(tcp::endpoint ep) {
@@ -330,17 +353,18 @@ void TLocalClient::Connect(tcp::endpoint ep) {
   google::FlushLogFiles(google::INFO);
 }
 
-void TLocalClient::Run() {
+size_t TLocalClient::Run() {
   ::boost::this_fiber::properties<FiberProps>().set_name("RunClient");
   base::Histogram hist;
 
   LOG(INFO) << "RunClient " << p_->GetIndex();
 
   vector<fiber> fbs(drivers_.size());
+  size_t res = 0;
   for (size_t i = 0; i < fbs.size(); ++i) {
     fbs[i] = fiber([&, i] {
       ::boost::this_fiber::properties<FiberProps>().set_name(absl::StrCat("run/", i));
-      drivers_[i]->Run(&hist);
+      res += drivers_[i]->Run(&hist);
     });
   }
 
@@ -348,6 +372,8 @@ void TLocalClient::Run() {
     fb.join();
   unique_lock<mutex> lk(lat_mu);
   lat_hist.Merge(hist);
+
+  return res;
 }
 
 int main(int argc, char* argv[]) {
@@ -383,14 +409,15 @@ int main(int argc, char* argv[]) {
     });
 
     auto start = absl::GetCurrentTimeNanos();
-    pp->AwaitFiberOnAll([&](auto* p) { client->Run(); });
+    atomic_uint64_t num_reqs{0};
+
+    pp->AwaitFiberOnAll([&](auto* p) { num_reqs.fetch_add(client->Run(), memory_order_relaxed); });
+
     auto dur = absl::GetCurrentTimeNanos() - start;
     size_t dur_ms = std::max<size_t>(1, dur / 1000000);
-    size_t dur_sec = std::max<size_t>(1, dur_ms / 1000);
 
-    CONSOLE_INFO << "Total time " << dur_ms
-                 << " ms, average qps: " << (pp->size() * size_t(FLAGS_c) * FLAGS_n) / dur_sec
-                 << "\n";
+    CONSOLE_INFO << "Total time " << dur_ms << " ms, num reqs: " << num_reqs.load()
+                 << " qps: " << (num_reqs.load() * 1000 / dur_ms)  << "\n";
     CONSOLE_INFO << "Overall latency (usec) \n" << lat_hist.ToString();
   }
   pp->Stop();

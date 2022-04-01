@@ -43,20 +43,14 @@ namespace uring {
 
 namespace {
 
-inline int sys_io_uring_enter(int fd, unsigned to_submit, unsigned min_complete, unsigned flags,
-                              sigset_t* sig) {
-  return syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags, sig, _NSIG / 8);
-}
+void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
+  struct io_uring_cqe* cqe_ptr = nullptr;
 
-ABSL_ATTRIBUTE_NOINLINE void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
-  // res must be 0 or -1.
-  int res = sys_io_uring_enter(ring->ring_fd, 0, wait_nr, IORING_ENTER_GETEVENTS, sig);
-  if (res == 0 || errno == EINTR)
-    return;
-  DCHECK_EQ(-1, res);
-  res = errno;
-
-  LOG(FATAL) << "Error " << (res) << " evaluating sys_io_uring_enter: " << strerror(res);
+  int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, NULL, sig);
+  if (res < 0) {
+    res = - res;
+    LOG_IF(ERROR, res != EAGAIN && res != EINTR) << detail::SafeErrorMessage(res);
+  }
 }
 
 inline unsigned CQReadyCount(const io_uring& ring) {
@@ -84,7 +78,7 @@ constexpr uint64_t kWakeIndex = 1;
 constexpr uint64_t kUserDataCbIndex = 1024;
 
 // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
-constexpr uint32_t kSpinLimit = 10;
+constexpr uint32_t kSpinLimit = 3;
 
 }  // namespace
 
@@ -118,13 +112,13 @@ void Proactor::Run() {
   struct io_uring_cqe cqes[kBatchSize];
   static_assert(sizeof(cqes) == 2048);
 
-  uint64_t num_stalls = 0, cqe_syscalls = 0, cqe_fetches = 0, loop_cnt = 0;
+  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
 
-  bool suspend_until_called = false;
+  bool suspendioloop_called = false;
   bool should_suspend = false;
 
   while (true) {
@@ -173,7 +167,8 @@ void Proactor::Run() {
 
     uint32_t cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
     if (cqe_count) {
-      unsigned total_fetched = cqe_count;
+      ++cqe_fetches;
+
       while (true) {
         // Once we copied the data we can mark the cqe consumed.
         io_uring_cq_advance(&ring_, cqe_count);
@@ -181,17 +176,12 @@ void Proactor::Run() {
         DispatchCompletions(cqes, cqe_count);
 
         if (cqe_count < kBatchSize) {
-          if (total_fetched > kBatchSize) {
-            wait_for_cqe(&ring_, 0);
-            total_fetched = 0;
-          } else {
-            break;
-          }
+          break;
         }
         cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
-        total_fetched += cqe_count;
       };
 
+      // In case some of the timer completions filled schedule_periodic_list_.
       for (auto& task_pair : schedule_periodic_list_) {
         SchedulePeriodic(task_pair.first, task_pair.second);
       }
@@ -212,7 +202,7 @@ void Proactor::Run() {
       DVLOG(2) << "this_fiber::yield_end " << spin_loops;
 
       // we preempted without passing through suspend_until.
-      suspend_until_called = false;
+      suspendioloop_called = false;
     }
 
     if (should_suspend || sched->has_ready_fibers()) {
@@ -226,21 +216,13 @@ void Proactor::Run() {
       // In general, SuspendIoLoop would always return true since it should execute all
       // fibers till exhaustion. However, since our scheduler can break off the execution and
       // switch back to ioloop, the control may resume without visiting in suspend_until().
-      suspend_until_called = scheduler_->SuspendIoLoop(now);
+      suspendioloop_called = scheduler_->SuspendIoLoop(now);
       should_suspend = false;
-      DVLOG(2) << "Resume ioloop " << suspend_until_called;
+      DVLOG(2) << "Resume ioloop " << suspendioloop_called;
       continue;
     }
 
     if (cqe_count || !task_queue_.empty()) {
-      continue;
-    }
-
-    ++cqe_syscalls;
-    wait_for_cqe(&ring_, 0);  // nonblocking syscall to dive into kernel space.
-    if (CQReadyCount(ring_)) {
-      ++cqe_fetches;
-      spin_loops = 0;
       continue;
     }
 
@@ -261,7 +243,7 @@ void Proactor::Run() {
     // fibers being suspended so that dispatcher could call suspend_until in order to update timeout
     // if needed. We track whether suspend_until was called since the last preemption of io-loop and
     // if not, we suspend this fiber to allow the dispatch fiber to call suspend_until().
-    if (!suspend_until_called) {
+    if (!suspendioloop_called) {
       should_suspend = true;
       continue;
     }
@@ -276,7 +258,7 @@ void Proactor::Run() {
     spin_loops = 0;  // Reset the spinning.
 
     DCHECK_EQ(0U, tq_seq & 1) << tq_seq;
-    DCHECK(suspend_until_called);
+    DCHECK(suspendioloop_called);
 
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then
@@ -301,8 +283,8 @@ void Proactor::Run() {
     }
   }
 
-  VPRO(1) << "total/stalls/cqe_syscalls/cqe_fetches: " << loop_cnt << "/" << num_stalls << "/"
-          << cqe_syscalls << "/" << cqe_fetches;
+  VPRO(1) << "total/stalls/cqe_fetches: " << loop_cnt << "/" << num_stalls << "/"
+          << "/" << cqe_fetches;
 
   VPRO(1) << "tq_wakeups/tq_full/tq_task_int/algo_notifies: " << tq_wakeup_ev_.load() << "/"
           << tq_full_ev_.load() << "/" << task_interrupts << "/" << algo_notify_cnt_.load();

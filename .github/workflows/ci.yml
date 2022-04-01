@@ -46,6 +46,7 @@ jobs:
           cd ${{github.workspace}}/build
           cat /proc/cpuinfo
           ninja base/all io/all strings/all util/all
+          ninja echo_server
           GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \
              ./accept_server_test || true
           GLOG_logtostderr=1 ctest -V -L CI
