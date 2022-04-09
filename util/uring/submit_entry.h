@@ -87,6 +87,13 @@ class SubmitEntry {
     sqe_->rw_flags = flags;
   }
 
+  void PrepFallocate(int fd, int mode, off_t offset, off_t len) {
+    PrepFd(IORING_OP_FALLOCATE, fd);
+    sqe_->off = offset;
+    sqe_->len = mode;
+    sqe_->addr = uint64_t(len);
+  }
+
   void PrepFadvise(int fd, off_t offset, off_t len, int advice) {
     PrepFd(IORING_OP_FADVISE, fd);
     sqe_->fadvise_advice = advice;
