@@ -196,7 +196,7 @@ io::SizeOrError ReadFileImpl::Read(size_t offset, const iovec* v, uint32_t len) 
 
     read_total += read;
 
-    while (v->iov_len <= read) {  // pass through all completed entries.
+    while (len && v->iov_len <= read) {  // pass through all completed entries.
       --len;
       read -= v->iov_len;
       ++v;

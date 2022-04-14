@@ -125,9 +125,9 @@ class Proactor : public ProactorBase {
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
   int32_t next_free_ce_ = -1;
-  uint32_t next_free_fd_ = 0;
+  uint32_t pending_cb_cnt_ = 0;
+  uint32_t next_free_fd_ = 0;  // next available fd for register files.
   uint32_t get_entry_sq_full_ = 0, get_entry_submit_fail_ = 0, get_entry_await_ = 0;
-  uint32_t dispatch_suspend_timer_fail_ = 0;
 };
 
 class FiberCall {

@@ -100,7 +100,7 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
     uint64_t last_dur_usec = prev_pick_ts_ ? (now - prev_pick_ts_) / 1000 : 0;
     if (last_dur_usec > 3000) {
       VLOG(1) << "Execution of " << fibers_ext::short_id(prev_picked_) << " took too long "
-              << last_dur_usec << " usec";
+              << last_dur_usec << " usec: " << props->name();
     }
 
     props->resume_ts_ = now;

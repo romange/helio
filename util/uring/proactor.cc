@@ -288,9 +288,9 @@ void Proactor::Run() {
 
   VPRO(1) << "tq_wakeups/tq_full/tq_task_int/algo_notifies: " << tq_wakeup_ev_.load() << "/"
           << tq_full_ev_.load() << "/" << task_interrupts << "/" << algo_notify_cnt_.load();
-  VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/suspend_timer_fail: "
+  VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
-          << get_entry_await_ << "/" << dispatch_suspend_timer_fail_;
+          << get_entry_await_ << "/" << pending_cb_cnt_;
 
   VPRO(1) << "centries size: " << centries_.size();
   centries_.clear();
@@ -390,7 +390,7 @@ void Proactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
       // Set e to be the head of free-list.
       e.val = next_free_ce_;
       next_free_ce_ = index;
-
+      --pending_cb_cnt_;
       func(cqe.res, cqe.flags, payload);
       continue;
     }
@@ -456,6 +456,7 @@ SubmitEntry Proactor::GetSubmitEntry(CbType cb, int64_t payload) {
     e.cb = std::move(cb);
     e.val = payload;
     e.opcode = -1;
+    ++pending_cb_cnt_;
   } else {
     res->user_data = kIgnoreIndex;
   }
@@ -465,7 +466,8 @@ SubmitEntry Proactor::GetSubmitEntry(CbType cb, int64_t payload) {
 
 void Proactor::RegrowCentries() {
   size_t prev = centries_.size();
-  VLOG(1) << "RegrowCentries from " << prev << " to " << prev * 2;
+  VLOG(1) << "RegrowCentries from " << prev << " to " << prev * 2
+          << " pending cb-cnt: " << pending_cb_cnt_;
 
   centries_.resize(prev * 2);  // grow by 2.
   next_free_ce_ = prev;

@@ -23,8 +23,7 @@ UringFiberAlgo::UringFiberAlgo(Proactor* proactor) : FiberSchedAlgo(proactor) {
 UringFiberAlgo::~UringFiberAlgo() {
 }
 
-// suspend_until halts the thread in case there are no active fibers to run on it.
-// This function is called by dispatcher fiber.
+// called by suspend_until (from dispatch fiber).
 void UringFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {
   using namespace chrono;
   DCHECK(time_point::max() != abs_time);
@@ -58,7 +57,7 @@ void UringFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {
   Proactor* proactor = (Proactor*)proactor_;
 
   if (io_uring_sq_space_left(&proactor->ring_) == 0) {
-    ++proactor->dispatch_suspend_timer_fail_;
+    LOG(ERROR) << "No space in ring to activate suspend timer";
     return;
   }
 
