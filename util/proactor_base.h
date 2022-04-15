@@ -159,6 +159,13 @@ class ProactorBase {
   // Calling fiber must belong to this proactor.
   void Migrate(ProactorBase* dest);
 
+  // returns seqnum in the Proactor.
+  // if it equals to WAIT_SECTION_STATE it means proactor is going to block on
+  // IO.
+  uint32_t RequestDispatcher() {
+    return tq_seq_.fetch_or(1, std::memory_order_relaxed);
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
 

@@ -14,7 +14,6 @@
 #include "absl/time/clock.h"
 #include "base/gtest.h"
 #include "base/logging.h"
-
 #include "util/accept_server.h"
 #include "util/fibers/fibers_ext.h"
 #include "util/sliding_counter.h"
@@ -84,6 +83,28 @@ TEST_F(ProactorTest, Sleep) {
     this_fiber::sleep_for(20ms);
     LOG(INFO) << "After Sleep";
   });
+}
+
+
+// This test sometimes deadlocks on boost1.74
+// It seems to not deadlock on later versions. Probably waker changes in Boost.fiber
+// are relevant here.
+TEST_F(ProactorTest, SleepMany) {
+  constexpr size_t kNumIters = 600;
+
+  auto cb = []() {
+    this_fiber::properties<FiberProps>().set_name("sleeper");
+    for (unsigned i = 0; i < kNumIters; ++i) {
+      auto sleep = chrono::steady_clock::now();
+      sleep += 15us;
+
+      DVLOG(1) << "sleep_until " << sleep.time_since_epoch().count();
+      this_fiber::sleep_until(sleep);
+    }
+    LOG(INFO) << "Sleeper finished ";
+  };
+  proactor_->Await(cb);
+  LOG(INFO) << "AwaitSleep finished ";
 }
 
 TEST_F(ProactorTest, SqeOverflow) {

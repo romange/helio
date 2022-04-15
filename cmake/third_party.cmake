@@ -221,7 +221,7 @@ if(NOT abseil_cpp_POPULATED)
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
 endif()
 
-
+# 1.71 comes with ubuntu 20.04 so that's what we require.
 find_package(Boost 1.71.0 REQUIRED COMPONENTS context system fiber)
 Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_VERSION}")
 

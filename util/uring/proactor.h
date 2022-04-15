@@ -115,8 +115,7 @@ class Proactor : public ProactorBase {
 
     // serves for linked list management when unused. Also can store an additional payload
     // field when in flight.
-    int32_t val = -1;
-    int32_t opcode = -1;  // For debugging. TODO: to remove later.
+    int64_t val = -1;
   };
   static_assert(sizeof(CompletionEntry) == 40, "");
 

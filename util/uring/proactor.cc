@@ -214,11 +214,13 @@ void Proactor::Run() {
       tl_info_.monotonic_time = now;
 
       // In general, SuspendIoLoop would always return true since it should execute all
-      // fibers till exhaustion. However, since our scheduler can break off the execution and
-      // switch back to ioloop, the control may resume without visiting in suspend_until().
+      // fibers till exhaustion. However, our scheduler can break off the execution of
+      // worker fibers and switch back to ioloop earlier.
+      // We should not halt in wait_for_cqe before suspending here again and exhausting
+      // all the ready fibers.
       suspendioloop_called = scheduler_->SuspendIoLoop(now);
       should_suspend = false;
-      DVLOG(2) << "Resume ioloop " << suspendioloop_called;
+      DVLOG(2) << "Resuming ioloop after " << suspendioloop_called;
       continue;
     }
 
@@ -270,6 +272,9 @@ void Proactor::Run() {
     if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
       if (is_stopped_)
         break;
+      DCHECK(!should_suspend);
+      DCHECK(!sched->has_ready_fibers());
+
       DVLOG(2) << "wait_for_cqe";
       wait_for_cqe(&ring_, 1);
       DVLOG(2) << "Woke up after wait_for_cqe " << tq_seq_.load(std::memory_order_acquire);
@@ -450,12 +455,11 @@ SubmitEntry Proactor::GetSubmitEntry(CbType cb, int64_t payload) {
 
     auto& e = centries_[next_free_ce_];
     DCHECK(!e.cb);  // cb is undefined.
-    DVLOG(2) << "GetSubmitEntry: index: " << next_free_ce_ << ", socket: " << payload;
+    DVLOG(2) << "GetSubmitEntry: index: " << next_free_ce_ << ", payload: " << payload;
 
     next_free_ce_ = e.val;
     e.cb = std::move(cb);
     e.val = payload;
-    e.opcode = -1;
     ++pending_cb_cnt_;
   } else {
     res->user_data = kIgnoreIndex;

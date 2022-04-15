@@ -64,7 +64,7 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   virtual void SuspendWithTimer(const time_point& tp) noexcept = 0;
 
   bool MainHasSwitched() const {
-    return (mask_ & (IOLOOP_SUSPENDED | IOLOOP_YIELDED)) == (IOLOOP_SUSPENDED | IOLOOP_YIELDED);
+    return flags_.ioloop_suspended & flags_.ioloop_yielded;
   }
 
   ProactorBase* proactor_;
@@ -75,13 +75,16 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   uint32_t ready_cnt_ = 0;
   int timer_fd_ = -1;
 
-  enum : unsigned {
-    IOLOOP_SUSPENDED = 1,  // io loop fiber is suspended
-    IOLOOP_YIELDED = 2,    // while suspended, ioloop switched to another fiber.
-    IOLOOP_WAKENED = 4,
-    SUSPEND_UNTIL_CALLED = 8,
+  union {
+    uint8_t flag_val_ = 0;
+    struct {
+      uint8_t ioloop_suspended: 1;  // io loop fiber is suspended
+      uint8_t ioloop_yielded: 1;   // while suspended, ioloop switched to another fiber.
+      uint8_t ioloop_woke: 1;
+      uint8_t suspenduntil_called: 1;
+    } flags_;
   };
-  uint8_t mask_ = 0;
+
 };
 
 }  // namespace util

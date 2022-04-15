@@ -36,9 +36,9 @@ void FiberSchedAlgo::awakened(FiberContext* ctx, FiberProps& props) noexcept {
   DCHECK(!ctx->ready_is_linked()) << props.name();
 
   if (ctx->is_context(fibers::type::dispatcher_context)) {
-    DVLOG(2) << "Awakened dispatch";
+    DVLOG(1) << "Awakened dispatch";
   } else {
-    DVLOG(2) << "Awakened " << props.name();
+    DVLOG(1) << "Awakened " << props.name();
 
     ++ready_cnt_;  // increase the number of awakened/ready fibers.
 
@@ -53,8 +53,8 @@ void FiberSchedAlgo::awakened(FiberContext* ctx, FiberProps& props) noexcept {
         main_cntx_->ready_link(rqueue_);
         FiberProps* main_props = static_cast<FiberProps*>(main_cntx_->get_properties());
         main_props->awaken_ts_ = now;
-        mask_ &= ~IOLOOP_YIELDED;
-        mask_ |= IOLOOP_WAKENED;
+        flags_.ioloop_yielded = 0;
+        flags_.ioloop_woke = 1;
       }
     }
   }
@@ -74,27 +74,29 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
 
   // simplest 2-level priority queue.
   // choose main context first
-  if ((mask_ & IOLOOP_WAKENED) && main_cntx_->ready_is_linked()) {
+  if (flags_.ioloop_woke && main_cntx_->ready_is_linked()) {
     ctx = main_cntx_;
     ctx->ready_unlink();
-
-    mask_ &= ~IOLOOP_WAKENED;
+    flags_.ioloop_woke = 0;
   } else {
     ctx = &rqueue_.front();
     rqueue_.pop_front();
 
-    if (mask_ & IOLOOP_SUSPENDED) {
-      mask_ |= IOLOOP_YIELDED;
+    if (flags_.ioloop_suspended) {
+      flags_.ioloop_yielded = 1;
     }
   }
 
   uint64_t now = ProactorBase::GetClockNanos();
 
-  if (!ctx->is_context(boost::fibers::type::dispatcher_context)) {
+  if (ctx->is_context(boost::fibers::type::dispatcher_context)) {
+    DVLOG(2) << "Switching to dispatch "
+             << fibers_ext::short_id(ctx);  // TODO: to switch to RAW_LOG.
+  } else {
     --ready_cnt_;
     FiberProps* props = (FiberProps*)ctx->get_properties();
 
-    DVLOG(1) << "Switching to " << fibers_ext::short_id(ctx) << ":"
+    DVLOG(2) << "Switching to " << fibers_ext::short_id(ctx) << ":"
              << props->name();  // TODO: to switch to RAW_LOG.
 
     uint64_t last_dur_usec = prev_pick_ts_ ? (now - prev_pick_ts_) / 1000 : 0;
@@ -110,9 +112,6 @@ auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
       LOG(INFO) << "Took " << delta_micros / 1000 << " ms since it woke and till became active "
                 << fibers_ext::short_id(ctx) << ":" << props->name();
     }
-  } else {
-    DVLOG(1) << "Switching to dispatch "
-             << fibers_ext::short_id(ctx);  // TODO: to switch to RAW_LOG.
   }
 
   prev_picked_ = ctx;
@@ -145,14 +144,14 @@ bool FiberSchedAlgo::has_ready_fibers() const noexcept {
 // In our case, "sleeping" means - might stuck the wait function waiting for completion events.
 // wait_for_cqe is the only place where the thread can be stalled.
 void FiberSchedAlgo::notify() noexcept {
-  DVLOG(1) << "notify from " << syscall(SYS_gettid);
+  DVLOG(2) << "notify from " << syscall(SYS_gettid);
 
   // We signal so that
   // 1. Main context should awake if it is not
   // 2. it needs to yield to dispatch context that will put active fibers into
   // ready queue.
-  auto prev_val = proactor_->tq_seq_.fetch_or(1, std::memory_order_relaxed);
-  if (prev_val == ProactorBase::WAIT_SECTION_STATE) {
+  uint32_t seqnum = proactor_->RequestDispatcher();
+  if (seqnum == ProactorBase::WAIT_SECTION_STATE) {
     ProactorBase* from = ProactorBase::me();
     if (from)
       from->algo_notify_cnt_.fetch_add(1, std::memory_order_relaxed);
@@ -166,11 +165,11 @@ void FiberSchedAlgo::suspend_until(time_point const& abs_time) noexcept {
   FiberContext* cur_cntx = fibers::context::active();
 
   DCHECK(cur_cntx->is_context(fibers::type::dispatcher_context));
-  CHECK_EQ(IOLOOP_SUSPENDED, mask_ & IOLOOP_SUSPENDED) << "Deadlock is detected";
-  DVLOG(1) << "suspend_until abs_time "
+  CHECK(flags_.ioloop_suspended) << "Deadlock is detected";
+  DVLOG(2) << "suspend_until abs_time "
            << time_point_cast<nanoseconds>(abs_time).time_since_epoch().count();
 
-  mask_ |= SUSPEND_UNTIL_CALLED;
+  flags_.suspenduntil_called = 1;
 
   if (time_point::max() != abs_time) {
     SuspendWithTimer(abs_time);
@@ -184,18 +183,20 @@ void FiberSchedAlgo::suspend_until(time_point const& abs_time) noexcept {
 bool FiberSchedAlgo::SuspendIoLoop(uint64_t now) {
   // block this fiber till all (ready) fibers are processed
   // or when  AsioScheduler::suspend_until() has been called or awaken() decided to resume it.
-  mask_ |= IOLOOP_SUSPENDED;
-  mask_ &= (~SUSPEND_UNTIL_CALLED);
+  flags_.ioloop_suspended = 1;
+  flags_.suspenduntil_called = 0;
 
   DVLOG(2) << "WaitTillFibersSuspend:Start";
   suspend_main_ts_ = now;
 
   main_cntx_->suspend();
-  mask_ &= ~(IOLOOP_SUSPENDED | IOLOOP_YIELDED | IOLOOP_WAKENED);
+  flags_.ioloop_suspended = 0;
+  flags_.ioloop_yielded = 0;
+  flags_.ioloop_woke = 0;
 
   DVLOG(2) << "WaitTillFibersSuspend:End";
 
-  return (mask_ & SUSPEND_UNTIL_CALLED) != 0;
+  return flags_.suspenduntil_called;
 }
 
 }  // namespace util

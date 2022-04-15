@@ -17,6 +17,10 @@ namespace uring {
 using namespace boost;
 using namespace std;
 
+inline int64_t tp_to_ns(const chrono::steady_clock::time_point& tp) {
+  return chrono::time_point_cast<chrono::nanoseconds>(tp).time_since_epoch().count();
+}
+
 UringFiberAlgo::UringFiberAlgo(Proactor* proactor) : FiberSchedAlgo(proactor) {
 }
 
@@ -33,11 +37,12 @@ void UringFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {
     // earlier than needed and dispatch won't awake the sleeping fiber.
     // This will cause deadlock.
     DCHECK_NE(res, -EINVAL) << "This linux version does not support this operation";
-    DVLOG(1) << "this_fiber::yield " << res << " " << payload;
-    if (this->active_timer_ns_ == payload) {
-      this->active_timer_ns_ = 0;
+    // -62 = -ETIME - timer expired.
+    if (this->suspend_time_ns_ == payload) {
+      DCHECK_LT(payload, tp_to_ns(chrono::steady_clock::now()));
+      this->suspend_time_ns_ = 0;
+      proactor_->RequestDispatcher();
     }
-    this_fiber::yield();
   };
 
   // TODO: if we got here, most likely our completion queues were empty so
@@ -61,26 +66,27 @@ void UringFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {
     return;
   }
 
-  const chrono::time_point<steady_clock, nanoseconds>& tp = abs_time;
-  int64_t ns = time_point_cast<nanoseconds>(tp).time_since_epoch().count();
+  int64_t ns = tp_to_ns(abs_time);
 
   // SuspendWithTimer can be called with either:
-  //   1. abs_time == active_timer_ns_ when we suspended multiple times before the dedline
+  //   1. abs_time == suspend_time_ns_ when we suspended multiple times before the deadline
   //      was reached.
   //   2. abs_time < active_timer_ when a new timer was introduced and it expires earlier than
   //      the active one.
-  // Fibers dispatcher will not suspend the thread with abs_time greater than active_timer_ns_
+  // The dispatch fiber won't suspend the thread with abs_time greater than suspend_time_ns_
   // because it can suspend until the earliest timepoint among all active timers present.
-  if (active_timer_ns_ == ns) {  // we already have an active timer
+  if (suspend_time_ns_ == ns) {  // we already have an active timer
     return;
   }
+
+  DVLOG(2) << "SuspendWithTimer: " << ns;
 
   SubmitEntry se = proactor->GetSubmitEntry(std::move(cb), ns);
   constexpr uint64_t kNsFreq = 1000000000ULL;
   ts_.tv_sec = ns / kNsFreq;
   ts_.tv_nsec = ns - ts_.tv_sec * kNsFreq;
 
-  active_timer_ns_ = ns;
+  suspend_time_ns_ = ns;
 
   // We require at least 5.8 for io_uring and get rid of those conditions.
   // Please note that we can not pass var on stack because we exit from the function
