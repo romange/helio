@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+from ghcr.io/romange/ubuntu-dev as builder
+
+WORKDIR /build
+COPY ./  ./
+RUN ./blaze.sh -release
+
+WORKDIR build-opt
+RUN ninja echo_server
+
+FROM ubuntu:20.04
+
+LABEL org.opencontainers.image.title echo_server
+LABEL org.opencontainers.image.source https://github.com/romange/helio
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt update && apt install -y libunwind8 libboost-fiber1.71.0 libssl1.1 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir /data
+WORKDIR /data
+COPY tools/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --from=builder /build/build-opt/echo_server /usr/local/bin/
+
+ENTRYPOINT ["entrypoint.sh"]
+
+EXPOSE 8081
+CMD ["echo_server", "--logtostderr"]

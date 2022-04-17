@@ -4,6 +4,7 @@
 
 // clang-format off
 #include <sys/time.h>
+#include <sys/mman.h>
 
 #include <linux/errqueue.h>
 #include <linux/net_tstamp.h>
@@ -45,12 +46,78 @@ DEFINE_uint32(backlog, 1024, "Accept queue length");
 DEFINE_uint32(p, 1, "pipelining factor");
 DEFINE_string(connect, "", "hostname or ip address to connect to in client mode");
 DEFINE_string(write_file, "", "");
-// DEFINE_uint32(write_num, 1000, "");
+DEFINE_uint32(write_num, 1000, "");
+DEFINE_uint32(max_pending_writes, 300, "");
+DEFINE_bool(sqe_async, false, "");
+DEFINE_bool(o_direct, true, "");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
 
 namespace {
+
+constexpr size_t kInitialSize = 1UL << 20;
+struct TL {
+  std::unique_ptr<util::uring::LinuxFile> file;
+
+  void Open(const string& path) {
+    CHECK(!file);
+
+    // | O_DIRECT
+    int flags = O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC;
+    if (FLAGS_o_direct)
+      flags |= O_DIRECT;
+
+    auto res = uring::OpenLinux(path, flags, 0666);
+    CHECK(res);
+    file = move(res.value());
+#if 0
+    Proactor* proactor = (Proactor*)ProactorBase::me();
+    uring::FiberCall fc(proactor);
+    fc->PrepFallocate(file->fd(), 0, 0, kInitialSize);
+    uring::FiberCall::IoResult io_res = fc.Get();
+    CHECK_EQ(0, io_res);
+#endif
+  }
+
+  void WriteToFile();
+
+  uint32_t pending_write_reqs = 0;
+  uint32_t max_pending_reqs = 1024;
+  fibers_ext::EventCount evc;
+};
+
+void TL::WriteToFile() {
+  static void* blob =
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+
+  auto ring_cb = [this](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
+    if (res < 0)
+      LOG(ERROR) << "Error writing to file";
+
+    if (this->pending_write_reqs == FLAGS_max_pending_writes) {
+      this->evc.notifyAll();
+    }
+    --this->pending_write_reqs;
+  };
+
+  evc.await([this] { return pending_write_reqs < FLAGS_max_pending_writes; });
+
+  ++pending_write_reqs;
+  uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
+
+  uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
+  se.PrepWrite(file->fd(), blob, 4096, 0);
+  if (FLAGS_sqe_async)
+    se.sqe()->flags |= IOSQE_ASYNC;
+
+  if (pending_write_reqs > max_pending_reqs) {
+    LOG(INFO) << "Pending write reqs: " << pending_write_reqs;
+    max_pending_reqs = pending_write_reqs * 1.2;
+  }
+}
+
+static thread_local TL* tl = nullptr;
 
 // Returns 0 on success.
 int ResolveDns(string_view host, char* dest) {
@@ -84,6 +151,7 @@ int ResolveDns(string_view host, char* dest) {
 
   return res;
 }
+
 }  // namespace
 
 class EchoConnection : public Connection {
@@ -93,6 +161,7 @@ class EchoConnection : public Connection {
 
  private:
   void HandleRequests() final;
+
   ::boost::system::error_code ReadMsg(size_t* sz);
 
   std::unique_ptr<uint8_t[]> work_buf_;
@@ -109,28 +178,6 @@ class EchoConnection : public Connection {
   *sz = bs;
   return ec;
 }
-
-constexpr size_t kInitialSize = 1UL << 20;
-struct TL {
-  std::unique_ptr<util::uring::LinuxFile> file;
-
-  void Open(const string& path) {
-    CHECK(!file);
-
-    auto res = uring::OpenLinux(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0666);
-    CHECK(res);
-    file = move(res.value());
-#if 0
-    Proactor* proactor = (Proactor*)ProactorBase::me();
-    uring::FiberCall fc(proactor);
-    fc->PrepFallocate(file->fd(), 0, 0, kInitialSize);
-    uring::FiberCall::IoResult io_res = fc.Get();
-    CHECK_EQ(0, io_res);
-#endif
-  }
-};
-
-static thread_local TL* tl = nullptr;
 
 void EchoConnection::HandleRequests() {
   boost::this_fiber::properties<FiberProps>().set_name("HandleRequests");
@@ -170,11 +217,6 @@ void EchoConnection::HandleRequests() {
   CHECK_LE(req_len_, 1UL << 18);
   work_buf_.reset(new uint8_t[req_len_]);
 
-  uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
-
-  static thread_local uint32_t pending_write_reqs = 0;
-  static thread_local uint32_t max_pending_reqs = 1024;
-
   // after the handshake.
   while (true) {
     ec = ReadMsg(&sz);
@@ -191,24 +233,9 @@ void EchoConnection::HandleRequests() {
     vec[1].iov_base = work_buf_.get();
     vec[1].iov_len = sz;
 
-    if (tl) {  // write file
-      static string blob(4096, 'X');
+    if (tl)
+      tl->WriteToFile();
 
-      auto ring_cb = [&](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
-        if (res < 0)
-          LOG(ERROR) << "Error writing to file";
-        --pending_write_reqs;
-      };
-      ++pending_write_reqs;
-      uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
-      se.PrepWrite(tl->file->fd(), blob.data(), blob.size(), 0);
-      se.sqe()->flags |= IOSQE_ASYNC;
-
-      if (pending_write_reqs > max_pending_reqs) {
-        LOG(INFO) << "Pending write reqs: " << pending_write_reqs;
-        max_pending_reqs = pending_write_reqs * 1.1;
-      }
-    }
     auto res = socket_->Send(vec, 2);
     if (!res)
       break;
@@ -237,6 +264,10 @@ void RunServer(ProactorPool* pp) {
   }
 
   if (!FLAGS_write_file.empty()) {
+    static void* blob =
+        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(MAP_FAILED != blob);
+
     auto write_file = [](unsigned index, ProactorBase* pb) {
       string file =
           absl::StrCat(FLAGS_write_file, "-", absl::Dec(pb->GetIndex(), absl::kZeroPad4), ".bin");
@@ -244,25 +275,27 @@ void RunServer(ProactorPool* pp) {
       tl->Open(file);
 
 #if 0
-      static string blob(4096, 'X');
       Proactor* proactor = (Proactor*)pb;
 
       for (unsigned i = 0; i < FLAGS_write_num; ++i) {
         auto ring_cb = [](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
           if (res < 0)
-            LOG(ERROR) << "Error writing to file";
+            LOG(ERROR) << "Error writing to file " << -res;
         };
 
         uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
-        se.PrepWrite(tl->file->fd(), blob.data(), blob.size(), 0);
-        if (i % 1000 == 0)
-          boost::this_fiber::sleep_for(1us);
+        se.PrepWrite(tl->file->fd(), blob, 4096, 0);
+        se.sqe()->flags |= IOSQE_ASYNC;
+        if (i % 1000 == 0) {
+          boost::this_fiber::yield();
+        }
       }
       LOG(INFO) << "Write file finished " << index;
 #endif
     };
 
     pp->AwaitFiberOnAll(write_file);
+    LOG(INFO) << "All Writes finished ";
   }
 
   acceptor.Run();
@@ -325,6 +358,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     // connected (which I suspect happens due to small accept queue) and
     // we discover this upon first Recv. I am not sure why it happens. Right now I retry.
     CHECK(es.error() == std::errc::connection_reset) << es.error();
+
     socket_->Close();
     LOG(WARNING) << "Driver " << index << " retries";
   }
