@@ -33,8 +33,11 @@ class Proactor : public ProactorBase {
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
-  using CbType = std::function<void(IoResult, uint32_t, int64_t)>;
-
+  // using CbType = std::function<void(IoResult, uint32_t, int64_t)>;
+  using CbType =
+      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16,8>,
+                         false /* non-throwing*/, false /* strong exceptions guarantees*/,
+                         void(IoResult, uint32_t, int64_t)>;
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
@@ -61,7 +64,7 @@ class Proactor : public ProactorBase {
   // Waits till specified number of entries are available for submitting.
   // Returns true if preemption ocurred, false if io_uring has enough space from the beginning.
   bool WaitTillAvailable(uint32_t threshold) {
-    return sqe_avail_.await([&] {  return GetSubmitRingAvailability() >= threshold; });
+    return sqe_avail_.await([&] { return GetSubmitRingAvailability() >= threshold; });
   }
 
   bool HasSqPoll() const {
@@ -161,7 +164,7 @@ class FiberCall {
 
   ::boost::fibers::context* me_;
   Proactor::IoResult io_res_ = 0;
-  timespec ts_;  // in case of timeout.
+  timespec ts_;             // in case of timeout.
   uint32_t res_flags_ = 0;  // set by waker upon completion.
 };
 

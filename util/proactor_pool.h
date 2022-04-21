@@ -6,6 +6,7 @@
 
 #include <absl/container/flat_hash_set.h>
 
+#include <memory_resource>
 #include <string_view>
 
 #include "base/RWSpinLock.h"
@@ -217,6 +218,7 @@ class ProactorPool {
 
   folly::RWSpinLock str_lock_;
   absl::flat_hash_set<std::string_view> str_set_;
+  std::pmr::monotonic_buffer_resource str_arena_;
 
   enum State { STOPPED, RUN } state_ = STOPPED;
 

@@ -108,9 +108,6 @@ std::string_view ProactorPool::GetString(std::string_view source) {
     return *it;
   rh.reset();
 
-  // we allocate outside of lock to reduce contention.
-  unique_ptr<char[]> guard_str(new char[source.size()]);
-
   folly::RWSpinLock::WriteHolder wh(str_lock_);
 
   // we check again if str_set_ contains source under write lock to provide strong
@@ -120,8 +117,9 @@ std::string_view ProactorPool::GetString(std::string_view source) {
     return *it;
   }
 
-  memcpy(guard_str.get(), source.data(), source.size());
-  std::string_view res(guard_str.release(), source.size());
+  void* new_block = str_arena_.allocate(source.size(), 1);
+  memcpy(new_block, source.data(), source.size());
+  std::string_view res(reinterpret_cast<char*>(new_block), source.size());
   str_set_.insert(res);
 
   return res;

@@ -207,7 +207,7 @@ class ProactorBase {
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
-      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_default,
+      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16,8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/, void()>;
   struct Tasklet : public Fu2Fun {
     using Fu2Fun::Fu2Fun;

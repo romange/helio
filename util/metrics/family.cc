@@ -57,6 +57,13 @@ void Family::ShutdownBase() {
     family_list = next_;
   next_ = prev_ = nullptr;
   pp_ = nullptr;
+
+  label_values_.clear();
+  label_values_.shrink_to_fit();
+  label_names_.clear();
+  label_names_.shrink_to_fit();
+  label_map_.clear();
+  label_map_.rehash(0);
 }
 
 auto Family::Emplace(uint64_t hash, absl::Span<const std::string_view> label_values,
