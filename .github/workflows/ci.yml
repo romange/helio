@@ -49,7 +49,7 @@ jobs:
           ninja echo_server
           GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \
              ./accept_server_test || true
-          GLOG_logtostderr=1 ctest -V -L CI
+          GLOG_logtostderr=1 GLOG_vmodule=proactor=1 ctest -V -L CI
           # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
 
 

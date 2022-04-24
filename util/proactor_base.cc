@@ -164,7 +164,12 @@ void ProactorBase::Migrate(ProactorBase* dest) {
   fibers::context* me = fibers::context::active();
   fibers::fiber fb2 = LaunchFiber([&] {
     me->detach();
-    dest->AwaitBrief([me] { fibers::context::active()->attach(me); });
+    VLOG(1) << "After me detach";
+    dest->AwaitBrief([me] {
+      fibers::context::active()->attach(me);
+      VLOG(1) << "After me attach";
+    });
+    VLOG(1) << "After Migrate/AwaitBrief";
   });
   fb2.join();
 }
