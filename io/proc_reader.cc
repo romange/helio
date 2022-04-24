@@ -16,14 +16,18 @@ namespace io {
 
 using namespace std;
 using nonstd::make_unexpected;
+using absl::SimpleAtoi;
 
-Result<StatusData> ReadStatusInfo() {
-  int fd = open("/proc/self/status", O_NOATIME);
+namespace {
+
+// Reads proc files like /proc/self/status  or /proc/meminfo
+// passes to cb: (key, value)
+error_code ReadProcFile(const char* name, function<void(string_view, string_view)> cb) {
+  int fd = open(name, O_RDONLY | O_CLOEXEC);
   if (fd == -1)
-    return make_unexpected(error_code(errno, system_category()));
+    return error_code{errno, system_category()};
 
   base::IoBuf buf;
-  StatusData sdata;
 
   while (true) {
     auto dest = buf.AppendBuffer();
@@ -31,7 +35,7 @@ Result<StatusData> ReadStatusInfo() {
     int res = read(fd, dest.data(), dest.size());
     if (res == -1) {
       close(fd);
-      return make_unexpected(error_code(errno, system_category()));
+      return error_code{errno, system_category()};
     }
 
     if (res == 0) {
@@ -46,29 +50,82 @@ Result<StatusData> ReadStatusInfo() {
       if (!eol)
         break;
 
-      std::string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
-      if (absl::ConsumePrefix(&line, "VmPeak:")) {
-        line = absl::StripLeadingAsciiWhitespace(line);
-        size_t del = line.find(' ');
-        CHECK(absl::SimpleAtoi(line.substr(0, del), &sdata.vm_peak)) << line;
-        sdata.vm_peak *= 1024;
-      } else if (absl::ConsumePrefix(&line, "VmSize:")) {
-        line = absl::StripLeadingAsciiWhitespace(line);
-        size_t del = line.find(' ');
-        CHECK(absl::SimpleAtoi(line.substr(0, del), &sdata.vm_size));
-        sdata.vm_size *= 1024;
-      } else if (absl::ConsumePrefix(&line, "VmRSS:")) {
-        line = absl::StripLeadingAsciiWhitespace(line);
-        size_t del = line.find(' ');
-        CHECK(absl::SimpleAtoi(line.substr(0, del), &sdata.vm_rss)) << line;
-        sdata.vm_rss *= 1024;
-      }
+      string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
+      size_t pos = line.find(':');
+      if (pos == string_view::npos)
+        break;
+      string_view key = line.substr(0, pos);
+      string_view value = absl::StripLeadingAsciiWhitespace(line.substr(pos + 1));
+
+      cb(key, value);
+
       buf.ConsumeInput(line.size() + 1);
     }
   }
   close(fd);
 
+  return error_code{};
+}
+
+inline void ParseKb(string_view num, size_t* dest) {
+  CHECK(SimpleAtoi(num, dest));
+  *dest *= 1024;
+};
+
+}  // namespace
+
+
+
+Result<StatusData> ReadStatusInfo() {
+  StatusData sdata;
+
+  auto cb = [&sdata](string_view key, string_view value) {
+    size_t space = value.find(' ');
+    string_view num = value.substr(0, space);
+
+    if (key == "VmPeak") {
+      ParseKb(num, &sdata.vm_peak);
+    } else if (key == "VmSize") {
+      ParseKb(num, &sdata.vm_size);
+    } else if (key == "VmRSS") {
+      ParseKb(num, &sdata.vm_rss);
+    }
+  };
+
+  error_code ec = ReadProcFile("/proc/self/status", move(cb));
+  if (ec)
+    return make_unexpected(ec);
+
   return sdata;
+}
+
+Result<MemInfoData> ReadMemInfo() {
+  MemInfoData mdata;
+
+  auto cb = [&mdata](string_view key, string_view value) {
+    size_t space = value.find(' ');
+    string_view num = value.substr(0, space);
+
+    if (key == "MemTotal") {
+      ParseKb(num, &mdata.mem_total);
+    } else if (key == "MemFree") {
+      ParseKb(num, &mdata.mem_free);
+    } else if (key == "MemAvailable") {
+      ParseKb(num, &mdata.mem_avail);
+    } else if (key == "Buffers") {
+      ParseKb(num, &mdata.mem_buffers);
+    } else if (key == "Cached") {
+      ParseKb(num, &mdata.mem_cached);
+    } else if (key == "SReclaimable") {
+      ParseKb(num, &mdata.mem_SReclaimable);
+    }
+  };
+
+  error_code ec = ReadProcFile("/proc/meminfo", move(cb));
+  if (ec)
+    return make_unexpected(ec);
+
+  return mdata;
 }
 
 }  // namespace io

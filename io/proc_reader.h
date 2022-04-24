@@ -15,6 +15,20 @@ struct StatusData {
   size_t vm_size = 0;
 };
 
+// Sizes in bytes.
+struct MemInfoData {
+  size_t mem_total = 0;
+  size_t mem_free = 0;
+  size_t mem_avail = 0;
+  size_t mem_buffers = 0;
+  size_t mem_cached = 0;
+  size_t mem_SReclaimable = 0;
+
+  // in meminfo.c of free program - mem used
+  // equals to: total - (free + buffers + cached + SReclaimable).
+};
+
 Result<StatusData> ReadStatusInfo();
+Result<MemInfoData> ReadMemInfo();
 
 }  // namespace io

@@ -119,6 +119,16 @@ TEST_F(IoTest, ProcReader) {
   LOG(INFO) << sdata->vm_peak << " " << sdata->vm_size << " " << sdata->vm_rss;
 
   EXPECT_GT(sdata->vm_size, sdata->vm_rss);
+
+  auto mdata = ReadMemInfo();
+
+  ASSERT_TRUE(mdata.has_value());
+  EXPECT_LT(mdata->mem_free, mdata->mem_avail);
+  EXPECT_GT(mdata->mem_free, 1024);
+  EXPECT_GT(mdata->mem_buffers, 0);
+  EXPECT_GT(mdata->mem_cached, 0);
+  EXPECT_GT(mdata->mem_SReclaimable, 0);
+  EXPECT_GT(mdata->mem_total, 1ul << 30);
 }
 
 }  // namespace io
