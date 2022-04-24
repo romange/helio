@@ -142,9 +142,13 @@ class ProactorBase {
    *        Must be called from the proactor thread.
    * @tparam Func
    * @param f
-   * @return uint64_t an unique ids denoting this task. Can be used for cancellation.
+   * @return uint32_t an unique ids denoting this task. Can be used for cancellation.
    */
   uint32_t AddIdleTask(IdleTask f);
+
+  bool IsIdleTaskActive(uint32_t id) const {
+    return on_idle_map_.contains(id);
+  }
 
   //! Must be called from the proactor thread.
   //! PeriodicTask should not block since it runs from I/O loop.
@@ -154,6 +158,7 @@ class ProactorBase {
   //! Blocking until the task has been cancelled. Should not run directly from I/O loop
   //! i.e. only from Await or another fiber.
   void CancelPeriodic(uint32_t id);
+  void CancelIdleTask(uint32_t id);
 
   // Migrates the calling fibers to the destination proactor.
   // Calling fiber must belong to this proactor.
@@ -188,6 +193,7 @@ class ProactorBase {
 
   virtual void SchedulePeriodic(uint32_t id, PeriodicItem* item) = 0;
   virtual void CancelPeriodicInternal(uint32_t val1, uint32_t val2) = 0;
+  void RunOnIdleTasks();
 
   static uint64_t GetClockNanos() {
     timespec ts;
@@ -225,7 +231,8 @@ class ProactorBase {
   uint32_t next_task_id_{1};
   FiberSchedAlgo* scheduler_ = nullptr;
 
-  absl::flat_hash_map<uint32_t, IdleTask> idle_map_;
+  // Runs tasks when there is available cpu time and no I/O events demand it.
+  absl::flat_hash_map<uint32_t, IdleTask> on_idle_map_;
   absl::flat_hash_map<uint32_t, IdleTask>::const_iterator idle_it_;
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
 

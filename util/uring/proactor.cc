@@ -86,7 +86,7 @@ Proactor::Proactor() : ProactorBase() {
 }
 
 Proactor::~Proactor() {
-  idle_map_.clear();
+  on_idle_map_.clear();
 
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
@@ -144,7 +144,7 @@ void Proactor::Run() {
     tq_seq = tq_seq_.load(std::memory_order_acquire);
 
     // This should handle wait-free and "brief" CPU-only tasks enqued using Async/Await
-    // calls. We allocate the quota of 500K nsec (500usec) of CPU time per iteration
+    // calls. We allocate quota of 500K nsec (500usec) of CPU time per iteration
     // To save redundant timer-calls we start measuring time only when if the queue is not empty.
     if (task_queue_.try_dequeue(task)) {
       uint64_t task_start = GetClockNanos();
@@ -168,6 +168,7 @@ void Proactor::Run() {
     uint32_t cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
     if (cqe_count) {
       ++cqe_fetches;
+      tl_info_.monotonic_time = GetClockNanos();
 
       while (true) {
         // Once we copied the data we can mark the cqe consumed.
@@ -228,16 +229,6 @@ void Proactor::Run() {
       continue;
     }
 
-    if (!idle_map_.empty()) {  // TODO: to break upon timer constraints (~20usec).
-      for (auto it = idle_map_.begin(); it != idle_map_.end(); ++it) {
-        if (!it->second()) {
-          idle_map_.erase(it);
-          break;
-        }
-      }
-      continue;
-    }
-
     // Dispatcher runs the scheduling loop. Every time a fiber preempts it awakens dispatcher
     // so that when that we eventually get to the dispatcher fiber again. dispatcher calls
     // suspend_until() only when pick_next returns null, i.e. there are no active fibers to run.
@@ -248,6 +239,18 @@ void Proactor::Run() {
     if (!suspendioloop_called) {
       should_suspend = true;
       continue;
+    }
+
+    if (!on_idle_map_.empty()) {
+      // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
+      // Instead we use the cpu time on doing on_idle work.
+      wait_for_cqe(&ring_, 0);   // a dip into kernel to fetch more cqes.
+
+      if (!CQReadyCount(ring_)) {
+        RunOnIdleTasks();
+      }
+
+      continue;  // continue spinning until on_idle_map_ is empty.
     }
 
     // Lets spin a bit to make a system a bit more responsive.

@@ -81,9 +81,49 @@ uint32_t ProactorBase::AddIdleTask(IdleTask f) {
   DCHECK(InMyThread());
 
   auto id = next_task_id_++;
-  auto res = idle_map_.emplace(id, std::move(f));
+  auto res = on_idle_map_.emplace(id, std::move(f));
   CHECK(res.second);
+  idle_it_ = on_idle_map_.begin();  // reset position to the first item.
+
   return id;
+}
+
+void ProactorBase::RunOnIdleTasks() {
+  if (on_idle_map_.empty())
+    return;
+
+  if (idle_it_ == on_idle_map_.end()) {
+    idle_it_ = on_idle_map_.begin();
+  }
+
+  uint64_t start = GetClockNanos();
+  tl_info_.monotonic_time = start;
+
+  // Perform round robin with idle_it_ saving the position between runs.
+  do {
+    bool res = idle_it_->second();
+
+    if (!res) {
+      on_idle_map_.erase(idle_it_);
+      idle_it_ = on_idle_map_.begin();
+      break;
+    }
+
+    ++idle_it_;
+    if (idle_it_ == on_idle_map_.end()) {
+      idle_it_ == on_idle_map_.begin();
+    }
+
+    tl_info_.monotonic_time = GetClockNanos();
+  } while (tl_info_.monotonic_time < start + 100000);  // 100usec for the run.
+}
+
+void ProactorBase::CancelIdleTask(uint32_t id) {
+  auto it = on_idle_map_.find(id);
+  if (it != on_idle_map_.end()) {
+    on_idle_map_.erase(it);
+    idle_it_ = on_idle_map_.begin();
+  }
 }
 
 uint32_t ProactorBase::AddPeriodic(uint32_t ms, PeriodicTask f) {
