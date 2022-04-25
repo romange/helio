@@ -62,13 +62,13 @@ class ListenerInterface {
   // Updates socket_ and listener interface bookeepings.
   void Migrate(Connection* conn, ProactorBase* dest);
 
+  LinuxSocketBase* socket() {
+    return sock_.get();
+  }
+
  protected:
   ProactorPool* pool() {
     return pool_;
-  }
-
-  FiberSocketBase* socket() {
-    return sock_.get();
   }
 
  private:

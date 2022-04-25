@@ -71,8 +71,12 @@ class FiberSocketBase : public ::io::SyncStreamInterface, public io::Sink {
   }
 
   // UINT32_MAX to disable timeout.
-  void set_timeout(uint32_t msec) { timeout_ = msec;}
-  uint32_t timeout() const { return timeout_; }
+  void set_timeout(uint32_t msec) {
+    timeout_ = msec;
+  }
+  uint32_t timeout() const {
+    return timeout_;
+  }
 
  protected:
   virtual void OnSetProactor() {
@@ -102,8 +106,13 @@ class LinuxSocketBase : public FiberSocketBase {
 
   // sock_opts are the bit mask of sockopt values shifted left, i.e.
   // (1 << SO_REUSEADDR) | (1 << SO_DONTROUTE), for example.
-  ABSL_MUST_USE_RESULT virtual error_code Listen(unsigned port, unsigned backlog,
-                                                 uint32_t sock_opts_mask = 0);
+  ABSL_MUST_USE_RESULT error_code Listen(const struct sockaddr* bind_addr, unsigned addr_len,
+                                         unsigned backlog, uint32_t sock_opts_mask);
+
+  // Listens on all interfaces. If port is 0 then a random available port is chosen
+  // by the OS.
+  ABSL_MUST_USE_RESULT error_code Listen(unsigned port, unsigned backlog,
+                                         uint32_t sock_opts_mask = 0);
 
   error_code Shutdown(int how) override;
 

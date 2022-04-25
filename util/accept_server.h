@@ -7,12 +7,14 @@
 #include <functional>
 #include <vector>
 
-#include "util/fibers/fibers_ext.h"
 #include "util/connection.h"
+#include "util/fibers/fibers_ext.h"
 
 namespace util {
+
 class ListenerInterface;
 class ProactorPool;
+
 class AcceptServer {
   AcceptServer(const AcceptServer&) = delete;
   void operator=(const AcceptServer&) = delete;
@@ -30,7 +32,13 @@ class AcceptServer {
   void Wait();
 
   // Returns the port number to which the listener was bound.
-  unsigned short AddListener(unsigned short port, ListenerInterface* cf);
+  // Check-fails in case of an error.
+  uint16_t AddListener(uint16_t port, ListenerInterface* cf);
+
+  // Advanced version that allows to specify bind address.
+  // bind_addr can be null, in that case the behavior is to bind on all interfaces.
+  // Does not check-fail - it's responsibility of the caller to check the error code.
+  std::error_code AddListener(const char* bind_addr, uint16_t port, ListenerInterface* cf);
 
   void TriggerOnBreakSignal(std::function<void()> f) {
     on_break_hook_ = std::move(f);
@@ -41,7 +49,6 @@ class AcceptServer {
   }
 
  private:
-
   void BreakListeners();
 
   ProactorPool* pool_;

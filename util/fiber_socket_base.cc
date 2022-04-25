@@ -33,7 +33,6 @@ inline ssize_t posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec) {
 
 }  // namespace
 
-
 void FiberSocketBase::SetProactor(ProactorBase* p) {
   if (p == proactor_)
     return;
@@ -68,8 +67,18 @@ LinuxSocketBase::~LinuxSocketBase() {
   }
 }
 
-
 error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog, uint32_t sock_opts_mask) {
+  sockaddr_in server_addr;
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+
+  return Listen((struct sockaddr*)&server_addr, sizeof(server_addr), backlog, sock_opts_mask);
+}
+
+error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned addr_len,
+                                   unsigned backlog, uint32_t sock_opts_mask) {
   CHECK_EQ(fd_, -1) << "Close socket before!";
 
   error_code ec;
@@ -87,21 +96,19 @@ error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog, uint32_t soc
     sock_opts_mask >>= 1;
   }
 
-  sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(port);
-  server_addr.sin_addr.s_addr = INADDR_ANY;
-
-  if (posix_err_wrap(bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)), &ec) < 0) {
+  int res = bind(fd, bind_addr, addr_len);
+  if (posix_err_wrap(res, &ec) < 0) {
     close(fd);
     return ec;
   }
 
-
   VSOCK(1) << "Listening";
 
-  posix_err_wrap(listen(fd, backlog), &ec);
+  res = posix_err_wrap(listen(fd, backlog), &ec);
+  if (posix_err_wrap(res, &ec) < 0) {
+    close(fd);
+    return ec;
+  }
 
   fd_ = fd << 3;
 
@@ -125,7 +132,6 @@ auto LinuxSocketBase::Shutdown(int how) -> error_code {
 
   return ec;
 }
-
 
 auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
   endpoint_type endpoint;

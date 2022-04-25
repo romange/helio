@@ -86,7 +86,7 @@ void AcceptServerTest::SetUp() {
   pp_->Run();
 
   as_.reset(new AcceptServer{up});
-  as_->AddListener(kPort, new TestListener);
+  as_->AddListener("localhost", kPort, new TestListener);
   as_->Run();
 
   ProactorBase* pb = pp_->GetNextProactor();
