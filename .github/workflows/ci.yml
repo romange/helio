@@ -19,10 +19,10 @@ jobs:
     strategy:
       matrix:
         # Test of these containers
-        container: ["ubuntu-dev", "alpine-dev"]
+        container: ["ubuntu-dev:20", "alpine-dev:latest"]
     timeout-minutes: 90
     container:
-      image: ghcr.io/${{ github.actor }}/${{ matrix.container }}:latest
+      image: ghcr.io/${{ github.actor }}/${{ matrix.container }}
     steps:
     - uses: actions/checkout@v2
     - name: Cache build deps
