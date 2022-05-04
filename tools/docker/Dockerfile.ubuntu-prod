@@ -3,7 +3,7 @@ from ghcr.io/romange/ubuntu-dev:20 as builder
 
 WORKDIR /build
 COPY ./  ./
-RUN ./blaze.sh -release
+RUN ./blaze.sh -release -DBoost_USE_STATIC_LIBS=ON
 
 WORKDIR build-opt
 RUN ninja echo_server
@@ -14,7 +14,7 @@ LABEL org.opencontainers.image.title echo_server
 LABEL org.opencontainers.image.source https://github.com/romange/helio
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt update && apt install -y libunwind8 libboost-fiber1.71.0 libssl1.1 && \
+RUN apt update && apt install -y libunwind8 libssl1.1 && \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /data
