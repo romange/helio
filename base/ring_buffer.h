@@ -1,7 +1,8 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 #pragma once
+
 #include <memory>
 
 namespace base {
@@ -21,6 +22,10 @@ template <typename T> class RingBuffer {
     return tail_ - head_;
   }
 
+  bool empty() const {
+    return tail_ == head_;
+  }
+
   // Try to inserts into tail of the buffer.
   template <typename U> bool TryEmplace(U&& u) {
     // due to how 2s compliment work, this check works even in case of overflows.
@@ -38,8 +43,22 @@ template <typename T> class RingBuffer {
     return false;
   }
 
+  // Inserts into tail. If buffer is full overrides the first inserted item at head
+  // and keeps the ring at maximal capacity.
+  // Returns true if an item was overriden and false otherwise.
+  template <typename U> bool EmplaceOrOverride(U&& u) {
+    buf_[tail_ & mask_] = std::forward<U>(u);
+    ++tail_;
+    if (tail_ <= head_ + capacity_) {
+      return false;
+    }
+
+    ++head_;  // override.
+    return true;
+  }
 
   // Gets the pointer to the next tail entry, or null if buffer is full
+  // advances the tail to the next position.
   T* GetTail() {
     T* res = nullptr;
     if (tail_ - head_ < capacity_) {
