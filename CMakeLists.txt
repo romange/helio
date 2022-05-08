@@ -17,6 +17,7 @@ Message(STATUS "PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR} CMAKE_SOURCE_DIR ${CMAK
 
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
+option (USE_MOLD "whether to use mold linker" OFF)
 
 if (PARENT_PROJ_NAME)
   Message(STATUS "PARENT_PROJ_NAME ${PARENT_PROJ_NAME}")

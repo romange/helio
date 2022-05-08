@@ -80,6 +80,12 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -flto")
 endif()
 
+if (USE_MOLD)
+  find_path(MOLD_PATH ld PATHS /usr/libexec /usr/local/libexec PATH_SUFFIXES mold
+            REQUIRED NO_DEFAULT_PATH)
+  set(LINKER_OPTS "-B${MOLD_PATH}")
+endif()
+
 # Need -fPIC in order to link against shared libraries. For example when creating python modules.
 set(COMPILE_OPTS "-Wall -Wextra -g -fPIC -fno-builtin-malloc -fno-builtin-calloc")
 set(COMPILE_OPTS "${COMPILE_OPTS} -fno-builtin-realloc -fno-builtin-free")
@@ -94,8 +100,8 @@ else()
   MESSAGE(FATAL_ERROR "Unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-set(CMAKE_CXX_FLAGS "${COMPILE_OPTS} ${CMAKE_CXX_FLAGS}")
-set(CMAKE_C_FLAGS "${COMPILE_OPTS} ${CMAKE_C_FLAGS}")
+set(CMAKE_CXX_FLAGS "${COMPILE_OPTS} ${CMAKE_CXX_FLAGS} ${LINKER_OPTS}")
+set(CMAKE_C_FLAGS "${COMPILE_OPTS} ${CMAKE_C_FLAGS} ${LINKER_OPTS}")
 
 IF(CMAKE_BUILD_TYPE STREQUAL "Debug")
   MESSAGE (CXX_FLAGS " ${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG}")
