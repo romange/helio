@@ -60,7 +60,7 @@ StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefi
       output_json = true;
   }
 
-  auto delta_ms = absl::ToInt64Microseconds(absl::Now() - start);
+  auto delta_usec = absl::ToInt64Microseconds(absl::Now() - start);
   if (output_json) {
     response.set(field::content_type, kJsonMime);
     response.body() = "{" + varz + "}\n";
@@ -94,7 +94,7 @@ StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefi
   string str_fmt = absl::FormatTime("%Y-%m-%dT%H:%M:%S", atime, absl::UTCTimeZone());
   a += StatusLine("Started on", str_fmt);
   a += StatusLine("Uptime", GetTimerString(time(NULL) - start_time));
-  a += StatusLine("Render Latency", absl::StrCat(delta_ms, " ms"));
+  a += StatusLine("Render Latency", absl::StrCat(delta_usec, " us"));
 
   a += R"(</div>
 </body>
