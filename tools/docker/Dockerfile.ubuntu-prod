@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 from ghcr.io/romange/ubuntu-dev:20 as builder
 
+# Serves as environment variable during the build
+# QEMU_CPU tunes how qemu emulator runs.
+ARG QEMU_CPU
+
 WORKDIR /build
 COPY ./  ./
 RUN ./blaze.sh -release -DBoost_USE_STATIC_LIBS=ON
@@ -9,6 +13,9 @@ WORKDIR build-opt
 RUN ninja echo_server
 
 FROM ubuntu:20.04
+
+# Serves as environment variable during the build phase.
+ARG QEMU_CPU
 
 LABEL org.opencontainers.image.title echo_server
 LABEL org.opencontainers.image.source https://github.com/romange/helio

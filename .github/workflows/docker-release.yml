@@ -39,7 +39,8 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         build-args: |
-          QEMU_CPU='max,pauth-impdef=on'
+          QEMU_CPU=max,pauth-impdef=on
+          
         push: ${{ github.event_name != 'pull_request' }}
         tags: |
           ghcr.io/${{ github.actor }}/echo_server:latest
