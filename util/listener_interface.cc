@@ -50,16 +50,20 @@ struct ListenerInterface::TLConnList {
   void Unlink(Connection* c) {
     auto it = list.iterator_to(*c);
     list.erase(it);
-    DVLOG(3) << "List size " << list.size();
+    DVLOG(2) << "Unlink conn, new list size: " << list.size();
     if (list.empty()) {
       empty_cv.notify_one();
     }
   }
 
   void AwaitEmpty() {
+    if (list.empty())
+      return;
+
     DVLOG(1) << "AwaitEmpty: List size: " << list.size();
 
     fibers_ext::Await(empty_cv, [this] { return this->list.empty(); });
+    DVLOG(1) << "AwaitEmpty finished ";
   }
 };
 
@@ -126,7 +130,8 @@ void ListenerInterface::RunAcceptLoop() {
     }
   });
 
-  VLOG(1) << "Waiting for " << cur_conn_cnt << " connections to close";
+  VLOG(1) << "Listener - " << ep.port() << " waiting for "
+          << cur_conn_cnt << " connections to close";
 
   pool_->AwaitFiberOnAll([&](auto* pb) {
     auto it = conn_list.find(this);
@@ -134,6 +139,7 @@ void ListenerInterface::RunAcceptLoop() {
     delete it->second;
     conn_list.erase(this);
   });
+  VLOG(1) << "Listener - " <<  ep.port() << " connections closed";
 
   PostShutdown();
 
