@@ -20,7 +20,7 @@ class UringSocketTest : public testing::Test {
 
   void TearDown() final {
     listen_socket_.reset();
-    server_socket_.reset();
+    conn_socket_.reset();
     if (accept_fb_.joinable()) {
       accept_fb_.join();
     }
@@ -38,7 +38,7 @@ class UringSocketTest : public testing::Test {
   unique_ptr<Proactor> proactor_;
   thread proactor_thread_;
   unique_ptr<LinuxSocketBase> listen_socket_;
-  unique_ptr<LinuxSocketBase> server_socket_;
+  unique_ptr<LinuxSocketBase> conn_socket_;
   uint16_t listen_port_ = 0;
   fibers::fiber accept_fb_;
   std::error_code accept_ec_;
@@ -63,8 +63,8 @@ void UringSocketTest::SetUp() {
     auto accept_res = listen_socket_->Accept();
     if (accept_res) {
       FiberSocketBase* sock = *accept_res;
-      server_socket_.reset(static_cast<LinuxSocketBase*>(sock));
-      server_socket_->SetProactor(proactor_.get());
+      conn_socket_.reset(static_cast<LinuxSocketBase*>(sock));
+      conn_socket_->SetProactor(proactor_.get());
     } else {
       accept_ec_ = accept_res.error();
     }
@@ -80,6 +80,9 @@ TEST_F(UringSocketTest, Basic) {
     accept_fb_.join();
 
     ASSERT_FALSE(accept_ec_);
+    uint8_t buf[16];
+    auto res = sock->Send(io::Bytes(buf));
+    EXPECT_EQ(16, res.value_or(0));
   });
 }
 
@@ -123,7 +126,7 @@ TEST_F(UringSocketTest, Poll) {
     EXPECT_FALSE(ec);
 
     // We enforce RST event on server socket by setting linger option with timeout=0.
-    // This way, client socket won't send any FIN notifications and will jus disappear.
+    // This way, client socket won't send any FIN notifications and will just disappear.
     // See https://stackoverflow.com/a/13088864/2280111
     CHECK_EQ(0, setsockopt(sock->native_handle(), SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
   });
@@ -136,7 +139,7 @@ TEST_F(UringSocketTest, Poll) {
   };
 
   proactor_->Await([&] {
-    UringSocket* us = static_cast<UringSocket*>(this->server_socket_.get());
+    UringSocket* us = static_cast<UringSocket*>(this->conn_socket_.get());
     us->PollEvent(POLLHUP | POLLERR, poll_cb);
   });
 

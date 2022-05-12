@@ -171,6 +171,14 @@ void ListenerInterface::RegisterPool(ProactorPool* pool) {
   pool_ = pool;
 }
 
+error_code ListenerInterface::ConfigureServerSocket(int fd) {
+  error_code ec;
+  const int val = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) < 0)
+    ec.assign(errno, system_category());
+  return ec;
+}
+
 ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
   return pool_->GetNextProactor();
 }

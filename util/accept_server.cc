@@ -100,12 +100,19 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   ProactorBase* next = pool_->GetNextProactor();
 
   std::unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
-  uint32_t sock_opt_mask = listener->GetSockOptMask();
+  // uint32_t sock_opt_mask = listener->GetSockOptMask();
 
   error_code ec;
   bool success = false;
   for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-    ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_, sock_opt_mask);
+    ec = fs->Create();
+    if (ec)
+      break;
+    ec = listener->ConfigureServerSocket(fs->native_handle());
+    if (ec)
+      break;
+
+    ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_);
     if (!ec) {
       success = true;
       break;
@@ -118,8 +125,6 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
     listener->RegisterPool(pool_);
     listener->sock_ = std::move(fs);
     list_interface_.emplace_back(listener);
-  } else {
-    DCHECK(ec);
   }
 
   return ec;

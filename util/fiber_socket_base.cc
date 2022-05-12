@@ -67,26 +67,40 @@ LinuxSocketBase::~LinuxSocketBase() {
   }
 }
 
-error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog, uint32_t sock_opts_mask) {
-  sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(port);
-  server_addr.sin_addr.s_addr = INADDR_ANY;
-
-  return Listen((struct sockaddr*)&server_addr, sizeof(server_addr), backlog, sock_opts_mask);
-}
-
-error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned addr_len,
-                                   unsigned backlog, uint32_t sock_opts_mask) {
-  CHECK_EQ(fd_, -1) << "Close socket before!";
+error_code LinuxSocketBase::Create() {
+  DCHECK_EQ(fd_, -1);
 
   error_code ec;
   int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
-  const int val = 1;
+  fd_ = fd << 3;
+  return ec;
+}
+
+error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog) {
+  sockaddr_in server_addr;
+  memset(&server_addr, 0, sizeof(server_addr));
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+  server_addr.sin_addr.s_addr = INADDR_ANY;
+
+  return Listen((struct sockaddr*)&server_addr, sizeof(server_addr), backlog);
+}
+
+error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned addr_len,
+                                   unsigned backlog) {
+  error_code ec;
+  if (fd_ == -1) {
+    ec = Create();
+    if (ec)
+      return ec;
+  }
+
+
+
+  /*const int val = 1;
   for (int opt = 0; sock_opts_mask; ++opt) {
     if (sock_opts_mask & 1) {
       if (setsockopt(fd, SOL_SOCKET, opt, &val, sizeof(val)) < 0) {
@@ -94,11 +108,13 @@ error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned ad
       }
     }
     sock_opts_mask >>= 1;
-  }
+  }*/
+  int fd = native_handle();
 
   int res = bind(fd, bind_addr, addr_len);
   if (posix_err_wrap(res, &ec) < 0) {
     close(fd);
+    fd_ = -1;
     return ec;
   }
 
@@ -107,10 +123,9 @@ error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned ad
   res = posix_err_wrap(listen(fd, backlog), &ec);
   if (posix_err_wrap(res, &ec) < 0) {
     close(fd);
+    fd_ = -1;
     return ec;
   }
-
-  fd_ = fd << 3;
 
   OnSetProactor();
   return ec;

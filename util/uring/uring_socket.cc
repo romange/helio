@@ -169,19 +169,18 @@ auto UringSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
     if (res >= 0) {
       return res;  // Fastpath
     }
-    DVSOCK(1) << "Got " << res;
+
+    DVSOCK(2) << "Got " << res;
     res = -res;
     if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
       continue;
 
-    if (base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ECANCELED})) {
-      if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-        res = ECONNABORTED;
-      break;
-    }
+    if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
+      res = ECONNABORTED;
 
-    LOG(FATAL) << "Unexpected error " << res << "/" << strerror(res);
-  }
+    break;
+  };
+
   error_code ec(res, system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 
@@ -200,7 +199,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   DCHECK(ProactorBase::me() == p);
 
   ssize_t res;
-  while (true) {
+  while(true) {
     FiberCall fc(p, timeout());
     fc->PrepRecvMsg(fd, &msg, flags);
     fc->sqe()->flags |= register_flag();
@@ -209,24 +208,19 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
     if (res > 0) {
       return res;
     }
-    DVSOCK(1) << "Got " << res;
+    DVSOCK(2) << "Got " << res;
 
     res = -res;
-    if (res == EAGAIN) {  // EAGAIN can happen in case of CQ overflow.
-      if (flags & MSG_DONTWAIT)
-        break;
+    // EAGAIN can happen in case of CQ overflow.
+    if (res == EAGAIN && (flags & MSG_DONTWAIT) == 0) {
       continue;
     }
 
     if (res == 0)
       res = ECONNABORTED;
-
-    if (base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ECANCELED})) {
-      break;
-    }
-
-    LOG(FATAL) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res);
+    break;
   }
+
   error_code ec(res, system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 

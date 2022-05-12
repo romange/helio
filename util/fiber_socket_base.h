@@ -104,15 +104,15 @@ class LinuxSocketBase : public FiberSocketBase {
     return fd_ >> 3;
   }
 
-  // sock_opts are the bit mask of sockopt values shifted left, i.e.
-  // (1 << SO_REUSEADDR) | (1 << SO_DONTROUTE), for example.
+  // Creates a socket
+  error_code Create();
+
   ABSL_MUST_USE_RESULT error_code Listen(const struct sockaddr* bind_addr, unsigned addr_len,
-                                         unsigned backlog, uint32_t sock_opts_mask);
+                                         unsigned backlog);
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
   // by the OS.
-  ABSL_MUST_USE_RESULT error_code Listen(unsigned port, unsigned backlog,
-                                         uint32_t sock_opts_mask = 0);
+  ABSL_MUST_USE_RESULT error_code Listen(unsigned port, unsigned backlog);
 
   error_code Shutdown(int how) override;
 

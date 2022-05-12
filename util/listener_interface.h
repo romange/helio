@@ -44,9 +44,9 @@ class ListenerInterface {
   virtual void PostShutdown() {
   }
 
-  virtual uint32_t GetSockOptMask() const {
-    return 1 << SO_REUSEADDR;
-  }
+  // Is called once when a server socket for this listener is configured and before
+  // bind is called.
+  virtual std::error_code ConfigureServerSocket(int fd);
 
   virtual ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
 
