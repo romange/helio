@@ -13,6 +13,7 @@
 #include <boost/fiber/scheduler.hpp>
 
 #include "absl/base/attributes.h"
+#include "base/histogram.h"
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/uring/uring_fiber_algo.h"
@@ -36,6 +37,7 @@ DEFINE_bool(proactor_register_fd, false, "If true tries to register file descrip
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
 
 using namespace boost;
+using namespace std;
 namespace ctx = boost::context;
 
 namespace util {
@@ -48,7 +50,7 @@ void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
 
   int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, NULL, sig);
   if (res < 0) {
-    res = - res;
+    res = -res;
     LOG_IF(ERROR, res != EAGAIN && res != EINTR) << detail::SafeErrorMessage(res);
   }
 }
@@ -72,13 +74,23 @@ unsigned IoRingPeek(const io_uring& ring, io_uring_cqe* cqes, unsigned count) {
   return count;
 }
 
+inline void Pause(unsigned count) {
+  for (unsigned i = 0; i < count * 100; ++i) {
+#if defined(__i386__) || defined(__amd64__)
+    __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#endif
+  }
+}
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kWakeIndex = 1;
 
 constexpr uint64_t kUserDataCbIndex = 1024;
 
 // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
-constexpr uint32_t kSpinLimit = 3;
+// and we enter too much into kernel space.
+constexpr uint32_t kSpinLimit = 10;
 
 }  // namespace
 
@@ -112,7 +124,7 @@ void Proactor::Run() {
   struct io_uring_cqe cqes[kBatchSize];
   static_assert(sizeof(cqes) == 2048);
 
-  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0;
+  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t busy_sq_cnt = 0;
@@ -120,6 +132,7 @@ void Proactor::Run() {
 
   bool suspendioloop_called = false;
   bool should_suspend = false;
+  base::Histogram hist;
 
   while (true) {
     ++loop_cnt;
@@ -139,30 +152,45 @@ void Proactor::Run() {
       URING_CHECK(num_submitted);
     }
 
-    num_task_runs = 0;
-
-    tq_seq = tq_seq_.load(std::memory_order_acquire);
+  spin_start:
+    tq_seq = tq_seq_.load(memory_order_acquire);
 
     // This should handle wait-free and "brief" CPU-only tasks enqued using Async/Await
     // calls. We allocate quota of 500K nsec (500usec) of CPU time per iteration
     // To save redundant timer-calls we start measuring time only when if the queue is not empty.
     if (task_queue_.try_dequeue(task)) {
+      uint32_t cnt = 0;
       uint64_t task_start = GetClockNanos();
+
       // update thread-local clock service via GetMonotonicTimeNs().
       tl_info_.monotonic_time = task_start;
       do {
         task();
         ++num_task_runs;
+        ++cnt;
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
           ++task_interrupts;
           break;
         }
-      } while (task_queue_.try_dequeue(task));
 
+        if (cnt == 32) {
+          // we notify threads if we unloaded a bunch of tasks.
+          // if in parallel they start pushing we may unload them in parallel
+          // via this loop thus increasing its efficiency.
+          task_queue_avail_.notifyAll();
+        }
+      } while (task_queue_.try_dequeue(task));
+      num_task_runs += cnt;
+      DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
+
+      // We notify second time to avoid deadlocks.
+      // Without it ProactorTest.AsyncCall blocks.
       task_queue_avail_.notifyAll();
 
-      DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
+#ifndef NDEBUG
+      hist.Add(cnt);
+#endif
     }
 
     uint32_t cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
@@ -173,7 +201,7 @@ void Proactor::Run() {
       while (true) {
         // Once we copied the data we can mark the cqe consumed.
         io_uring_cq_advance(&ring_, cqe_count);
-        DVLOG(2) << "Fetched " << cqe_count << " cqes";
+        VPRO(2) << "Fetched " << cqe_count << " cqes";
         DispatchCompletions(cqes, cqe_count);
 
         if (cqe_count < kBatchSize) {
@@ -196,17 +224,20 @@ void Proactor::Run() {
 
       // We must reset LSB for both tq_seq and tq_seq_  so that if notify() was called after
       // yield(), tq_seq_ would be invalidated.
+      unsigned read_cnt = scheduler_->ready_cnt();
 
-      tq_seq_.fetch_and(~1, std::memory_order_relaxed);
+      tq_seq_.fetch_and(~1, memory_order_relaxed);
       tq_seq &= ~1;
       this_fiber::yield();
-      DVLOG(2) << "this_fiber::yield_end " << spin_loops;
+      VPRO(2) << "this_fiber::yield_end " << loop_cnt << " " << read_cnt << " "
+              << scheduler_->ready_cnt();
 
       // we preempted without passing through suspend_until.
       suspendioloop_called = false;
     }
 
-    if (should_suspend || sched->has_ready_fibers()) {
+    if (should_suspend || sched->has_ready_fibers() ||
+        tq_seq_.load(memory_order_relaxed) != tq_seq) {
       // Suspend this fiber until others will run and get blocked.
       // Eventually UringFiberAlgo will resume back this fiber in suspend_until
       // function.
@@ -221,11 +252,14 @@ void Proactor::Run() {
       // all the ready fibers.
       suspendioloop_called = scheduler_->SuspendIoLoop(now);
       should_suspend = false;
-      DVLOG(2) << "Resuming ioloop after " << suspendioloop_called;
+      ++num_suspends;
+      VPRO(2) << "Resuming ioloop " << loop_cnt << " " << scheduler_->ready_cnt();
+
       continue;
     }
 
-    if (cqe_count || !task_queue_.empty()) {
+    if (cqe_count) {
+      VPRO(2) << "cqe_count, continue at " << loop_cnt;
       continue;
     }
 
@@ -238,13 +272,13 @@ void Proactor::Run() {
     // if not, we suspend this fiber to allow the dispatch fiber to call suspend_until().
     if (!suspendioloop_called) {
       should_suspend = true;
-      continue;
+      goto spin_start;
     }
 
     if (!on_idle_map_.empty()) {
       // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
       // Instead we use the cpu time on doing on_idle work.
-      wait_for_cqe(&ring_, 0);   // a dip into kernel to fetch more cqes.
+      wait_for_cqe(&ring_, 0);  // a dip into kernel to fetch more cqes.
 
       if (!CQReadyCount(ring_)) {
         RunOnIdleTasks();
@@ -254,10 +288,15 @@ void Proactor::Run() {
     }
 
     // Lets spin a bit to make a system a bit more responsive.
-    if (!ring_busy && ++spin_loops < kSpinLimit) {
+    if (!ring_busy && spin_loops++ < kSpinLimit) {
       DVLOG(3) << "spin_loops " << spin_loops;
-      // We should not spin too much using sched_yield or it burns a fuckload of cpu.
-      continue;
+      if (spin_loops == kSpinLimit) {
+        usleep(0);
+      } else {
+        // We should not spin too much using sched_yield or it burns a fuckload of cpu.
+        Pause(spin_loops);
+      }
+      goto spin_start;
     }
 
     spin_loops = 0;  // Reset the spinning.
@@ -278,21 +317,30 @@ void Proactor::Run() {
       DCHECK(!should_suspend);
       DCHECK(!sched->has_ready_fibers());
 
-      DVLOG(2) << "wait_for_cqe";
-      wait_for_cqe(&ring_, 1);
-      DVLOG(2) << "Woke up after wait_for_cqe " << tq_seq_.load(std::memory_order_acquire);
+      if (task_queue_.empty()) {
+        this_fiber::yield();
+        if (!sched->has_ready_fibers()) {
+          VPRO(2) << "wait_for_cqe " << loop_cnt;
+          wait_for_cqe(&ring_, 1);
+          VPRO(2) << "Woke up after wait_for_cqe ";
+
+          ++num_stalls;
+        }
+      }
 
       tq_seq = 0;
-      ++num_stalls;
-      ++suspend_cnt_;
-
       // Reset all except the LSB bit that signals that we need to switch to dispatch fiber.
       tq_seq_.fetch_and(1, std::memory_order_release);
     }
   }
 
-  VPRO(1) << "total/stalls/cqe_fetches: " << loop_cnt << "/" << num_stalls << "/" << cqe_fetches;
+#ifndef NDEBUG
+  VPRO(1) << "Task runs histogram: " << hist.ToString();
+#endif
 
+  VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << loop_cnt << "/" << num_stalls << "/"
+          << cqe_fetches << "/" << num_suspends;
+  VPRO(1) << "Tasks/loop: " << double(num_task_runs) / loop_cnt;
   VPRO(1) << "tq_wakeups/tq_full/tq_task_int/algo_notifies: " << tq_wakeup_ev_.load() << "/"
           << tq_full_ev_.load() << "/" << task_interrupts << "/" << algo_notify_cnt_.load();
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
@@ -457,7 +505,7 @@ SubmitEntry Proactor::GetSubmitEntry(CbType cb, int64_t payload) {
 
     auto& e = centries_[next_free_ce_];
     DCHECK(!e.cb);  // cb is undefined.
-    DVLOG(2) << "GetSubmitEntry: index: " << next_free_ce_ << ", payload: " << payload;
+    DVLOG(3) << "GetSubmitEntry: index: " << next_free_ce_ << ", payload: " << payload;
 
     next_free_ce_ = e.val;
     e.cb = std::move(cb);

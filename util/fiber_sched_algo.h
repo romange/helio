@@ -60,6 +60,8 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   // Returns true if suspend_until has been called before resuming back to ioloop.
   bool SuspendIoLoop(uint64_t now);
 
+  uint32_t ready_cnt() const { return ready_cnt_;}
+
  protected:
   virtual void SuspendWithTimer(const time_point& tp) noexcept = 0;
 

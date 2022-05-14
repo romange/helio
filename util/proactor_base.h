@@ -59,10 +59,6 @@ class ProactorBase {
     return thread_id_;
   }
 
-  uint64_t suspend_count() const {
-    return suspend_cnt_;
-  }
-
   static bool IsProactorThread() {
     return tl_info_.owner != nullptr;
   }
@@ -96,10 +92,14 @@ class ProactorBase {
     tl_info_.proactor_index = index;
   }
 
+  bool IsTaskQueueFull() const {
+    return task_queue_.is_full();
+  }
+
   //! Fire and forget - does not wait for the function to run called.
   //! `f` should not block, lock on mutexes or Await.
   //! Might block the calling fiber if the queue is full.
-  template <typename Func> void DispatchBrief(Func&& brief);
+  template <typename Func> bool DispatchBrief(Func&& brief);
 
   //! Similarly to DispatchBrief but 'f' is wrapped in fiber.
   //! f is allowed to fiber-block or await.
@@ -209,7 +209,6 @@ class ProactorBase {
   std::atomic_uint32_t tq_seq_{0}, tq_full_ev_{0};
   std::atomic_uint32_t tq_wakeup_ev_{0};
   std::atomic_uint32_t algo_notify_cnt_{0} /* how many times this FiberAlgo woke up others */;
-  uint64_t suspend_cnt_ = 0;
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
@@ -269,9 +268,9 @@ inline void ProactorBase::WakeupIfNeeded() {
   }
 }
 
-template <typename Func> void ProactorBase::DispatchBrief(Func&& f) {
+template <typename Func> bool ProactorBase::DispatchBrief(Func&& f) {
   if (EmplaceTaskQueue(std::forward<Func>(f)))
-    return;
+    return false;
 
   tq_full_ev_.fetch_add(1, std::memory_order_relaxed);
 
@@ -285,12 +284,15 @@ template <typename Func> void ProactorBase::DispatchBrief(Func&& f) {
     }
     task_queue_avail_.wait(key.epoch());
   }
+
+  return true;
 }
 
 template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()) {
   if (InMyThread()) {
     return f();
   }
+
   if (IsProactorThread()) {
     // TODO:
   }

@@ -29,7 +29,9 @@ TEST_F(MPMCTest, Enqueue) {
   mpmc_bounded_queue<int> q(2);
   ASSERT_TRUE(q.try_enqueue(5));
   const int val = 6;
+  ASSERT_FALSE( q.is_full());
   ASSERT_TRUE(q.try_enqueue(val));
+  ASSERT_TRUE( q.is_full());
   ASSERT_FALSE(q.try_enqueue(val));
 
   int tmp = 0;

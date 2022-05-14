@@ -63,12 +63,20 @@ template <typename T> class mpmc_bounded_queue {
       size_t pos = dequeue_pos_.fetch_add(1, std::memory_order_relaxed);
       cell_t& cell = buffer_[pos & buffer_mask_];
       size_t seq = cell.sequence.load(std::memory_order_acquire);
-      intptr_t dif = (intptr_t)seq - (intptr_t)(pos + 1);
+      intptr_t dif = (intptr_t)seq - intptr_t(pos + 1);
       if (dif < 0) {
         return;
       }
       reinterpret_cast<T*>(&cell.storage)->~T();
     }
+  }
+
+  bool is_full() const {
+    size_t pos = enqueue_pos_.load(std::memory_order_relaxed);
+    cell_t& cell = buffer_[pos & buffer_mask_];
+    intptr_t seq = cell.sequence.load(std::memory_order_relaxed);
+    intptr_t dif = seq - intptr_t(pos);
+    return dif < 0;
   }
 
   // It's super important to leave try_enqueue as a template function of free type U.
@@ -84,7 +92,7 @@ template <typename T> class mpmc_bounded_queue {
       pos = enqueue_pos_.load(std::memory_order_relaxed);
       cell = &buffer_[pos & buffer_mask_];
       size_t seq = cell->sequence.load(std::memory_order_acquire);
-      intptr_t dif = (intptr_t)seq - (intptr_t)(pos);
+      intptr_t dif = intptr_t(seq) - intptr_t(pos);
       if (dif == 0) {  // available cell.
         // advance enque index.
         if (enqueue_pos_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed))
