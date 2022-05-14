@@ -159,7 +159,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
 
   try {
     conn->HandleRequests();
-    VSOCK(2, *conn) << "After HandleRequests";
+    VSOCK(1, *conn) << "After HandleRequests";
 
   } catch (std::exception& e) {
     LOG(ERROR) << "Uncaught exception " << e.what();

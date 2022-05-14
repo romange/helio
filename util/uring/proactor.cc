@@ -291,8 +291,7 @@ void Proactor::Run() {
     }
   }
 
-  VPRO(1) << "total/stalls/cqe_fetches: " << loop_cnt << "/" << num_stalls << "/"
-          << "/" << cqe_fetches;
+  VPRO(1) << "total/stalls/cqe_fetches: " << loop_cnt << "/" << num_stalls << "/" << cqe_fetches;
 
   VPRO(1) << "tq_wakeups/tq_full/tq_task_int/algo_notifies: " << tq_wakeup_ev_.load() << "/"
           << tq_full_ev_.load() << "/" << task_interrupts << "/" << algo_notify_cnt_.load();

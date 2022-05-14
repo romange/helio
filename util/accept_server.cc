@@ -23,6 +23,9 @@ AcceptServer::AcceptServer(ProactorPool* pool, bool break_on_int) : pool_(pool),
     ProactorBase* proactor = pool_->GetNextProactor();
     proactor->RegisterSignal({SIGINT, SIGTERM}, [this](int signal) {
       LOG(INFO) << "Exiting on signal " << strsignal(signal);
+      if (on_break_hook_) {
+        on_break_hook_();
+      }
       BreakListeners();
     });
   }
