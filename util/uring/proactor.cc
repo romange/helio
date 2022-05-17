@@ -291,7 +291,8 @@ void Proactor::Run() {
     if (!ring_busy && spin_loops++ < kSpinLimit) {
       DVLOG(3) << "spin_loops " << spin_loops;
       if (spin_loops == kSpinLimit) {
-        usleep(0);
+        // Insteaf of calling usleep(0), we check for I/O in a non-blocking way -
+        // last attempt before stalling.
       } else {
         // We should not spin too much using sched_yield or it burns a fuckload of cpu.
         Pause(spin_loops);
