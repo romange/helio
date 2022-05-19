@@ -44,7 +44,9 @@ set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
 check_cxx_source_compiles("int main() { return 0; }" SUPPORT_USAN)
 
 if (SUPPORT_ASAN)
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+  # There is some weird interaction with sanitizers and exceptions.
+  # It exists at least on gcc 11.2 and clang-13.
+  # set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
 endif()
 
 if (SUPPORT_USAN)

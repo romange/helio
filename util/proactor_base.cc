@@ -111,7 +111,7 @@ void ProactorBase::RunOnIdleTasks() {
 
     ++idle_it_;
     if (idle_it_ == on_idle_map_.end()) {
-      idle_it_ == on_idle_map_.begin();
+      idle_it_ = on_idle_map_.begin();
     }
 
     tl_info_.monotonic_time = GetClockNanos();

@@ -1,7 +1,8 @@
 #!/bin/bash
 
 TARGET_BUILD_TYPE=Debug
-BUILD_DIR=build-dbg
+BUILD_PREF=build
+BUILD_SUF=dbg
 COMPILER='g++'
 GENERATOR='-GNinja'
 LAUNCHER=$(command -v ccache)
@@ -17,11 +18,12 @@ for ((i=1;i <= $#;));do
   case "$ARG" in
     -release)
         TARGET_BUILD_TYPE=Release
-        BUILD_DIR=build-opt
+        BUILD_SUF=opt
         shift
         ;;
     -clang)
         COMPILER=`which clang++`
+        BUILD_PREF=clang
         shift
         ;;
     -ninja)
@@ -42,9 +44,11 @@ for ((i=1;i <= $#;));do
   esac
 done
 
-mkdir -p $BUILD_DIR && cd $BUILD_DIR
+BUILD_DIR=${BUILD_PREF}-${BUILD_SUF}
+
 set -x
 
-cmake -L -DCMAKE_BUILD_TYPE=$TARGET_BUILD_TYPE -DCMAKE_CXX_COMPILER=$COMPILER "$GENERATOR" $LAUNCHER $@ ..
+cmake -L -B $BUILD_DIR -DCMAKE_BUILD_TYPE=$TARGET_BUILD_TYPE -DCMAKE_CXX_COMPILER=$COMPILER \
+    "$GENERATOR" $LAUNCHER $@
 
 
