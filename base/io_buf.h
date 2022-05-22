@@ -3,35 +3,50 @@
 //
 #pragma once
 
+#include <absl/numeric/bits.h>
 #include <absl/types/span.h>
 
 #include <cstring>
 
-#include "base/pod_array.h"
 namespace base {
 
 class IoBuf {
  public:
+  IoBuf(const IoBuf&) = delete;
+  IoBuf& operator=(const IoBuf&) = delete;
+
   using Bytes = absl::Span<uint8_t>;
   using ConstBytes = absl::Span<const uint8_t>;
 
-  explicit IoBuf(size_t capacity = 256)  {
-    buf_.reserve(capacity);
+  explicit IoBuf(size_t capacity = 256) {
+    assert(capacity > 0);
+
+    Reserve(capacity);
+  }
+
+  IoBuf(size_t capacity, std::align_val_t align) : alignment_(size_t(align)) {
+    Reserve(capacity);
+  }
+
+  ~IoBuf() {
+    delete[] buf_;
   }
 
   size_t Capacity() const {
-    return buf_.capacity();
+    return capacity();
   }
 
   ConstBytes InputBuffer() const {
-    return ConstBytes{buf_.begin() + offs_, InputLen()};
+    return ConstBytes{buf_ + offs_, InputLen()};
   }
 
   Bytes InputBuffer() {
-    return Bytes{buf_.begin() + offs_, InputLen()};
+    return Bytes{buf_ + offs_, InputLen()};
   }
 
-  size_t InputLen() const { return buf_.size() - offs_; }
+  size_t InputLen() const {
+    return size_ - offs_;
+  }
 
   void ConsumeInput(size_t offs);
 
@@ -43,35 +58,59 @@ class IoBuf {
   }
 
   Bytes AppendBuffer() {
-    return Bytes{buf_.end(), Available()};
+    return Bytes{buf_ + size_, Available()};
   }
 
   void CommitWrite(size_t sz) {
-     buf_.resize_assume_reserved(buf_.size() + sz);
+    size_ += sz;
   }
 
   void Reserve(size_t sz) {
-    buf_.reserve(sz);
+    if (sz < capacity_)
+      return;
+
+    sz = absl::bit_ceil(sz);
+    uint8_t* nb = new (std::align_val_t{alignment_}) uint8_t[sz];
+    if (buf_) {
+      if (size_ > offs_) {
+        memcpy(nb, buf_ + offs_, size_ - offs_);
+        size_ -= offs_;
+        offs_ = 0;
+      } else {
+        size_ = offs_ = 0;
+      }
+      delete[] buf_;
+    }
+
+    buf_ = nb;
+    capacity_ = sz;
   }
 
  private:
   size_t Available() const {
-    return buf_.capacity() - buf_.size();
+    return capacity() - size_;
   }
 
-  base::PODArray<uint8_t, 8> buf_;
-  size_t offs_ = 0;
+  uint32_t capacity() const {
+    return capacity_;
+  }
+
+  uint8_t* buf_ = nullptr;
+  uint32_t offs_ = 0;
+  uint32_t size_ = 0;
+  uint32_t alignment_ = 8;
+  uint32_t capacity_ = 0;
 };
 
 inline void IoBuf::ConsumeInput(size_t sz) {
-  if (offs_ + sz >= buf_.size()) {
-    buf_.clear();
+  if (offs_ + sz >= size_) {
+    size_ = 0;
     offs_ = 0;
   } else {
     offs_ += sz;
-    if (2 * offs_ > buf_.size() && buf_.size() - offs_ < 512) {
-      memcpy(buf_.data(), buf_.data() + offs_, buf_.size() - offs_);
-      buf_.resize(buf_.size() - offs_);
+    if (2 * offs_ > size_ && size_ - offs_ < 512) {
+      memcpy(buf_, buf_ + offs_, size_ - offs_);
+      size_ -= offs_;
       offs_ = 0;
     }
   }
