@@ -85,7 +85,6 @@ TEST_F(ProactorTest, Sleep) {
   });
 }
 
-
 // This test sometimes deadlocks on boost1.74
 // It seems to not deadlock on later versions. Probably waker changes in Boost.fiber
 // are relevant here.
@@ -384,6 +383,28 @@ TEST_F(ProactorTest, File) {
 
   ASSERT_EQ(0, stat(path.c_str(), &sbuf));
   ASSERT_EQ(1 << 19, sbuf.st_size);
+}
+
+TEST_F(ProactorTest, LinuxFile) {
+  string path = base::GetTestTempPath("bar.txt");
+
+  char* buf = (char*)std::aligned_alloc(4096, 4096);
+  ASSERT_EQ(intptr_t(buf) % 4096, 0);
+
+  auto res = proactor_->Await(
+      [&] { return OpenLinux(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC | O_DIRECT, 0666); });
+  ASSERT_TRUE(res);
+  iovec v{.iov_base = buf, .iov_len = 4096};
+
+  proactor_->Await([&] {
+    unique_ptr file = std::move(res.value());
+
+    auto write_res = file->WriteSome(&v, 1, 0, 0);
+    ASSERT_TRUE(write_res);
+    file->Close();
+  });
+
+  std::free(buf);
 }
 
 #if 0

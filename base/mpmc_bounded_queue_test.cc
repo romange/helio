@@ -23,7 +23,30 @@ struct A {
   ~A() { --ref; }
 };
 
+
+struct Moveable {
+  static int ref;
+
+  Moveable() {
+    ++ref;
+  }
+
+  ~Moveable() {
+    --ref;
+  }
+
+  Moveable(const Moveable&) = delete;
+  void operator=(const Moveable&) = delete;
+
+  Moveable(Moveable&&) {
+    ++ref;
+  }
+
+  Moveable& operator=(Moveable&&) = default;
+};
+
 int A::ref = 0;
+int Moveable::ref = 0;
 
 TEST_F(MPMCTest, Enqueue) {
   mpmc_bounded_queue<int> q(2);
@@ -64,6 +87,22 @@ TEST_F(MPMCTest, Dtor) {
       EXPECT_EQ(j + 1, A::ref);
     }
   }
+}
+
+
+TEST_F(MPMCTest, Moveable) {
+  mpmc_bounded_queue<Moveable> queue(16);
+
+  EXPECT_TRUE(queue.try_enqueue(Moveable{}));
+  EXPECT_EQ(1, Moveable::ref);
+  {
+    Moveable dest;
+    EXPECT_EQ(2, Moveable::ref);
+
+    EXPECT_TRUE(queue.try_dequeue(dest));
+    EXPECT_EQ(1, Moveable::ref);
+  }
+  EXPECT_EQ(0, Moveable::ref);
 }
 
 }  // namespace base

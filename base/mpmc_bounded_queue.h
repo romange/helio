@@ -124,7 +124,9 @@ template <typename T> class mpmc_bounded_queue {
       }
     }
 
-    data = std::forward<T>(reinterpret_cast<T&>(cell->storage));
+    T& src = reinterpret_cast<T&>(cell->storage);
+    data = std::forward<T>(src);
+    src.~T();
 
     // Commit transaction, free up the cell.
     cell->sequence.store(pos + buffer_mask_ + 1, std::memory_order_release);
