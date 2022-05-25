@@ -1,4 +1,5 @@
 set(OPENSSL_ROOT_DIR "/opt/openssl/")
+set(OPENSSL_USE_STATIC_LIBS TRUE)
 find_package(OpenSSL REQUIRED)
 Message(STATUS "OpenSSL libs ${OPENSSL_SSL_LIBRARIES} ${OPENSSL_VERSION}")
 
