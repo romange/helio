@@ -5,6 +5,7 @@ SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})
 Include(ExternalProject)
 Include(FetchContent)
 
+option (WITH_UNWIND "Enable libunwind support" ON)
 
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
@@ -12,13 +13,6 @@ file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC")
 
 find_package(Threads REQUIRED)
-find_library (UNWIND_LIBRARY NAMES unwind DOC "unwind library")
-mark_as_advanced (UNWIND_LIBRARY)  ## Hides this variable from GUI.
-
-if (NOT UNWIND_LIBRARY)
-  Message(FATAL_ERROR  "libunwind8-dev is not installed but required for better glog stacktraces")
-endif ()
-
 
 function(add_third_party name)
   set(options SHARED)
@@ -231,7 +225,7 @@ add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILA
 # gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
 # Until it's fixed, I use the old configure based build.
 
-if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
   set(PERF_TOOLS_OPTS --enable-libunwind )
 else()
   set(PERF_TOOLS_OPTS --disable-libunwind)
@@ -315,6 +309,11 @@ add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES
                       INTERFACE_INCLUDE_DIRECTORIES "${RAPIDJSON_INCLUDE_DIR}")
-set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
+
+
+if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
+  set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
+endif()
+
 # file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/_deps ${CMAKE_SOURCE_DIR}/_deps SYMBOLIC)
 # file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/third_party/libs/ ${CMAKE_SOURCE_DIR}/third_party SYMBOLIC)
