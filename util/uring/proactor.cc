@@ -390,7 +390,19 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   VLOG(1) << "Create uring of size " << ring_size;
 
   // If this fails with 'can not allocate memory' most probably you need to increase maxlock limit.
-  URING_CHECK(io_uring_queue_init_params(ring_size, &ring_, &params));
+  int init_res = io_uring_queue_init_params(ring_size, &ring_, &params);
+  if (init_res < 0) {
+    init_res = -init_res;
+    if (init_res == ENOMEM) {
+      LOG(ERROR)
+          << "io_uring does not have enough memory. That can happen when your max locked "
+             "memory is too limited. If you run me via docker, try adding '--ulimit memlock=-1' to"
+             "docker run command";
+      exit(1);
+    }
+    LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
+               << detail::SafeErrorMessage(init_res);
+  }
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
 
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
