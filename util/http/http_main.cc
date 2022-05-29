@@ -1,6 +1,9 @@
-// Copyright 2013, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
+#include <absl/flags/usage.h>
+#include <absl/flags/usage_config.h>
+#include <absl/strings/match.h>
 #include <absl/strings/str_join.h>
 
 #include "base/init.h"
@@ -11,7 +14,7 @@
 #include "util/uring/uring_pool.h"
 #include "util/varz.h"
 
-DEFINE_int32(port, 8080, "Port number.");
+ABSL_FLAG(uint32_t, port, 8080, "Port number.");
 
 using namespace std;
 using namespace util;
@@ -57,7 +60,7 @@ void ServerRun(ProactorPool* pool) {
   listener->RegisterCb("/table", table_cb);
   listener->enable_metrics();
 
-  uint16_t port = server.AddListener(FLAGS_port, listener);
+  uint16_t port = server.AddListener(absl::GetFlag(FLAGS_port), listener);
   LOG(INFO) << "Listening on port " << port;
 
   server.Run();
@@ -67,7 +70,7 @@ void ServerRun(ProactorPool* pool) {
 string LabelTuple(const metrics::ObservationDescriptor& od, unsigned label_index,
                   unsigned observ_index) {
   string res;
-  for (size_t i  = 0; i < od.label_names.size(); ++i) {
+  for (size_t i = 0; i < od.label_names.size(); ++i) {
     absl::StrAppend(&res, od.label_names[i].name(), "=", od.label_values[label_index][i], ", ");
   }
 
@@ -88,7 +91,17 @@ void PrintObservation(const metrics::ObservationDescriptor& od, absl::Span<const
   }
 };
 
+bool HelpshortFlags(std::string_view f) {
+  return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
+}
+
 int main(int argc, char** argv) {
+  absl::SetProgramUsageMessage("http example server");
+  absl::FlagsUsageConfig config;
+  config.contains_helpshort_flags = &HelpshortFlags;
+  config.contains_help_flags = &HelpshortFlags;
+  absl::SetFlagsUsageConfig(config);
+
   MainInitGuard guard(&argc, &argv);
 
   uring::UringPool pool;

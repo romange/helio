@@ -123,55 +123,22 @@ function(add_third_party name)
 endfunction()
 
 # gflags
-FetchContent_Declare(
-  gflags
-  URL https://github.com/gflags/gflags/archive/v2.2.2.zip
-  # SOURCE_DIR gflags
-  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/gflags-v2.2.2.patch"
-)
+# FetchContent_Declare(
+#   gflags
+#   URL https://github.com/gflags/gflags/archive/v2.2.2.zip
+#   # SOURCE_DIR gflags
+#   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/gflags-v2.2.2.patch"
+# )
 
-FetchContent_GetProperties(gflags)
-if (NOT gflags_POPULATED)
-    FetchContent_Populate(gflags)
-    set(BUILD_gflags_nothreads_LIB OFF)
-    set(BUILD_gflags_LIB ON)
-    set(GFLAGS_INSTALL_STATIC_LIBS ON)
+# FetchContent_GetProperties(gflags)
+# if (NOT gflags_POPULATED)
+#     FetchContent_Populate(gflags)
+#     set(BUILD_gflags_nothreads_LIB OFF)
+#     set(BUILD_gflags_LIB ON)
+#     set(GFLAGS_INSTALL_STATIC_LIBS ON)
 
-    add_subdirectory(${gflags_SOURCE_DIR} ${gflags_BINARY_DIR})
-endif ()
-
-FetchContent_Declare(
-  glog
-  GIT_REPOSITORY https://github.com/romange/glog.git
-  GIT_TAG Prod
-
-  GIT_PROGRESS    TRUE
-  GIT_SHALLOW     TRUE
-)
-
-FetchContent_GetProperties(glog)
-if (NOT glog_POPULATED)
-    FetchContent_Populate(glog)
-
-  # There are bugs with libunwind on aarch64
-  # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
-  # inside pthreads code.
-  if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
-    set(WITH_UNWIND OFF  CACHE BOOL "")
-    set(HAVE_RWLOCK OFF  CACHE BOOL "")
-  endif()
-
-    set(WITH_GTEST OFF CACHE BOOL "")
-    set(BUILD_TESTING OFF CACHE BOOL "")
-
-    # We trick glog into compiling with gflags.
-    set(HAVE_LIB_GFLAGS ON CACHE BOOL "")
-    set(WITH_GFLAGS OFF CACHE BOOL "")
-    add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
-
-    set_property(TARGET glog APPEND PROPERTY
-                 INCLUDE_DIRECTORIES $<TARGET_PROPERTY:gflags,INTERFACE_INCLUDE_DIRECTORIES>)
-endif()
+#     add_subdirectory(${gflags_SOURCE_DIR} ${gflags_BINARY_DIR})
+# endif ()
 
 
 FetchContent_Declare(
@@ -200,7 +167,6 @@ if (NOT benchmark_POPULATED)
 endif ()
 
 
-
 FetchContent_Declare(
   abseil_cpp
   URL https://github.com/abseil/abseil-cpp/archive/20211102.0.tar.gz
@@ -214,6 +180,40 @@ if(NOT abseil_cpp_POPULATED)
   set(ABSL_PROPAGATE_CXX_STD ON)
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
 endif()
+
+FetchContent_Declare(
+  glog
+  GIT_REPOSITORY https://github.com/romange/glog
+  GIT_TAG Absl
+
+  GIT_PROGRESS    TRUE
+  GIT_SHALLOW     TRUE
+)
+
+FetchContent_GetProperties(glog)
+if (NOT glog_POPULATED)
+    FetchContent_Populate(glog)
+
+  # There are bugs with libunwind on aarch64
+  # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
+  # inside pthreads code.
+  if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
+    set(WITH_UNWIND OFF  CACHE BOOL "")
+    set(HAVE_RWLOCK OFF  CACHE BOOL "")
+  endif()
+
+    set(WITH_GTEST OFF CACHE BOOL "")
+    set(BUILD_TESTING OFF CACHE BOOL "")
+
+    set(HAVE_LIB_GFLAGS OFF CACHE BOOL "")
+    set(WITH_GFLAGS OFF CACHE BOOL "")
+    set(WITH_ABSL ON  BOOL "")
+    add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
+
+    set_property(TARGET glog APPEND PROPERTY
+                 INCLUDE_DIRECTORIES $<TARGET_PROPERTY:absl::flags,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
+
 
 # 1.71 comes with ubuntu 20.04 so that's what we require.
 find_package(Boost 1.71.0 REQUIRED COMPONENTS context system fiber)
@@ -315,5 +315,5 @@ if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
   set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
 endif()
 
-# file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/_deps ${CMAKE_SOURCE_DIR}/_deps SYMBOLIC)
-# file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/third_party/libs/ ${CMAKE_SOURCE_DIR}/third_party SYMBOLIC)
+cmake_policy (SET CMP0079 NEW)
+target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)

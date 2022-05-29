@@ -1,6 +1,7 @@
-// Copyright 2017, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 #pragma once
 
-#include <gflags/gflags.h>
+#include <absl/flags/declare.h>
+#include <absl/flags/flag.h>

@@ -8,9 +8,10 @@
 #include <random>
 #include <unordered_set>
 
+#include "base/flags.h"
 #include "base/gtest.h"
 
-DEFINE_int32(shrink_items, 200, "");
+ABSL_FLAG(int32, shrink_items, 200, "");
 
 namespace base {
 
@@ -96,7 +97,9 @@ TEST_F(CuckooMapTest, ReserveSizes) {
 }
 
 TEST_F(CuckooMapTest, Compact) {
-  for (uint64_t iter = 17; iter <= unsigned(FLAGS_shrink_items); ++iter) {
+  auto shrink_cnt = absl::GetFlag(FLAGS_shrink_items);
+
+  for (uint64_t iter = 17; iter <= unsigned(shrink_cnt); ++iter) {
     LOG(INFO) << "Iter " << iter;
     CuckooMap<uint64> m;
     m.SetEmptyKey(0);

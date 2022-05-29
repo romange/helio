@@ -8,7 +8,7 @@
 #include "base/init.h"
 #include "base/logging.h"
 
-DEFINE_bool(bench, false, "Run benchmarks");
+ABSL_FLAG(bool, bench, false, "Run benchmarks");
 
 using namespace std;
 
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
 
   int res = RUN_ALL_TESTS();
 
-  if (FLAGS_bench) {
+  if (absl::GetFlag(FLAGS_bench)) {
     benchmark::RunSpecifiedBenchmarks();
   }
   if (res == 0 && base::test_path[0]) {

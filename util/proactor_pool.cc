@@ -4,10 +4,11 @@
 
 #include "util/proactor_pool.h"
 
+#include "base/flags.h"
 #include "base/logging.h"
 #include "base/pthread_utils.h"
 
-DEFINE_uint32(proactor_threads, 0, "Number of io threads in the pool");
+ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
 
 using namespace std;
 
@@ -29,9 +30,9 @@ static unsigned NumOnlineCpus() {
 
 ProactorPool::ProactorPool(std::size_t pool_size) {
   if (pool_size == 0) {
+    auto num_pthreads = absl::GetFlag(FLAGS_proactor_threads);
     // thread::hardware_concurrency() returns number of online cpus but ignores taskset.
-    pool_size = FLAGS_proactor_threads > 0 ? FLAGS_proactor_threads
-                                           : NumOnlineCpus();
+    pool_size = num_pthreads > 0 ? num_pthreads : NumOnlineCpus();
     VLOG(1) << "Setting pool size to " << pool_size;
   }
 
@@ -136,7 +137,7 @@ void ProactorPool::SetupProactors() {
   int rel_cpu_index = 0, abs_cpu_index = 0;
 
   for (; abs_cpu_index < kTotalCpus; abs_cpu_index++) {
-    if (CPU_ISSET(abs_cpu_index, &online_cpus)){
+    if (CPU_ISSET(abs_cpu_index, &online_cpus)) {
       rel_to_abs_cpu[rel_cpu_index] = abs_cpu_index;
       rel_cpu_index++;
 
@@ -153,7 +154,7 @@ void ProactorPool::SetupProactors() {
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
 
-    proactor_[i]= CreateProactor();
+    proactor_[i] = CreateProactor();
     auto cb = [this, i]() mutable {
       this->InitInThread(i);
       proactor_[i]->Run();

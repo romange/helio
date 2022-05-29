@@ -1,7 +1,7 @@
 add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
             pthread_utils.cc varz_node.cc cuckoo_map.cc)
 
-cxx_link(base glog::glog gflags::gflags atomic rt # rt for timer_create etc.
+cxx_link(base glog::glog absl::flags_parse atomic rt # rt for timer_create etc.
          absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
 
 # Define default gtest_main for tests.

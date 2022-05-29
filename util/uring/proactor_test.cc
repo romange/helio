@@ -4,6 +4,8 @@
 
 #include "util/uring/proactor.h"
 
+#include <absl/flags/internal/program_name.h>
+#include <absl/time/clock.h>
 #include <fcntl.h>
 #include <gmock/gmock.h>
 #include <netinet/in.h>
@@ -11,7 +13,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "absl/time/clock.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/accept_server.h"
@@ -109,8 +110,9 @@ TEST_F(ProactorTest, SleepMany) {
 TEST_F(ProactorTest, SqeOverflow) {
   size_t unique_id = 0;
   char buf[128];
-
-  int fd = open(gflags::GetArgv0(), O_RDONLY | O_CLOEXEC);
+  // const testing::TestInfo* const test_info = testing::UnitTest::GetInstance()->current_test_info();
+  string progname = absl::flags_internal::ProgramInvocationName();
+  int fd = open(progname.c_str(), O_RDONLY | O_CLOEXEC);
   CHECK_GT(fd, 0);
 
   constexpr size_t kMaxPending = kRingDepth * 100;

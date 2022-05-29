@@ -13,13 +13,14 @@
 #include <boost/fiber/scheduler.hpp>
 
 #include "absl/base/attributes.h"
+#include "base/flags.h"
 #include "base/histogram.h"
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/uring/uring_fiber_algo.h"
 #include "util/uring/uring_socket.h"
 
-DEFINE_bool(proactor_register_fd, false, "If true tries to register file descriptors");
+ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                                \
   do {                                                                                \
@@ -410,7 +411,7 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
       << "required feature feature is not present in the kernel";
 
   wake_fixed_fd_ = wake_fd_;
-  register_fd_ = FLAGS_proactor_register_fd;
+  register_fd_ = absl::GetFlag(FLAGS_proactor_register_fd);
   if (register_fd_) {
     register_fds_.resize(64, -1);
     register_fds_[0] = wake_fd_;

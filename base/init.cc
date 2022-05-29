@@ -8,6 +8,7 @@
 
 #include "absl/debugging/failure_signal_handler.h"
 #include "absl/debugging/symbolize.h"
+#include "absl/flags/parse.h"
 #include "base/logging.h"
 
 namespace __internal__ {
@@ -42,7 +43,7 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
   if (main_init_guard_count.fetch_add(1))
     return;
 
-  gflags::ParseCommandLineFlags(argc, argv, true);
+  absl::ParseCommandLine(*argc, *argv);
   google::InitGoogleLogging((*argv)[0]);
 
   absl::InitializeSymbolizer((*argv)[0]);
@@ -56,9 +57,7 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
 #else
   LOG(INFO) << (*argv)[0] << " running in debug mode.";
 #endif
-  std::set_terminate([] {
-    LOG(FATAL) << "Terminate handler called";
-  });
+  std::set_terminate([] { LOG(FATAL) << "Terminate handler called"; });
 
   __internal__::ModuleInitializer::RunFtors(true);
 }

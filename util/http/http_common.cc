@@ -4,6 +4,8 @@
 
 #include "util/http/http_common.h"
 
+#include <absl/flags/reflection.h>
+
 #include "absl/strings/match.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_split.h"
@@ -24,8 +26,7 @@ void HandleVModule(std::string_view str) {
   for (std::string_view p : parts) {
     size_t sep = p.find('=');
     int32_t level = 0;
-    if (sep != std::string_view::npos &&
-        absl::SimpleAtoi(p.substr(sep + 1), &level)) {
+    if (sep != std::string_view::npos && absl::SimpleAtoi(p.substr(sep + 1), &level)) {
       string module_expr = string(p.substr(0, sep));
       int prev = google::SetVLOGLevel(module_expr.c_str(), level);
       LOG(INFO) << "Setting module " << module_expr << " to loglevel " << level
@@ -41,7 +42,8 @@ const char kJsonMime[] = "application/json";
 const char kSvgMime[] = "image/svg+xml";
 const char kTextMime[] = "text/plain";
 const char kXmlMime[] = "application/xml";
-const char kBinMime[] = "application/octet-stream";;
+const char kBinMime[] = "application/octet-stream";
+;
 
 QueryParam ParseQuery(std::string_view str) {
   std::pair<std::string_view, std::string_view> res;
@@ -59,8 +61,7 @@ QueryArgs SplitQuery(std::string_view query) {
   for (size_t i = 0; i < args.size(); ++i) {
     size_t pos = args[i].find('=');
     res[i].first = args[i].substr(0, pos);
-    res[i].second =
-        (pos == std::string_view::npos) ? std::string_view() : args[i].substr(pos + 1);
+    res[i].second = (pos == std::string_view::npos) ? std::string_view() : args[i].substr(pos + 1);
   }
   return res;
 }
@@ -78,19 +79,18 @@ h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
     }
   }
   if (!flag_name.empty()) {
-    gflags::CommandLineFlagInfo flag_info;
-    string fname(flag_name);
-    if (!gflags::GetCommandLineFlagInfo(fname.c_str(), &flag_info)) {
+    absl::CommandLineFlag* cmd_flag = absl::FindCommandLineFlag(flag_name);
+    if (cmd_flag == nullptr) {
       response.body() = "Flag not found \n";
     } else {
       SetMime(kHtmlMime, &response);
-      response.body()
-          .append("<p>Current value ")
-          .append(flag_info.current_value)
-          .append("</p>");
-      string new_val(value);
-      string res = gflags::SetCommandLineOption(fname.c_str(), new_val.c_str());
-      response.body().append("Flag ").append(res);
+      response.body().append("<p>Current value ").append(cmd_flag->CurrentValue()).append("</p>");
+      string error;
+      if (cmd_flag->ParseFrom(value, &error)) {
+        response.body().append("Flag ").append(cmd_flag->CurrentValue());
+      } else {
+        response.body().append("Flag could not be parsed:").append(error);
+      }
 
       if (flag_name == "vmodule") {
         HandleVModule(value);
@@ -98,14 +98,13 @@ h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
     }
   } else if (args.size() == 1) {
     LOG(INFO) << "Printing all flags";
-    std::vector<gflags::CommandLineFlagInfo> flags;
-    gflags::GetAllFlags(&flags);
-    for (const auto& v : flags) {
+    auto flags = absl::GetAllFlags();
+    for (const auto& k_v : flags) {
       response.body()
           .append("--")
-          .append(v.name)
+          .append(k_v.first)
           .append(": ")
-          .append(v.current_value)
+          .append(k_v.second->CurrentValue())
           .append("\n");
       SetMime(kTextMime, &response);
     }
@@ -113,8 +112,7 @@ h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
   return response;
 }
 
-::boost::system::error_code LoadFileResponse(std::string_view fname,
-                                             FileResponse* resp) {
+::boost::system::error_code LoadFileResponse(std::string_view fname, FileResponse* resp) {
   FileResponse::body_type::value_type body;
   system::error_code ec;
   body.open(fname.data(), boost::beast::file_mode::scan, ec);
@@ -123,9 +121,8 @@ h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
   }
 
   size_t sz = body.size();
-  *resp =
-      FileResponse{std::piecewise_construct, std::make_tuple(std::move(body)),
-                   std::make_tuple(h2::status::ok, 11)};
+  *resp = FileResponse{std::piecewise_construct, std::make_tuple(std::move(body)),
+                       std::make_tuple(h2::status::ok, 11)};
 
   const char* mime = kHtmlMime;
   if (absl::EndsWith(fname, ".svg")) {

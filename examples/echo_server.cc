@@ -36,20 +36,20 @@ using tcp = ::boost::asio::ip::tcp;
 using IoResult = Proactor::IoResult;
 using ::boost::fibers::fiber;
 
-DEFINE_bool(epoll, false, "If true use epoll for server");
-DEFINE_int32(http_port, 8080, "Http port.");
-DEFINE_int32(port, 8081, "Echo server port");
-DEFINE_uint32(n, 1000, "Number of requests per connection");
-DEFINE_uint32(c, 10, "Number of connections per thread");
-DEFINE_uint32(size, 1, "Message size, 0 for hardcoded 4 byte pings");
-DEFINE_uint32(backlog, 1024, "Accept queue length");
-DEFINE_uint32(p, 1, "pipelining factor");
-DEFINE_string(connect, "", "hostname or ip address to connect to in client mode");
-DEFINE_string(write_file, "", "");
-DEFINE_uint32(write_num, 1000, "");
-DEFINE_uint32(max_pending_writes, 300, "");
-DEFINE_bool(sqe_async, false, "");
-DEFINE_bool(o_direct, true, "");
+ABSL_FLAG(bool, epoll, false, "If true use epoll for server");
+ABSL_FLAG(int32, http_port, 8080, "Http port.");
+ABSL_FLAG(int32, port, 8081, "Echo server port");
+ABSL_FLAG(uint32, n, 1000, "Number of requests per connection");
+ABSL_FLAG(uint32, c, 10, "Number of connections per thread");
+ABSL_FLAG(uint32, size, 1, "Message size, 0 for hardcoded 4 byte pings");
+ABSL_FLAG(uint32, backlog, 1024, "Accept queue length");
+ABSL_FLAG(uint32, p, 1, "pipelining factor");
+ABSL_FLAG(string, connect, "", "hostname or ip address to connect to in client mode");
+ABSL_FLAG(string, write_file, "", "");
+ABSL_FLAG(uint32, write_num, 1000, "");
+ABSL_FLAG(uint32, max_pending_writes, 300, "");
+ABSL_FLAG(bool, sqe_async, false, "");
+ABSL_FLAG(bool, o_direct, true, "");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -65,7 +65,7 @@ struct TL {
 
     // | O_DIRECT
     int flags = O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC;
-    if (FLAGS_o_direct)
+    if (absl::GetFlag(FLAGS_o_direct))
       flags |= O_DIRECT;
 
     auto res = uring::OpenLinux(path, flags, 0666);
@@ -88,27 +88,26 @@ struct TL {
 };
 
 void TL::WriteToFile() {
-  static void* blob =
-        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  static void* blob = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 
   auto ring_cb = [this](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
     if (res < 0)
       LOG(ERROR) << "Error writing to file";
 
-    if (this->pending_write_reqs == FLAGS_max_pending_writes) {
+    if (this->pending_write_reqs == absl::GetFlag(FLAGS_max_pending_writes)) {
       this->evc.notifyAll();
     }
     --this->pending_write_reqs;
   };
 
-  evc.await([this] { return pending_write_reqs < FLAGS_max_pending_writes; });
+  evc.await([this] { return pending_write_reqs < absl::GetFlag(FLAGS_max_pending_writes); });
 
   ++pending_write_reqs;
   uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
 
   uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
   se.PrepWrite(file->fd(), blob, 4096, 0);
-  if (FLAGS_sqe_async)
+  if (absl::GetFlag(FLAGS_sqe_async))
     se.sqe()->flags |= IOSQE_ASYNC;
 
   if (pending_write_reqs > max_pending_reqs) {
@@ -255,22 +254,22 @@ void RunServer(ProactorPool* pp) {
   connections.Init(pp);
 
   AcceptServer acceptor(pp);
-  acceptor.set_back_log(FLAGS_backlog);
+  acceptor.set_back_log(absl::GetFlag(FLAGS_backlog));
 
-  acceptor.AddListener(FLAGS_port, new EchoListener);
-  if (FLAGS_http_port >= 0) {
-    uint16_t port = acceptor.AddListener(FLAGS_http_port, new HttpListener<>);
+  acceptor.AddListener(absl::GetFlag(FLAGS_port), new EchoListener);
+  if (absl::GetFlag(FLAGS_http_port) >= 0) {
+    uint16_t port = acceptor.AddListener(absl::GetFlag(FLAGS_http_port), new HttpListener<>);
     LOG(INFO) << "Started http server on port " << port;
   }
 
-  if (!FLAGS_write_file.empty()) {
+  if (!absl::GetFlag(FLAGS_write_file).empty()) {
     static void* blob =
         mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(MAP_FAILED != blob);
 
     auto write_file = [](unsigned index, ProactorBase* pb) {
-      string file =
-          absl::StrCat(FLAGS_write_file, "-", absl::Dec(pb->GetIndex(), absl::kZeroPad4), ".bin");
+      string file = absl::StrCat(absl::GetFlag(FLAGS_write_file), "-",
+                                 absl::Dec(pb->GetIndex(), absl::kZeroPad4), ".bin");
       tl = new TL;
       tl->Open(file);
 
@@ -336,7 +335,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     LOG_IF(ERROR, delta_msec > 1000) << "Slow connect1 " << index << " " << delta_msec << " ms";
 
     // Send msg size.
-    absl::little_endian::Store64(buf_, FLAGS_size);
+    absl::little_endian::Store64(buf_, absl::GetFlag(FLAGS_size));
     io::Result<size_t> es = socket_->Send(buf_);
     CHECK(es) << es.error();  // Send expected payload size.
     CHECK_EQ(8U, es.value());
@@ -369,12 +368,12 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
 size_t Driver::Run(base::Histogram* dest) {
   base::Histogram hist;
 
-  std::unique_ptr<uint8_t[]> msg(new uint8_t[FLAGS_size]);
+  std::unique_ptr<uint8_t[]> msg(new uint8_t[absl::GetFlag(FLAGS_size)]);
 
   iovec vec[2];
   vec[0].iov_len = 4;
   vec[0].iov_base = buf_;
-  vec[1].iov_len = FLAGS_size;
+  vec[1].iov_len = absl::GetFlag(FLAGS_size);
   vec[1].iov_base = msg.get();
 
   auto lep = socket_->LocalEndpoint();
@@ -385,23 +384,23 @@ size_t Driver::Run(base::Histogram* dest) {
 
   bool conn_close = false;
   size_t i = 0;
-  for (; i < FLAGS_n; ++i) {
+  for (; i < absl::GetFlag(FLAGS_n); ++i) {
     auto start = absl::GetCurrentTimeNanos();
 
-    for (size_t j = 0; j < FLAGS_p; ++j) {
-      es = socket_->Send(io::Bytes{msg.get(), FLAGS_size});
+    for (size_t j = 0; j < absl::GetFlag(FLAGS_p); ++j) {
+      es = socket_->Send(io::Bytes{msg.get(), absl::GetFlag(FLAGS_size)});
       if (!es && FiberSocketBase::IsConnClosed(es.error())) {
         conn_close = true;
         break;
       }
       CHECK(es.has_value()) << es.error();
-      CHECK_EQ(es.value(), FLAGS_size);
+      CHECK_EQ(es.value(), absl::GetFlag(FLAGS_size));
     }
 
     if (conn_close)
       break;
 
-    for (size_t j = 0; j < FLAGS_p; ++j) {
+    for (size_t j = 0; j < absl::GetFlag(FLAGS_p); ++j) {
       // DVLOG(1) << "Recv " << lep << " " << i;
       es = socket_->Recv(vec, 1);
       if (!es && FiberSocketBase::IsConnClosed(es.error())) {
@@ -412,9 +411,10 @@ size_t Driver::Run(base::Histogram* dest) {
       CHECK(es.has_value()) << "RecvError: " << es.error() << "/" << lep;
 
       ::boost::system::error_code ec;
-      size_t sz = ::boost::asio::read(adapter, ::boost::asio::buffer(msg.get(), FLAGS_size), ec);
+      size_t sz = ::boost::asio::read(
+          adapter, ::boost::asio::buffer(msg.get(), absl::GetFlag(FLAGS_size)), ec);
       CHECK(!ec) << ec;
-      CHECK_EQ(sz, FLAGS_size);
+      CHECK_EQ(sz, absl::GetFlag(FLAGS_size));
     }
 
     uint64_t dur = absl::GetCurrentTimeNanos() - start;
@@ -441,7 +441,7 @@ class TLocalClient {
 
  public:
   TLocalClient(ProactorBase* p) : p_(p) {
-    drivers_.resize(FLAGS_c);
+    drivers_.resize(absl::GetFlag(FLAGS_c));
     for (size_t i = 0; i < drivers_.size(); ++i) {
       drivers_[i].reset(new Driver{p});
     }
@@ -495,29 +495,29 @@ size_t TLocalClient::Run() {
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
-  CHECK_GT(FLAGS_port, 0);
+  CHECK_GT(absl::GetFlag(FLAGS_port), 0);
 
   std::unique_ptr<ProactorPool> pp;
-  if (FLAGS_epoll) {
+  if (absl::GetFlag(FLAGS_epoll)) {
     pp.reset(new epoll::EvPool);
   } else {
     pp.reset(new UringPool);
   }
   pp->Run();
 
-  if (FLAGS_connect.empty()) {
+  if (absl::GetFlag(FLAGS_connect).empty()) {
     RunServer(pp.get());
   } else {
-    CHECK_GT(FLAGS_size, 0U);
+    CHECK_GT(absl::GetFlag(FLAGS_size), 0U);
 
     char ip_addr[INET6_ADDRSTRLEN];
 
-    int resolve_err = ResolveDns(FLAGS_connect, ip_addr);
-    CHECK_EQ(0, resolve_err) << "Could not resolve " << FLAGS_connect << " "
+    int resolve_err = ResolveDns(absl::GetFlag(FLAGS_connect), ip_addr);
+    CHECK_EQ(0, resolve_err) << "Could not resolve " << absl::GetFlag(FLAGS_connect) << " "
                              << gai_strerror(resolve_err);
     thread_local std::unique_ptr<TLocalClient> client;
     auto address = ::boost::asio::ip::make_address(ip_addr);
-    tcp::endpoint ep{address, uint16_t(FLAGS_port)};
+    tcp::endpoint ep{address, uint16_t(absl::GetFlag(FLAGS_port))};
 
     pp->AwaitFiberOnAll([&](auto* p) {
       client.reset(new TLocalClient(p));
