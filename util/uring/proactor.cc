@@ -21,6 +21,8 @@
 #include "util/uring/uring_socket.h"
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
+ABSL_FLAG(uint32_t, proactor_spin_limit, 10,
+          "How many times to spin proactor loop before blocking on kernel");
 
 #define URING_CHECK(x)                                                                \
   do {                                                                                \
@@ -45,6 +47,9 @@ namespace util {
 namespace uring {
 
 namespace {
+
+constexpr unsigned kMaxSpinLimit = 5;
+unsigned pause_amplifier = 50;
 
 void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
   struct io_uring_cqe* cqe_ptr = nullptr;
@@ -76,7 +81,9 @@ unsigned IoRingPeek(const io_uring& ring, io_uring_cqe* cqes, unsigned count) {
 }
 
 inline void Pause(unsigned count) {
-  for (unsigned i = 0; i < count * 100; ++i) {
+  auto pc = pause_amplifier;
+
+  for (unsigned i = 0; i < count * pc; ++i) {
 #if defined(__i386__) || defined(__amd64__)
     __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
@@ -89,13 +96,36 @@ constexpr uint64_t kWakeIndex = 1;
 
 constexpr uint64_t kUserDataCbIndex = 1024;
 
-// Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
-// and we enter too much into kernel space.
-constexpr uint32_t kSpinLimit = 10;
+std::once_flag module_init;
+
+uint64_t GetClockNanos() {
+  timespec ts;
+  // absl::GetCurrentTimeNanos() is not monotonic and it syncs with the system clock.
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_nsec + ts.tv_sec * 1000000000UL;
+}
+
+
+void ModuleInit() {
+  uint64_t delta;
+  while (true) {
+    uint64_t now = GetClockNanos();
+    for (unsigned i = 0; i < 10; ++i) {
+      Pause(kMaxSpinLimit);
+    }
+    delta = GetClockNanos() - now;
+    VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";
+
+    if (delta < 20000 || pause_amplifier == 0)
+      break;
+    pause_amplifier -= (pause_amplifier + 7) / 8;
+  };
+}
 
 }  // namespace
 
 Proactor::Proactor() : ProactorBase() {
+  call_once(module_init, &ModuleInit);
 }
 
 Proactor::~Proactor() {
@@ -289,15 +319,13 @@ void Proactor::Run() {
     }
 
     // Lets spin a bit to make a system a bit more responsive.
-    if (!ring_busy && spin_loops++ < kSpinLimit) {
+    // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
+    // and we enter too often into kernel space.
+    if (!ring_busy && spin_loops++ < kMaxSpinLimit) {
       DVLOG(3) << "spin_loops " << spin_loops;
-      if (spin_loops == kSpinLimit) {
-        // Insteaf of calling usleep(0), we check for I/O in a non-blocking way -
-        // last attempt before stalling.
-      } else {
-        // We should not spin too much using sched_yield or it burns a fuckload of cpu.
-        Pause(spin_loops);
-      }
+
+      // We should not spin too much using sched_yield or it burns a fuckload of cpu.
+      Pause(spin_loops);
       goto spin_start;
     }
 
