@@ -142,7 +142,7 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   return ec;
 }
 
-auto UringSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
+auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GT(len, 0U);
   CHECK_GE(fd_, 0);

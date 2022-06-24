@@ -181,7 +181,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   return read_total;
 }
 
-io::Result<size_t> TlsSocket::Send(const iovec* ptr, size_t len) {
+io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   DCHECK(engine_);
   DCHECK_GT(len, 0u);
 
@@ -249,7 +249,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   CHECK(buf_result);
 
   if (!buf_result->empty()) {
-    io::Result<size_t> write_result = next_sock_->Send(*buf_result);
+    io::Result<size_t> write_result = next_sock_->WriteSome(*buf_result);
     if (!write_result) {
       return write_result.error();
     }

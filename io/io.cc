@@ -6,7 +6,6 @@
 #include <cstring>
 
 #include "base/logging.h"
-#include "io/sync_stream_interface.h"
 
 using namespace std;
 
@@ -68,14 +67,6 @@ error_code Sink::Write(const iovec* v, uint32_t len) {
     return WriteSomeBytes(v, len, this);
   });
   return error_code{};
-}
-
-Result<size_t> NullSinkStream::Send(const iovec* ptr, size_t len) {
-  size_t res = 0;
-  for (size_t i = 0; i < len; ++i) {
-    res += ptr[i].iov_len;
-  }
-  return res;
 }
 
 Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {

@@ -1,4 +1,4 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 
@@ -29,10 +29,7 @@ class UringSocket : public LinuxSocketBase {
   ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
 
-  using FiberSocketBase::Send;
-
-  // Really need here expected.
-  Result<size_t> Send(const iovec* ptr, size_t len) override;
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
 

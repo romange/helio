@@ -149,7 +149,7 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   return ec;
 }
 
-auto FiberSocket::Send(const iovec* ptr, size_t len) -> Result<size_t> {
+auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GT(len, 0U);
   CHECK_GE(fd_, 0);

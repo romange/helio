@@ -38,7 +38,7 @@ class TlsSocket : public FiberSocketBase {
 
   ::io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final;
 
-  ::io::Result<size_t> Send(const iovec* ptr, size_t len) final;
+  ::io::Result<size_t> WriteSome(const iovec* ptr, uint32_t len) final;
 
   SSL* ssl_handle();
 

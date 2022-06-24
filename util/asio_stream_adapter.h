@@ -1,4 +1,4 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
 
@@ -6,11 +6,11 @@
 
 #include <boost/asio/detail/buffer_sequence_adapter.hpp>
 #include <boost/system/error_code.hpp>
-#include "util/sync_stream_interface.h"
+#include "util/fiber_socket_base.h"
 
 namespace util {
 
-template <typename Socket = SyncStreamInterface> class AsioStreamAdapter {
+template <typename Socket = FiberSocketBase> class AsioStreamAdapter {
   Socket& s_;
 
  public:
@@ -61,7 +61,7 @@ size_t AsioStreamAdapter<Socket>::write_some(const BS& bufs, error_code& ec) {
   badapter bsa(bufs);
 
   std::error_code lec;
-  auto res = s_.Send(bsa.buffers(), bsa.count());
+  auto res = s_.WriteSome(bsa.buffers(), bsa.count());
   if (res) {
     return res.value();
   }

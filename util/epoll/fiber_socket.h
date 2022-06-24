@@ -24,7 +24,7 @@ class FiberSocket : public LinuxSocketBase {
   ABSL_MUST_USE_RESULT error_code Close() final;
 
   // Really need here expected.
-  Result<size_t> Send(const iovec* ptr, size_t len) override;
+  Result<size_t> WriteSome(const iovec* ptr, uint32_t len) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
 

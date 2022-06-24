@@ -39,6 +39,7 @@ class UringSocketTest : public testing::Test {
   thread proactor_thread_;
   unique_ptr<LinuxSocketBase> listen_socket_;
   unique_ptr<LinuxSocketBase> conn_socket_;
+
   uint16_t listen_port_ = 0;
   fibers::fiber accept_fb_;
   std::error_code accept_ec_;
@@ -81,7 +82,7 @@ TEST_F(UringSocketTest, Basic) {
 
     ASSERT_FALSE(accept_ec_);
     uint8_t buf[16];
-    auto res = sock->Send(io::Bytes(buf));
+    auto res = sock->WriteSome(io::Bytes(buf));
     EXPECT_EQ(16, res.value_or(0));
   });
 }

@@ -206,7 +206,7 @@ void EchoConnection::HandleRequests() {
     CHECK_EQ(es.value(), 8U);
     VLOG(1) << "Received size from " << ep;
     uint8_t val = 1;
-    socket_->Send(io::Bytes(&val, 1));
+    socket_->WriteSome(io::Bytes(&val, 1));
   }
 
   // size_t bs = asio::read(asa, asio::buffer(buf), ec);
@@ -235,7 +235,7 @@ void EchoConnection::HandleRequests() {
     if (tl)
       tl->WriteToFile();
 
-    auto res = socket_->Send(vec, 2);
+    auto res = socket_->WriteSome(vec, 2);
     if (!res)
       break;
   }
@@ -336,7 +336,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
 
     // Send msg size.
     absl::little_endian::Store64(buf_, absl::GetFlag(FLAGS_size));
-    io::Result<size_t> es = socket_->Send(buf_);
+    io::Result<size_t> es = socket_->WriteSome(buf_);
     CHECK(es) << es.error();  // Send expected payload size.
     CHECK_EQ(8U, es.value());
 
@@ -384,17 +384,19 @@ size_t Driver::Run(base::Histogram* dest) {
 
   bool conn_close = false;
   size_t i = 0;
+  size_t req_size = absl::GetFlag(FLAGS_size);
+
   for (; i < absl::GetFlag(FLAGS_n); ++i) {
     auto start = absl::GetCurrentTimeNanos();
 
     for (size_t j = 0; j < absl::GetFlag(FLAGS_p); ++j) {
-      es = socket_->Send(io::Bytes{msg.get(), absl::GetFlag(FLAGS_size)});
+      es = socket_->WriteSome(io::Bytes{msg.get(), req_size});
       if (!es && FiberSocketBase::IsConnClosed(es.error())) {
         conn_close = true;
         break;
       }
       CHECK(es.has_value()) << es.error();
-      CHECK_EQ(es.value(), absl::GetFlag(FLAGS_size));
+      CHECK_EQ(es.value(), req_size);
     }
 
     if (conn_close)

@@ -8,13 +8,13 @@
 #include <boost/asio/ip/tcp.hpp>
 
 #include "absl/base/attributes.h"
-#include "io/sync_stream_interface.h"
+#include "io/io.h"
 
 namespace util {
 
 class ProactorBase;
 
-class FiberSocketBase : public ::io::SyncStreamInterface, public io::Sink {
+class FiberSocketBase : public io::Sink {
   FiberSocketBase(const FiberSocketBase&) = delete;
   void operator=(const FiberSocketBase&) = delete;
   FiberSocketBase(FiberSocketBase&& other) = delete;
@@ -41,19 +41,7 @@ class FiberSocketBase : public ::io::SyncStreamInterface, public io::Sink {
 
   ::io::Result<size_t> virtual RecvMsg(const msghdr& msg, int flags) = 0;
 
-  using SyncStreamInterface::Send;
-
-  // Implementing Sink interface.
-  ::io::Result<size_t> WriteSome(const iovec* v, uint32_t len) final {
-    return Send(v, len);
-  }
-
-  ::io::Result<size_t> Send(const ::io::Bytes& b) {
-    iovec v{const_cast<uint8_t*>(b.data()), b.size()};
-    return Send(&v, 1);
-  }
-
-  ::io::Result<size_t> Recv(const iovec* ptr, size_t len) override;
+  ::io::Result<size_t> Recv(const iovec* ptr, size_t len);
 
   ::io::Result<size_t> Recv(const io::MutableBytes& mb) {
     iovec v{mb.data(), mb.size()};
