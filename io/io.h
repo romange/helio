@@ -105,7 +105,7 @@ class Sink {
    * @param dest - source buffer
    * @return Result<size_t>
    */
-  Result<size_t> WriteSome(const Bytes& buf) {
+  Result<size_t> WriteSome(Bytes buf) {
     iovec v{.iov_base = const_cast<uint8_t*>(buf.data()), .iov_len = buf.size()};
     return WriteSome(&v, 1);
   }
@@ -126,7 +126,7 @@ class Sink {
    * @param buf
    * @return std::error_code
    */
-  std::error_code Write(const Bytes& buf) {
+  std::error_code Write(Bytes buf) {
     iovec v{.iov_base = const_cast<uint8_t*>(buf.data()), .iov_len = buf.size()};
     return Write(&v, 1);
   }
@@ -139,6 +139,24 @@ class Sink {
    * @return std::error_code
    */
   std::error_code Write(const iovec* vec, uint32_t len);
+};
+
+class AsyncSink {
+ public:
+  using AsyncWriteCb = std::function<void(Result<size_t>)>;
+
+  // Dispatches the write call asynchronously and immediately exits.
+  // The caller must make sure that (v, len) are valid until cb is called.
+  virtual void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) = 0;
+
+  // Wrapper around AsyncWriteSome that makes sure that the passed vectir is written to
+  // completion. Copies (v, len) internally so it can be discarded after the call.
+  void AsyncWrite(const iovec* v, uint32_t len, std::function<void(std::error_code)> cb);
+
+  void AsyncWrite(Bytes buf, std::function<void(std::error_code)> cb) {
+    iovec v{const_cast<uint8_t*>(buf.data()), buf.size()};
+    AsyncWrite(&v, 1, std::move(cb));
+  }
 };
 
 class PrefixSource : public Source {

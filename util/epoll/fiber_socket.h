@@ -12,6 +12,8 @@ namespace epoll {
 
 class FiberSocket : public LinuxSocketBase {
  public:
+  using FiberSocketBase::AsyncWriteCb;
+
   template<typename T> using Result = io::Result<T>;
 
   FiberSocket(int fd = -1);
@@ -25,6 +27,7 @@ class FiberSocket : public LinuxSocketBase {
 
   // Really need here expected.
   Result<size_t> WriteSome(const iovec* ptr, uint32_t len) override;
+  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
 

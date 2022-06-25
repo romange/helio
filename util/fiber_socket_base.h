@@ -14,7 +14,7 @@ namespace util {
 
 class ProactorBase;
 
-class FiberSocketBase : public io::Sink {
+class FiberSocketBase : public io::Sink, io::AsyncSink {
   FiberSocketBase(const FiberSocketBase&) = delete;
   void operator=(const FiberSocketBase&) = delete;
   FiberSocketBase(FiberSocketBase&& other) = delete;
@@ -28,6 +28,7 @@ class FiberSocketBase : public io::Sink {
   using endpoint_type = ::boost::asio::ip::tcp::endpoint;
   using error_code = std::error_code;
   using AcceptResult = ::io::Result<FiberSocketBase*>;
+  using io::AsyncSink::AsyncWriteCb;
 
   ABSL_MUST_USE_RESULT virtual error_code Shutdown(int how) = 0;
 
@@ -65,6 +66,9 @@ class FiberSocketBase : public io::Sink {
   uint32_t timeout() const {
     return timeout_;
   }
+
+  using AsyncSink::AsyncWrite;
+  using AsyncSink::AsyncWriteSome;
 
  protected:
   virtual void OnSetProactor() {

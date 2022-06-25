@@ -199,6 +199,11 @@ auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
+void FiberSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+  auto res = WriteSome(v, len);
+  cb(res);
+}
+
 auto FiberSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GE(fd_, 0);

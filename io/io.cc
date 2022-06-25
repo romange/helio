@@ -3,6 +3,8 @@
 //
 #include "io/io.h"
 
+#include <absl/container/fixed_array.h>
+
 #include <cstring>
 
 #include "base/logging.h"
@@ -26,8 +28,52 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
   return res;
 }
 
-}  // namespace
+struct AsyncWriteState {
+  absl::FixedArray<iovec, 4> arr;
+  iovec *cur;
+  AsyncSink* owner;
 
+  function<void(error_code)> cb;
+
+  AsyncWriteState(const iovec* v, uint32_t length) : arr(length) {
+    cur = arr.data();
+    std::copy(v, v + length, cur);
+  }
+
+  void OnCb(Result<size_t> res);
+};
+
+void AsyncWriteState::OnCb(Result<size_t> res) {
+  if (!res) {
+    cb(res.error());
+    delete this;
+    return;
+  }
+
+  size_t sz = *res;
+  while (cur->iov_len <= sz) {
+    sz -= cur->iov_len;
+    ++cur;
+
+    if (cur == arr.end()) {  // Successfully finished all the operations.
+      DCHECK_EQ(0u, sz);
+
+      cb(error_code{});
+
+      delete this;
+      return;
+    }
+  }
+
+  char* base = (char*)cur->iov_base;
+  cur->iov_len -= sz;
+  cur->iov_base = base + sz;
+
+  // continue issuing requests.
+  owner->AsyncWriteSome(cur, arr.end() - cur, [this](Result<size_t> res) { this->OnCb(res); });
+}
+
+}  // namespace
 
 Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
   DCHECK_GE(dest.size(), min_size);
@@ -63,9 +109,8 @@ Result<size_t> PrefixSource::ReadSome(const iovec* v, uint32_t len) {
 }
 
 error_code Sink::Write(const iovec* v, uint32_t len) {
-  return ApplyExactly(v, len, [this](const auto* v, uint32_t len) {
-    return WriteSomeBytes(v, len, this);
-  });
+  return ApplyExactly(v, len,
+                      [this](const auto* v, uint32_t len) { return WriteSomeBytes(v, len, this); });
   return error_code{};
 }
 
@@ -84,6 +129,13 @@ Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {
     res += ptr[i].iov_len;
   }
   return res;
+}
+
+void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, function<void(error_code)> cb) {
+  AsyncWriteState* state = new AsyncWriteState(v, len);
+  state->owner = this;
+  state->cb = std::move(cb);
+  AsyncWriteSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });
 }
 
 }  // namespace io

@@ -150,5 +150,22 @@ TEST_F(UringSocketTest, Poll) {
   usleep(100);
 }
 
+TEST_F(UringSocketTest, AsyncWrite) {
+  unique_ptr<LinuxSocketBase> sock;
+  fibers_ext::Done done;
+  proactor_->Dispatch([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    static char buf[] = "HELLO";
+    sock->AsyncWrite(io::Buffer(buf), [done](error_code ec) mutable {
+      EXPECT_FALSE(ec) << ec.message();
+      done.Notify();
+    });
+  });
+  done.Wait();
+}
+
 }  // namespace uring
 }  // namespace util

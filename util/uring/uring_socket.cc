@@ -20,8 +20,8 @@ namespace util {
 namespace uring {
 
 using namespace std;
-using namespace boost;
 using IoResult = Proactor::IoResult;
+using nonstd::make_unexpected;
 
 namespace {
 
@@ -32,6 +32,10 @@ inline ssize_t posix_err_wrap(ssize_t res, UringSocket::error_code* ec) {
     LOG(WARNING) << "Bad posix error " << res;
   }
   return res;
+}
+
+auto Unexpected(std::errc e) {
+  return make_unexpected(make_error_code(e));
 }
 
 }  // namespace
@@ -89,14 +93,13 @@ auto UringSocket::Accept() -> AcceptResult {
       IoResult io_res = fc.Get();
 
       if (io_res == POLLERR) {
-        ec = make_error_code(errc::connection_aborted);
-        return nonstd::make_unexpected(ec);
+        return Unexpected(errc::connection_aborted);
       }
       continue;
     }
 
     posix_err_wrap(res, &ec);
-    return nonstd::make_unexpected(ec);
+    return make_unexpected(ec);
   }
 }
 
@@ -148,7 +151,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   CHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
-    return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
+    return Unexpected(errc::connection_aborted);
   }
 
   msghdr msg;
@@ -184,7 +187,42 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   error_code ec(res, system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 
-  return nonstd::make_unexpected(std::move(ec));
+  return make_unexpected(std::move(ec));
+}
+
+void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+  if (fd_ & IS_SHUTDOWN) {
+    cb(Unexpected(errc::connection_aborted));
+    return;
+  }
+
+  // this time we can not store it on stack.
+  //
+  msghdr* msg = new msghdr;
+  memset(msg, 0, sizeof(msghdr));
+  msg->msg_iov = const_cast<iovec*>(v);
+  msg->msg_iovlen = len;
+
+  int fd = native_handle();
+  Proactor* proactor = GetProactor();
+
+  auto mycb = [msg, cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, int64_t) {
+    delete msg;
+
+    if (res >= 0) {
+      cb(res);
+      return;
+    }
+
+    if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
+      res = ECONNABORTED;
+
+    cb(make_unexpected(error_code{-res, generic_category()}));
+  };
+
+  SubmitEntry se = proactor->GetSubmitEntry(std::move(mycb), 0);
+  se.PrepSendMsg(fd, msg, MSG_NOSIGNAL);
+  se.sqe()->flags |= register_flag();
 }
 
 auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
@@ -192,14 +230,14 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   CHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
-    return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
+    return Unexpected(errc::connection_aborted);
   }
   int fd = native_handle();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
 
   ssize_t res;
-  while(true) {
+  while (true) {
     FiberCall fc(p, timeout());
     fc->PrepRecvMsg(fd, &msg, flags);
     fc->sqe()->flags |= register_flag();
@@ -224,7 +262,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   error_code ec(res, system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 
-  return nonstd::make_unexpected(std::move(ec));
+  return make_unexpected(std::move(ec));
 }
 
 uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {

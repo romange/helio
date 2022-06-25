@@ -12,6 +12,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace tls {
@@ -330,6 +331,11 @@ TEST_F(SslStreamTest, Write) {
     cl_err = RunPeer(client_opts_, write_op_, client_engine_.get(), server_engine_.get());
     ASSERT_EQ(0, cl_err);
   }
+}
+
+
+TEST_F(SslStreamTest, Socket) {
+  TlsSocket socket;
 }
 
 void BM_TlsWrite(benchmark::State& state) {

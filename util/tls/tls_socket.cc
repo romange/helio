@@ -240,6 +240,12 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   return send_total;
 }
 
+// TODO: to implement async functionality.
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+  io::Result<size_t> res = WriteSome(v, len);
+  cb(res);
+}
+
 SSL* TlsSocket::ssl_handle() {
   return engine_ ? engine_->native_handle() : nullptr;
 }
