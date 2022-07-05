@@ -154,35 +154,58 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     return Unexpected(errc::connection_aborted);
   }
 
-  msghdr msg;
-  memset(&msg, 0, sizeof(msg));
-  msg.msg_iov = const_cast<iovec*>(ptr);
-  msg.msg_iovlen = len;
-
-  ssize_t res;
   int fd = native_handle();
   Proactor* p = GetProactor();
+  ssize_t res = 0;
 
-  while (true) {
-    FiberCall fc(p, timeout());
-    fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
-    fc->sqe()->flags |= register_flag();
+  if (len == 1) {
+    while (true) {
+      FiberCall fc(p, timeout());
+      fc->PrepSend(fd, ptr->iov_base, ptr->iov_len, 0);
+      fc->sqe()->flags |= register_flag();
 
-    res = fc.Get();  // Interrupt point
-    if (res >= 0) {
-      return res;  // Fastpath
+      res = fc.Get();  // Interrupt point
+      if (res >= 0) {
+        return res;  // Fastpath
+      }
+
+      DVSOCK(2) << "Got " << res;
+      res = -res;
+      if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
+        continue;
+
+      if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
+        res = ECONNABORTED;
+
+      break;
     }
+  } else {  // len > 1
+    msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = const_cast<iovec*>(ptr);
+    msg.msg_iovlen = len;
 
-    DVSOCK(2) << "Got " << res;
-    res = -res;
-    if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
-      continue;
+    while (true) {
+      FiberCall fc(p, timeout());
+      fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
+      fc->sqe()->flags |= register_flag();
 
-    if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-      res = ECONNABORTED;
+      res = fc.Get();  // Interrupt point
+      if (res >= 0) {
+        return res;  // Fastpath
+      }
 
-    break;
-  };
+      DVSOCK(2) << "Got " << res;
+      res = -res;
+      if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
+        continue;
+
+      if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
+        res = ECONNABORTED;
+
+      break;
+    };
+  }
 
   error_code ec(res, system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();

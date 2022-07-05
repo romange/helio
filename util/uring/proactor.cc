@@ -438,6 +438,9 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   CHECK_EQ(req_feats, params.features & req_feats)
       << "required feature feature is not present in the kernel";
 
+  int res = io_uring_register_ring_fd(&ring_);
+  VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
+
   wake_fixed_fd_ = wake_fd_;
   register_fd_ = absl::GetFlag(FLAGS_proactor_register_fd);
   if (register_fd_) {
