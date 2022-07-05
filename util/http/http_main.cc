@@ -6,6 +6,8 @@
 #include <absl/strings/match.h>
 #include <absl/strings/str_join.h>
 
+#include <boost/beast/http/span_body.hpp>
+
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/html/sorted_table.h"
@@ -15,6 +17,8 @@
 #include "util/varz.h"
 
 ABSL_FLAG(uint32_t, port, 8080, "Port number.");
+ABSL_FLAG(bool, use_incoming_cpu, false,
+          "If true uses incoming cpu of a socket in order to distribute incoming connections");
 
 using namespace std;
 using namespace util;
@@ -23,17 +27,41 @@ namespace h2 = boost::beast::http;
 VarzQps http_qps("bar-qps");
 metrics::CounterFamily http_req("http_requests_total", "Number of served http requests");
 
+class MyListener : public HttpListener<> {
+ public:
+  ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
+};
+
+ProactorBase* MyListener::PickConnectionProactor(LinuxSocketBase* sock) {
+  int fd = sock->native_handle();
+
+  int cpu;
+  socklen_t len = sizeof(cpu);
+
+  CHECK_EQ(0, getsockopt(fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, &len));
+  VLOG(1) << "Got socket from cpu " << cpu;
+
+  bool use_incoming = absl::GetFlag(FLAGS_use_incoming_cpu);
+  if (use_incoming) {
+    vector<unsigned> ids = pool()->MapCpuToThreads(cpu);
+    if (!ids.empty()) {
+      return pool()->at(ids.front());
+    }
+  }
+  return pool()->GetNextProactor();
+}
+
 void ServerRun(ProactorPool* pool) {
   AcceptServer server(pool);
   http_req.Init(pool, {"type", "handle"});
 
-  HttpListener<>* listener = new HttpListener<>;
+  HttpListener<>* listener = new MyListener;
   auto cb = [](const http::QueryArgs& args, HttpContext* send) {
     http::StringResponse resp = http::MakeStringResponse(h2::status::ok);
     resp.body() = "Bar";
 
     http::SetMime(http::kTextMime, &resp);
-    resp.set(h2::field::server, "uring");
+    resp.set(h2::field::server, "http_main");
     http_qps.Inc();
     http_req.IncBy({"get", "foo"}, 1);
 
@@ -41,6 +69,20 @@ void ServerRun(ProactorPool* pool) {
   };
 
   listener->RegisterCb("/foo", cb);
+
+  static const char kBody[]= R"({"message":"Hello, World!"})";
+  using SB = h2::span_body<const char>;
+  static h2::response<SB> sb_resp(h2::status::ok, 11);
+  sb_resp.body() = boost::beast::span<const char>(kBody, strlen(kBody));
+  http::SetMime(http::kJsonMime, &sb_resp);
+  sb_resp.set(h2::field::server, "http_main");
+
+  auto json_cb = [](const http::QueryArgs& args, HttpContext* send) {
+    auto resp = sb_resp;
+    return send->Invoke(move(resp));
+  };
+
+  listener->RegisterCb("/json", json_cb);
 
   auto table_cb = [](const http::QueryArgs& args, HttpContext* send) {
     using html::SortedTable;

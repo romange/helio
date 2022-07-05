@@ -291,7 +291,7 @@ add_third_party(
 add_third_party(
   uring
   GIT_REPOSITORY https://github.com/axboe/liburing.git
-  GIT_TAG liburing-2.1
+  GIT_TAG liburing-2.2
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_IN_SOURCE 1
 )
