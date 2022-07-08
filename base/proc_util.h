@@ -30,6 +30,7 @@ namespace sys {
   };
 
   void GetKernelVersion(KernelVersion* version);
+  bool CheckSyscallAvailability(std::string_view syscall_name);
 }  // namespace sys
 
 // Runs sh with the command. Returns 0 if succeeded. Child status is ignored.

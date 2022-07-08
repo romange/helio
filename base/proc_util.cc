@@ -125,6 +125,34 @@ void GetKernelVersion(KernelVersion* version) {
   CHECK(res == 3 || res == 4) << res;
 }
 
+bool CheckSyscallAvailability(std::string_view syscall_name) {
+  FILE* f = fopen("/proc/kallsyms", "r");
+  CHECK_NE(nullptr, f);
+
+  bool syscall_available = false;
+  char* line = nullptr;
+  size_t len = 128;
+  while (getline(&line, &len, f) != -1) {
+    line[len - 1] = '\0';
+    std::string_view line_view(line, len);
+
+    size_t start_pos = line_view.find_last_of(' ');
+    size_t end_pos = line_view.find('\n');
+
+    if (start_pos != std::string_view::npos && end_pos != std::string_view::npos) {
+      line_view = line_view.substr(start_pos + 1, end_pos - start_pos - 1);
+      if (syscall_name == line_view) {
+        syscall_available = true;
+        break;
+      }
+    }
+  }
+
+  free(line);
+  fclose(f);
+  return syscall_available;
+}
+
 }  // namespace sys
 
 int sh_exec(const char* cmd) {
