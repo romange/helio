@@ -428,6 +428,11 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
              "memory is too limited. If you run me via docker, try adding '--ulimit memlock=-1' to"
              "docker run command";
       exit(1);
+    } else if (init_res == ENOSYS) {
+      LOG(ERROR)
+          << "io_uring system call interface is not support by current kernel. "
+             "Try to install kernel with io_uring support.";
+      exit(0);
     }
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
                << detail::SafeErrorMessage(init_res);
