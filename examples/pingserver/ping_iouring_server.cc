@@ -23,17 +23,19 @@ using namespace util;
 using redis::RespParser;
 using uring::Proactor;
 using uring::UringPool;
+using absl::GetFlag;
 
-DEFINE_int32(http_port, 8080, "Http port.");
-DEFINE_int32(port, 6380, "Redis port");
-DEFINE_uint32(iouring_depth, 512, "Io uring depth");
-DEFINE_bool(tls, false, "Enable tls");
-DEFINE_bool(tls_verify_peer, false,
+ABSL_FLAG(int32_t, http_port, 8080, "Http port.");
+ABSL_FLAG(int32_t, port, 6380, "Redis port");
+ABSL_FLAG(uint32_t, iouring_depth, 512, "Io uring depth");
+ABSL_FLAG(bool, tls, false, "Enable tls");
+ABSL_FLAG(bool, tls_verify_peer, false,
             "Require peer certificate. Please note that this flag requires loading of "
             "server certificates (not sure why).");
-DEFINE_bool(use_incoming_cpu, false, "If true uses incoming cpu of a socket in order to distribute incoming connections");
-DEFINE_string(tls_cert, "", "");
-DEFINE_string(tls_key, "", "");
+ABSL_FLAG(bool, use_incoming_cpu, false, "If true uses incoming cpu of a socket in order to distribute incoming connections");
+ABSL_FLAG(string, tls_cert, "", "");
+ABSL_FLAG(string, tls_key, "", "");
+ABSL_FLAG(string, unixsocket, "", "");
 
 VarzQps ping_qps("ping-qps");
 
@@ -173,8 +175,9 @@ ProactorBase* PingListener::PickConnectionProactor(LinuxSocketBase* sock) {
 
   CHECK_EQ(0, getsockopt(fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, &len));
   VLOG(1) << "Got socket from cpu " << cpu;
+  bool use_incoming = GetFlag(FLAGS_use_incoming_cpu);
 
-  if (FLAGS_use_incoming_cpu) {
+  if (use_incoming) {
     vector<unsigned> ids = pool()->MapCpuToThreads(cpu);
     if (!ids.empty()) {
       return pool()->at(ids.front());
@@ -195,11 +198,13 @@ static SSL_CTX* CreateSslCntx() {
   // TO connect with redis-cli:
   // ./src/redis-cli --tls -p 6380 --insecure  PING
   // For redis-cli we need to load certificate in order to use a common cipher.
-  if (!FLAGS_tls_key.empty()) {
-    CHECK_EQ(1, SSL_CTX_use_PrivateKey_file(ctx, FLAGS_tls_key.c_str(), SSL_FILETYPE_PEM));
+  string tls_key = GetFlag(FLAGS_tls_key);
 
-    if (!FLAGS_tls_cert.empty()) {
-      CHECK_EQ(1, SSL_CTX_use_certificate_chain_file(ctx, FLAGS_tls_cert.c_str()));
+  if (!tls_key.empty()) {
+    CHECK_EQ(1, SSL_CTX_use_PrivateKey_file(ctx, tls_key.c_str(), SSL_FILETYPE_PEM));
+    string tls_cert = GetFlag(FLAGS_tls_cert);
+    if (!tls_cert.empty()) {
+      CHECK_EQ(1, SSL_CTX_use_certificate_chain_file(ctx, tls_cert.c_str()));
     }
   }
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
@@ -207,7 +212,8 @@ static SSL_CTX* CreateSslCntx() {
   SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
 
   unsigned mask = SSL_VERIFY_PEER;
-  if (FLAGS_tls_verify_peer)
+  bool tls_verify_peer = GetFlag(FLAGS_tls_verify_peer);
+  if (tls_verify_peer)
     mask |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
   SSL_CTX_set_verify(ctx, mask, MyVerifyCb);
   // SSL_CTX_set_verify_depth(ctx, 0);
@@ -223,22 +229,37 @@ static SSL_CTX* CreateSslCntx() {
 
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
+  int port = GetFlag(FLAGS_port);
+  string uds = GetFlag(FLAGS_unixsocket);
 
-  CHECK_GT(FLAGS_port, 0);
+  if (uds.empty()) {
+    CHECK_GT(port, 0);
+  }
 
   SSL_CTX* ctx = nullptr;
-  if (FLAGS_tls) {
+
+  if (GetFlag(FLAGS_tls)) {
     ctx = CreateSslCntx();
   }
 
-  UringPool pp{FLAGS_iouring_depth};
+  UringPool pp{GetFlag(FLAGS_iouring_depth)};
   pp.Run();
   ping_qps.Init(&pp);
 
   AcceptServer uring_acceptor(&pp);
-  uring_acceptor.AddListener(FLAGS_port, new PingListener(ctx));
-  if (FLAGS_http_port >= 0) {
-    uint16_t port = uring_acceptor.AddListener(FLAGS_http_port, new HttpListener<>);
+  PingListener* listener = new PingListener(ctx);
+
+  if (uds.empty()) {
+    uring_acceptor.AddListener(port, listener);
+  } else {
+    unlink(uds.c_str());
+    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), listener);
+    CHECK(!ec) << ec;
+  }
+
+  int http_port = GetFlag(FLAGS_http_port);
+  if (http_port >= 0) {
+    uint16_t port = uring_acceptor.AddListener(http_port, new HttpListener<>);
     LOG(INFO) << "Started http server on port " << port;
   }
 

@@ -67,19 +67,23 @@ LinuxSocketBase::~LinuxSocketBase() {
   }
 }
 
-error_code LinuxSocketBase::Create() {
+error_code LinuxSocketBase::Create(unsigned short pfamily) {
   DCHECK_EQ(fd_, -1);
 
   error_code ec;
-  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+
+  int fd = socket(pfamily, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
   fd_ = fd << 3;
+  if (pfamily == AF_UNIX) {
+    fd_ |= IS_UDS;
+  }
   return ec;
 }
 
-error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog) {
+error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
   sockaddr_in server_addr;
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
@@ -87,6 +91,22 @@ error_code LinuxSocketBase::Listen(unsigned port, unsigned backlog) {
   server_addr.sin_addr.s_addr = INADDR_ANY;
 
   return Listen((struct sockaddr*)&server_addr, sizeof(server_addr), backlog);
+}
+
+error_code LinuxSocketBase::ListenUDS(const char* path, unsigned backlog) {
+  DCHECK(fd_ & IS_UDS);
+
+  struct sockaddr_un addr;
+  size_t len = strlen(path);
+
+  if (len + 1 >= sizeof(addr.sun_path))
+    return make_error_code(errc::filename_too_long);
+
+  addr.sun_family = AF_UNIX;
+  memcpy(addr.sun_path, path, len);
+  addr.sun_path[len] = 0;
+
+  return Listen((struct sockaddr*)&addr, sizeof(addr), backlog);
 }
 
 error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned addr_len,
@@ -98,17 +118,6 @@ error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned ad
       return ec;
   }
 
-
-
-  /*const int val = 1;
-  for (int opt = 0; sock_opts_mask; ++opt) {
-    if (sock_opts_mask & 1) {
-      if (setsockopt(fd, SOL_SOCKET, opt, &val, sizeof(val)) < 0) {
-        LOG(WARNING) << "setsockopt: could not set opt " << opt << ", " << strerror(errno);
-      }
-    }
-    sock_opts_mask >>= 1;
-  }*/
   int fd = native_handle();
 
   int res = bind(fd, bind_addr, addr_len);

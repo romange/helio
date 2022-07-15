@@ -96,15 +96,18 @@ class LinuxSocketBase : public FiberSocketBase {
     return fd_ >> 3;
   }
 
-  // Creates a socket
-  error_code Create();
+  /// Creates a socket. By default with AF_INET family (2).
+  error_code Create(unsigned short protocol_family = 2);
 
   ABSL_MUST_USE_RESULT error_code Listen(const struct sockaddr* bind_addr, unsigned addr_len,
                                          unsigned backlog);
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
   // by the OS.
-  ABSL_MUST_USE_RESULT error_code Listen(unsigned port, unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog);
+
+  // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
+  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, unsigned backlog);
 
   error_code Shutdown(int how) override;
 
@@ -126,7 +129,7 @@ class LinuxSocketBase : public FiberSocketBase {
   LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd > 0 ? fd << 3 : fd) {
   }
 
-  enum { IS_SHUTDOWN = 0x1 };
+  enum { IS_SHUTDOWN = 0x1, IS_UDS = 0x2, REGISTER_FD = 0x4,};
 
   // 3 low bits are used for masking the state of fd.
   // gives me 512M descriptors.

@@ -33,12 +33,15 @@ class AcceptServer {
 
   // Returns the port number to which the listener was bound.
   // Check-fails in case of an error.
-  uint16_t AddListener(uint16_t port, ListenerInterface* cf);
+  uint16_t AddListener(uint16_t port, ListenerInterface* listener);
 
   // Advanced version that allows to specify bind address.
   // bind_addr can be null, in that case the behavior is to bind on all interfaces.
   // Does not check-fail - it's responsibility of the caller to check the error code.
-  std::error_code AddListener(const char* bind_addr, uint16_t port, ListenerInterface* cf);
+  std::error_code AddListener(const char* bind_addr, uint16_t port, ListenerInterface* listener);
+
+  // Adds a listener on unix domain sockets.
+  std::error_code AddUDSListener(const char* path, ListenerInterface* listener);
 
   void TriggerOnBreakSignal(std::function<void()> f) {
     on_break_hook_ = std::move(f);

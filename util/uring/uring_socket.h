@@ -15,7 +15,7 @@ namespace uring {
 class UringSocket : public LinuxSocketBase {
  public:
   using FiberSocketBase::AsyncWriteCb;
-  
+
   template <typename T> using Result = io::Result<T>;
 
   UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p) {
@@ -50,8 +50,6 @@ class UringSocket : public LinuxSocketBase {
   uint32_t CancelPoll(uint32_t id);
 
  private:
-  enum {REGISTER_FD = 2};
-
   Proactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
   }

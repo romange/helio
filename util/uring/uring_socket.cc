@@ -67,17 +67,12 @@ auto UringSocket::Close() -> error_code {
 auto UringSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
-  sockaddr_in client_addr;
-  socklen_t addr_len = sizeof(client_addr);
-
   error_code ec;
 
   int fd = native_handle();
   int real_fd = (fd_ & REGISTER_FD) ? GetProactor()->TranslateFixedFd(fd) : fd;
-
   while (true) {
-    int res =
-        accept4(real_fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int res = accept4(real_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       UringSocket* fs = new UringSocket{nullptr};
       fs->fd_ = res << 3;
@@ -92,9 +87,11 @@ auto UringSocket::Accept() -> AcceptResult {
       fc->sqe()->flags |= register_flag();
       IoResult io_res = fc.Get();
 
-      if (io_res == POLLERR) {
+      // tcp sockets set POLLERR but UDS set POLLHUP.
+      if ((io_res & (POLLERR | POLLHUP)) != 0) {
         return Unexpected(errc::connection_aborted);
       }
+
       continue;
     }
 

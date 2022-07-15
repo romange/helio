@@ -18,16 +18,7 @@ class UringSocketTest : public testing::Test {
  protected:
   void SetUp() final;
 
-  void TearDown() final {
-    listen_socket_.reset();
-    conn_socket_.reset();
-    if (accept_fb_.joinable()) {
-      accept_fb_.join();
-    }
-    proactor_->Stop();
-    proactor_thread_.join();
-    proactor_.reset();
-  }
+  void TearDown() final;
 
   static void SetUpTestCase() {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
@@ -70,6 +61,21 @@ void UringSocketTest::SetUp() {
       accept_ec_ = accept_res.error();
     }
   });
+}
+
+void UringSocketTest::TearDown() {
+  proactor_->Await([&] {
+    listen_socket_->Shutdown(SHUT_RDWR);
+  });
+
+  listen_socket_.reset();
+  conn_socket_.reset();
+  if (accept_fb_.joinable()) {
+    accept_fb_.join();
+  }
+  proactor_->Stop();
+  proactor_thread_.join();
+  proactor_.reset();
 }
 
 TEST_F(UringSocketTest, Basic) {
@@ -144,9 +150,7 @@ TEST_F(UringSocketTest, Poll) {
     us->PollEvent(POLLHUP | POLLERR, poll_cb);
   });
 
-  proactor_->Await([&] {
-    sock->Close();
-  });
+  proactor_->Await([&] { sock->Close(); });
   usleep(100);
 }
 
@@ -165,6 +169,20 @@ TEST_F(UringSocketTest, AsyncWrite) {
     });
   });
   done.Wait();
+}
+
+TEST_F(UringSocketTest, UDS) {
+  string path = base::GetTestTempPath("sock.uds");
+
+  unique_ptr<LinuxSocketBase> sock;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Create(AF_UNIX);
+    EXPECT_FALSE(ec);
+    ec = sock->ListenUDS(path.c_str(), 1);
+    EXPECT_FALSE(ec);
+  });
+
 }
 
 }  // namespace uring

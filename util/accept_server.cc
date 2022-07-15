@@ -102,8 +102,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
 
   ProactorBase* next = pool_->GetNextProactor();
 
-  std::unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
-  // uint32_t sock_opt_mask = listener->GetSockOptMask();
+  unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
 
   error_code ec;
   bool success = false;
@@ -125,6 +124,33 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   freeaddrinfo(servinfo);
 
   if (success) {
+    listener->RegisterPool(pool_);
+    listener->sock_ = std::move(fs);
+    list_interface_.emplace_back(listener);
+  }
+
+  return ec;
+}
+
+error_code AcceptServer::AddUDSListener(const char* path, ListenerInterface* listener) {
+  CHECK(listener && !listener->socket());
+
+  ProactorBase* next = pool_->GetNextProactor();
+  unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
+
+  error_code ec = next->Await([&] {
+    error_code ec = fs->Create(AF_UNIX);
+    if (ec)
+      return ec;
+
+    ec = listener->ConfigureServerSocket(fs->native_handle());
+    if (ec)
+      return ec;
+
+    return fs->ListenUDS(path, backlog_);
+  });
+
+  if (!ec) {
     listener->RegisterPool(pool_);
     listener->sock_ = std::move(fs);
     list_interface_.emplace_back(listener);
