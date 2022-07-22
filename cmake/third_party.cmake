@@ -169,16 +169,21 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20211102.0.tar.gz
-  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20211102.patch"
+  URL https://github.com/abseil/abseil-cpp/archive/20220623.0.tar.gz
 )
 
 FetchContent_GetProperties(abseil_cpp)
 if(NOT abseil_cpp_POPULATED)
   FetchContent_Populate(abseil_cpp)
-  set(BUILD_TESTING OFF)
-  set(ABSL_PROPAGATE_CXX_STD ON)
+  set(BUILD_TESTING OFF CACHE INTERNAL "")
+  set(ABSL_PROPAGATE_CXX_STD ON CACHE INTERNAL "")
+
+  # If we want to override a variable in a subproject, we can temporary change the var
+  # and then restore it if we use it ourselves.
+  set(CMAKE_CXX_FLAGS_RELEASE_OLD ${CMAKE_CXX_FLAGS_RELEASE})
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
+  set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
 
 FetchContent_Declare(
@@ -234,8 +239,7 @@ endif()
 add_third_party(
   gperf
   URL https://github.com/gperftools/gperftools/archive/gperftools-2.9.1.tar.gz
-  #GIT_REPOSITORY https://github.com/gperftools/gperftools
-  #GIT_TAG gperftools-2.9.1
+
   GIT_SHALLOW TRUE
   PATCH_COMMAND autoreconf -i   # update runs every time for some reason
   # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \

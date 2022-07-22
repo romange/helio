@@ -65,7 +65,7 @@ TEST_F(AbseilTest, SNPrintF) {
 void BM_CycleClock(benchmark::State& state) {
   while (state.KeepRunning()) {
     for (unsigned i = 0; i < 10; ++i) {
-      absl::base_internal::CycleClock::Now();
+      benchmark::DoNotOptimize(absl::base_internal::CycleClock::Now());
     }
   }
 }
