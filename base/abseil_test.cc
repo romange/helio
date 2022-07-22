@@ -6,10 +6,10 @@
 //   gcc -O3 -mtune=native -mavx -std=c++11 -S -masm=intel  -fverbose-asm bits_test.cc
 //    -I.. -I../third_party/libs/benchmark/include/ -I../third_party/libs/gtest/include/
 
+#include <absl/base/internal/cycleclock.h>
 #include <absl/debugging/internal/vdso_support.h>
 #include <absl/debugging/stacktrace.h>
 #include <absl/strings/str_format.h>
-
 #include <gperftools/stacktrace.h>
 #include <ucontext.h>
 
@@ -48,15 +48,27 @@ TEST_F(AbseilTest, PerftoolsProfile) {
   ASSERT_GT(res, 5);
 }
 
+// Does not work in release-mode.
+#if 0
 TEST_F(AbseilTest, Stacktrace) {
   void* stack[256];
   int res = absl::GetStackTraceWithContext(stack, 255, 1, NULL, NULL);
   ASSERT_GT(res, 5);
 }
+#endif
 
 TEST_F(AbseilTest, SNPrintF) {
   char buf[16];
   absl::SNPrintF(buf, sizeof(buf), "FOOBAR%04d", 42);
 }
+
+void BM_CycleClock(benchmark::State& state) {
+  while (state.KeepRunning()) {
+    for (unsigned i = 0; i < 10; ++i) {
+      absl::base_internal::CycleClock::Now();
+    }
+  }
+}
+BENCHMARK(BM_CycleClock);
 
 }  // namespace base
