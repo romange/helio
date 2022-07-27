@@ -86,8 +86,10 @@ function(add_third_party name)
     # Can not use | because we use it inside sh/install_cmd
 
     # we need those CMAKE_ARGS for cmake based 3rd party projects.
-    CMAKE_ARGS -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY:PATH=${INSTALL_ROOT}
-        -DCMAKE_LIBRARY_OUTPUT_DIRECTORY:PATH=${INSTALL_ROOT}
+    # CMAKE_ARCHIVE_OUTPUT_DIRECTORY is for static libs
+    # CMAKE_LIBRARY_OUTPUT_DIRECTORY is for shared libs
+    CMAKE_ARGS -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY:PATH=${INSTALL_ROOT}/lib
+        -DCMAKE_LIBRARY_OUTPUT_DIRECTORY:PATH=${INSTALL_ROOT}/lib
         -DCMAKE_BUILD_TYPE:STRING=Release
         -DBUILD_TESTING=OFF
         "-DCMAKE_C_FLAGS:STRING=-O3" -DCMAKE_CXX_FLAGS=${THIRD_PARTY_CXX_FLAGS}
