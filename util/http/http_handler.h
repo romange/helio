@@ -34,11 +34,20 @@ class HttpContext {
     // We need the serializer here because the serializer requires
     // a non-const file_body, and the message oriented version of
     // http::write only works with const messages.
+    namespace h2 = ::boost::beast::http;
     msg.prepare_payload();
-    ::boost::beast::http::response_serializer<Body> sr{msg};
+    h2::response_serializer<Body> sr{msg};
 
     ::boost::system::error_code ec;
-    ::boost::beast::http::write(asa_, sr, ec);
+    h2::write(asa_, sr, ec);
+  }
+
+  template<typename Serializer> ::boost::system::error_code Write(const Serializer& ser) {
+    namespace h2 = ::boost::beast::http;
+
+    ::boost::system::error_code ec;
+    h2::write(asa_, ser, ec);
+    return ec;
   }
 };
 

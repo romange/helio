@@ -6,7 +6,6 @@
 #include <boost/beast/http/file_body.hpp>
 
 #include <string_view>
-// #include "util/asio_stream_adapter.h"
 
 namespace util {
 namespace http {
@@ -26,7 +25,7 @@ inline StringResponse MakeStringResponse(
   return StringResponse(st, 11);
 }
 
-inline void SetMime(const char* mime, ::boost::beast::http::fields* dest) {
+template<typename Fields> inline void SetMime(const char* mime, Fields* dest) {
   dest->set(::boost::beast::http::field::content_type, mime);
 }
 

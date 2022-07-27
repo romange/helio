@@ -176,6 +176,8 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
 
   AsioStreamAdapter<> asa(*socket_);
 
+  HttpContext cntx(asa);
+
   while (!buf.empty()) {
     ParserType parser{move(request)};
     parser.eager(true);
@@ -186,7 +188,6 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
     buf.remove_prefix(consumed);
     request = parser.release();
 
-    HttpContext cntx(asa);
     VLOG(1) << "Full Url: " << request.target();
     HandleSingleRequest(request, &cntx);
   }

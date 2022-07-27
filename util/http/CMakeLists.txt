@@ -5,7 +5,7 @@ add_library(http_server_lib http_common.cc status_page.cc profilez_handler.cc ht
 cxx_link(http_server_lib absl::strings absl::time base http_beast_prebuilt metrics TRDP::gperf)
 
 add_executable(http_main http_main.cc)
-cxx_link(http_main uring_fiber_lib html_lib http_server_lib)
+cxx_link(http_main uring_fiber_lib html_lib http_server_lib TRDP::mimalloc)
 
 add_library(http_client_lib http_client.cc)
 cxx_link(http_client_lib proactor_lib)

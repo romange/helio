@@ -1,6 +1,8 @@
 // Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
+#include <mimalloc-new-delete.h>
+
 #include <absl/flags/usage.h>
 #include <absl/flags/usage_config.h>
 #include <absl/strings/match.h>
@@ -136,6 +138,7 @@ void PrintObservation(const metrics::ObservationDescriptor& od, absl::Span<const
 bool HelpshortFlags(std::string_view f) {
   return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
 }
+
 
 int main(int argc, char** argv) {
   absl::SetProgramUsageMessage("http example server");
