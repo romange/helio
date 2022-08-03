@@ -125,6 +125,11 @@ class LinuxSocketBase : public FiberSocketBase {
   endpoint_type LocalEndpoint() const;
   endpoint_type RemoteEndpoint() const;
 
+  bool IsUDS() const { return fd_ & IS_UDS; }
+
+  // Whether it was registered with io_uring engine.
+  bool IsDirect() const { return fd_ & REGISTER_FD; }
+
  protected:
   LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd > 0 ? fd << 3 : fd) {
   }

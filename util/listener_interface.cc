@@ -75,8 +75,12 @@ void ListenerInterface::RunAcceptLoop() {
   auto& fiber_props = this_fiber::properties<FiberProps>();
   fiber_props.set_name("AcceptLoop");
 
-  auto ep = sock_->LocalEndpoint();
-  VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
+  FiberSocketBase::endpoint_type ep;
+
+  if (!sock_->IsUDS() && !sock_->IsDirect()) {
+    ep = sock_->LocalEndpoint();
+    VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
+  }
 
   PreAcceptLoop(sock_->proactor());
 

@@ -182,7 +182,6 @@ TEST_F(UringSocketTest, UDS) {
     ec = sock->ListenUDS(path.c_str(), 1);
     EXPECT_FALSE(ec);
   });
-
 }
 
 }  // namespace uring
