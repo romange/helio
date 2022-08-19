@@ -23,7 +23,7 @@ jobs:
         container: ["ubuntu-dev:20", "alpine-dev:latest"]
     timeout-minutes: 90
     container:
-      image: ghcr.io/${{ github.actor }}/${{ matrix.container }}
+      image: ghcr.io/romange/${{ matrix.container }}
     steps:
     - uses: actions/checkout@v2
     - name: Cache build deps
