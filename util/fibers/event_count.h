@@ -10,7 +10,7 @@
 #include <boost/fiber/context.hpp>
 #include <boost/version.hpp>
 
-#if BOOST_VERSION >= 107600
+#if BOOST_VERSION >= 107500
   #define USE_WAKER 1
 #endif
 
