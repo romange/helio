@@ -34,6 +34,7 @@ using uring::UringSocket;
 using tcp = ::boost::asio::ip::tcp;
 
 using IoResult = Proactor::IoResult;
+using absl::GetFlag;
 using ::boost::fibers::fiber;
 
 ABSL_FLAG(bool, epoll, false, "If true use epoll for server");
@@ -50,6 +51,9 @@ ABSL_FLAG(uint32, write_num, 1000, "");
 ABSL_FLAG(uint32, max_pending_writes, 300, "");
 ABSL_FLAG(bool, sqe_async, false, "");
 ABSL_FLAG(bool, o_direct, true, "");
+ABSL_FLAG(bool, raw, true,
+          "If true, does not send/receive size parameter during "
+          "the connection handshake");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -65,7 +69,7 @@ struct TL {
 
     // | O_DIRECT
     int flags = O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC;
-    if (absl::GetFlag(FLAGS_o_direct))
+    if (GetFlag(FLAGS_o_direct))
       flags |= O_DIRECT;
 
     auto res = uring::OpenLinux(path, flags, 0666);
@@ -94,20 +98,20 @@ void TL::WriteToFile() {
     if (res < 0)
       LOG(ERROR) << "Error writing to file";
 
-    if (this->pending_write_reqs == absl::GetFlag(FLAGS_max_pending_writes)) {
+    if (this->pending_write_reqs == GetFlag(FLAGS_max_pending_writes)) {
       this->evc.notifyAll();
     }
     --this->pending_write_reqs;
   };
 
-  evc.await([this] { return pending_write_reqs < absl::GetFlag(FLAGS_max_pending_writes); });
+  evc.await([this] { return pending_write_reqs < GetFlag(FLAGS_max_pending_writes); });
 
   ++pending_write_reqs;
   uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
 
   uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
   se.PrepWrite(file->fd(), blob, 4096, 0);
-  if (absl::GetFlag(FLAGS_sqe_async))
+  if (GetFlag(FLAGS_sqe_async))
     se.sqe()->flags |= IOSQE_ASYNC;
 
   if (pending_write_reqs > max_pending_reqs) {
@@ -161,14 +165,14 @@ class EchoConnection : public Connection {
  private:
   void HandleRequests() final;
 
-  ::boost::system::error_code ReadMsg(size_t* sz);
+  std::error_code ReadMsg(size_t* sz);
 
   std::unique_ptr<uint8_t[]> work_buf_;
   size_t req_len_ = 0;
 };
 
-::boost::system::error_code EchoConnection::ReadMsg(size_t* sz) {
-  ::boost::system::error_code ec;
+std::error_code EchoConnection::ReadMsg(size_t* sz) {
+  boost::system::error_code ec;
   AsioStreamAdapter<FiberSocketBase> asa(*socket_);
 
   size_t bs = ::boost::asio::read(asa, ::boost::asio::buffer(work_buf_.get(), req_len_), ec);
@@ -180,8 +184,7 @@ class EchoConnection : public Connection {
 
 void EchoConnection::HandleRequests() {
   boost::this_fiber::properties<FiberProps>().set_name("HandleRequests");
-
-  ::boost::system::error_code ec;
+  std::error_code ec;
   size_t sz;
   iovec vec[2];
   uint8_t buf[8];
@@ -196,24 +199,33 @@ void EchoConnection::HandleRequests() {
   vec[0].iov_len = 8;
 
   auto ep = sock->RemoteEndpoint();
-  VLOG(1) << "Waiting for size header from " << ep;
-  auto es = socket_->Recv(buf);
-  if (!es.has_value()) {
-    if (es.error().value() == ECONNABORTED)
-      return;
-    LOG(FATAL) << "Bad Conn Handshake " << es.error() << " for socket " << ep;
+
+  VLOG(1) << "New connection from " << ep;
+
+  bool is_raw = GetFlag(FLAGS_raw);
+
+  if (is_raw) {
+    req_len_ = GetFlag(FLAGS_size);
   } else {
-    CHECK_EQ(es.value(), 8U);
-    VLOG(1) << "Received size from " << ep;
-    uint8_t val = 1;
-    socket_->WriteSome(io::Bytes(&val, 1));
+    VLOG(1) << "Waiting for size header from " << ep;
+    auto es = socket_->Recv(buf);
+    if (!es.has_value()) {
+      if (es.error().value() == ECONNABORTED)
+        return;
+      LOG(FATAL) << "Bad Conn Handshake " << es.error() << " for socket " << ep;
+    } else {
+      CHECK_EQ(es.value(), 8U);
+      VLOG(1) << "Received size from " << ep;
+      uint8_t ack = 1;
+      socket_->WriteSome(io::Bytes(&ack, 1));  // Send ACK
+    }
+
+    // size_t bs = asio::read(asa, asio::buffer(buf), ec);
+    CHECK(es.has_value() && es.value() == sizeof(buf));
+    req_len_ = absl::little_endian::Load64(buf);
   }
 
-  // size_t bs = asio::read(asa, asio::buffer(buf), ec);
-  CHECK(es.has_value() && es.value() == sizeof(buf));
-  req_len_ = absl::little_endian::Load64(buf);
-
-  CHECK_LE(req_len_, 1UL << 18);
+  CHECK_LE(req_len_, 1UL << 26);
   work_buf_.reset(new uint8_t[req_len_]);
 
   // after the handshake.
@@ -235,10 +247,16 @@ void EchoConnection::HandleRequests() {
     if (tl)
       tl->WriteToFile();
 
-    auto res = socket_->WriteSome(vec, 2);
-    if (!res)
+    if (is_raw) {
+      ec = socket_->Write(vec + 1, 1);
+    } else {
+      ec = socket_->Write(vec, 2);
+    }
+    if (ec)
       break;
   }
+
+  VLOG(1) << "Connection ended " << ep;
   connections.IncBy(-1);
 }
 
@@ -254,21 +272,21 @@ void RunServer(ProactorPool* pp) {
   connections.Init(pp);
 
   AcceptServer acceptor(pp);
-  acceptor.set_back_log(absl::GetFlag(FLAGS_backlog));
+  acceptor.set_back_log(GetFlag(FLAGS_backlog));
 
-  acceptor.AddListener(absl::GetFlag(FLAGS_port), new EchoListener);
-  if (absl::GetFlag(FLAGS_http_port) >= 0) {
-    uint16_t port = acceptor.AddListener(absl::GetFlag(FLAGS_http_port), new HttpListener<>);
+  acceptor.AddListener(GetFlag(FLAGS_port), new EchoListener);
+  if (GetFlag(FLAGS_http_port) >= 0) {
+    uint16_t port = acceptor.AddListener(GetFlag(FLAGS_http_port), new HttpListener<>);
     LOG(INFO) << "Started http server on port " << port;
   }
 
-  if (!absl::GetFlag(FLAGS_write_file).empty()) {
+  if (!GetFlag(FLAGS_write_file).empty()) {
     static void* blob =
         mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(MAP_FAILED != blob);
 
     auto write_file = [](unsigned index, ProactorBase* pb) {
-      string file = absl::StrCat(absl::GetFlag(FLAGS_write_file), "-",
+      string file = absl::StrCat(GetFlag(FLAGS_write_file), "-",
                                  absl::Dec(pb->GetIndex(), absl::kZeroPad4), ".bin");
       tl = new TL;
       tl->Open(file);
@@ -324,6 +342,9 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
   size_t iter = 0;
   size_t kMaxIter = 3;
   VLOG(1) << "Driver::Connect-Start " << index;
+
+  bool is_raw = GetFlag(FLAGS_raw);
+
   for (; iter < kMaxIter; ++iter) {
     uint64_t start = absl::GetCurrentTimeNanos();
     auto ec = socket_->Connect(ep);
@@ -333,6 +354,10 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     uint64_t start1 = absl::GetCurrentTimeNanos();
     uint64_t delta_msec = (start1 - start) / 1000000;
     LOG_IF(ERROR, delta_msec > 1000) << "Slow connect1 " << index << " " << delta_msec << " ms";
+
+    if (is_raw) {
+      break;
+    }
 
     // Send msg size.
     absl::little_endian::Store64(buf_, absl::GetFlag(FLAGS_size));
@@ -344,6 +369,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     delta_msec = (start2 - start) / 1000000;
     LOG_IF(ERROR, delta_msec > 2000) << "Slow connect2 " << index << " " << delta_msec << " ms";
 
+    // wait for ack.
     es = socket_->Recv(io::MutableBytes(buf_, 1));
     delta_msec = (absl::GetCurrentTimeNanos() - start2) / 1000000;
     LOG_IF(ERROR, delta_msec > 2000) << "Slow connect3 " << index << " " << delta_msec << " ms";
@@ -361,6 +387,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     socket_->Close();
     LOG(WARNING) << "Driver " << index << " retries";
   }
+
   CHECK_LT(iter, kMaxIter) << "Maximum reconnects reached";
   VLOG(1) << "Driver::Connect-End " << index;
 }
@@ -385,11 +412,13 @@ size_t Driver::Run(base::Histogram* dest) {
   bool conn_close = false;
   size_t i = 0;
   size_t req_size = absl::GetFlag(FLAGS_size);
+  size_t pipeline_cnt = absl::GetFlag(FLAGS_p);
+  bool is_raw = GetFlag(FLAGS_raw);
 
   for (; i < absl::GetFlag(FLAGS_n); ++i) {
     auto start = absl::GetCurrentTimeNanos();
 
-    for (size_t j = 0; j < absl::GetFlag(FLAGS_p); ++j) {
+    for (size_t j = 0; j < pipeline_cnt; ++j) {
       es = socket_->WriteSome(io::Bytes{msg.get(), req_size});
       if (!es && FiberSocketBase::IsConnClosed(es.error())) {
         conn_close = true;
@@ -402,20 +431,23 @@ size_t Driver::Run(base::Histogram* dest) {
     if (conn_close)
       break;
 
-    for (size_t j = 0; j < absl::GetFlag(FLAGS_p); ++j) {
+    for (size_t j = 0; j < pipeline_cnt; ++j) {
       // DVLOG(1) << "Recv " << lep << " " << i;
-      es = socket_->Recv(vec, 1);
-      if (!es && FiberSocketBase::IsConnClosed(es.error())) {
-        conn_close = true;
-        break;
-      }
+      if (!is_raw) {
+        es = socket_->Recv(vec, 1);
+        if (!es && FiberSocketBase::IsConnClosed(es.error())) {
+          conn_close = true;
+          break;
+        }
 
-      CHECK(es.has_value()) << "RecvError: " << es.error() << "/" << lep;
+        CHECK(es.has_value()) << "RecvError: " << es.error() << "/" << lep;
+      }
 
       ::boost::system::error_code ec;
       size_t sz = ::boost::asio::read(
           adapter, ::boost::asio::buffer(msg.get(), absl::GetFlag(FLAGS_size)), ec);
-      CHECK(!ec) << ec;
+
+      CHECK(!ec) << ec.message();
       CHECK_EQ(sz, absl::GetFlag(FLAGS_size));
     }
 
