@@ -54,6 +54,7 @@ ABSL_FLAG(bool, o_direct, true, "");
 ABSL_FLAG(bool, raw, true,
           "If true, does not send/receive size parameter during "
           "the connection handshake");
+ABSL_FLAG(bool, tcp_nodelay, false, "if true - use tcp_nodelay option for server sockets");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -191,7 +192,9 @@ void EchoConnection::HandleRequests() {
 
   int yes = 1;
   LinuxSocketBase* sock = (LinuxSocketBase*)socket_.get();
-  CHECK_EQ(0, setsockopt(sock->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
+  if (GetFlag(FLAGS_tcp_nodelay)) {
+    CHECK_EQ(0, setsockopt(sock->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
+  }
 
   connections.IncBy(1);
   AsioStreamAdapter<FiberSocketBase> asa(*socket_);
