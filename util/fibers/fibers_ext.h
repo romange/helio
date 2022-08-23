@@ -116,6 +116,10 @@ class Done {
     return impl_->Wait(reset);
   }
 
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    return impl_->WaitFor(duration);
+  }
+
   void Reset() {
     impl_->Reset();
   }
