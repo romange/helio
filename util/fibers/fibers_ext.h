@@ -74,6 +74,14 @@ class Done {
       return res;
     }
 
+    // Returns true if predicate became true, false if timeout reached.
+    bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+      auto tp = std::chrono::steady_clock::now() + duration;
+      std::cv_status status =
+          ec_.await_until([this] { return ready_.load(std::memory_order_acquire); }, tp);
+      return status == std::cv_status::no_timeout;
+    }
+
     // We use EventCount to wake threads without blocking.
     void Notify() {
       ready_.store(true, std::memory_order_release);
@@ -106,6 +114,10 @@ class Done {
   }
   bool Wait(DoneWaitDirective reset = AND_NOTHING) {
     return impl_->Wait(reset);
+  }
+
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    return impl_->WaitFor(duration);
   }
 
   void Reset() {
