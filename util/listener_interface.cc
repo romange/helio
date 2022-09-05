@@ -43,13 +43,18 @@ struct ListenerInterface::TLConnList {
   fibers::condition_variable_any empty_cv;
 
   void Link(Connection* c) {
+    DCHECK(!c->hook_.is_linked());
+
     list.push_front(*c);
     DVLOG(3) << "List size " << list.size();
   }
 
   void Unlink(Connection* c) {
-    auto it = list.iterator_to(*c);
+    DCHECK(c->hook_.is_linked());
+
+    auto it = ListType::s_iterator_to(*c);
     list.erase(it);
+
     DVLOG(2) << "Unlink conn, new list size: " << list.size();
     if (list.empty()) {
       empty_cv.notify_one();
@@ -169,7 +174,10 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
     LOG(ERROR) << "Uncaught exception " << e.what();
   }
 
+  // Our connection could migrate, hence we should find it again
+  clist = conn_list.find(this)->second;
   clist->Unlink(conn);
+
   guard.reset();
 }
 
@@ -204,22 +212,29 @@ void ListenerInterface::TraverseConnections(TraverseCB cb) {
 }
 
 void ListenerInterface::Migrate(Connection* conn, ProactorBase* dest) {
-  ProactorBase* src = conn->socket()->proactor();
-  CHECK(src->InMyThread());
+  ProactorBase* src_proactor = conn->socket()->proactor();
+  CHECK(src_proactor->InMyThread());
 
-  if (src == dest)
+  if (src_proactor == dest)
     return;
 
+  VLOG(1) << "Migrating from " << src_proactor->thread_id() << " to "
+          << dest->thread_id();
+
+  conn->OnPreMigrateThread();
   auto* clist = conn_list.find(this)->second;
   clist->Unlink(conn);
 
-  src->Migrate(dest);
+  src_proactor->Migrate(dest);
 
   DCHECK(dest->InMyThread());  // We are running in the updated thread.
   conn->socket()->SetProactor(dest);
 
-  clist = conn_list.find(this)->second;
-  clist->Link(conn);
+  auto* clist2 = conn_list.find(this)->second;
+  DCHECK(clist2 != clist);
+
+  clist2->Link(conn);
+  conn->OnPostMigrateThread();
 }
 
 void Connection::Shutdown() {

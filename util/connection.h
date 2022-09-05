@@ -14,7 +14,7 @@ class ListenerInterface;
 
 class Connection {
   using connection_hook_t = ::boost::intrusive::slist_member_hook<
-      ::boost::intrusive::link_mode<::boost::intrusive::normal_link>>;
+      ::boost::intrusive::link_mode<::boost::intrusive::safe_link>>;
 
   connection_hook_t hook_;
 
@@ -49,6 +49,9 @@ class Connection {
 
   virtual void OnShutdown() {
   }
+
+  virtual void OnPreMigrateThread() {}
+  virtual void OnPostMigrateThread() {}
 
   std::unique_ptr<FiberSocketBase> socket_;
   friend class ListenerInterface;
