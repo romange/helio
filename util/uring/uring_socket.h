@@ -32,7 +32,7 @@ class UringSocket : public LinuxSocketBase {
   ABSL_MUST_USE_RESULT error_code Close() final;
 
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
-  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb);
+  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
 

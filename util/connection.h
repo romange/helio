@@ -41,8 +41,11 @@ class Connection {
     return socket_.release();
   }
 
- protected:
+  // Calls shutdown(SHUT_RDWR) on a socket and then
+  // calls OnShutdown().
   void Shutdown();
+
+ protected:
 
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;

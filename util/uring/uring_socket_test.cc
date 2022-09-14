@@ -150,7 +150,10 @@ TEST_F(UringSocketTest, Poll) {
     us->PollEvent(POLLHUP | POLLERR, poll_cb);
   });
 
-  proactor_->Await([&] { sock->Close(); });
+  proactor_->Await([&] {
+    auto ec = sock->Close();
+    (void)ec;
+  });
   usleep(100);
 }
 
