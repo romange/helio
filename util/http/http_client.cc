@@ -12,7 +12,6 @@
 #include <boost/beast/http/write.hpp>
 
 #include "base/logging.h"
-#include "util/asio_stream_adapter.h"
 #include "util/fiber_socket_base.h"
 #include "util/proactor_base.h"
 
@@ -33,8 +32,11 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
   CHECK(absl::SimpleAtoi(service, &port));
   CHECK_LT(port, 1u << 16);
 
+  ::boost::system::error_code ec;
+  auto address = asio::ip::make_address(host, ec);
+  if (ec)
+    return ec;
 
-  auto address = asio::ip::make_address(host);
   FiberSocketBase::endpoint_type ep{address, uint16_t(port)};
   socket_.reset(proactor_->CreateSocket());
 
