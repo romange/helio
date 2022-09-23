@@ -1,5 +1,5 @@
-// Copyright 2018, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/http/http_client.h"
@@ -14,14 +14,16 @@
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
 #include "util/proactor_base.h"
+#include "util/dns_resolve.h"
 
 namespace util {
 namespace http {
 
-using namespace boost;
 using namespace std;
 
-namespace h2 = beast::http;
+namespace h2 = boost::beast::http;
+namespace ip = boost::asio::ip;
+using boost_error = boost::system::error_code;
 
 Client::Client(ProactorBase* proactor) : proactor_(proactor) {}
 
@@ -32,10 +34,17 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
   CHECK(absl::SimpleAtoi(service, &port));
   CHECK_LT(port, 1u << 16);
 
-  ::boost::system::error_code ec;
-  auto address = asio::ip::make_address(host, ec);
-  if (ec)
+  char ip[INET_ADDRSTRLEN];
+
+  error_code ec = DnsResolve(host.data(), 2000, ip);
+  if (ec) {
     return ec;
+  }
+
+  boost_error berr;
+  auto address = ip::make_address(ip, berr);
+  if (berr)
+    return berr;
 
   FiberSocketBase::endpoint_type ep{address, uint16_t(port)};
   socket_.reset(proactor_->CreateSocket());
@@ -55,7 +64,7 @@ std::error_code Client::Send(Verb verb, StringPiece url, StringPiece body,
   req.body().assign(body.begin(), body.end());
   req.prepare_payload();
 
-  system::error_code ec;
+  boost_error ec;
 
   AsioStreamAdapter<> adapter(*socket_);
 
@@ -67,7 +76,7 @@ std::error_code Client::Send(Verb verb, StringPiece url, StringPiece body,
   }
 
   // This buffer is used for reading and must be persisted
-  beast::flat_buffer buffer;
+  boost::beast::flat_buffer buffer;
 
   h2::read(adapter, buffer, *response, ec);
   VLOG(2) << "Resp: " << *response;
