@@ -14,8 +14,8 @@
 
 using namespace std;
 using ::testing::_;
-using ::testing::InSequence;
-using ::testing::Return;
+using testing::UnorderedElementsAre;
+using testing::Pair;
 
 namespace io {
 
@@ -129,6 +129,21 @@ TEST_F(IoTest, ProcReader) {
   EXPECT_GT(mdata->mem_cached, 0);
   EXPECT_GT(mdata->mem_SReclaimable, 0);
   EXPECT_GT(mdata->mem_total, 1ul << 30);
+}
+
+TEST_F(IoTest, IniReader) {
+  StringSource ss(R"(
+    foo = bar
+    [sec1 ]
+    x = y
+    z=1
+    )");
+  io::Result<ini::Contents> contents = ini::Parse(&ss, DO_NOT_TAKE_OWNERSHIP);
+  ASSERT_EQ(2, contents->size());
+  ASSERT_EQ(1, contents->count(""));
+  ASSERT_EQ(1, contents->count("sec1"));
+  ASSERT_THAT(contents->at(""), UnorderedElementsAre(Pair("foo", "bar")));
+  ASSERT_THAT(contents->at("sec1"), UnorderedElementsAre(Pair("x", "y"), Pair("z", "1")));
 }
 
 }  // namespace io

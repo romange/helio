@@ -2,16 +2,31 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
+#include "io/line_reader.h"
+
+#include <absl/strings/strip.h>
+
 #include <cstring>  // for rawmemchr
 
-#include "io/line_reader.h"
-#include "io/file.h"
-
 #include "base/logging.h"
+#include "io/file.h"
 
 namespace io {
 
 using namespace std;
+
+LineReader::Iterator::Iterator(LineReader* lr) : master_(lr) {
+  if (master_) {
+    this->operator++();
+  }
+}
+
+LineReader::Iterator& LineReader::Iterator::operator++() {
+  if (!master_->Next(&result_, &scratch_)) {
+    master_ = nullptr;
+  }
+  return *this;
+}
 
 void LineReader::Init(uint32_t buf_log) {
   CHECK(buf_log > 10 && buf_log < 28) << buf_log;
@@ -35,9 +50,9 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
   while (true) {
     // Common case: search of EOL.
 #ifdef HAS_RAWMEMCHR
-    char* ptr =  reinterpret_cast<char*>(rawmemchr(next_, '\n'));
+    char* ptr = reinterpret_cast<char*>(rawmemchr(next_, '\n'));
 #else
-    char* ptr =  reinterpret_cast<char*>(memchr(next_, '\n', end_ - next_ + 1));
+    char* ptr = reinterpret_cast<char*>(memchr(next_, '\n', end_ - next_ + 1));
 #endif
     if (ptr < end_) {  // Found EOL.
       ++line_num_;
@@ -71,7 +86,6 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
           return false;
         }
 
-
         if (scratch == nullptr)
           scratch = &scratch_;
 
@@ -94,7 +108,7 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
     }
 
     MutableBytes range{reinterpret_cast<uint8_t*>(buf_.get()),
-                                    /* -1 to allow sentinel */ page_size_ - 1};
+                       /* -1 to allow sentinel */ page_size_ - 1};
     auto sres = source_->ReadSome(range);
     if (!sres) {
       LOG(ERROR) << "LineReader read error " << sres.error() << " at line " << line_num_;
@@ -124,5 +138,51 @@ bool LineReader::Next(std::string_view* result, std::string* scratch) {
   DCHECK(line_num_ & kEofMask);
   return false;
 }
+
+namespace ini {
+
+io::Result<Contents> Parse(Source* source, Ownership ownership) {
+  LineReader lr(source, ownership);
+  Contents result;
+  Contents::value_type::second_type* map = nullptr;
+
+  for (string_view line : lr) {
+    line = absl::StripAsciiWhitespace(line);
+    size_t pos = line.find_first_of(";#");
+    line = line.substr(0, pos);
+    if (line.empty())
+      continue;
+
+    if (line.front() == '[' && line.back() == ']') {
+      string_view section = line;
+      section.remove_prefix(1);
+      section.remove_suffix(1);
+      string name = string(absl::StripAsciiWhitespace(section));
+      map = &result[name];
+    } else {
+      size_t pos = line.find('=');
+      if (pos == std::string::npos) {
+        continue;  // invalid line
+      }
+
+      string key(line.substr(0, pos));
+      string val(line.substr(pos + 1));
+      absl::StripAsciiWhitespace(&key);
+      absl::StripAsciiWhitespace(&val);
+
+      if (!map) {
+        map = &result[""];
+      }
+      (*map)[key] = val;
+    }
+  }
+
+  if (lr.status())
+    return nonstd::make_unexpected(lr.status());
+
+  return result;
+}
+
+}  // namespace ini
 
 }  // namespace io
