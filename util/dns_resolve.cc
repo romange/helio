@@ -74,6 +74,11 @@ error_code DnsResolve(const char* dns, uint32_t wait_ms, char dest_ip[]) {
   if (res == EAI_CANCELED) {
     return make_error_code(errc::operation_canceled);
   }
+
+  if (res == EAI_NONAME) {
+    return make_error_code(errc::bad_address);
+  }
+
   CHECK_EQ(0, res);
   servinfo = gai_req.ar_result;
 #else

@@ -55,20 +55,6 @@ void ListBuckets(const AWS& aws, ProactorBase* proactor) {
   }
 };
 
-void ListObjects(const AWS& aws, string_view bucket, string_view path, ProactorBase* proactor) {
-  LOG(INFO) << "list " << bucket << " " << path;
-
-  http::Client http_client{proactor};
-  http_client.set_connect_timeout_ms(2000);
-
-  auto list_res = proactor->Await([&] {
-    CHECK_EC(http_client.Connect("s3.amazonaws.com", "80"));
-    return error_code{};
-  });
-
-  CHECK(!list_res);
-}
-
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
@@ -90,12 +76,22 @@ int main(int argc, char* argv[]) {
       string_view clean = absl::StripPrefix(path, "s3://");
       string_view obj_path;
       size_t pos = clean.find('/');
-      string_view bucket = clean.substr(0, pos);
-
+      string_view bucket_name = clean.substr(0, pos);
       if (pos != string_view::npos) {
         obj_path = clean.substr(pos + 1);
       }
-      ListObjects(aws, bucket, obj_path, pp->GetNextProactor());
+      cloud::S3Bucket bucket(aws, bucket_name);
+      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) {
+        LOG(INFO) << name;
+      };
+
+      error_code ec = pp->GetNextProactor()->Await([&] {
+        auto ec = bucket.Connect(300);
+        CHECK(!ec);
+        return bucket.ListObjects(obj_path, cb);
+      });
+
+      CHECK(!ec) << ec;
     }
   } else {
     LOG(ERROR) << "Unknown command " << cmd;

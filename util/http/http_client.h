@@ -67,6 +67,8 @@ class Client {
     headers_.emplace_back(std::move(name), std::move(value));
   }
 
+  const std::string host() const { return host_; }
+
  private:
   static bool IsIoError(std::error_code ec) {
     return bool(ec);  // TODO: currently all erros are io errors
@@ -85,6 +87,7 @@ class Client {
 
   std::vector<HeaderPair> headers_;
   std::unique_ptr<FiberSocketBase> socket_;
+  std::string host_;
 };
 
 template <typename Req, typename Resp> std::error_code Client::Send(const Req& req, Resp* resp) {

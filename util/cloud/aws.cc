@@ -4,15 +4,14 @@
 
 #include "util/cloud/aws.h"
 
-#include <boost/beast/http/message.hpp>
-
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
 #include <absl/time/clock.h>
-
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+
+#include <boost/beast/http/message.hpp>
 
 #include "base/logging.h"
 
@@ -109,8 +108,8 @@ string DeriveSigKey(absl::string_view key, absl::string_view datestamp, absl::st
   return string(sign_key);
 }
 
-inline absl::string_view absl_sv(const ::boost::beast::string_view s) {
-  return absl::string_view{s.data(), s.size()};
+inline std::string_view std_sv(const ::boost::beast::string_view s) {
+  return std::string_view{s.data(), s.size()};
 }
 
 constexpr char kAlgo[] = "AWS4-HMAC-SHA256";
@@ -119,7 +118,6 @@ constexpr char kAlgo[] = "AWS4-HMAC-SHA256";
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const char AWS::kUnsignedPayloadSig[] = "UNSIGNED-PAYLOAD";
-
 
 string AWS::AuthHeader(string_view method, string_view headers, string_view target,
                        string_view content_sha256, string_view amz_date) const {
@@ -186,12 +184,12 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
   // TODO: right now I hardcoded the list but if we need more flexible headers,
   // this code much change.
   string canonical_headers =
-      absl::StrCat("host", ":", absl_sv(header->find(h2::field::host)->value()), "\n");
+      absl::StrCat("host", ":", std_sv(header->find(h2::field::host)->value()), "\n");
   absl::StrAppend(&canonical_headers, "x-amz-content-sha256", ":", payload_sig, "\n");
   absl::StrAppend(&canonical_headers, "x-amz-date", ":", amz_date, "\n");
 
-  string auth_header = AuthHeader(absl_sv(header->method_string()), canonical_headers,
-                                  absl_sv(header->target()), payload_sig, amz_date);
+  string auth_header = AuthHeader(std_sv(header->method_string()), canonical_headers,
+                                  std_sv(header->target()), payload_sig, amz_date);
 
   header->set(h2::field::authorization, auth_header);
 }
@@ -221,11 +219,19 @@ error_code AWS::Init() {
   string amz_date = absl::FormatTime("%Y%m%d", tn, utc_tz);
   strcpy(date_str_, amz_date.c_str());
 
-  sign_key_ = DeriveSigKey(secret_, date_str_, region_id_, service_);
-
-  credential_scope_ = absl::StrCat(date_str_, "/", region_id_, "/", service_, "/", "aws4_request");
+  SetScopeAndSignKey();
 
   return error_code{};
+}
+
+void AWS::UpdateRegion(std::string_view region) {
+  region_ = region;
+  SetScopeAndSignKey();
+}
+
+void AWS::SetScopeAndSignKey() {
+  sign_key_ = DeriveSigKey(secret_, date_str_, region_, service_);
+  credential_scope_ = absl::StrCat(date_str_, "/", region_, "/", service_, "/", "aws4_request");
 }
 
 }  // namespace cloud

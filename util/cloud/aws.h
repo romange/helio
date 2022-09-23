@@ -15,8 +15,8 @@ class AWS {
   static const char kEmptySig[];
   static const char kUnsignedPayloadSig[];
 
-  AWS(const std::string& region_id, const std::string& service)
-      : region_id_(region_id), service_(service) {
+  AWS(const std::string& region, const std::string& service)
+      : region_(region), service_(service) {
   }
 
   std::error_code Init();
@@ -30,12 +30,19 @@ class AWS {
   //
   void Sign(std::string_view payload_sig, HttpHeader* header) const;
 
+  const std::string& region() const {
+    return region_;
+  }
+
+  void UpdateRegion(std::string_view region);
+
  private:
   std::string AuthHeader(std::string_view method, std::string_view headers,
                          std::string_view target, std::string_view payload_sig,
                          std::string_view amz_date) const;
+  void SetScopeAndSignKey();
 
-  std::string region_id_, service_, secret_, access_key_;
+  std::string region_, service_, secret_, access_key_;
 
   std::string sign_key_;
   std::string credential_scope_;

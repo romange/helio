@@ -48,6 +48,7 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
 
   FiberSocketBase::endpoint_type ep{address, uint16_t(port)};
   socket_.reset(proactor_->CreateSocket());
+  host_ = host;
 
   return socket_->Connect(ep);
 }
