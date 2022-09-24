@@ -124,6 +124,9 @@ class Proactor : public ProactorBase {
 
   std::vector<CompletionEntry> centries_;
   std::vector<int> register_fds_;
+
+  // we keep this vector only for iouring because its timers are one shot.
+  // For epoll, periodic timers are refreshed automatically.
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
   int32_t next_free_ce_ = -1;

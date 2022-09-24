@@ -1,6 +1,7 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #pragma once
 
 #include <pthread.h>
@@ -173,6 +174,7 @@ class ProactorBase {
 
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
+  static constexpr unsigned kMaxSpinLimit = 5;
 
   struct PeriodicItem {
     PeriodicTask task;
@@ -194,6 +196,9 @@ class ProactorBase {
   virtual void SchedulePeriodic(uint32_t id, PeriodicItem* item) = 0;
   virtual void CancelPeriodicInternal(uint32_t val1, uint32_t val2) = 0;
   void RunOnIdleTasks();
+
+  static void Pause(unsigned strength);
+  static void ModuleInit();
 
   static uint64_t GetClockNanos() {
     timespec ts;

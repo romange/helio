@@ -154,7 +154,7 @@ void FiberSchedAlgo::notify() noexcept {
   if (seqnum == ProactorBase::WAIT_SECTION_STATE) {
     ProactorBase* from = ProactorBase::me();
     if (from)
-      from->algo_notify_cnt_.fetch_add(1, std::memory_order_relaxed);
+      from->algo_notify_cnt_.fetch_add(1, memory_order_relaxed);
     proactor_->WakeRing();
   }
 }

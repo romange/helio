@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/proactor_base.h"
@@ -47,11 +47,16 @@ void SigAction(int signal, siginfo_t*, void*) {
   }
 }
 
+unsigned pause_amplifier = 50;
+std::once_flag module_init;
+
 }  // namespace
 
 thread_local ProactorBase::TLInfo ProactorBase::tl_info_;
 
 ProactorBase::ProactorBase() : task_queue_(512) {
+  call_once(module_init, &ModuleInit);
+
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   CHECK_GE(wake_fd_, 0);
   VLOG(1) << "Created wake_fd is " << wake_fd_;
@@ -206,9 +211,9 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
 
 // Remember, WakeRing is called from external threads.
 void ProactorBase::WakeRing() {
-  DVLOG(2) << "Wake ring " << tq_seq_.load(std::memory_order_relaxed);
+  DVLOG(2) << "Wake ring " << tq_seq_.load(memory_order_relaxed);
 
-  tq_wakeup_ev_.fetch_add(1, std::memory_order_relaxed);
+  tq_wakeup_ev_.fetch_add(1, memory_order_relaxed);
 
   /**
    * It's tempting to use io_uring_prep_nop() here in order to resume wait_cqe() call.
@@ -225,6 +230,38 @@ void ProactorBase::WakeRing() {
 
   uint64_t val = 1;
   CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
+}
+
+void ProactorBase::Pause(unsigned count) {
+  auto pc = pause_amplifier;
+
+  for (unsigned i = 0; i < count * pc; ++i) {
+#if defined(__i386__) || defined(__amd64__)
+    __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+      /* Use an isb here as we've found it's much closer in duration to
+      * the x86 pause instruction vs. yield which is a nop and thus the
+      * loop count is lower and the interconnect gets a lot more traffic
+      * from loading the ticket above. */
+    __asm__ __volatile__ ("isb");
+#endif
+  }
+}
+
+void ProactorBase::ModuleInit() {
+  uint64_t delta;
+  while (true) {
+    uint64_t now = GetClockNanos();
+    for (unsigned i = 0; i < 10; ++i) {
+      Pause(kMaxSpinLimit);
+    }
+    delta = GetClockNanos() - now;
+    VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";
+
+    if (delta < 20000 || pause_amplifier == 1)
+      break;
+    pause_amplifier -= (pause_amplifier + 7) / 8;
+  };
 }
 
 }  // namespace util

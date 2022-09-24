@@ -48,9 +48,6 @@ namespace uring {
 
 namespace {
 
-constexpr unsigned kMaxSpinLimit = 5;
-unsigned pause_amplifier = 50;
-
 void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
   struct io_uring_cqe* cqe_ptr = nullptr;
 
@@ -80,56 +77,14 @@ unsigned IoRingPeek(const io_uring& ring, io_uring_cqe* cqes, unsigned count) {
   return count;
 }
 
-inline void Pause(unsigned count) {
-  auto pc = pause_amplifier;
-
-  for (unsigned i = 0; i < count * pc; ++i) {
-#if defined(__i386__) || defined(__amd64__)
-    __asm__ __volatile__("pause");
-#elif defined(__aarch64__)
-      /* Use an isb here as we've found it's much closer in duration to
-      * the x86 pause instruction vs. yield which is a nop and thus the
-      * loop count is lower and the interconnect gets a lot more traffic
-      * from loading the ticket above. */
-    __asm__ __volatile__ ("isb");
-#endif
-  }
-}
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kWakeIndex = 1;
 
 constexpr uint64_t kUserDataCbIndex = 1024;
 
-std::once_flag module_init;
-
-uint64_t GetClockNanos() {
-  timespec ts;
-  // absl::GetCurrentTimeNanos() is not monotonic and it syncs with the system clock.
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ts.tv_nsec + ts.tv_sec * 1000000000UL;
-}
-
-
-void ModuleInit() {
-  uint64_t delta;
-  while (true) {
-    uint64_t now = GetClockNanos();
-    for (unsigned i = 0; i < 10; ++i) {
-      Pause(kMaxSpinLimit);
-    }
-    delta = GetClockNanos() - now;
-    VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";
-
-    if (delta < 20000 || pause_amplifier == 0)
-      break;
-    pause_amplifier -= (pause_amplifier + 7) / 8;
-  };
-}
-
 }  // namespace
 
 Proactor::Proactor() : ProactorBase() {
-  call_once(module_init, &ModuleInit);
 }
 
 Proactor::~Proactor() {
@@ -165,8 +120,7 @@ void Proactor::Run() {
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
 
-  bool suspendioloop_called = false;
-  bool should_suspend = false;
+  bool suspendioloop_called = false, should_suspend = false;
   base::Histogram hist;
 
   while (true) {
@@ -253,7 +207,8 @@ void Proactor::Run() {
       sqe_avail_.notifyAll();
     }
 
-    // Check if we are notified by FiberSchedAlgo::notify().
+    // Check if we are notified by FiberSchedAlgo::notify() via RequestDispatcher
+    // that sets lsb of tq_seq_.
     if (tq_seq & 1) {
       // We allow dispatch fiber to run.
 

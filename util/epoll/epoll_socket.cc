@@ -1,8 +1,8 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
-#include "util/epoll/fiber_socket.h"
+#include "util/epoll/epoll_socket.h"
 
 #include <netinet/in.h>
 #include <sys/epoll.h>
@@ -107,10 +107,11 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
 
   error_code ec;
 
-  fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (posix_err_wrap(fd_, &ec) < 0)
+  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
+  fd_ = (fd << 3);
   OnSetProactor();
   current_context_ = fibers::context::active();
 
@@ -118,9 +119,9 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
   ev.data.u32 = arm_index_ + 1024;  // TODO: to fix it.
 
-  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
+  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd, &ev));
   while (true) {
-    int res = connect(fd_, (const sockaddr*)ep.data(), ep.size());
+    int res = connect(fd, (const sockaddr*)ep.data(), ep.size());
     if (res == 0) {
       break;
     }
@@ -137,14 +138,15 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   current_context_ = nullptr;
 
   if (ec) {
-    GetProactor()->Disarm(fd_, arm_index_);
-    if (close(fd_) < 0) {
+    GetProactor()->Disarm(fd, arm_index_);
+    if (close(fd) < 0) {
       LOG(WARNING) << "Could not close fd " << strerror(errno);
     }
     fd_ = -1;
   }
+
   ev.events = EPOLLIN | EPOLLET;
-  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
+  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd, &ev));
 
   return ec;
 }

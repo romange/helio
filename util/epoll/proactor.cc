@@ -14,7 +14,7 @@
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/epoll/epoll_fiber_scheduler.h"
-#include "util/epoll/fiber_socket.h"
+#include "util/epoll/epoll_socket.h"
 
 #define EV_CHECK(x)                                                                   \
   do {                                                                                \
@@ -25,8 +25,12 @@
     }                                                                                 \
   } while (false)
 
-using namespace boost;
+#define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
+
 namespace ctx = boost::context;
+namespace fibers = boost::fibers;
+namespace this_fiber = boost::this_fiber;
+using namespace std;
 
 namespace util {
 namespace epoll {
@@ -36,7 +40,7 @@ namespace {
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kNopIndex = 2;
 constexpr uint64_t kUserDataCbIndex = 1024;
-constexpr uint32_t kSpinLimit = 30;
+constexpr uint32_t kMaxSpinLimit = 5;
 
 }  // namespace
 
@@ -75,7 +79,7 @@ void EpollProactor::Init() {
 
 void EpollProactor::Run() {
   VLOG(1) << "EpollProactor::Run";
-  
+
   main_loop_ctx_ = fibers::context::active();
   fibers::scheduler* sched = main_loop_ctx_->get_scheduler();
 
@@ -85,44 +89,59 @@ void EpollProactor::Run() {
 
   is_stopped_ = false;
 
-  constexpr size_t kBatchSize = 64;
+  constexpr size_t kBatchSize = 128;
   struct epoll_event cevents[kBatchSize];
 
   uint32_t tq_seq = 0;
-  uint32_t num_stalls = 0;
-  uint32_t spin_loops = 0, num_task_runs = 0;
+  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
+  uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
+  bool should_suspend = false;
   Tasklet task;
 
   while (true) {
+    ++loop_cnt;
     num_task_runs = 0;
 
-    uint64_t task_start = 0;
+    tq_seq = tq_seq_.load(memory_order_acquire);
 
-    tq_seq = tq_seq_.load(std::memory_order_acquire);
+    if (task_queue_.try_dequeue(task)) {
+      uint32_t cnt = 0;
+      uint64_t task_start = GetClockNanos();
 
-    // This should handle wait-free and "submit-free" short CPU tasks enqued using Async/Await
-    // calls. We allocate the quota of 500K nsec (500usec) of CPU time per iteration.
-    while (task_queue_.try_dequeue(task)) {
-      ++num_task_runs;
-      tl_info_.monotonic_time = GetClockNanos();
-      task();
-      if (task_start == 0) {
-        task_start = tl_info_.monotonic_time;
-      } else if (task_start + 500000 < tl_info_.monotonic_time) {
-        break;
-      }
-    }
+      // update thread-local clock service via GetMonotonicTimeNs().
+      tl_info_.monotonic_time = task_start;
+      do {
+        task();
+        ++num_task_runs;
+        ++cnt;
+        tl_info_.monotonic_time = GetClockNanos();
+        if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
+          ++task_interrupts;
+          break;
+        }
 
-    if (num_task_runs) {
+        if (cnt == 32) {
+          // we notify threads if we unloaded a bunch of tasks.
+          // if in parallel they start pushing we may unload them in parallel
+          // via this loop thus increasing its efficiency.
+          task_queue_avail_.notifyAll();
+        }
+      } while (task_queue_.try_dequeue(task));
+
+      num_task_runs += cnt;
+      DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
+
+      // We notify second time to avoid deadlocks.
+      // Without it ProactorTest.AsyncCall blocks.
       task_queue_avail_.notifyAll();
     }
 
     int timeout = 0;  // By default we do not block on epoll_wait.
 
-    if (spin_loops >= kSpinLimit) {
+    if (spin_loops >= kMaxSpinLimit) {
       spin_loops = 0;
 
-      if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
+      if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
         // We check stop condition when all the pending events were processed.
         // It's up to the app-user to make sure that the incoming flow of events is stopped before
         // stopping EpollProactor.
@@ -142,35 +161,66 @@ void EpollProactor::Run() {
       LOG(FATAL) << "TBD: " << errno << " " << strerror(errno);
     }
 
-    uint32_t cqe_count = epoll_res;
-    if (cqe_count) {
-      DispatchCompletions(cevents, cqe_count);
+    if (timeout == -1) {
+      // Zero all bits except the lsb which signals we need to switch to dispatch fiber.
+      tq_seq_.fetch_and(1, memory_order_release);
     }
 
-    if (timeout == -1) {
-      // Reset all except the LSB bit that signals that we need to switch to dispatch fiber.
-      tq_seq_.fetch_and(1, std::memory_order_release);
+    uint32_t cqe_count = epoll_res;
+    if (cqe_count) {
+      ++cqe_fetches;
+      tl_info_.monotonic_time = GetClockNanos();
+
+      while (true) {
+        VPRO(2) << "Fetched " << cqe_count << " cqes";
+        DispatchCompletions(cevents, cqe_count);
+
+        if (cqe_count < kBatchSize) {
+          break;
+        }
+        epoll_res = epoll_wait(epoll_fd_, cevents, kBatchSize, 0);
+        if (epoll_res < 0) {
+          break;
+        }
+        cqe_count = epoll_res;
+      };
     }
 
     if (tq_seq & 1) {  // We allow dispatch fiber to run.
-      tq_seq_.fetch_and(~1U, std::memory_order_relaxed);
+      tq_seq_.fetch_and(~1U, memory_order_relaxed);
+      tq_seq &= ~1;
+
       this_fiber::yield();
+
+      // we preempted without passing through suspend_until.
+      should_suspend = true;
     }
 
-    if (sched->has_ready_fibers()) {
+    if (should_suspend || sched->has_ready_fibers() ||
+        tq_seq_.load(memory_order_relaxed) != tq_seq) {
       // Suspend this fiber until others finish runnning and get blocked.
       // Eventually UringFiberAlgo will resume back this fiber in suspend_until
       // function.
       DVLOG(2) << "Suspend ioloop";
       auto now = GetClockNanos();
       tl_info_.monotonic_time = now;
-      algo->SuspendIoLoop(now);
+      if (algo->SuspendIoLoop(now)) {
+        should_suspend = false;
+        ++num_suspends;
+      }
 
       DVLOG(2) << "Resume ioloop";
       spin_loops = 0;
+      continue;
     }
+
+    // TODO: to handle idle tasks.
+    Pause(spin_loops);
     ++spin_loops;
   }
+
+  VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << loop_cnt << "/" << num_stalls << "/"
+          << cqe_fetches << "/" << num_suspends;
 
   VLOG(1) << "wakeups/stalls: " << tq_wakeup_ev_.load() << "/" << num_stalls;
 
@@ -232,17 +282,8 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   ts.it_interval = item->period;
   item->val1 = tfd;
 
-  auto cb = [item](uint32_t event_mask, EpollProactor*) {
-    if (!item->in_map) {
-      delete item;
-      return;
-    }
-
-    item->task();
-    uint64_t res;
-    if (read(item->val1, &res, sizeof(res)) == -1) {
-      LOG(ERROR) << "Error reading from timer, errno " << errno;
-    }
+  auto cb = [this, item](uint32_t event_mask, EpollProactor*) {
+    this->PeriodicCb(item);
   };
 
   unsigned arm_id = Arm(tfd, std::move(cb), EPOLLIN);
@@ -251,19 +292,30 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   CHECK_EQ(0, timerfd_settime(tfd, 0, &ts, NULL));
 }
 
-void EpollProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
-  auto arm_index = val2;
-
+void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
   // we call the callback one more time explicitly in order to make sure it
   // deleted PeriodicItem.
-  if (centries_[arm_index].cb) {
-    centries_[arm_index].cb(0, this);
-    centries_[arm_index].cb = nullptr;
+  if (centries_[arm_id].cb) {
+    centries_[arm_id].cb(0, this);
+    centries_[arm_id].cb = nullptr;
   }
 
-  Disarm(val1, val2);
-  if (close(val1) == -1) {
+  Disarm(tfd, arm_id);
+  if (close(tfd) == -1) {
     LOG(ERROR) << "Could not close timer, error " << errno;
+  }
+}
+
+void EpollProactor::PeriodicCb(PeriodicItem* item) {
+  if (!item->in_map) {
+    delete item;
+    return;
+  }
+
+  item->task();
+  uint64_t res;
+  if (read(item->val1, &res, sizeof(res)) == -1) {
+    LOG(ERROR) << "Error reading from timer, errno " << errno;
   }
 }
 

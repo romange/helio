@@ -45,7 +45,7 @@ class EpollProactor : public ProactorBase {
   LinuxSocketBase* CreateSocket(int fd = -1) final;
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
   void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
-
+  void PeriodicCb(PeriodicItem* item);
 
   void RegrowCentries();
   void ArmWakeupEvent();
