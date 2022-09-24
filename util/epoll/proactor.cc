@@ -1,8 +1,8 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
-#include "util/epoll/ev_controller.h"
+#include "util/epoll/proactor.h"
 
 #include <signal.h>
 #include <string.h>
@@ -16,13 +16,13 @@
 #include "util/epoll/epoll_fiber_scheduler.h"
 #include "util/epoll/fiber_socket.h"
 
-#define EV_CHECK(x)                                                              \
-  do {                                                                           \
-    int __res_val = (x);                                                         \
-    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                     \
-      LOG(FATAL) << "Error " << (-__res_val) << " evaluating '" #x "': "         \
-                 << detail::SafeErrorMessage(-__res_val);                        \
-    }                                                                            \
+#define EV_CHECK(x)                                                                   \
+  do {                                                                                \
+    int __res_val = (x);                                                              \
+    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                          \
+      LOG(FATAL) << "Error " << (-__res_val)                                          \
+                 << " evaluating '" #x "': " << detail::SafeErrorMessage(-__res_val); \
+    }                                                                                 \
   } while (false)
 
 using namespace boost;
@@ -40,23 +40,42 @@ constexpr uint32_t kSpinLimit = 30;
 
 }  // namespace
 
-EvController::EvController() : ProactorBase() {
+EpollProactor::EpollProactor() : ProactorBase() {
   epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
   CHECK_GE(epoll_fd_, 0);
   VLOG(1) << "Created epoll_fd_ " << epoll_fd_;
 }
 
-EvController::~EvController() {
+EpollProactor::~EpollProactor() {
   CHECK(is_stopped_);
   close(epoll_fd_);
 
-  DVLOG(1) << "~EvController";
+  DVLOG(1) << "~EpollProactor";
 }
 
-void EvController::Run() {
-  VLOG(1) << "EvController::Run";
-  Init();
+void EpollProactor::Init() {
+  CHECK_EQ(0U, thread_id_) << "Init was already called";
 
+  centries_.resize(512);  // .index = -1
+  next_free_ce_ = 0;
+  for (size_t i = 0; i < centries_.size() - 1; ++i) {
+    centries_[i].index = i + 1;
+  }
+
+  thread_id_ = pthread_self();
+  tl_info_.owner = this;
+
+  auto cb = [ev_fd = wake_fd_](uint32_t mask, auto*) {
+    DVLOG(1) << "EventFdCb called " << mask;
+    uint64_t val;
+    CHECK_EQ(8, read(ev_fd, &val, sizeof(val)));
+  };
+  Arm(wake_fd_, std::move(cb), EPOLLIN);
+}
+
+void EpollProactor::Run() {
+  VLOG(1) << "EpollProactor::Run";
+  
   main_loop_ctx_ = fibers::context::active();
   fibers::scheduler* sched = main_loop_ctx_->get_scheduler();
 
@@ -106,7 +125,7 @@ void EvController::Run() {
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
         // We check stop condition when all the pending events were processed.
         // It's up to the app-user to make sure that the incoming flow of events is stopped before
-        // stopping EvController.
+        // stopping EpollProactor.
         if (is_stopped_)
           break;
         ++num_stalls;
@@ -158,7 +177,7 @@ void EvController::Run() {
   VLOG(1) << "centries size: " << centries_.size();
 }
 
-unsigned EvController::Arm(int fd, CbType cb, uint32_t event_mask) {
+unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
   epoll_event ev;
   ev.events = event_mask;
   if (next_free_ce_ < 0) {
@@ -182,12 +201,12 @@ unsigned EvController::Arm(int fd, CbType cb, uint32_t event_mask) {
   return ret;
 }
 
-void EvController::UpdateCb(unsigned arm_index, CbType cb) {
+void EpollProactor::UpdateCb(unsigned arm_index, CbType cb) {
   CHECK_LT(arm_index, centries_.size());
   centries_[arm_index].cb = cb;
 }
 
-void EvController::Disarm(int fd, unsigned arm_index) {
+void EpollProactor::Disarm(int fd, unsigned arm_index) {
   DVLOG(1) << "Disarming " << fd << " on " << arm_index;
   CHECK_LT(arm_index, centries_.size());
 
@@ -198,34 +217,14 @@ void EvController::Disarm(int fd, unsigned arm_index) {
   CHECK_EQ(0, epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, NULL));
 }
 
-void EvController::Init() {
-  CHECK_EQ(0U, thread_id_) << "Init was already called";
-
-  centries_.resize(512);  // .index = -1
-  next_free_ce_ = 0;
-  for (size_t i = 0; i < centries_.size() - 1; ++i) {
-    centries_[i].index = i + 1;
-  }
-
-  thread_id_ = pthread_self();
-  tl_info_.owner = this;
-
-  auto cb = [ev_fd = wake_fd_](uint32_t mask, auto*) {
-    DVLOG(1) << "EventFdCb called " << mask;
-    uint64_t val;
-    CHECK_EQ(8, read(ev_fd, &val, sizeof(val)));
-  };
-  Arm(wake_fd_, std::move(cb), EPOLLIN);
-}
-
-LinuxSocketBase* EvController::CreateSocket(int fd) {
+LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
   FiberSocket* res = new FiberSocket(fd);
   res->SetProactor(this);
 
   return res;
 }
 
-void EvController::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
+void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   CHECK_GE(tfd, 0);
   itimerspec ts;
@@ -233,7 +232,7 @@ void EvController::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   ts.it_interval = item->period;
   item->val1 = tfd;
 
-  auto cb = [item](uint32_t event_mask, EvController*) {
+  auto cb = [item](uint32_t event_mask, EpollProactor*) {
     if (!item->in_map) {
       delete item;
       return;
@@ -252,7 +251,7 @@ void EvController::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   CHECK_EQ(0, timerfd_settime(tfd, 0, &ts, NULL));
 }
 
-void EvController::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
+void EpollProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   auto arm_index = val2;
 
   // we call the callback one more time explicitly in order to make sure it
@@ -268,12 +267,12 @@ void EvController::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   }
 }
 
-void EvController::DispatchCompletions(epoll_event* cevents, unsigned count) {
+void EpollProactor::DispatchCompletions(epoll_event* cevents, unsigned count) {
   DVLOG(2) << "DispatchCompletions " << count << " cqes";
   for (unsigned i = 0; i < count; ++i) {
     const auto& cqe = cevents[i];
 
-    // I allocate range of 1024 reserved values for the internal EvController use.
+    // I allocate range of 1024 reserved values for the internal EpollProactor use.
     uint32_t user_data = cqe.data.u32;
 
     if (cqe.data.u32 >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
@@ -294,7 +293,7 @@ void EvController::DispatchCompletions(epoll_event* cevents, unsigned count) {
   }
 }
 
-void EvController::RegrowCentries() {
+void EpollProactor::RegrowCentries() {
   size_t prev = centries_.size();
   VLOG(1) << "RegrowCentries from " << prev << " to " << prev * 2;
 

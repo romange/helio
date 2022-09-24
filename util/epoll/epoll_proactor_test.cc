@@ -1,8 +1,8 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
-#include "util/epoll/ev_controller.h"
+#include "util/epoll/proactor.h"
 
 #include <fcntl.h>
 #include <gmock/gmock.h>
@@ -25,11 +25,13 @@ using testing::Pair;
 namespace util {
 namespace epoll {
 
-class EvControllerTest : public testing::Test {
+class EpollProactorTest : public testing::Test {
  protected:
   void SetUp() override {
-    ev_cntrl_ = std::make_unique<EvController>();
-    ev_cntrl_thread_ = thread{[this] { ev_cntrl_->Run(); }};
+    ev_cntrl_ = std::make_unique<EpollProactor>();
+    ev_cntrl_thread_ = thread{[this] { 
+      ev_cntrl_->Init();
+      ev_cntrl_->Run(); }};
   }
 
   void TearDown() override {
@@ -42,18 +44,18 @@ class EvControllerTest : public testing::Test {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
   }
 
-  std::unique_ptr<EvController> ev_cntrl_;
+  std::unique_ptr<EpollProactor> ev_cntrl_;
   std::thread ev_cntrl_thread_;
 };
 
-TEST_F(EvControllerTest, AsyncCall) {
+TEST_F(EpollProactorTest, AsyncCall) {
   for (unsigned i = 0; i < 1000; ++i) {
     ev_cntrl_->DispatchBrief([] {});
   }
   usleep(5000);
 }
 
-TEST_F(EvControllerTest, Await) {
+TEST_F(EpollProactorTest, Await) {
   thread_local int val = 5;
 
   ev_cntrl_->AwaitBrief([] { val = 15; });
@@ -63,7 +65,7 @@ TEST_F(EvControllerTest, Await) {
   EXPECT_EQ(15, j);
 }
 
-TEST_F(EvControllerTest, Sleep) {
+TEST_F(EpollProactorTest, Sleep) {
   ev_cntrl_->Await([] {
     LOG(INFO) << "Before Sleep";
     this_fiber::sleep_for(20ms);
@@ -71,7 +73,7 @@ TEST_F(EvControllerTest, Sleep) {
   });
 }
 
-TEST_F(EvControllerTest, DispatchTest) {
+TEST_F(EpollProactorTest, DispatchTest) {
   fibers::condition_variable cnd1, cnd2;
   fibers::mutex mu;
   int state = 0;
@@ -100,7 +102,7 @@ TEST_F(EvControllerTest, DispatchTest) {
   fb.join();
 }
 
-TEST_F(EvControllerTest, Periodic) {
+TEST_F(EpollProactorTest, Periodic) {
   unsigned count = 0;
   auto cb = [&] {
     VLOG(1) << "Tick " << count;
@@ -118,7 +120,7 @@ TEST_F(EvControllerTest, Periodic) {
 }
 
 void BM_AsyncCall(benchmark::State& state) {
-  EvController proactor;
+  EpollProactor proactor;
   std::thread t([&] { proactor.Run(); });
 
   while (state.KeepRunning()) {
@@ -130,7 +132,7 @@ void BM_AsyncCall(benchmark::State& state) {
 BENCHMARK(BM_AsyncCall);
 
 void BM_AwaitCall(benchmark::State& state) {
-  EvController proactor;
+  EpollProactor proactor;
   std::thread t([&] { proactor.Run(); });
 
   while (state.KeepRunning()) {

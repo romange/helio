@@ -17,7 +17,7 @@
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
-#include "util/epoll/ev_pool.h"
+#include "util/epoll/epoll_pool.h"
 #include "util/http/http_handler.h"
 #include "util/uring/uring_fiber_algo.h"
 #include "util/uring/uring_file.h"
@@ -536,7 +536,7 @@ int main(int argc, char* argv[]) {
 
   std::unique_ptr<ProactorPool> pp;
   if (absl::GetFlag(FLAGS_epoll)) {
-    pp.reset(new epoll::EvPool);
+    pp.reset(new epoll::EpollPool);
   } else {
     pp.reset(new UringPool);
   }

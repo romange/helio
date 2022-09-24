@@ -12,7 +12,6 @@
 #include "util/asio_stream_adapter.h"
 #include "util/listener_interface.h"
 #include "util/uring/uring_pool.h"
-#include "util/epoll/ev_pool.h"
 
 namespace util {
 namespace uring {

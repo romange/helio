@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
@@ -14,18 +14,21 @@ namespace epoll {
 class EpollFiberAlgo;
 class EvPool;
 
-class EvController : public ProactorBase {
+class EpollProactor : public ProactorBase {
  public:
-  EvController();
-  ~EvController();
+  EpollProactor();
+  ~EpollProactor();
 
-  // Runs the poll-loop. Stalls the calling thread which will become the "EvController" thread.
+  // should be called from the thread that owns this EpollProactor before calling Run.
+  void Init();
+
+  // Runs the poll-loop. Stalls the calling thread which will become the "EpollProactor" thread.
   void Run() final;
 
   using IoResult = int;
 
   // event_mask passed from epoll_event.events.
-  using CbType = std::function<void(uint32_t event_mask, EvController*)>;
+  using CbType = std::function<void(uint32_t event_mask, EpollProactor*)>;
 
   // Returns the handler id for the armed event.
   unsigned Arm(int fd, CbType cb, uint32_t event_mask);
@@ -37,7 +40,6 @@ class EvController : public ProactorBase {
   }
 
  private:
-  void Init();
   void DispatchCompletions(struct epoll_event* cevents, unsigned count);
 
   LinuxSocketBase* CreateSocket(int fd = -1) final;

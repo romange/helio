@@ -1,6 +1,7 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #include "util/fiber_sched_algo.h"
 
 namespace util {

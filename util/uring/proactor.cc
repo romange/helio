@@ -87,7 +87,11 @@ inline void Pause(unsigned count) {
 #if defined(__i386__) || defined(__amd64__)
     __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
-    __asm__ __volatile__("yield");
+      /* Use an isb here as we've found it's much closer in duration to
+      * the x86 pause instruction vs. yield which is a nop and thus the
+      * loop count is lower and the interconnect gets a lot more traffic
+      * from loading the ticket above. */
+    __asm__ __volatile__ ("isb");
 #endif
   }
 }

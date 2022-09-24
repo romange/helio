@@ -5,7 +5,7 @@
 #pragma once
 
 #include "util/fiber_socket_base.h"
-#include "util/epoll/ev_controller.h"
+#include "util/epoll/proactor.h"
 
 namespace util {
 namespace epoll {
@@ -34,10 +34,10 @@ class FiberSocket : public LinuxSocketBase {
   using FiberSocketBase::IsConnClosed;
 
  private:
-  EvController* GetEv() { return static_cast<EvController*>(proactor()); }
+  EpollProactor* GetProactor() { return static_cast<EpollProactor*>(proactor()); }
   void OnSetProactor() final;
 
-  void Wakey(uint32_t mask, EvController* cntr);
+  void Wakey(uint32_t mask, EpollProactor* cntr);
 
   ::boost::fibers::context* current_context_ = nullptr;
   int arm_index_ = -1;

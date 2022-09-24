@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/epoll/epoll_fiber_scheduler.h"
@@ -8,7 +8,7 @@
 #include <sys/timerfd.h>
 
 #include "base/logging.h"
-#include "util/epoll/ev_controller.h"
+#include "util/epoll/proactor.h"
 
 namespace util {
 namespace epoll {
@@ -16,7 +16,7 @@ using namespace boost;
 using namespace std;
 
 EpollFiberAlgo::EpollFiberAlgo(ProactorBase* ev_cntr) : FiberSchedAlgo(ev_cntr) {
-  auto cb = [tfd = timer_fd_](uint32_t event_mask, EvController*) {
+  auto cb = [tfd = timer_fd_](uint32_t event_mask, EpollProactor*) {
     uint64_t val;
     int res = read(tfd, &val, sizeof(val));
     DVLOG(2) << "this_fiber::yield " << event_mask << "/" << res;
@@ -24,11 +24,11 @@ EpollFiberAlgo::EpollFiberAlgo(ProactorBase* ev_cntr) : FiberSchedAlgo(ev_cntr) 
     this_fiber::yield();
   };
 
-  arm_index_ = static_cast<EvController*>(ev_cntr)->Arm(timer_fd_, std::move(cb), EPOLLIN);
+  arm_index_ = static_cast<EpollProactor*>(ev_cntr)->Arm(timer_fd_, std::move(cb), EPOLLIN);
 }
 
 EpollFiberAlgo::~EpollFiberAlgo() {
-  static_cast<EvController*>(proactor_)->Disarm(timer_fd_, arm_index_);
+  static_cast<EpollProactor*>(proactor_)->Disarm(timer_fd_, arm_index_);
 }
 
 void EpollFiberAlgo::SuspendWithTimer(const time_point& abs_time) noexcept {

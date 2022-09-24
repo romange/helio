@@ -51,7 +51,7 @@ auto FiberSocket::Close() -> error_code {
     DVSOCK(1) << "Closing socket";
 
     int fd = native_handle();
-    GetEv()->Disarm(fd, arm_index_);
+    GetProactor()->Disarm(fd, arm_index_);
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
   }
@@ -62,9 +62,9 @@ void FiberSocket::OnSetProactor() {
   if (fd_ >= 0) {
     CHECK_LT(arm_index_, 0);
 
-    auto cb = [this](uint32 mask, EvController* cntr) { Wakey(mask, cntr); };
+    auto cb = [this](uint32 mask, EpollProactor* cntr) { Wakey(mask, cntr); };
 
-    arm_index_ = GetEv()->Arm(native_handle(), std::move(cb), EPOLLIN | EPOLLET);
+    arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), EPOLLIN | EPOLLET);
   }
 }
 
@@ -83,7 +83,7 @@ auto FiberSocket::Accept() -> AcceptResult {
         accept4(real_fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       FiberSocket* fs = new FiberSocket;
-      fs->fd_ = res;
+      fs->fd_ = res << 3;  // we keep some flags in the first 3 bits of fd_.
       current_context_ = nullptr;
       return fs;
     }
@@ -118,7 +118,7 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
   ev.data.u32 = arm_index_ + 1024;  // TODO: to fix it.
 
-  CHECK_EQ(0, epoll_ctl(GetEv()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
+  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
   while (true) {
     int res = connect(fd_, (const sockaddr*)ep.data(), ep.size());
     if (res == 0) {
@@ -137,14 +137,14 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   current_context_ = nullptr;
 
   if (ec) {
-    GetEv()->Disarm(fd_, arm_index_);
+    GetProactor()->Disarm(fd_, arm_index_);
     if (close(fd_) < 0) {
       LOG(WARNING) << "Could not close fd " << strerror(errno);
     }
     fd_ = -1;
   }
   ev.events = EPOLLIN | EPOLLET;
-  CHECK_EQ(0, epoll_ctl(GetEv()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
+  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd_, &ev));
 
   return ec;
 }
@@ -253,7 +253,7 @@ auto FiberSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
-void FiberSocket::Wakey(uint32_t ev_mask, EvController* cntr) {
+void FiberSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
   DVLOG(2) << "Wakey " << fd_ << "/" << ev_mask;
 
   // It could be that we scheduled current_context_ already but has not switched to it yet.

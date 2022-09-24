@@ -1,12 +1,13 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2022, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #include <absl/time/clock.h>
 #include "base/gtest.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/uring/uring_pool.h"
-#include "util/epoll/ev_pool.h"
+#include "util/epoll/epoll_pool.h"
 #include "util/uring/uring_fiber_algo.h"
 
 using namespace boost;
@@ -86,7 +87,7 @@ TEST_F(FibersTest, FQTP) {
 }
 
 TEST_F(FibersTest, FiberQueue) {
-  epoll::EvPool pool{1};
+  epoll::EpollPool pool{1};
   pool.Run();
 
   ProactorBase* proactor = pool.GetNextProactor();
