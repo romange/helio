@@ -139,6 +139,10 @@ string AWS::AuthHeader(string_view method, string_view headers, string_view targ
 
   string canonical_request = absl::StrCat(method, "\n", url, "\n", canonical_querystring, "\n");
   string signed_headers = "host;x-amz-content-sha256;x-amz-date";
+  if (!session_token_.empty()) {
+    signed_headers += ";x-amz-security-token";
+  }
+
   absl::StrAppend(&canonical_request, headers, "\n", signed_headers, "\n", content_sha256);
   VLOG(1) << "CanonicalRequest:\n" << canonical_request << "\n-------------------\n";
 
@@ -173,6 +177,10 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
   header->set("x-amz-content-sha256",
               boost::beast::string_view{payload_sig.data(), payload_sig.size()});
 
+  if (!session_token_.empty()) {
+    header->set("x-amz-security-token", session_token_);
+  }
+
   /// The Canonical headers must include the following:
   ///
   ///   - HTTP host header.
@@ -187,6 +195,9 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
       absl::StrCat("host", ":", std_sv(header->find(h2::field::host)->value()), "\n");
   absl::StrAppend(&canonical_headers, "x-amz-content-sha256", ":", payload_sig, "\n");
   absl::StrAppend(&canonical_headers, "x-amz-date", ":", amz_date, "\n");
+  if (!session_token_.empty()) {
+    absl::StrAppend(&canonical_headers, "x-amz-security-token", ":", session_token_, "\n");
+  }
 
   string auth_header = AuthHeader(std_sv(header->method_string()), canonical_headers,
                                   std_sv(header->target()), payload_sig, amz_date);
@@ -198,6 +209,7 @@ error_code AWS::Init() {
   // TODO: to
   const char* access_key = getenv("AWS_ACCESS_KEY_ID");
   const char* secret_key = getenv("AWS_SECRET_ACCESS_KEY");
+  const char* session_token = getenv("AWS_SESSION_TOKEN");
 
   if (!access_key) {
     LOG(WARNING) << "Can not find AWS_ACCESS_KEY_ID";
@@ -211,6 +223,10 @@ error_code AWS::Init() {
 
   secret_ = secret_key;
   access_key_ = access_key;
+
+  if (session_token) {
+    session_token_ = session_token;
+  }
 
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
 
