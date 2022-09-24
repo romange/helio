@@ -42,7 +42,7 @@ class AWS {
                          std::string_view amz_date) const;
   void SetScopeAndSignKey();
 
-  std::string region_, service_, secret_, access_key_;
+  std::string region_, service_, secret_, access_key_, session_token_;
 
   std::string sign_key_;
   std::string credential_scope_;
