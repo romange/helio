@@ -10,6 +10,7 @@
 #include <absl/debugging/internal/vdso_support.h>
 #include <absl/debugging/stacktrace.h>
 #include <absl/strings/str_format.h>
+#include <absl/time/clock.h>
 #include <gperftools/stacktrace.h>
 #include <ucontext.h>
 
@@ -20,6 +21,7 @@ namespace base {
 
 using namespace absl;
 using namespace std;
+using benchmark::DoNotOptimize;
 
 constexpr size_t kSzStr = sizeof(string);
 
@@ -65,10 +67,37 @@ TEST_F(AbseilTest, SNPrintF) {
 void BM_CycleClock(benchmark::State& state) {
   while (state.KeepRunning()) {
     for (unsigned i = 0; i < 10; ++i) {
-      benchmark::DoNotOptimize(absl::base_internal::CycleClock::Now());
+      DoNotOptimize(absl::base_internal::CycleClock::Now());
     }
   }
 }
 BENCHMARK(BM_CycleClock);
+
+
+void BM_AbslCurrentTime(benchmark::State& state) {
+  while (state.KeepRunning()) {
+    for (unsigned i = 0; i < 10; ++i) {
+      DoNotOptimize(absl::GetCurrentTimeNanos());
+    }
+  }
+}
+BENCHMARK(BM_AbslCurrentTime);
+
+template <clockid_t cid> void BM_ClockType(benchmark::State& state) {
+  timespec ts;
+  while (state.KeepRunning()) {
+    for (unsigned i = 0; i < 10; ++i)
+      DoNotOptimize(clock_gettime(cid, &ts));
+  }
+}
+
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_REALTIME);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_REALTIME_COARSE);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_MONOTONIC);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_MONOTONIC_COARSE);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_BOOTTIME);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_PROCESS_CPUTIME_ID);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_THREAD_CPUTIME_ID);
+BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_BOOTTIME_ALARM);
 
 }  // namespace base
