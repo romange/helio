@@ -7,13 +7,22 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
+#include <rapidjson/document.h>
 #include <absl/time/clock.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 
+#include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/message.hpp>
+#include <boost/beast/http/string_body.hpp>
+
+#include <optional>
 
 #include "base/logging.h"
+#include "util/http/http_client.h"
+#include "util/proactor_base.h"
+#include "io/file.h"
+#include "io/line_reader.h"
 
 namespace util {
 namespace cloud {
@@ -114,6 +123,119 @@ inline std::string_view std_sv(const ::boost::beast::string_view s) {
 
 constexpr char kAlgo[] = "AWS4-HMAC-SHA256";
 
+struct AwsKeys {
+  std::string access_key, secret_key, session_token;
+};
+
+// Try reading AwsKeys from env.
+std::optional<AwsKeys> GetKeysFromEnv() {
+  const char* access_key = getenv("AWS_ACCESS_KEY_ID");
+  const char* secret_key = getenv("AWS_SECRET_ACCESS_KEY");
+  const char* session_token = getenv("AWS_SESSION_TOKEN");
+  if (access_key && secret_key) {
+    AwsKeys keys;
+    keys.access_key = access_key;
+    keys.secret_key = secret_key;
+    if (session_token) {
+      keys.session_token = session_token;
+    }
+    return keys;
+  }
+  return std::nullopt;
+}
+
+// Try reading AwsKeys from credentials file.
+std::optional<AwsKeys> GetKeysFromFile() {
+  const char* home_folder = getenv("HOME");
+  if (!home_folder)
+    return std::nullopt;
+
+  // Open credentials file.
+  const char* path_override = getenv("AWS_SHARED_CREDENTIALS_FILE");
+  std::string full_path;
+  if (path_override != nullptr) {
+    full_path = path_override;
+  } else {
+    full_path = absl::StrCat(home_folder, "/.aws/credentials");
+  }
+  auto file = io::OpenRead(full_path, io::ReadonlyFile::Options{});
+  if (!file)
+    return std::nullopt;
+
+  io::FileSource file_source{file.value()};
+  auto contents = ::io::ini::Parse(&file_source, Ownership::DO_NOT_TAKE_OWNERSHIP);
+  if (!contents)
+    return std::nullopt;
+
+  // Read profile data.
+  const char* profile = getenv("AWS_PROFILE");
+  auto it = contents.value().find(profile != nullptr ? profile : "default");
+  if (it != contents.value().end()) {
+    AwsKeys keys;
+    keys.access_key = it->second["aws_access_key_id"];
+    keys.secret_key = it->second["aws_secret_access_key"];
+    keys.session_token = it->second["aws_session_token"];
+    return keys;
+  }
+  return std::nullopt;
+}
+
+// Try getting AwsKeys from instance metadata.
+std::optional<AwsKeys> GetKeysFromMetadata() {
+  error_code ec;
+  ProactorBase* pb = ProactorBase::me();
+  CHECK(pb);
+
+  // TODO: Replace mock path with real. Make mockable path?
+  http::Client http_client{pb};
+  ec = http_client.Connect("127.0.0.1", "1338");
+  if (ec)
+    return std::nullopt;
+
+  // TODO: fix role name
+  const char* PATH = "/latest/meta-data/iam/security-credentials/baskinc-role";
+  h2::request<h2::empty_body> req{h2::verb::get, PATH, 11};
+  h2::response<h2::string_body> resp;
+  req.set(h2::field::host, http_client.host());
+
+  ec = http_client.Send(req, &resp);
+  if (ec || resp.result() != h2::status::ok)
+    return std::nullopt;
+
+  rapidjson::Document doc;
+  doc.Parse(resp.body().c_str());
+
+  if (doc.HasMember("AccessKeyId") && doc.HasMember("SecretAccessKey")) {
+    AwsKeys keys;
+    keys.access_key = doc["AccessKeyId"].GetString();
+    keys.secret_key = doc["SecretAccessKey"].GetString();
+    if (doc.HasMember("Token")) {
+      keys.session_token = doc["Token"].GetString();
+    }
+    return keys;
+  }
+
+  return std::nullopt;
+}
+
+AwsKeys GetKeys() {
+  std::optional<AwsKeys> keys;
+
+  keys = GetKeysFromEnv();
+  if (keys)
+    return *keys;
+
+  keys = GetKeysFromFile();
+  if (keys)
+    return *keys;
+
+  keys = GetKeysFromMetadata();
+  if (keys)
+    return *keys;
+
+  return {};
+}
+
 }  // namespace
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -206,27 +328,21 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
 }
 
 error_code AWS::Init() {
-  // TODO: to
-  const char* access_key = getenv("AWS_ACCESS_KEY_ID");
-  const char* secret_key = getenv("AWS_SECRET_ACCESS_KEY");
-  const char* session_token = getenv("AWS_SESSION_TOKEN");
+  AwsKeys keys = GetKeys();
 
-  if (!access_key) {
+  if (keys.access_key.empty()) {
     LOG(WARNING) << "Can not find AWS_ACCESS_KEY_ID";
     return make_error_code(errc::operation_not_permitted);
   }
 
-  if (!secret_key) {
+  if (keys.secret_key.empty()) {
     LOG(WARNING) << "Can not find AWS_SECRET_ACCESS_KEY";
     return make_error_code(errc::operation_not_permitted);
   }
 
-  secret_ = secret_key;
-  access_key_ = access_key;
-
-  if (session_token) {
-    session_token_ = session_token;
-  }
+  secret_ = std::move(keys.secret_key);
+  access_key_ = std::move(keys.access_key);
+  session_token_ = std::move(keys.session_token);
 
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
 

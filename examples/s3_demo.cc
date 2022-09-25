@@ -44,7 +44,6 @@ void ListBuckets(const AWS& aws, ProactorBase* proactor) {
   http_client.set_connect_timeout_ms(2000);
   auto list_res = proactor->Await([&] {
     CHECK_EC(http_client.Connect("s3.amazonaws.com", "80"));
-
     return ListS3Buckets(aws, &http_client);
   });
 
@@ -64,7 +63,10 @@ int main(int argc, char* argv[]) {
   pp->Run();
 
   AWS aws{absl::GetFlag(FLAGS_region), "s3"};
-  CHECK_EC(aws.Init());
+
+  pp->GetNextProactor()->Await([&] {
+    CHECK_EC(aws.Init());
+  });
 
   string cmd = absl::GetFlag(FLAGS_cmd);
   string path = absl::GetFlag(FLAGS_path);
