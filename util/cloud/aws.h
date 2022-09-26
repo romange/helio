@@ -15,8 +15,8 @@ class AWS {
   static const char kEmptySig[];
   static const char kUnsignedPayloadSig[];
 
-  AWS(const std::string& region, const std::string& service)
-      : region_(region), service_(service) {
+  AWS(const std::string& service, const std::string& region = "")
+      : service_(service), region_(region) {
   }
 
   std::error_code Init();
@@ -42,7 +42,7 @@ class AWS {
                          std::string_view amz_date) const;
   void SetScopeAndSignKey();
 
-  std::string region_, service_, secret_, access_key_, session_token_;
+  std::string service_, region_, secret_, access_key_, session_token_;
 
   std::string sign_key_;
   std::string credential_scope_;

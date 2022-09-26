@@ -62,7 +62,7 @@ int main(int argc, char* argv[]) {
 
   pp->Run();
 
-  AWS aws{absl::GetFlag(FLAGS_region), "s3"};
+  AWS aws{"s3", absl::GetFlag(FLAGS_region)};
 
   pp->GetNextProactor()->Await([&] {
     CHECK_EC(aws.Init());

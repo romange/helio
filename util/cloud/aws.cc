@@ -7,22 +7,21 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
-#include <rapidjson/document.h>
 #include <absl/time/clock.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <rapidjson/document.h>
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/message.hpp>
 #include <boost/beast/http/string_body.hpp>
-
 #include <optional>
 
 #include "base/logging.h"
-#include "util/http/http_client.h"
-#include "util/proactor_base.h"
 #include "io/file.h"
 #include "io/line_reader.h"
+#include "util/http/http_client.h"
+#include "util/proactor_base.h"
 
 namespace util {
 namespace cloud {
@@ -123,116 +122,193 @@ inline std::string_view std_sv(const ::boost::beast::string_view s) {
 
 constexpr char kAlgo[] = "AWS4-HMAC-SHA256";
 
-struct AwsKeys {
+struct AwsConnectionData {
   std::string access_key, secret_key, session_token;
+  std::string region;
 };
 
-// Try reading AwsKeys from env.
-std::optional<AwsKeys> GetKeysFromEnv() {
+// Try reading AwsConnectionData from env.
+std::optional<AwsConnectionData> GetConnectionDataFromEnv() {
   const char* access_key = getenv("AWS_ACCESS_KEY_ID");
   const char* secret_key = getenv("AWS_SECRET_ACCESS_KEY");
   const char* session_token = getenv("AWS_SESSION_TOKEN");
+  const char* region = getenv("AWS_REGION");
+
   if (access_key && secret_key) {
-    AwsKeys keys;
-    keys.access_key = access_key;
-    keys.secret_key = secret_key;
-    if (session_token) {
-      keys.session_token = session_token;
-    }
-    return keys;
+    AwsConnectionData cd;
+    cd.access_key = access_key;
+    cd.secret_key = secret_key;
+    if (session_token)
+      cd.session_token = session_token;
+    if (region)
+      cd.region = region;
+    return cd;
   }
+
   return std::nullopt;
 }
 
-// Try reading AwsKeys from credentials file.
-std::optional<AwsKeys> GetKeysFromFile() {
+// Get path from ENV if env_var is set or default path relative to user home.
+std::optional<std::string> GetAlternativePath(std::string_view default_home_postfix,
+                                              const char* env_var) {
+  const char* path_override = getenv(env_var);
+  if (path_override)
+    return path_override;
+
   const char* home_folder = getenv("HOME");
   if (!home_folder)
     return std::nullopt;
 
-  // Open credentials file.
-  const char* path_override = getenv("AWS_SHARED_CREDENTIALS_FILE");
-  std::string full_path;
-  if (path_override != nullptr) {
-    full_path = path_override;
-  } else {
-    full_path = absl::StrCat(home_folder, "/.aws/credentials");
-  }
+  return absl::StrCat(home_folder, default_home_postfix);
+}
+
+std::optional<io::ini::Contents> ReadIniFile(std::string_view full_path) {
   auto file = io::OpenRead(full_path, io::ReadonlyFile::Options{});
   if (!file)
     return std::nullopt;
 
   io::FileSource file_source{file.value()};
   auto contents = ::io::ini::Parse(&file_source, Ownership::DO_NOT_TAKE_OWNERSHIP);
+  if (!contents) {
+    LOG(ERROR) << "Failed to parse ini file:" << full_path;
+    return std::nullopt;
+  }
+
+  return contents.value();
+}
+
+// Try filling AwsConnectionData with data from config file.
+void GetConfigFromFile(const char* profile, AwsConnectionData* cd) {
+  auto full_path = GetAlternativePath("/.aws/config", "AWS_CONFIG_FILE");
+  if (!full_path)
+    return;
+
+  auto contents = ReadIniFile(*full_path);
+  if (!contents)
+    return;
+
+  auto it = contents->find(profile);
+  if (it != contents->end()) {
+    cd->region = it->second["region"];
+  }
+}
+
+// Try reading AwsConnectionData from credentials file.
+std::optional<AwsConnectionData> GetConnectionDataFromFile() {
+  // Get credentials path.
+  auto full_path = GetAlternativePath("/.aws/credentials", "AWS_SHARED_CREDENTIALS_FILE");
+  if (!full_path)
+    return std::nullopt;
+
+  // Read credentials file.
+  auto contents = ReadIniFile(*full_path);
   if (!contents)
     return std::nullopt;
 
   // Read profile data.
   const char* profile = getenv("AWS_PROFILE");
-  auto it = contents.value().find(profile != nullptr ? profile : "default");
-  if (it != contents.value().end()) {
-    AwsKeys keys;
-    keys.access_key = it->second["aws_access_key_id"];
-    keys.secret_key = it->second["aws_secret_access_key"];
-    keys.session_token = it->second["aws_session_token"];
-    return keys;
+  if (profile == nullptr)
+    profile = "default";
+
+  auto it = contents->find(profile);
+  if (it != contents->end()) {
+    AwsConnectionData cd;
+    cd.access_key = it->second["aws_access_key_id"];
+    cd.secret_key = it->second["aws_secret_access_key"];
+    cd.session_token = it->second["aws_session_token"];
+    GetConfigFromFile(profile, &cd);
+    return cd;
+  }
+
+  if (profile != "default"sv) {
+    LOG(ERROR) << "Failed to find profile:" << profile << " in credentials";
   }
   return std::nullopt;
 }
 
-// Try getting AwsKeys from instance metadata.
-std::optional<AwsKeys> GetKeysFromMetadata() {
-  error_code ec;
-  ProactorBase* pb = ProactorBase::me();
-  CHECK(pb);
-
-  // TODO: Replace mock path with real. Make mockable path?
-  http::Client http_client{pb};
-  ec = http_client.Connect("127.0.0.1", "1338");
-  if (ec)
-    return std::nullopt;
-
-  // TODO: fix role name
-  const char* PATH = "/latest/meta-data/iam/security-credentials/baskinc-role";
-  h2::request<h2::empty_body> req{h2::verb::get, PATH, 11};
+// Make simple GET request on path and return body.
+std::optional<std::string> MakeGetRequest(boost::string_view path, http::Client* http_client) {
+  h2::request<h2::empty_body> req{h2::verb::get, path, 11};
   h2::response<h2::string_body> resp;
-  req.set(h2::field::host, http_client.host());
+  req.set(h2::field::host, http_client->host());
 
-  ec = http_client.Send(req, &resp);
+  std::error_code ec = http_client->Send(req, &resp);
   if (ec || resp.result() != h2::status::ok)
     return std::nullopt;
 
-  rapidjson::Document doc;
-  doc.Parse(resp.body().c_str());
-
-  if (doc.HasMember("AccessKeyId") && doc.HasMember("SecretAccessKey")) {
-    AwsKeys keys;
-    keys.access_key = doc["AccessKeyId"].GetString();
-    keys.secret_key = doc["SecretAccessKey"].GetString();
-    if (doc.HasMember("Token")) {
-      keys.session_token = doc["Token"].GetString();
-    }
-    return keys;
-  }
-
-  return std::nullopt;
+  return resp.body();
 }
 
-AwsKeys GetKeys() {
-  std::optional<AwsKeys> keys;
+void GetConfigFromMetadata(http::Client* http_client, AwsConnectionData* cd) {
+  const char* PATH = "/latest/dynamic/instance-identity/document";
 
-  keys = GetKeysFromEnv();
+  auto resp = MakeGetRequest(PATH, http_client);
+  if (!resp)
+    return;
+
+  rapidjson::Document doc;
+  doc.Parse(resp->c_str());
+  if (doc.HasMember("region")) {
+    cd->region = doc["region"].GetString();
+  }
+}
+
+// Try getting AwsConnectionData from instance metadata.
+std::optional<AwsConnectionData> GetConnectionDataFromMetadata() {
+  ProactorBase* pb = ProactorBase::me();
+  CHECK(pb);
+
+  http::Client http_client{pb};
+  error_code ec = http_client.Connect("169.254.169.254", "80");
+  if (ec)
+    return std::nullopt;
+
+  // Get role name.
+  const char* PATH = "/latest/meta-data/iam/security-credentials/";
+  auto role_name = MakeGetRequest(PATH, &http_client);
+  if (!role_name) {
+    LOG(ERROR) << "Failed to get role name from metadata";
+    return std::nullopt;
+  }
+
+  // Get credentials.
+  std::string path = absl::StrCat(PATH, *role_name);
+  auto resp = MakeGetRequest(path, &http_client);
+  if (!resp)
+    return std::nullopt;
+
+  rapidjson::Document doc;
+  doc.Parse(resp->c_str());
+  if (!doc.HasMember("AccessKeyId") || !doc.HasMember("SecretAccessKey"))
+    return std::nullopt;
+
+  AwsConnectionData cd;
+  cd.access_key = doc["AccessKeyId"].GetString();
+  cd.secret_key = doc["SecretAccessKey"].GetString();
+  if (doc.HasMember("Token")) {
+    cd.session_token = doc["Token"].GetString();
+  }
+  GetConfigFromMetadata(&http_client, &cd);
+
+  return cd;
+}
+
+AwsConnectionData GetConnectionData() {
+  std::optional<AwsConnectionData> keys;
+
+  keys = GetConnectionDataFromEnv();
   if (keys)
     return *keys;
 
-  keys = GetKeysFromFile();
+  keys = GetConnectionDataFromFile();
   if (keys)
     return *keys;
 
-  keys = GetKeysFromMetadata();
+  keys = GetConnectionDataFromMetadata();
   if (keys)
     return *keys;
 
+  LOG(ERROR) << "Failed to find valid source for AWS connection data";
   return {};
 }
 
@@ -328,7 +404,7 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
 }
 
 error_code AWS::Init() {
-  AwsKeys keys = GetKeys();
+  AwsConnectionData keys = GetConnectionData();
 
   if (keys.access_key.empty()) {
     LOG(WARNING) << "Can not find AWS_ACCESS_KEY_ID";
@@ -343,6 +419,8 @@ error_code AWS::Init() {
   secret_ = std::move(keys.secret_key);
   access_key_ = std::move(keys.access_key);
   session_token_ = std::move(keys.session_token);
+  if (region_.empty())
+    region_ = std::move(keys.region);
 
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
 
