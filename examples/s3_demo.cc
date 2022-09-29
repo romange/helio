@@ -90,7 +90,7 @@ int main(int argc, char* argv[]) {
       error_code ec = pp->GetNextProactor()->Await([&] {
         auto ec = bucket.Connect(300);
         CHECK(!ec);
-        return bucket.ListObjects(obj_path, cb);
+        return bucket.ListAllObjects(obj_path, cb);
       });
 
       CHECK(!ec) << ec;

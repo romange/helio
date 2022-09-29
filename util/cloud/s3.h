@@ -13,6 +13,9 @@ namespace util {
 namespace cloud {
 
 using ListBucketsResult = io::Result<std::vector<std::string>>;
+// Inner result value is 'marker' to start next page from.
+// Empty if no more pages left.
+using ListObjectsResult = io::Result<std::string>;
 
 ListBucketsResult ListS3Buckets(const AWS& aws, http::Client* http_client);
 
@@ -25,7 +28,10 @@ class S3Bucket {
   //! Called with (size, key_name) pairs.
   using ListObjectCb = std::function<void(size_t, std::string_view)>;
 
-  std::error_code ListObjects(std::string_view path, ListObjectCb cb);
+  ListObjectsResult ListObjects(std::string_view path, ListObjectCb cb,
+                                std::string_view marker = "", int max_keys = 1000);
+
+  std::error_code ListAllObjects(std::string_view path, ListObjectCb cb);
 
  private:
   std::string GetHost() const;
