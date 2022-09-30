@@ -4,17 +4,18 @@
 
 #include "util/cloud/s3.h"
 
+#include <absl/cleanup/cleanup.h>
+#include <absl/strings/match.h>
 #include <libxml/xpath.h>
 #include <libxml/xpathInternals.h>
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 
-#include <absl/strings/match.h>
-
 #include "base/logging.h"
 #include "util/cloud/aws.h"
 #include "util/proactor_base.h"
+#include "util/http/encoding.h"
 
 namespace util {
 namespace cloud {
@@ -24,6 +25,9 @@ namespace h2 = boost::beast::http;
 using nonstd::make_unexpected;
 
 const char kRootDomain[] = "s3.amazonaws.com";
+
+// Max number of keys in AWS response.
+const unsigned kAwsMaxKeys = 1000;
 
 inline std::string_view std_sv(const ::boost::beast::string_view s) {
   return std::string_view{s.data(), s.size()};
@@ -95,33 +99,36 @@ std::pair<size_t, string_view> ParseXmlObjContents(xmlNodePtr node) {
   return res;
 }
 
-error_code ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
+ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
   xmlDocPtr doc = XmlRead(xml_obj);
+
+  bool truncated = false;
+  string_view last_key = "";
 
   if (!doc) {
     LOG(ERROR) << "Could not parse xml response " << xml_obj;
-    return make_error_code(errc::bad_message);
+    return make_unexpected(make_error_code(errc::bad_message));
   }
+
+  absl::Cleanup xml_free{[doc]() { xmlFreeDoc(doc); }};
 
   xmlNodePtr root = xmlDocGetRootElement(doc);
   CHECK_STREQ("ListBucketResult", as_char(root->name));
-
   for (xmlNodePtr child = root->children; child; child = child->next) {
     if (child->type == XML_ELEMENT_NODE) {
       xmlNodePtr grand = child->children;
-      if (!strcmp(as_char(child->name), "IsTruncated")) {
-        CHECK(grand && grand->type == XML_TEXT_NODE);
-        CHECK_STREQ("false", as_char(grand->content)) << "TBD: need to support cursor based functionality";
-      } else if (!strcmp(as_char(child->name), "Marker")) {
-      } else if (!strcmp(as_char(child->name), "Contents")) {
+      if (as_char(child->name) == "IsTruncated"sv) {
+        truncated = as_char(grand->content) == "true"sv;
+      } else if (as_char(child->name) == "Marker"sv) {
+      } else if (as_char(child->name) == "Contents"sv) {
         auto sz_name = ParseXmlObjContents(child);
         cb(sz_name.first, sz_name.second);
+        last_key = sz_name.second;
       }
     }
   }
-  xmlFreeDoc(doc);
 
-  return error_code{};
+  return truncated ? std::string{last_key} : "";
 }
 
 }  // namespace xml
@@ -165,8 +172,26 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
   return http_client_->Connect(host, "80");
 }
 
-error_code S3Bucket::ListObjects(string_view path, ListObjectCb cb) {
-  h2::request<h2::empty_body> req{h2::verb::get, "/", 11};
+ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb,
+                                        std::string_view marker, unsigned max_keys) {
+  CHECK(max_keys <= kAwsMaxKeys);
+
+  // Build full request path.
+  std::string path = "/?";
+  if (bucket_path != "")
+    path += absl::StrCat("prefix=", util::http::UrlEncode(bucket_path), "&");
+
+  if (marker != "")
+    path += absl::StrCat("marker=", util::http::UrlEncode(marker), "&");
+
+  if (max_keys != kAwsMaxKeys)
+    path += absl::StrCat("max-keys=", max_keys, "&");
+
+  CHECK(path.back() == '?' || path.back() == '&');
+  path.pop_back();
+
+  // Send request.
+  h2::request<h2::empty_body> req{h2::verb::get, path, 11};
   req.set(h2::field::host, http_client_->host());
 
   h2::response<h2::string_body> resp;
@@ -177,12 +202,12 @@ error_code S3Bucket::ListObjects(string_view path, ListObjectCb cb) {
 
   error_code ec = http_client_->Send(req, &resp);
   if (ec)
-    return ec;
+    return make_unexpected(ec);
 
   if (resp.result() == h2::status::moved_permanently) {
     boost::beast::string_view new_region = resp["x-amz-bucket-region"];
     if (new_region.empty()) {
-      return make_error_code(errc::network_unreachable);
+      return make_unexpected(make_error_code(errc::network_unreachable));
     }
     aws_.UpdateRegion(std_sv(new_region));
     string host = GetHost();
@@ -190,23 +215,23 @@ error_code S3Bucket::ListObjects(string_view path, ListObjectCb cb) {
     VLOG(1) << "Redirecting to " << host;
     ec = http_client_->Connect(host, "80");
     if (ec)
-      return ec;
+      return make_unexpected(ec);
 
     req.set(h2::field::host, host);
     aws_.Sign(AWS::kEmptySig, &req);
 
     ec = http_client_->Send(req, &resp);
     if (ec)
-      return ec;
+      return make_unexpected(ec);
   }
 
   if (resp.result() != h2::status::ok) {
     LOG(ERROR) << "http error: " << resp;
-    return make_error_code(errc::inappropriate_io_control_operation);
+    return make_unexpected(make_error_code(errc::inappropriate_io_control_operation));
   }
 
   if (!absl::StartsWith(resp.body(), "<?xml"))
-    return make_error_code(errc::bad_message);
+    return make_unexpected(make_error_code(errc::bad_message));
 
   // Sometimes s3 response contains multiple xml documents. xml2lib does not know how to parse them
   // or I did not find the way to do it. So I just check for another marker.
@@ -218,6 +243,20 @@ error_code S3Bucket::ListObjects(string_view path, ListObjectCb cb) {
   }
   VLOG(1) << "ObjListResp: " << xml;
   return xml::ParseListObj(xml, std::move(cb));
+}
+
+error_code S3Bucket::ListAllObjects(string_view bucket_path, ListObjectCb cb) {
+  std::string marker = "";
+  unsigned max_keys = kAwsMaxKeys;
+  do {
+    auto res = ListObjects(bucket_path, cb, marker, max_keys);
+    if (!res)
+      return res.error();
+
+    marker = res.value();
+  } while (!marker.empty());
+
+  return std::error_code{};
 }
 
 std::string S3Bucket::GetHost() const {

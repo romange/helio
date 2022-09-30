@@ -64,9 +64,7 @@ int main(int argc, char* argv[]) {
 
   AWS aws{"s3", absl::GetFlag(FLAGS_region)};
 
-  pp->GetNextProactor()->Await([&] {
-    CHECK_EC(aws.Init());
-  });
+  pp->GetNextProactor()->Await([&] { CHECK_EC(aws.Init()); });
 
   string cmd = absl::GetFlag(FLAGS_cmd);
   string path = absl::GetFlag(FLAGS_path);
@@ -83,14 +81,12 @@ int main(int argc, char* argv[]) {
         obj_path = clean.substr(pos + 1);
       }
       cloud::S3Bucket bucket(aws, bucket_name);
-      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) {
-        LOG(INFO) << name;
-      };
+      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) { LOG(INFO) << name; };
 
       error_code ec = pp->GetNextProactor()->Await([&] {
         auto ec = bucket.Connect(300);
         CHECK(!ec);
-        return bucket.ListObjects(obj_path, cb);
+        return bucket.ListAllObjects(obj_path, cb);
       });
 
       CHECK(!ec) << ec;

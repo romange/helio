@@ -14,6 +14,10 @@ namespace cloud {
 
 using ListBucketsResult = io::Result<std::vector<std::string>>;
 
+// Inner result value is 'marker' to start next page from.
+// Empty if no more pages left.
+using ListObjectsResult = io::Result<std::string>;
+
 ListBucketsResult ListS3Buckets(const AWS& aws, http::Client* http_client);
 
 class S3Bucket {
@@ -25,7 +29,14 @@ class S3Bucket {
   //! Called with (size, key_name) pairs.
   using ListObjectCb = std::function<void(size_t, std::string_view)>;
 
-  std::error_code ListObjects(std::string_view path, ListObjectCb cb);
+  // Iterate over bucket objects for given path, starting from a marker (default none).
+  // Up to max_keys entries are returned, possible maximum is 1000.
+  // Returns key to start next query from is result is truncated.
+  ListObjectsResult ListObjects(std::string_view path, ListObjectCb cb,
+                                std::string_view marker = "", unsigned max_keys = 1000);
+
+  // Iterate over all bucket objects for the given path.
+  std::error_code ListAllObjects(std::string_view path, ListObjectCb cb);
 
  private:
   std::string GetHost() const;
