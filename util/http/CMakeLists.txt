@@ -10,6 +10,8 @@ cxx_link(http_main uring_fiber_lib html_lib http_server_lib TRDP::mimalloc)
 add_library(http_client_lib http_client.cc)
 cxx_link(http_client_lib proactor_lib http_beast_prebuilt)
 
+add_library(http_utils encoding.cc)
+
 #add_library(https_client_lib https_client.cc https_client_pool.cc ssl_stream.cc)
 #cxx_link(https_client_lib proactor_lib absl_variant http_beast_prebuilt)
 

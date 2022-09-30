@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "util/cloud/aws.h"
 #include "util/proactor_base.h"
+#include "util/http/encoding.h"
 
 namespace util {
 namespace cloud {
@@ -26,7 +27,7 @@ using nonstd::make_unexpected;
 const char kRootDomain[] = "s3.amazonaws.com";
 
 // Max number of keys in AWS response.
-const int kAwsMaxKeys = 1000;
+const unsigned kAwsMaxKeys = 1000;
 
 inline std::string_view std_sv(const ::boost::beast::string_view s) {
   return std::string_view{s.data(), s.size()};
@@ -116,10 +117,10 @@ ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
   for (xmlNodePtr child = root->children; child; child = child->next) {
     if (child->type == XML_ELEMENT_NODE) {
       xmlNodePtr grand = child->children;
-      if (!strcmp(as_char(child->name), "IsTruncated")) {
-        truncated = strcmp(as_char(grand->content), "true") == 0;
-      } else if (!strcmp(as_char(child->name), "Marker")) {
-      } else if (!strcmp(as_char(child->name), "Contents")) {
+      if (as_char(child->name) == "IsTruncated"sv) {
+        truncated = as_char(grand->content) == "true"sv;
+      } else if (as_char(child->name) == "Marker"sv) {
+      } else if (as_char(child->name) == "Contents"sv) {
         auto sz_name = ParseXmlObjContents(child);
         cb(sz_name.first, sz_name.second);
         last_key = sz_name.second;
@@ -172,18 +173,24 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
 }
 
 ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb,
-                                        std::string_view marker, int max_keys) {
-  std::string path = absl::StrCat("/", bucket_path, "?");
+                                        std::string_view marker, unsigned max_keys) {
+  CHECK(max_keys <= kAwsMaxKeys);
+
+  // Build full request path.
+  std::string path = "/?";
+  if (bucket_path != "")
+    path += absl::StrCat("prefix=", util::http::UrlEncode(bucket_path), "&");
 
   if (marker != "")
-    path += absl::StrCat("marker=", marker, "&");
+    path += absl::StrCat("marker=", util::http::UrlEncode(marker), "&");
 
   if (max_keys != kAwsMaxKeys)
     path += absl::StrCat("max-keys=", max_keys, "&");
 
-  if (path.back() == '?' || path.back() == '&')
-    path.pop_back();
+  CHECK(path.back() == '?' || path.back() == '&');
+  path.pop_back();
 
+  // Send request.
   h2::request<h2::empty_body> req{h2::verb::get, path, 11};
   req.set(h2::field::host, http_client_->host());
 
@@ -240,7 +247,7 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
 
 error_code S3Bucket::ListAllObjects(string_view bucket_path, ListObjectCb cb) {
   std::string marker = "";
-  int max_keys = kAwsMaxKeys;
+  unsigned max_keys = kAwsMaxKeys;
   do {
     auto res = ListObjects(bucket_path, cb, marker, max_keys);
     if (!res)
