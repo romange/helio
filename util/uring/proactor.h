@@ -35,7 +35,7 @@ class Proactor : public ProactorBase {
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
   // using CbType = std::function<void(IoResult, uint32_t, int64_t)>;
   using CbType =
-      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16,8>,
+      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/,
                          void(IoResult, uint32_t, int64_t)>;
   /**
@@ -87,6 +87,10 @@ class Proactor : public ProactorBase {
 
   void UnregisterFd(unsigned fixed_fd);
   LinuxSocketBase* CreateSocket(int fd = -1) final;
+
+  ProactorKind GetKind() const final {
+    return IOURING;
+  }
 
  private:
   void DispatchCompletions(io_uring_cqe* cqes, unsigned count);

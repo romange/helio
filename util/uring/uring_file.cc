@@ -292,6 +292,8 @@ io::Result<io::WriteFile*> OpenWrite(std::string_view path, io::WriteFile::Optio
     flags |= O_TRUNC;
 
   ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+
   Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
 
   unique_ptr<WriteFileImpl> impl(new WriteFileImpl{p, path});
@@ -306,6 +308,8 @@ io::Result<io::ReadonlyFile*> OpenRead(std::string_view path) {
   int flags = O_RDONLY | O_CLOEXEC;
 
   ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+
   Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
   FiberCall::IoResult io_res;
 
@@ -367,6 +371,8 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
 
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {
   ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+
   Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
   FiberCall::IoResult io_res;
 

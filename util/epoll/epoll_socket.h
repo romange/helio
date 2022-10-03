@@ -10,15 +10,15 @@
 namespace util {
 namespace epoll {
 
-class FiberSocket : public LinuxSocketBase {
+class EpollSocket : public LinuxSocketBase {
  public:
   using FiberSocketBase::AsyncWriteCb;
 
   template<typename T> using Result = io::Result<T>;
 
-  FiberSocket(int fd = -1);
+  EpollSocket(int fd = -1);
 
-  virtual ~FiberSocket();
+  virtual ~EpollSocket();
 
   ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
@@ -31,6 +31,17 @@ class FiberSocket : public LinuxSocketBase {
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
 
+  //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
+  //! When and an event occurs, the cb will be called with the mask of actual events
+  //! that trigerred it.
+  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
+  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) final;
+
+  //! Cancels the poll event. id must be the id returned by PollEvent function.
+  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
+  //! in process of completing.
+  uint32_t CancelPoll(uint32_t id) final;
+
   using FiberSocketBase::IsConnClosed;
 
  private:
@@ -39,7 +50,8 @@ class FiberSocket : public LinuxSocketBase {
 
   void Wakey(uint32_t mask, EpollProactor* cntr);
 
-  ::boost::fibers::context* current_context_ = nullptr;
+  ::boost::fibers::context* write_context_ = nullptr;
+  ::boost::fibers::context* read_context_ = nullptr;
   int arm_index_ = -1;
 };
 

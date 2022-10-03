@@ -391,6 +391,12 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     LOG(WARNING) << "Driver " << index << " retries";
   }
 
+  int bufferlen = 1 << 14;
+  CHECK_EQ(0, setsockopt(socket_->native_handle(), SOL_SOCKET, SO_SNDBUF, &bufferlen,
+                         sizeof(bufferlen)));
+  CHECK_EQ(0, setsockopt(socket_->native_handle(), SOL_SOCKET, SO_RCVBUF, &bufferlen,
+                         sizeof(bufferlen)));
+
   CHECK_LT(iter, kMaxIter) << "Maximum reconnects reached";
   VLOG(1) << "Driver::Connect-End " << index;
 }
@@ -422,13 +428,12 @@ size_t Driver::Run(base::Histogram* dest) {
     auto start = absl::GetCurrentTimeNanos();
 
     for (size_t j = 0; j < pipeline_cnt; ++j) {
-      es = socket_->WriteSome(io::Bytes{msg.get(), req_size});
-      if (!es && FiberSocketBase::IsConnClosed(es.error())) {
+      error_code ec = socket_->Write(io::Bytes{msg.get(), req_size});
+      if (ec && FiberSocketBase::IsConnClosed(ec)) {
         conn_close = true;
         break;
       }
-      CHECK(es.has_value()) << es.error();
-      CHECK_EQ(es.value(), req_size);
+      CHECK(!ec) << ec.message();
     }
 
     if (conn_close)

@@ -268,7 +268,7 @@ void EpollProactor::Disarm(int fd, unsigned arm_index) {
 }
 
 LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
-  FiberSocket* res = new FiberSocket(fd);
+  EpollSocket* res = new EpollSocket(fd);
   res->SetProactor(this);
 
   return res;

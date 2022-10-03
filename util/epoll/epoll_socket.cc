@@ -21,11 +21,11 @@ using namespace boost;
 
 namespace {
 
-inline FiberSocket::error_code from_errno() {
-  return FiberSocket::error_code(errno, std::system_category());
+inline EpollSocket::error_code from_errno() {
+  return EpollSocket::error_code(errno, std::system_category());
 }
 
-inline ssize_t posix_err_wrap(ssize_t res, FiberSocket::error_code* ec) {
+inline ssize_t posix_err_wrap(ssize_t res, EpollSocket::error_code* ec) {
   if (res == -1) {
     *ec = from_errno();
   } else if (res < 0) {
@@ -34,18 +34,22 @@ inline ssize_t posix_err_wrap(ssize_t res, FiberSocket::error_code* ec) {
   return res;
 }
 
-}  // namespace
-
-FiberSocket::FiberSocket(int fd) : LinuxSocketBase(fd, nullptr) {
+nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
+  return nonstd::make_unexpected(make_error_code(code));
 }
 
-FiberSocket::~FiberSocket() {
+}  // namespace
+
+EpollSocket::EpollSocket(int fd) : LinuxSocketBase(fd, nullptr) {
+}
+
+EpollSocket::~EpollSocket() {
   error_code ec = Close();  // Quietly close.
 
   LOG_IF(WARNING, ec) << "Error closing socket " << ec << "/" << ec.message();
 }
 
-auto FiberSocket::Close() -> error_code {
+auto EpollSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
     DVSOCK(1) << "Closing socket";
@@ -58,17 +62,17 @@ auto FiberSocket::Close() -> error_code {
   return ec;
 }
 
-void FiberSocket::OnSetProactor() {
+void EpollSocket::OnSetProactor() {
   if (fd_ >= 0) {
     CHECK_LT(arm_index_, 0);
 
     auto cb = [this](uint32 mask, EpollProactor* cntr) { Wakey(mask, cntr); };
 
-    arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), EPOLLIN | EPOLLET);
+    arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), EPOLLIN | EPOLLOUT | EPOLLET);
   }
 }
 
-auto FiberSocket::Accept() -> AcceptResult {
+auto EpollSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
   sockaddr_in client_addr;
@@ -76,15 +80,21 @@ auto FiberSocket::Accept() -> AcceptResult {
   error_code ec;
 
   int real_fd = native_handle();
-  current_context_ = fibers::context::active();
+  CHECK(read_context_ == NULL);
+
+  read_context_ = fibers::context::active();
 
   while (true) {
+    if (fd_ & IS_SHUTDOWN) {
+      return MakeUnexpected(errc::connection_aborted);
+    }
+
     int res =
         accept4(real_fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
-      FiberSocket* fs = new FiberSocket;
+      EpollSocket* fs = new EpollSocket;
       fs->fd_ = res << 3;  // we keep some flags in the first 3 bits of fd_.
-      current_context_ = nullptr;
+      read_context_ = nullptr;
       return fs;
     }
 
@@ -95,13 +105,13 @@ auto FiberSocket::Accept() -> AcceptResult {
       break;
     }
 
-    current_context_->suspend();
+    read_context_->suspend();
   }
-  current_context_ = nullptr;
+  read_context_ = nullptr;
   return nonstd::make_unexpected(ec);
 }
 
-auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
+auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -111,9 +121,12 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
+  CHECK(read_context_ == NULL);
+  CHECK(write_context_ == NULL);
+
   fd_ = (fd << 3);
   OnSetProactor();
-  current_context_ = fibers::context::active();
+  write_context_ = fibers::context::active();
 
   epoll_event ev;
   ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
@@ -131,11 +144,11 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
       break;
     }
 
-    DVLOG(2) << "Suspending " << fibers_ext::short_id(current_context_);
-    current_context_->suspend();
-    DVLOG(2) << "Resuming " << fibers_ext::short_id(current_context_);
+    DVLOG(2) << "Suspending " << fd << "/" << fibers_ext::short_id(write_context_);
+    write_context_->suspend();
+    DVLOG(2) << "Resuming " << fibers_ext::short_id(write_context_);
   }
-  current_context_ = nullptr;
+  write_context_ = nullptr;
 
   if (ec) {
     GetProactor()->Disarm(fd, arm_index_);
@@ -145,20 +158,15 @@ auto FiberSocket::Connect(const endpoint_type& ep) -> error_code {
     fd_ = -1;
   }
 
-  ev.events = EPOLLIN | EPOLLET;
-  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd, &ev));
-
   return ec;
 }
 
-auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
+auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GT(len, 0U);
   CHECK_GE(fd_, 0);
 
-  if (fd_ & IS_SHUTDOWN) {
-    return nonstd::make_unexpected(std::make_error_code(std::errc::connection_aborted));
-  }
+  CHECK(write_context_ == NULL);
 
   msghdr msg;
   memset(&msg, 0, sizeof(msg));
@@ -167,12 +175,17 @@ auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
   ssize_t res;
   int fd = native_handle();
-  current_context_ = fibers::context::active();
+  write_context_ = fibers::context::active();
 
   while (true) {
+    if (fd_ & IS_SHUTDOWN) {
+      res = ECONNABORTED;
+      break;
+    }
+
     res = sendmsg(fd, &msg, MSG_NOSIGNAL);
     if (res >= 0) {
-      current_context_ = nullptr;
+      write_context_ = nullptr;
       return res;
     }
 
@@ -182,10 +195,11 @@ auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     if (res != EAGAIN) {
       break;
     }
-    current_context_->suspend();
+    DVLOG(1) << "Suspending " << fd << "/" << fibers_ext::short_id(write_context_);
+    write_context_->suspend();
   }
 
-  current_context_ = nullptr;
+  write_context_ = nullptr;
 
   // Error handling - finale part.
   if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET})) {
@@ -201,39 +215,42 @@ auto FiberSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
-void FiberSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
   auto res = WriteSome(v, len);
   cb(res);
 }
 
-auto FiberSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
+auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GE(fd_, 0);
   CHECK_GT(size_t(msg.msg_iovlen), 0U);
 
-  if (fd_ & IS_SHUTDOWN) {
-    return nonstd::make_unexpected(std::make_error_code(std::errc::connection_aborted));
-  }
+  CHECK(read_context_ == NULL);
 
   int fd = native_handle();
-  current_context_ = fibers::context::active();
+  read_context_ = fibers::context::active();
 
   ssize_t res;
   while (true) {
+    if (fd_ & IS_SHUTDOWN) {
+      res = ECONNABORTED;
+      break;
+    }
+
     res = recvmsg(fd, const_cast<msghdr*>(&msg), flags);
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
-      current_context_ = nullptr;
+      read_context_ = nullptr;
       return res;
     }
 
     if (res == 0 || errno != EAGAIN) {
       break;
     }
-    DVLOG(1) << "Suspending " << fd << "/" << fibers_ext::short_id(current_context_);
-    current_context_->suspend();
+    DVLOG(1) << "Suspending " << fd << "/" << fibers_ext::short_id(read_context_);
+    read_context_->suspend();
   }
 
-  current_context_ = nullptr;
+  read_context_ = nullptr;
 
   // Error handling - finale part.
   if (res == 0) {
@@ -255,14 +272,35 @@ auto FiberSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
-void FiberSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
-  DVLOG(2) << "Wakey " << fd_ << "/" << ev_mask;
+uint32_t EpollSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
+  return 0;
+}
 
-  // It could be that we scheduled current_context_ already but has not switched to it yet.
-  // Meanwhile a new event has arrived that triggered this callback again.
-  if (current_context_ && !current_context_->ready_is_linked()) {
-    DVLOG(2) << "Wakey: Scheduling " << fibers_ext::short_id(current_context_);
-    fibers::context::active()->schedule(current_context_);
+uint32_t EpollSocket::CancelPoll(uint32_t id) {
+  return 0;
+}
+
+void EpollSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
+  DVLOG(2) << "Wakey " << native_handle() << "/" << ev_mask;
+
+  constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP;
+
+  if (ev_mask & (EPOLLIN | kErrMask)) {
+    // It could be that we scheduled current_context_ already but has not switched to it yet.
+    // Meanwhile a new event has arrived that triggered this callback again.
+    if (read_context_ && !read_context_->ready_is_linked()) {
+      DVLOG(2) << "Wakey: Schedule read " << native_handle();
+      fibers::context::active()->schedule(read_context_);
+    }
+  }
+
+  if (ev_mask & (EPOLLOUT | kErrMask)) {
+    // It could be that we scheduled current_context_ already but has not switched to it yet.
+    // Meanwhile a new event has arrived that triggered this callback again.
+    if (write_context_ && !write_context_->ready_is_linked()) {
+      DVLOG(2) << "Wakey: Schedule write " << native_handle();
+      fibers::context::active()->schedule(write_context_);
+    }
   }
 }
 

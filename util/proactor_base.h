@@ -33,6 +33,8 @@ class ProactorBase {
   friend class FiberSchedAlgo;
 
  public:
+  enum ProactorKind { EPOLL = 1, IOURING = 2 };
+
   ProactorBase();
   virtual ~ProactorBase();
 
@@ -172,6 +174,8 @@ class ProactorBase {
     return tq_seq_.fetch_or(1, std::memory_order_relaxed);
   }
 
+  virtual ProactorKind GetKind() const = 0;
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -217,7 +221,7 @@ class ProactorBase {
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
-      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16,8>,
+      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/, void()>;
   struct Tasklet : public Fu2Fun {
     using Fu2Fun::Fu2Fun;

@@ -39,6 +39,10 @@ class EpollProactor : public ProactorBase {
     return epoll_fd_;
   }
 
+  ProactorKind GetKind() const final {
+    return EPOLL;
+  }
+
  private:
   void DispatchCompletions(struct epoll_event* cevents, unsigned count);
 

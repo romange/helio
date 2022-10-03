@@ -42,12 +42,12 @@ class UringSocket : public LinuxSocketBase {
   //! When and an event occurs, the cb will be called with the mask of actual events
   //! that trigerred it.
   //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
-  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb);
+  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) final;
 
   //! Cancels the poll event. id must be the id returned by PollEvent function.
   //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
   //! in process of completing.
-  uint32_t CancelPoll(uint32_t id);
+  uint32_t CancelPoll(uint32_t id) final;
 
  private:
   Proactor* GetProactor() {
