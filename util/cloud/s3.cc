@@ -14,8 +14,8 @@
 
 #include "base/logging.h"
 #include "util/cloud/aws.h"
-#include "util/proactor_base.h"
 #include "util/http/encoding.h"
+#include "util/proactor_base.h"
 
 namespace util {
 namespace cloud {
@@ -133,16 +133,12 @@ ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
 
 }  // namespace xml
 
-ListBucketsResult ListS3Buckets(const AWS& aws, http::Client* http_client) {
+ListBucketsResult ListS3Buckets(AWS& aws, http::Client* http_client) {
   h2::request<h2::empty_body> req{h2::verb::get, "/", 11};
   req.set(h2::field::host, kRootDomain);
   h2::response<h2::string_body> resp;
 
-  aws.Sign(AWS::kEmptySig, &req);
-
-  VLOG(1) << "Req: " << req;
-
-  error_code ec = http_client->Send(req, &resp);
+  error_code ec = aws.SendRequest(AWS::kEmptySig, http_client, &req, &resp);
   if (ec)
     return make_unexpected(ec);
 
@@ -196,11 +192,7 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
 
   h2::response<h2::string_body> resp;
 
-  aws_.Sign(AWS::kEmptySig, &req);
-
-  VLOG(1) << "Req: " << req;
-
-  error_code ec = http_client_->Send(req, &resp);
+  error_code ec = aws_.SendRequest(AWS::kEmptySig, http_client_.get(), &req, &resp);
   if (ec)
     return make_unexpected(ec);
 
@@ -218,9 +210,8 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
       return make_unexpected(ec);
 
     req.set(h2::field::host, host);
-    aws_.Sign(AWS::kEmptySig, &req);
 
-    ec = http_client_->Send(req, &resp);
+    ec = aws_.SendRequest(AWS::kEmptySig, http_client_.get(), &req, &resp);
     if (ec)
       return make_unexpected(ec);
   }

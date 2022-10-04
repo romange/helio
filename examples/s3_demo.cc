@@ -38,7 +38,7 @@ template <typename Body> std::ostream& operator<<(std::ostream& os, const h2::re
   return os;
 }
 
-void ListBuckets(const AWS& aws, ProactorBase* proactor) {
+void ListBuckets(AWS& aws, ProactorBase* proactor) {
   http::Client http_client{proactor};
 
   http_client.set_connect_timeout_ms(2000);
