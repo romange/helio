@@ -315,12 +315,14 @@ AwsConnectionData GetConnectionData() {
   return {};
 }
 
-void MoveAwsConnectionData(AwsConnectionData&& source, AwsConnectionData* target) {
+void PopulateAwsConnectionData(const AwsConnectionData& src, AwsConnectionData* dest) {
   // don't overwrite region as it can be provided as a flag.
-  if (!target->region.empty()) {
-    source.region = std::move(target->region);
-  }
-  *target = std::move(source);
+  std::string region = dest->region;
+
+  *dest = src;
+
+  if (!region.empty())
+    dest->region = region;
 }
 
 }  // namespace
@@ -428,20 +430,32 @@ std::error_code AWS::SendRequest(std::string_view payload_sig, http::Client* cli
   if (!ec && resp->result() == h2::status::bad_request && !connection_data_.role_name.empty() &&
       resp->body().find(kExpiredTokenSentinel) != std::string::npos) {
     VLOG(1) << "Trying to update expired session token";
+
     auto updated_data = GetConnectionDataFromMetadata(connection_data_.role_name);
-    if (updated_data) {
-      MoveAwsConnectionData(std::move(*updated_data), &connection_data_);
-      Sign(payload_sig, req);
-      *resp = h2::response<h2::string_body>{};
-      return client->Send(*req, resp);
+    if (!updated_data)
+      return ec;
+
+    PopulateAwsConnectionData(std::move(*updated_data), &connection_data_);
+    SetScopeAndSignKey();
+
+    // Re-connect client if needed.
+    if ((*resp)["Connection"] == "close") {
+      auto ec = client->Connect(client->host(), "80");
+      if (ec)
+        return ec;
     }
+
+    Sign(payload_sig, req);
+    *resp = h2::response<h2::string_body>{};
+    VLOG(1) << "Req: " << *req;
+    return client->Send(*req, resp);
   }
 
   return ec;
 }
 
 error_code AWS::Init() {
-  MoveAwsConnectionData(GetConnectionData(), &connection_data_);
+  PopulateAwsConnectionData(GetConnectionData(), &connection_data_);
 
   if (connection_data_.access_key.empty()) {
     LOG(WARNING) << "Can not find AWS_ACCESS_KEY_ID";

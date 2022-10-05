@@ -133,12 +133,12 @@ ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
 
 }  // namespace xml
 
-ListBucketsResult ListS3Buckets(AWS& aws, http::Client* http_client) {
+ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
   h2::request<h2::empty_body> req{h2::verb::get, "/", 11};
   req.set(h2::field::host, kRootDomain);
   h2::response<h2::string_body> resp;
 
-  error_code ec = aws.SendRequest(AWS::kEmptySig, http_client, &req, &resp);
+  error_code ec = aws->SendRequest(AWS::kEmptySig, http_client, &req, &resp);
   if (ec)
     return make_unexpected(ec);
 

@@ -33,7 +33,8 @@ class AWS {
 
   using HttpHeader = ::boost::beast::http::header<true, ::boost::beast::http::fields>;
 
-  // Sign request and send it with client->Send() internally. Try to refresh session token if needed.
+  // Sign request and send it with client->Send() internally. Try to refresh session token if
+  // needed.
   std::error_code SendRequest(std::string_view payload_sig, http::Client* client,
                               h2::request<h2::empty_body>* req,
                               h2::response<h2::string_body>* resp);

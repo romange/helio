@@ -38,7 +38,7 @@ template <typename Body> std::ostream& operator<<(std::ostream& os, const h2::re
   return os;
 }
 
-void ListBuckets(AWS& aws, ProactorBase* proactor) {
+void ListBuckets(AWS* aws, ProactorBase* proactor) {
   http::Client http_client{proactor};
 
   http_client.set_connect_timeout_ms(2000);
@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
 
   if (cmd == "ls") {
     if (path.empty()) {
-      ListBuckets(aws, pp->GetNextProactor());
+      ListBuckets(&aws, pp->GetNextProactor());
     } else {
       string_view clean = absl::StripPrefix(path, "s3://");
       string_view obj_path;
