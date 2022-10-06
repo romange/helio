@@ -20,7 +20,6 @@
 #include "base/logging.h"
 #include "io/file.h"
 #include "io/line_reader.h"
-#include "util/http/http_client.h"
 #include "util/proactor_base.h"
 
 namespace util {
@@ -30,6 +29,8 @@ using namespace std;
 namespace h2 = boost::beast::http;
 
 namespace {
+
+const char* kExpiredTokenSentinel = "<Error><Code>ExpiredToken</Code>";
 
 /*void EVPDigest(const ::boost::beast::multi_buffer& mb, unsigned char* md) {
   EVP_MD_CTX* ctx = EVP_MD_CTX_new();
@@ -121,11 +122,6 @@ inline std::string_view std_sv(const ::boost::beast::string_view s) {
 }
 
 constexpr char kAlgo[] = "AWS4-HMAC-SHA256";
-
-struct AwsConnectionData {
-  std::string access_key, secret_key, session_token;
-  std::string region;
-};
 
 // Try reading AwsConnectionData from env.
 std::optional<AwsConnectionData> GetConnectionDataFromEnv() {
@@ -254,7 +250,8 @@ void GetConfigFromMetadata(http::Client* http_client, AwsConnectionData* cd) {
 }
 
 // Try getting AwsConnectionData from instance metadata.
-std::optional<AwsConnectionData> GetConnectionDataFromMetadata() {
+std::optional<AwsConnectionData> GetConnectionDataFromMetadata(
+    std::string_view hinted_role_name = ""sv) {
   ProactorBase* pb = ProactorBase::me();
   CHECK(pb);
 
@@ -263,16 +260,21 @@ std::optional<AwsConnectionData> GetConnectionDataFromMetadata() {
   if (ec)
     return std::nullopt;
 
-  // Get role name.
   const char* PATH = "/latest/meta-data/iam/security-credentials/";
-  auto role_name = MakeGetRequest(PATH, &http_client);
-  if (!role_name) {
-    LOG(ERROR) << "Failed to get role name from metadata";
-    return std::nullopt;
+
+  // Get role name if none provided.
+  std::string role_name{hinted_role_name};
+  if (role_name.empty()) {
+    auto fetched_role = MakeGetRequest(PATH, &http_client);
+    if (!fetched_role) {
+      LOG(ERROR) << "Failed to get role name from metadata";
+      return std::nullopt;
+    }
+    role_name = std::move(*fetched_role);
   }
 
   // Get credentials.
-  std::string path = absl::StrCat(PATH, *role_name);
+  std::string path = absl::StrCat(PATH, role_name);
   auto resp = MakeGetRequest(path, &http_client);
   if (!resp)
     return std::nullopt;
@@ -288,6 +290,7 @@ std::optional<AwsConnectionData> GetConnectionDataFromMetadata() {
   if (doc.HasMember("Token")) {
     cd.session_token = doc["Token"].GetString();
   }
+  cd.role_name = role_name;
   GetConfigFromMetadata(&http_client, &cd);
 
   return cd;
@@ -312,6 +315,22 @@ AwsConnectionData GetConnectionData() {
   return {};
 }
 
+void PopulateAwsConnectionData(const AwsConnectionData& src, AwsConnectionData* dest) {
+  // don't overwrite region as it can be provided as a flag.
+  std::string region = dest->region;
+
+  *dest = src;
+
+  if (!region.empty())
+    dest->region = region;
+}
+
+// Return true if the response indicates an expired token.
+bool IsExpiredSessionResponse(const h2::response<h2::string_body>& resp) {
+  return resp.result() == h2::status::bad_request &&
+         resp.body().find(kExpiredTokenSentinel) != std::string::npos;
+}
+
 }  // namespace
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -319,7 +338,7 @@ const char AWS::kUnsignedPayloadSig[] = "UNSIGNED-PAYLOAD";
 
 string AWS::AuthHeader(string_view method, string_view headers, string_view target,
                        string_view content_sha256, string_view amz_date) const {
-  CHECK(!access_key_.empty());
+  CHECK(!connection_data_.access_key.empty());
 
   size_t pos = target.find('?');
   string_view url = target.substr(0, pos);
@@ -337,7 +356,7 @@ string AWS::AuthHeader(string_view method, string_view headers, string_view targ
 
   string canonical_request = absl::StrCat(method, "\n", url, "\n", canonical_querystring, "\n");
   string signed_headers = "host;x-amz-content-sha256;x-amz-date";
-  if (!session_token_.empty()) {
+  if (!connection_data_.session_token.empty()) {
     signed_headers += ";x-amz-security-token";
   }
 
@@ -355,7 +374,7 @@ string AWS::AuthHeader(string_view method, string_view headers, string_view targ
   Hexify(signature, sizeof(signature), hexdigest);
 
   string authorization_header =
-      absl::StrCat(kAlgo, " Credential=", access_key_, "/", credential_scope_,
+      absl::StrCat(kAlgo, " Credential=", connection_data_.access_key, "/", credential_scope_,
                    ",SignedHeaders=", signed_headers, ",Signature=", hexdigest);
 
   return authorization_header;
@@ -375,8 +394,9 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
   header->set("x-amz-content-sha256",
               boost::beast::string_view{payload_sig.data(), payload_sig.size()});
 
-  if (!session_token_.empty()) {
-    header->set("x-amz-security-token", session_token_);
+  const std::string& session_token = connection_data_.session_token;
+  if (!session_token.empty()) {
+    header->set("x-amz-security-token", session_token);
   }
 
   /// The Canonical headers must include the following:
@@ -393,8 +413,8 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
       absl::StrCat("host", ":", std_sv(header->find(h2::field::host)->value()), "\n");
   absl::StrAppend(&canonical_headers, "x-amz-content-sha256", ":", payload_sig, "\n");
   absl::StrAppend(&canonical_headers, "x-amz-date", ":", amz_date, "\n");
-  if (!session_token_.empty()) {
-    absl::StrAppend(&canonical_headers, "x-amz-security-token", ":", session_token_, "\n");
+  if (!session_token.empty()) {
+    absl::StrAppend(&canonical_headers, "x-amz-security-token", ":", session_token, "\n");
   }
 
   string auth_header = AuthHeader(std_sv(header->method_string()), canonical_headers,
@@ -403,24 +423,54 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
   header->set(h2::field::authorization, auth_header);
 }
 
-error_code AWS::Init() {
-  AwsConnectionData keys = GetConnectionData();
+std::error_code AWS::SendRequest(std::string_view payload_sig, http::Client* client,
+                                 h2::request<h2::empty_body>* req,
+                                 h2::response<h2::string_body>* resp) {
+  Sign(payload_sig, req);
 
-  if (keys.access_key.empty()) {
+  VLOG(1) << "Req: " << *req;
+  auto ec = client->Send(*req, resp);
+
+  // Check if session_token expired on an aws connection, established via instance metadata.
+  // In this case, try to update it, re-sign the request and re-try it.
+  if (!ec && !connection_data_.role_name.empty() && IsExpiredSessionResponse(*resp)) {
+    VLOG(1) << "Trying to update expired session token";
+
+    auto updated_data = GetConnectionDataFromMetadata(connection_data_.role_name);
+    if (!updated_data)
+      return ec;
+
+    PopulateAwsConnectionData(std::move(*updated_data), &connection_data_);
+    SetScopeAndSignKey();
+
+    // Re-connect client if needed.
+    if ((*resp)[h2::field::connection] == "close") {
+      auto ec = client->Connect(client->host(), "80");
+      if (ec)
+        return ec;
+    }
+
+    Sign(payload_sig, req);
+    *resp = h2::response<h2::string_body>{};
+    VLOG(1) << "Req: " << *req;
+    return client->Send(*req, resp);
+  }
+
+  return ec;
+}
+
+error_code AWS::Init() {
+  PopulateAwsConnectionData(GetConnectionData(), &connection_data_);
+
+  if (connection_data_.access_key.empty()) {
     LOG(WARNING) << "Can not find AWS_ACCESS_KEY_ID";
     return make_error_code(errc::operation_not_permitted);
   }
 
-  if (keys.secret_key.empty()) {
+  if (connection_data_.secret_key.empty()) {
     LOG(WARNING) << "Can not find AWS_SECRET_ACCESS_KEY";
     return make_error_code(errc::operation_not_permitted);
   }
-
-  secret_ = std::move(keys.secret_key);
-  access_key_ = std::move(keys.access_key);
-  session_token_ = std::move(keys.session_token);
-  if (region_.empty())
-    region_ = std::move(keys.region);
 
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
 
@@ -435,13 +485,15 @@ error_code AWS::Init() {
 }
 
 void AWS::UpdateRegion(std::string_view region) {
-  region_ = region;
+  connection_data_.region = region;
   SetScopeAndSignKey();
 }
 
 void AWS::SetScopeAndSignKey() {
-  sign_key_ = DeriveSigKey(secret_, date_str_, region_, service_);
-  credential_scope_ = absl::StrCat(date_str_, "/", region_, "/", service_, "/", "aws4_request");
+  sign_key_ =
+      DeriveSigKey(connection_data_.secret_key, date_str_, connection_data_.region, service_);
+  credential_scope_ =
+      absl::StrCat(date_str_, "/", connection_data_.region, "/", service_, "/", "aws4_request");
 }
 
 }  // namespace cloud

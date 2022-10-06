@@ -18,7 +18,8 @@ using ListBucketsResult = io::Result<std::vector<std::string>>;
 // Empty if no more pages left.
 using ListObjectsResult = io::Result<std::string>;
 
-ListBucketsResult ListS3Buckets(const AWS& aws, http::Client* http_client);
+// List all S3 buckets. Refresh AWS token if needed.
+ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client);
 
 class S3Bucket {
  public:
