@@ -253,11 +253,10 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   read_context_ = nullptr;
 
   // Error handling - finale part.
-  if (res == 0) {
-    res = ECONNABORTED;
-  } else {
-    DCHECK_EQ(-1, res);
+  if (res == -1) {
     res = errno;
+  } else if (res == 0) {
+    res = ECONNABORTED;
   }
 
   DVSOCK(1) << "Got " << res;
