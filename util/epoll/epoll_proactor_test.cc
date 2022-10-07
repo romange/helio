@@ -29,7 +29,7 @@ class EpollProactorTest : public testing::Test {
  protected:
   void SetUp() override {
     ev_cntrl_ = std::make_unique<EpollProactor>();
-    ev_cntrl_thread_ = thread{[this] { 
+    ev_cntrl_thread_ = thread{[this] {
       ev_cntrl_->Init();
       ev_cntrl_->Run(); }};
   }
@@ -117,6 +117,24 @@ TEST_F(EpollProactorTest, Periodic) {
   ASSERT_TRUE(count >= 15 && count <= 25) << count;
   usleep(20000);
   EXPECT_EQ(num, count);
+}
+
+TEST_F(EpollProactorTest, SleepMany) {
+  constexpr size_t kNumIters = 600;
+
+  auto cb = []() {
+    this_fiber::properties<FiberProps>().set_name("sleeper");
+    for (unsigned i = 0; i < kNumIters; ++i) {
+      auto sleep = chrono::steady_clock::now();
+      sleep += 15us;
+
+      DVLOG(1) << "sleep_until " << sleep.time_since_epoch().count();
+      this_fiber::sleep_until(sleep);
+    }
+    LOG(INFO) << "Sleeper finished ";
+  };
+  ev_cntrl_->Await(cb);
+  LOG(INFO) << "AwaitSleep finished ";
 }
 
 void BM_AsyncCall(benchmark::State& state) {

@@ -212,11 +212,11 @@ void Proactor::Run() {
     if (tq_seq & 1) {
       // We allow dispatch fiber to run.
 
-      // We must reset LSB for both tq_seq and tq_seq_  so that if notify() was called after
-      // yield(), tq_seq_ would be invalidated.
       unsigned read_cnt = scheduler_->ready_cnt();
 
-      tq_seq_.fetch_and(~1, memory_order_relaxed);
+      // We must reset LSB for both tq_seq and tq_seq_  so that if notify() was called after
+      // yield(), tq_seq_ would be invalidated.
+      tq_seq_.fetch_and(~1, memory_order_acq_rel);
       tq_seq &= ~1;
       this_fiber::yield();
       VPRO(2) << "this_fiber::yield_end " << loop_cnt << " " << read_cnt << " "
