@@ -40,7 +40,6 @@ namespace {
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kNopIndex = 2;
 constexpr uint64_t kUserDataCbIndex = 1024;
-constexpr uint32_t kMaxSpinLimit = 5;
 
 }  // namespace
 
@@ -95,6 +94,7 @@ void EpollProactor::Run() {
   uint32_t tq_seq = 0;
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
+  uint32_t cqe_count = 0;
   bool should_suspend = false;
   Tasklet task;
 
@@ -136,9 +136,40 @@ void EpollProactor::Run() {
       task_queue_avail_.notifyAll();
     }
 
+    // we got notifications from 3rd party threads via tq_seq_ lsb.
+    if (tq_seq & 1) {  // We allow dispatch fiber to run.
+      // we use ack_req so that this store won't be reordered with `this_fiber::yield` below.
+      // That makes sure that subsequent notifications via tq_seq_ won't get lost.
+      // In other words, if another thread sets the bit right after fetch_and -
+      // we will call again yield() at some point, but if `fetch_and` would move
+      // after the yield and someone would notify us after the dispatcher runs,
+      // we would loose that notification.
+      tq_seq_.fetch_and(~1U, memory_order_acq_rel);
+      tq_seq &= ~1;
+
+      // This eventually calls dispatcher fiber.
+      this_fiber::yield();
+
+      // we preempted without passing through suspend_until so we should not block on epoll_wait
+      // before we call suspend_until.
+      should_suspend = true;
+    }
+
     int timeout = 0;  // By default we do not block on epoll_wait.
 
-    if (spin_loops >= kMaxSpinLimit) {
+    // Check if we can block on I/O.
+    // There are few ground rules before we can set timeout=-1 (i.e. block indefinitely)
+    // 1. No other fibers are active.
+    // 2. Specifically SuspendIoLoop was called and returned true.
+    // 3. Moreover dispatch fiber was switched to at least once since RequestDispatcher
+    //    has been called (i.e. tq_seq_ has a flag on that says we should
+    //    switch to dispatcher fiber). This is verified with (tq_seq & 1) check.
+    //    These rules a bit awkward because we hack into 3rd party fibers framework
+    //    without the ability to build a straightforward epoll/fibers scheduler.
+
+    bool has_fiber_work = should_suspend || sched->has_ready_fibers();
+
+    if (!has_fiber_work && spin_loops >= kMaxSpinLimit) {
       spin_loops = 0;
 
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
@@ -152,7 +183,10 @@ void EpollProactor::Run() {
       }
     }
 
-    DVLOG(2) << "EpollWait " << timeout;
+    DCHECK(!has_fiber_work || timeout == 0);
+
+    DVLOG(2) << "EpollWait " << timeout << " " << tq_seq;
+
     int epoll_res = epoll_wait(epoll_fd_, cevents, kBatchSize, timeout);
     if (epoll_res < 0) {
       epoll_res = errno;
@@ -166,7 +200,7 @@ void EpollProactor::Run() {
       tq_seq_.fetch_and(1, memory_order_release);
     }
 
-    uint32_t cqe_count = epoll_res;
+    cqe_count = epoll_res;
     if (cqe_count) {
       ++cqe_fetches;
       tl_info_.monotonic_time = GetClockNanos();
@@ -186,18 +220,7 @@ void EpollProactor::Run() {
       };
     }
 
-    if (tq_seq & 1) {  // We allow dispatch fiber to run.
-      tq_seq_.fetch_and(~1U, memory_order_relaxed);
-      tq_seq &= ~1;
-
-      this_fiber::yield();
-
-      // we preempted without passing through suspend_until.
-      should_suspend = true;
-    }
-
-    if (should_suspend || sched->has_ready_fibers() ||
-        tq_seq_.load(memory_order_relaxed) != tq_seq) {
+    if (has_fiber_work) {
       // Suspend this fiber until others finish runnning and get blocked.
       // Eventually UringFiberAlgo will resume back this fiber in suspend_until
       // function.
@@ -209,7 +232,7 @@ void EpollProactor::Run() {
         ++num_suspends;
       }
 
-      DVLOG(2) << "Resume ioloop";
+      DVLOG(2) << "Resume ioloop " << tq_seq_.load(memory_order_relaxed);
       spin_loops = 0;
       continue;
     }

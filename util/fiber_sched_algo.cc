@@ -144,7 +144,7 @@ bool FiberSchedAlgo::has_ready_fibers() const noexcept {
 // In our case, "sleeping" means - might stuck the wait function waiting for completion events.
 // wait_for_cqe is the only place where the thread can be stalled.
 void FiberSchedAlgo::notify() noexcept {
-  DVLOG(2) << "notify from " << syscall(SYS_gettid);
+  DVLOG(2) << "notify from thread";  // thread id is in the log.
 
   // We signal so that
   // 1. Main context should awake if it is not
@@ -194,7 +194,7 @@ bool FiberSchedAlgo::SuspendIoLoop(uint64_t now) {
   flags_.ioloop_yielded = 0;
   flags_.ioloop_woke = 0;
 
-  DVLOG(2) << "WaitTillFibersSuspend:End";
+  DVLOG(2) << "WaitTillFibersSuspend:End " << int(flags_.suspenduntil_called);
 
   return flags_.suspenduntil_called;
 }
