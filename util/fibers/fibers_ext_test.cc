@@ -3,12 +3,16 @@
 //
 
 #include <absl/time/clock.h>
+
+#include <boost/context/continuation.hpp>
+#include <gmock/gmock.h>
 #include "base/gtest.h"
+#include "base/logging.h"
+#include "util/epoll/epoll_pool.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/simple_channel.h"
-#include "util/uring/uring_pool.h"
-#include "util/epoll/epoll_pool.h"
 #include "util/uring/uring_fiber_algo.h"
+#include "util/uring/uring_pool.h"
 
 using namespace boost;
 using namespace std;
@@ -52,7 +56,7 @@ TEST_F(FibersTest, EventCount) {
 TEST_F(FibersTest, EventCountTimeout) {
   EventCount ec;
   std::chrono::steady_clock::time_point tp = std::chrono::steady_clock::now() + 5ms;
-  EXPECT_EQ(std::cv_status::timeout, ec.await_until([] { return false;}, tp));
+  EXPECT_EQ(std::cv_status::timeout, ec.await_until([] { return false; }, tp));
 }
 
 TEST_F(FibersTest, SpuriousNotify) {
@@ -93,9 +97,7 @@ TEST_F(FibersTest, FiberQueue) {
   ProactorBase* proactor = pool.GetNextProactor();
   FiberQueue fq{32};
 
-  auto fiber = proactor->LaunchFiber([&] {
-    fq.Run();
-  });
+  auto fiber = proactor->LaunchFiber([&] { fq.Run(); });
 
   constexpr unsigned kIters = 10000;
   size_t delay = 0;
@@ -138,13 +140,68 @@ TEST_F(FibersTest, SimpleChannelDone) {
   t.join();
 }
 
+TEST_F(FibersTest, BoostContext) {
+  namespace ctx = boost::context;
+  int a = -1;
+
+  // Switches immediately and passes the current context as sink to the lambda.
+  ctx::continuation source = ctx::callcc([&a](ctx::continuation&& sink) {
+    a = 0;
+    int b = 1;
+    for (;;) {
+      // switches to sink. sink immediately looses its state but it returns the new one
+      // if it switches back here.
+      sink = sink.resume();
+      int next = a + b;
+      a = b;
+      b = next;
+    }
+    return std::move(sink);
+  });
+
+  int current = 0;
+  int next = 1;
+  for (int j = 0; j < 10; ++j) {
+    EXPECT_EQ(a, current);
+    int tmp = next;
+    next += current;
+    current = tmp;
+    source = std::move(source).resume();
+  }
+
+  vector<string> steps;
+  ctx::continuation c1 = ctx::callcc([&steps](ctx::continuation && c) {
+    steps.push_back("c1.start"); // here c is the next address right after callcc call.
+
+    // interrupt point A.
+    c = c.resume_with([&](ctx::continuation && c) {
+      steps.push_back("rw1");
+      return std::move(c);
+    });
+
+    // after resume_with call c is the address of testing function at point (B).
+    steps.push_back("c1.end");
+    return std::move(c);  // continues with c.
+  });
+
+  // here c1 is the address after (A) or before "c1.end" line.
+  c1 = c1.resume_with([&](ctx::continuation && c) {
+    // here c has the address of c1 lambda before "c1.end" line.
+    // in other words, c equals to c1.
+    steps.push_back("rw2");
+    return std::move(c); // continue with c1.
+  });
+
+  // point B.
+
+  ASSERT_THAT(steps, testing::ElementsAre("c1.start", "rw1", "rw2", "c1.end"));
+  ASSERT_FALSE(c1);
+}
+
 typedef testing::Types<base::mpmc_bounded_queue<int>, folly::ProducerConsumerQueue<int>>
     QueueImplementations;
 
-template <typename Q>
-class ChannelTest : public ::testing::Test {
- public:
-};
+template <typename Q> class ChannelTest : public ::testing::Test { public: };
 TYPED_TEST_SUITE(ChannelTest, QueueImplementations);
 
 TYPED_TEST(ChannelTest, SimpleChannel) {
