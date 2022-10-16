@@ -3,9 +3,10 @@
 //
 
 #include <absl/time/clock.h>
+#include <gmock/gmock.h>
 
 #include <boost/context/continuation.hpp>
-#include <gmock/gmock.h>
+
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/epoll/epoll_pool.h"
@@ -20,6 +21,7 @@ using namespace chrono_literals;
 
 namespace util {
 using namespace uring;
+namespace ctx = boost::context;
 
 namespace fibers_ext {
 
@@ -141,7 +143,6 @@ TEST_F(FibersTest, SimpleChannelDone) {
 }
 
 TEST_F(FibersTest, BoostContext) {
-  namespace ctx = boost::context;
   int a = -1;
 
   // Switches immediately and passes the current context as sink to the lambda.
@@ -170,11 +171,11 @@ TEST_F(FibersTest, BoostContext) {
   }
 
   vector<string> steps;
-  ctx::continuation c1 = ctx::callcc([&steps](ctx::continuation && c) {
-    steps.push_back("c1.start"); // here c is the next address right after callcc call.
+  ctx::continuation c1 = ctx::callcc([&steps](ctx::continuation&& c) {
+    steps.push_back("c1.start");  // here c is the next address right after callcc call.
 
     // interrupt point A.
-    c = c.resume_with([&](ctx::continuation && c) {
+    c = c.resume_with([&](ctx::continuation&& c) {
       steps.push_back("rw1");
       return std::move(c);
     });
@@ -185,17 +186,51 @@ TEST_F(FibersTest, BoostContext) {
   });
 
   // here c1 is the address after (A) or before "c1.end" line.
-  c1 = c1.resume_with([&](ctx::continuation && c) {
+  c1 = c1.resume_with([&](ctx::continuation&& c) {
     // here c has the address of c1 lambda before "c1.end" line.
     // in other words, c equals to c1.
     steps.push_back("rw2");
-    return std::move(c); // continue with c1.
+    return std::move(c);  // continue with c1.
   });
 
   // point B.
 
   ASSERT_THAT(steps, testing::ElementsAre("c1.start", "rw1", "rw2", "c1.end"));
   ASSERT_FALSE(c1);
+}
+
+TEST_F(FibersTest, BoostContextResumeWith) {
+  ctx::continuation c1, c2;
+
+  auto cb1 = [&](ctx::continuation&& c) {
+    LOG(INFO) << "c1.start";
+    c = c.resume();
+    LOG(INFO) << "c1.end";
+
+    // c should have been address of (A) but we returned an empty continuation.
+    CHECK(!c);
+
+    // instead we kept the address in c2.
+    return std::move(c2);
+  };
+
+  c1 = ctx::callcc(std::move(cb1));  // runs cb1 until resume() point.
+
+  // c1 represents cb1 above at c1.end line.
+  // before switching back to cb1, we run the lambda below on top of c1 stack.
+  c1 = c1.resume_with([&](ctx::continuation&& c) {
+    LOG(INFO) << "rw1";
+
+    // c and then c2 point to the address right after resume_with call in c1 stack.
+    // i.e. to point A.
+    c2 = std::move(c);
+
+    return ctx::continuation{};
+  });
+
+  // point A.
+  ASSERT_FALSE(c1);
+  LOG(INFO) << "end";
 }
 
 typedef testing::Types<base::mpmc_bounded_queue<int>, folly::ProducerConsumerQueue<int>>

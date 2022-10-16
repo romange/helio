@@ -21,8 +21,6 @@
 #include "util/uring/uring_socket.h"
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
-ABSL_FLAG(uint32_t, proactor_spin_limit, 10,
-          "How many times to spin proactor loop before blocking on kernel");
 
 #define URING_CHECK(x)                                                                \
   do {                                                                                \
