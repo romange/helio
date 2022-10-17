@@ -1,4 +1,4 @@
-# Async - backend development framework in C++ using io_ring event-loop.
+# Async - backend development framework in C++ using io_uring event-loop.
 
 =====
 
