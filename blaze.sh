@@ -48,7 +48,17 @@ BUILD_DIR=${BUILD_PREF}-${BUILD_SUF}
 
 set -x
 
+result="$(cmake --version | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')"
+major="${result%%.*}"
+remainder="${result#*.}"
+minor="${remainder%.*}"
+
+if [ "$major" -lt 3 ] ||
+    ( [ "$major" -eq 3 ] &&
+        ( [ "$minor" -lt 4 ] )) ; then
+    echo "you are using an older version of cmake, need cmake >= 3.4"
+    exit 1
+fi
+
 cmake -L -B $BUILD_DIR -DCMAKE_BUILD_TYPE=$TARGET_BUILD_TYPE -DCMAKE_CXX_COMPILER=$COMPILER \
     "$GENERATOR" $LAUNCHER $@
-
-
