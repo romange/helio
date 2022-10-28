@@ -86,8 +86,6 @@ Proactor::Proactor() : ProactorBase() {
 }
 
 Proactor::~Proactor() {
-  on_idle_map_.clear();
-
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
     io_uring_queue_exit(&ring_);
@@ -251,6 +249,8 @@ void Proactor::Run() {
       continue;
     }
 
+    bool should_spin = RunOnIdleTasks();
+
     // Dispatcher runs the scheduling loop. Every time a fiber preempts it awakens dispatcher
     // so that when that we eventually get to the dispatcher fiber again. dispatcher calls
     // suspend_until() only when pick_next returns null, i.e. there are no active fibers to run.
@@ -263,14 +263,10 @@ void Proactor::Run() {
       goto spin_start;
     }
 
-    if (!on_idle_map_.empty()) {
+    if (should_spin) {
       // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
       // Instead we use the cpu time on doing on_idle work.
       wait_for_cqe(&ring_, 0);  // a dip into kernel to fetch more cqes.
-
-      if (!CQReadyCount(ring_)) {
-        RunOnIdleTasks();
-      }
 
       continue;  // continue spinning until on_idle_map_ is empty.
     }

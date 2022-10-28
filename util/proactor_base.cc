@@ -82,53 +82,63 @@ void ProactorBase::Stop() {
   VLOG(1) << "Proactor::StopFinish";
 }
 
-uint32_t ProactorBase::AddIdleTask(IdleTask f) {
+uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f) {
   DCHECK(InMyThread());
 
-  auto id = next_task_id_++;
-  auto res = on_idle_map_.emplace(id, std::move(f));
-  CHECK(res.second);
-  idle_it_ = on_idle_map_.begin();  // reset position to the first item.
+  uint32_t res = on_idle_arr_.size();
+  on_idle_arr_.push_back(OnIdleWrapper{.task = std::move(f), .next_ts = 0});
 
-  return id;
+  return res;
 }
 
-void ProactorBase::RunOnIdleTasks() {
-  if (on_idle_map_.empty())
-    return;
-
-  if (idle_it_ == on_idle_map_.end()) {
-    idle_it_ = on_idle_map_.begin();
-  }
+bool ProactorBase::RunOnIdleTasks() {
+  if (on_idle_arr_.empty())
+    return false;
 
   uint64_t start = GetClockNanos();
-  tl_info_.monotonic_time = start;
+  uint64_t curr_ts = start;
 
-  // Perform round robin with idle_it_ saving the position between runs.
+  bool should_spin = false;
+
+  DCHECK_LT(on_idle_next_, on_idle_arr_.size());
+
+  // Perform round robin with on_idle_next_ saving the position between runs.
   do {
-    bool res = idle_it_->second();
+    OnIdleWrapper& on_idle = on_idle_arr_[on_idle_next_];
 
-    if (!res) {
-      on_idle_map_.erase(idle_it_);
-      idle_it_ = on_idle_map_.begin();
+    if (on_idle.task && on_idle.next_ts <= curr_ts) {
+      tl_info_.monotonic_time = curr_ts;
+
+      uint32_t level = on_idle.task();  // run the task
+
+      curr_ts = GetClockNanos();
+
+      if (level >= kOnIdleMaxLevel) {
+        level = kOnIdleMaxLevel;
+        should_spin = true;
+      } else {
+        uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
+        on_idle.next_ts = curr_ts + delta_ns;
+      }
+    }
+
+    ++on_idle_next_;
+    if (on_idle_next_ == on_idle_arr_.size()) {
+      on_idle_next_ = 0;
       break;
     }
+  } while (curr_ts < start + 10000);  // 10usec for the run.
 
-    ++idle_it_;
-    if (idle_it_ == on_idle_map_.end()) {
-      idle_it_ = on_idle_map_.begin();
-    }
-
-    tl_info_.monotonic_time = GetClockNanos();
-  } while (tl_info_.monotonic_time < start + 100000);  // 100usec for the run.
+  return should_spin;
 }
 
-void ProactorBase::CancelIdleTask(uint32_t id) {
-  auto it = on_idle_map_.find(id);
-  if (it != on_idle_map_.end()) {
-    on_idle_map_.erase(it);
-    idle_it_ = on_idle_map_.begin();
-  }
+bool ProactorBase::RemoveOnIdleTask(uint32_t id) {
+  if (id >= on_idle_arr_.size() || !on_idle_arr_[id].task)
+    return false;
+
+  on_idle_arr_[id].task = OnIdleTask{};
+
+  return true;
 }
 
 uint32_t ProactorBase::AddPeriodic(uint32_t ms, PeriodicTask f) {
