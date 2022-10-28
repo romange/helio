@@ -35,6 +35,14 @@ class ProactorBase {
  public:
   enum ProactorKind { EPOLL = 1, IOURING = 2 };
 
+  // Corresponds to level 0.
+  // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.
+  static const uint32_t kIdleCycleMaxMicros = 1000000u;
+
+  // The "hottest" task can have this maxlevel.
+  // In that case, proactor will always spin calling that task until it will cool down.
+  static const uint32_t kOnIdleMaxLevel = 21;
+
   ProactorBase();
   virtual ~ProactorBase();
 
@@ -135,7 +143,7 @@ class ProactorBase {
     return fb;
   }
 
-  using IdleTask = std::function<bool()>;
+  using OnIdleTask = std::function<uint32_t()>;
   using PeriodicTask = std::function<void()>;
 
   /**
@@ -147,11 +155,7 @@ class ProactorBase {
    * @param f
    * @return uint32_t an unique ids denoting this task. Can be used for cancellation.
    */
-  uint32_t AddIdleTask(IdleTask f);
-
-  bool IsIdleTaskActive(uint32_t id) const {
-    return on_idle_map_.contains(id);
-  }
+  uint32_t AddOnIdleTask(OnIdleTask f);
 
   //! Must be called from the proactor thread.
   //! PeriodicTask should not block since it runs from I/O loop.
@@ -161,7 +165,8 @@ class ProactorBase {
   //! Blocking until the task has been cancelled. Should not run directly from I/O loop
   //! i.e. only from Await or another fiber.
   void CancelPeriodic(uint32_t id);
-  void CancelIdleTask(uint32_t id);
+
+  bool RemoveOnIdleTask(uint32_t id);
 
   // Migrates the calling fibers to the destination proactor.
   // Calling fiber must belong to this proactor.
@@ -199,16 +204,21 @@ class ProactorBase {
 
   virtual void SchedulePeriodic(uint32_t id, PeriodicItem* item) = 0;
   virtual void CancelPeriodicInternal(uint32_t val1, uint32_t val2) = 0;
-  void RunOnIdleTasks();
+
+  // Returns true if we should continue spinning or false otherwise.
+  bool RunOnIdleTasks();
 
   static void Pause(unsigned strength);
   static void ModuleInit();
 
   static uint64_t GetClockNanos() {
-    timespec ts;
-    // absl::GetCurrentTimeNanos() is not monotonic and it syncs with the system clock.
+    // absl::GetCurrentTimeNanos() might be non-monotonic and sync with the system clock.
+    // but it's much more efficient than clock_gettime.
+    return absl::GetCurrentTimeNanos();
+    /*timespec ts;
+
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_nsec + ts.tv_sec * 1000000000UL;
+    return ts.tv_nsec + ts.tv_sec * 1000000000UL;*/
   }
 
   pthread_t thread_id_ = 0U;
@@ -240,8 +250,14 @@ class ProactorBase {
   FiberSchedAlgo* scheduler_ = nullptr;
 
   // Runs tasks when there is available cpu time and no I/O events demand it.
-  absl::flat_hash_map<uint32_t, IdleTask> on_idle_map_;
-  absl::flat_hash_map<uint32_t, IdleTask>::const_iterator idle_it_;
+  struct OnIdleWrapper {
+    OnIdleTask task;
+    uint64_t next_ts;  // when to run the next time in nano seconds.
+  };
+
+  std::vector<OnIdleWrapper> on_idle_arr_;
+  uint32_t on_idle_next_ = 0;
+
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
 
   struct TLInfo {
