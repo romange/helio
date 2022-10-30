@@ -25,7 +25,17 @@ struct NotifyStruct {
   fibers_ext::EventCount evc;
 };
 
-static void DnsResolveNotify(__sigval_t val) {
+// To ensure compatibility between different versions of Glibc,
+// we use sigval_t instead of __sigval_t. However, some older 
+// versions may still require __sigval_t, such as when __USE_POSIX199309
+// is defined. The following text is derived from the comments in Glibc 2.31:
+// To avoid sigval_t (not a standard type name) having C++ name
+// mangling depending on whether the selected standard includes union
+// sigval, it should not be defined at all when using a standard for
+// which the sigval name is not reserved; in that case, headers should
+// not include <bits/types/sigval_t.h> and should use only the
+// internal __sigval_t name.  
+static void DnsResolveNotify(sigval_t val) {
   NotifyStruct* ns = (NotifyStruct*)val.sival_ptr;
   ns->gate.store(true, memory_order_relaxed);
   ns->evc.notify();
