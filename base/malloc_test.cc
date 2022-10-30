@@ -81,6 +81,93 @@ inline size_t VmmRss() {
   return ProcessStats::Read().vm_rss;
 }
 
+static inline mi_slice_t* mi_slice_first(const mi_slice_t* slice) {
+  mi_slice_t* start = (mi_slice_t*)((uint8_t*)slice - slice->slice_offset);
+  return start;
+}
+
+static inline mi_segment_t* _mi_ptr_segment(const void* p) {
+  return (mi_segment_t*)((uintptr_t)p & ~MI_SEGMENT_MASK);
+}
+
+
+#define mi_likely(x) __builtin_expect(!!(x), true)
+
+/*
+extern "C" uint8_t _mi_bin(size_t size);
+static mi_page_queue_t* mi_heap_page_queue_of(mi_heap_t* heap, const mi_page_t* page) {
+  assert(page->flags.x.in_full == 0);
+
+  uint8_t bin = _mi_bin(page->xblock_size);
+  mi_page_queue_t* pq = &heap->pages[bin];
+  return pq;
+}*/
+
+
+// returns true if page is not active, and its used blocks <= capacity * ratio
+bool mi_heap_page_is_underutilized(mi_heap_t* heap, void* p, float ratio) {
+  mi_segment_t* const segment = _mi_ptr_segment(p);
+
+  // from _mi_segment_page_of
+  ptrdiff_t diff = (uint8_t*)p - (uint8_t*)segment;
+  size_t idx = (size_t)diff >> MI_SEGMENT_SLICE_SHIFT;
+  mi_slice_t* slice0 = (mi_slice_t*)&segment->slices[idx];
+  mi_slice_t* slice = mi_slice_first(slice0);  // adjust to the block that holds the page data
+  mi_page_t* page = (mi_page_t*)slice;
+  // end from _mi_segment_page_of //
+
+  // from mi_page_heap
+  mi_heap_t* page_heap = (mi_heap_t*)(mi_atomic_load_relaxed(&(page)->xheap));
+
+  // the heap id matches and it is not a full page
+  if (mi_likely(page_heap == heap && page->flags.x.in_full == 0)) {
+    // mi_page_queue_t* pq = mi_heap_page_queue_of(heap, page);
+
+    // first in the list, meaning it's the head of page queue, thus being used for malloc
+    if (page->prev == NULL)
+      return false;
+
+    // this page belong to this heap and is not first in the page queue. Lets check its
+    // utilization.
+    return page->used <= unsigned(page->capacity * ratio);
+  }
+  return false;
+}
+
+TEST_F(MallocTest, MiMallocHeap) {
+  mi_heap_t* myheap = mi_heap_new();
+
+  EXPECT_EQ(0u, myheap->page_count);
+
+  // mi_page_queue_push pushes a new page into page queue.
+  vector<void*> ptrs;
+
+  while (myheap->page_count < 2) {
+    ptrs.push_back(mi_heap_malloc(myheap, 16));
+  }
+
+  // Last bin MI_BIN_FULL holds the linked list of all the full pages for all block sizes.
+  auto cb_visit = [](const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
+                     size_t block_size, void* arg) {
+    LOG(INFO) << "area " << area->reserved << " " << area->committed
+                         << " " << block_size << " " << area->used;
+    return true;
+  };
+
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, cb_visit, nullptr);
+
+  // bring back full page to page queue via
+  mi_free(ptrs.front());
+  ptrs.erase(ptrs.begin());
+
+  mi_free(ptrs.front());
+  ptrs.erase(ptrs.begin());
+
+  mi_heap_destroy(myheap);
+
+  // mi_free(ptr);
+}
+
 TEST_F(MallocTest, OS) {
   int ps = getpagesize();
   struct rusage ru;
