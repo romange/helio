@@ -176,6 +176,18 @@ class PrefixSource : public Source {
   size_t offs_ = 0;
 };
 
+class BytesSource : public Source {
+ public:
+  BytesSource(Bytes buf) : buf_(buf) {
+  }
+
+  Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
+
+ protected:
+  Bytes buf_;
+  off_t offs_ = 0;
+};
+
 class NullSink final : public Sink {
  public:
   Result<size_t> WriteSome(const iovec* v, uint32_t len);

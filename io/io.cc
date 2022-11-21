@@ -30,7 +30,7 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
 
 struct AsyncWriteState {
   absl::FixedArray<iovec, 4> arr;
-  iovec *cur;
+  iovec* cur;
   AsyncSink* owner;
 
   function<void(error_code)> cb;
@@ -93,6 +93,21 @@ Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
   }
 
   return to_read;
+}
+
+io::Result<size_t> BytesSource::ReadSome(const iovec* v, uint32_t len) {
+  ssize_t read_total = 0;
+  while (size_t(offs_) < buf_.size() && len > 0) {
+    size_t read_sz = min(buf_.size() - offs_, v->iov_len);
+    memcpy(v->iov_base, buf_.data() + offs_, read_sz);
+    read_total += read_sz;
+    offs_ += read_sz;
+
+    ++v;
+    --len;
+  }
+
+  return read_total;
 }
 
 Result<size_t> PrefixSource::ReadSome(const iovec* v, uint32_t len) {
