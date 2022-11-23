@@ -124,7 +124,7 @@ function(add_third_party name)
   endif()
 endfunction()
 
-# gflags
+#gflags
 # FetchContent_Declare(
 #   gflags
 #   URL https://github.com/gflags/gflags/archive/v2.2.2.zip
@@ -265,9 +265,12 @@ else()
   set(MI_OVERRIDE OFF)
 endif()
 
-add_third_party(mimalloc
-  URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.5.tar.gz
+set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.5.patch)
 
+ add_third_party(mimalloc
+   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.5.tar.gz
+   PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
+   # -DCMAKE_BUILD_TYPE=Release
   # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
                     -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=${MI_OVERRIDE} -DCMAKE_C_FLAGS=-g"
@@ -276,7 +279,7 @@ add_third_party(mimalloc
   INSTALL_COMMAND make install
   COMMAND cp <SOURCE_DIR>/include/mimalloc-types.h <SOURCE_DIR>/include/mimalloc-atomic.h
           ${MIMALLOC_INCLUDE_DIR}/
-  # LIB libmimalloc-debug.a
+  #LIB libmimalloc-debug.a
 )
 
 add_third_party(jemalloc
