@@ -168,11 +168,10 @@ TEST_F(SslStreamTest, BIO_s_bio_err) {
   constexpr char kData[] = "ROMAN";
   ASSERT_EQ(0, ERR_get_error());
 
-  // -2 - not implemented: https://www.openssl.org/docs/man1.1.1/man3/BIO_write.html
-  EXPECT_EQ(-2, BIO_write(bio1, kData, sizeof(kData)));
+  EXPECT_LT(BIO_write(bio1, kData, sizeof(kData)), 0);
   int e = ERR_get_error();
   EXPECT_NE(0, e);
-  EXPECT_EQ(BIO_F_BIO_WRITE_INTERN, ERR_GET_FUNC(e));
+
   EXPECT_EQ(BIO_R_UNINITIALIZED, ERR_GET_REASON(e));
   BIO_free(bio1);
 }

@@ -97,6 +97,7 @@ struct Socket {
 
 std::vector<ResumeablePoint> resume_points;
 std::vector<Socket> sockets;
+thread_local ctx::continuation main_caller;
 
 uint32_t next_rp_id = UINT32_MAX;
 bool loop_exit = false;
@@ -110,21 +111,29 @@ uint32_t NextRp() {
   return res;
 }
 
+CqeResult SuspendMyself(io_uring_sqe* sqe, ctx::continuation* caller) {
+  CqeResult cqe_result;
+  uint32_t myindex = NextRp();
+  sqe->user_data = myindex;
+
+  auto& rp = resume_points[myindex];
+  rp.cqe_res = &cqe_result;
+  *caller = caller->resume_with([&](ctx::continuation&& myself) {
+    rp.cont = std::move(myself);
+    return ctx::continuation{};  // the caller won't have a continuation to switch back to.
+  });
+
+  return cqe_result;
+}
+
+// return 0 if succeeded.
 int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring, ctx::continuation* caller) {
   CqeResult cqe_result;
   size_t offs = 0;
   while (len > 0) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
     io_uring_prep_recv(sqe, fd, buf + offs, len, 0);
-    uint32_t myindex = NextRp();
-    sqe->user_data = myindex;
-
-    auto& rp = resume_points[myindex];
-    rp.cqe_res = &cqe_result;
-    *caller = caller->resume_with([&](ctx::continuation&& myself) {
-      rp.cont = std::move(myself);
-      return ctx::continuation{};  // the caller won't have a continuation to switch back to.
-    });
+    cqe_result = SuspendMyself(sqe, caller);
 
     if (cqe_result.res > 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -154,15 +163,10 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring, ctx::continuati
   while (len > 0) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
     io_uring_prep_send(sqe, fd, buf + offs, len, MSG_NOSIGNAL);
-    uint32_t myindex = NextRp();
-    sqe->user_data = myindex;
+    cqe_result = SuspendMyself(sqe, caller);
 
-    auto& rp = resume_points[myindex];
-    rp.cqe_res = &cqe_result;
-    *caller = caller->resume_with([&](ctx::continuation&& myself) {
-      rp.cont = std::move(myself);
-      return ctx::continuation{};  // the caller won't have a continuation to switch back to.
-    });
+    bool has_cont = bool(*caller);
+    DCHECK(has_cont);
 
     if (cqe_result.res >= 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -177,28 +181,42 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring, ctx::continuati
   return 0;
 }
 
-ctx::continuation HandleSocket(io_uring* ring, int fd, ctx::continuation&& caller) {
+void HandleSocket(io_uring* ring, int fd, ctx::continuation* caller) {
+  DVLOG(1) << "Handle socket";
   uint32_t size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> buf(new uint8_t[size]);
 
   while (true) {
-    int res = Recv(fd, buf.get(), size, ring, &caller);
+    DVLOG(1) << "Trying to recv from socket " << fd;
+    int res = Recv(fd, buf.get(), size, ring, caller);
 
-    if (res > 0) {
+    if (res > 0) {  // error
       break;
     }
 
-    res = Send(fd, buf.get(), size, ring, &caller);
+    DVLOG(1) << "After recv from socket " << fd;
+    res = Send(fd, buf.get(), size, ring, caller);
     if (res > 0) {
       break;
     }
   }
 
   close(fd);
-  return std::move(caller);
 }
 
-ctx::continuation AcceptFiber(io_uring* ring, int listen_fd, ctx::continuation&& caller) {
+template <typename U> void SpawnFiber(U&& u) {
+  auto cb = [u = std::forward<U>(u)](ctx::continuation&& caller) {
+    main_caller.swap(caller);
+    u();
+
+    return std::move(main_caller);
+  };
+
+  ctx::continuation cont = ctx::callcc(std::move(cb));
+  CHECK(!cont);
+}
+
+void AcceptFiber(io_uring* ring, int listen_fd) {
   CqeResult cqe_result;
 
   while (true) {
@@ -207,22 +225,25 @@ ctx::continuation AcceptFiber(io_uring* ring, int listen_fd, ctx::continuation&&
       VLOG(1) << "Accepted fd " << res;
       sockets.emplace_back();
       sockets.back().fd = res;
-      ctx::continuation cont = ctx::callcc(
-          [&](ctx::continuation&& caller) { return HandleSocket(ring, res, std::move(caller)); });
+
+      // new fiber
+      ctx::continuation cont = ctx::callcc([&](ctx::continuation&& caller) {
+        HandleSocket(ring, res, &caller);
+        return std::move(caller);
+      });
+      CHECK(main_caller);
       CHECK(!cont);
+      DVLOG(1) << "After HandleSocket fd " << res;
     } else if (errno == EAGAIN) {
       io_uring_sqe* sqe = io_uring_get_sqe(ring);
       io_uring_prep_poll_add(sqe, listen_fd, POLLIN);
 
-      uint32_t myindex = NextRp();
-      sqe->user_data = myindex;
+      // switch back to the main loop.
+      DVLOG(1) << "Resuming to main from AcceptFiber";
+      cqe_result = SuspendMyself(sqe, &main_caller);
 
-      auto& rp = resume_points[myindex];
-      rp.cqe_res = &cqe_result;
-      caller = caller.resume_with([&](ctx::continuation&& myself) {
-        rp.cont = std::move(myself);
-        return ctx::continuation{};
-      });
+      CHECK(main_caller);
+      DVLOG(1) << "Resuming AcceptFiber after main";
 
       if ((cqe_result.res & (POLLERR | POLLHUP)) != 0) {
         LOG(ERROR) << "aborted " << cqe_result.res;
@@ -235,8 +256,6 @@ ctx::continuation AcceptFiber(io_uring* ring, int listen_fd, ctx::continuation&&
       break;
     }
   }
-
-  return std::move(caller);
 };
 
 }  // namespace
@@ -283,8 +302,7 @@ int main(int argc, char* argv[]) {
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  ctx::continuation accept_cont = ctx::callcc(
-      [&](ctx::continuation&& caller) { return AcceptFiber(&ring, listen_fd, std::move(caller)); });
+  SpawnFiber([&] { AcceptFiber(&ring, listen_fd); });
 
   io_uring_cqe* cqe = nullptr;
 
@@ -313,6 +331,7 @@ int main(int argc, char* argv[]) {
     io_uring_cq_advance(&ring, i);
 
     if (i) {
+      DVLOG(1) << "Resuming " << active.size() << " fibers";
       for (auto& cont : active) {
         std::move(cont).resume();
       }

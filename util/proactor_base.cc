@@ -268,7 +268,7 @@ void ProactorBase::ModuleInit() {
     delta = GetClockNanos() - now;
     VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";
 
-    if (delta < 20000 || pause_amplifier == 1)
+    if (delta < 2000 || pause_amplifier == 1)  // 2us
       break;
     pause_amplifier -= (pause_amplifier + 7) / 8;
   };
