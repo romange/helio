@@ -12,12 +12,106 @@
 
 #include "base/init.h"
 #include "base/logging.h"
+#include "examples/fiber.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");
 
 namespace ctx = boost::context;
 using namespace std;
+
+namespace example {
+
+thread_local BaseFiberWrapper* active_fb_wrapper = nullptr;
+thread_local BaseFiberWrapper* main_wrapper = nullptr;
+constexpr size_t kSizeOfCtx = sizeof(BaseFiberWrapper);  // because of the virtual +8 bytes.
+
+typedef boost::intrusive::list<
+    BaseFiberWrapper,
+    boost::intrusive::member_hook<BaseFiberWrapper, detail::FiberContextHook,
+                                  &BaseFiberWrapper::list_hook>,
+    boost::intrusive::constant_time_size<false> >
+    FiberWrapperQueue;
+
+thread_local FiberWrapperQueue ready_queue;
+thread_local FiberWrapperQueue terminated_queue;
+
+BaseFiberWrapper::BaseFiberWrapper(uint32_t cnt, std::string_view nm) : use_count_(cnt) {
+  size_t len = std::min(nm.size(), sizeof(name_) - 1);
+  name_[len] = 0;
+  if (len) {
+    memcpy(name_, nm.data(), len);
+  }
+}
+
+BaseFiberWrapper::~BaseFiberWrapper() {
+  DVLOG(1) << "~BaseFiberWrapper";
+}
+
+void BaseFiberWrapper::Suspend() {
+  main_wrapper->Resume();
+}
+
+void BaseFiberWrapper::Terminate() {
+  DCHECK(this == active_fb_wrapper);
+  DCHECK(!list_hook.is_linked());
+
+  if (this != main_wrapper) {
+    terminated_queue.push_back(*this);
+    main_wrapper->Resume();
+  }
+}
+
+void BaseFiberWrapper::Resume() {
+  BaseFiberWrapper* prev = this;
+
+  std::swap(active_fb_wrapper, prev);
+
+  // pass pointer to the context that resumes `this`
+  std::move(c_).resume_with([prev](ctx::fiber_context&& c) {
+    DCHECK(!prev->c_);
+
+    prev->c_ = std::move(c);  // update the return address in the context we just switch from.
+    return ctx::fiber_context{};
+  });
+}
+
+void BaseFiberWrapper::StartMain() {
+  DCHECK(!active_fb_wrapper);
+  active_fb_wrapper = this;
+
+  std::move(c_).resume();
+}
+
+void BaseFiberWrapper::SetReady() {
+  DCHECK(!list_hook.is_linked());
+  ready_queue.push_back(*this);
+}
+
+Fiber::~Fiber() {
+  CHECK(!joinable());
+}
+
+Fiber& Fiber::operator=(Fiber&& other) noexcept {
+  CHECK(!joinable());
+
+  if (this == &other) {
+    return *this;
+  }
+
+  impl_.swap(other.impl_);
+  return *this;
+}
+
+void Fiber::Start() {
+  impl_->SetReady();
+}
+
+void Fiber::Detach() {
+  impl_.reset();
+}
+
+}  // namespace example
 
 namespace {
 
@@ -75,165 +169,15 @@ void RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> 
 }
 
 using IoResult = int;
+using namespace example;
 
 struct CqeResult {
   int32_t res;
   uint32_t flags;
 };
 
-typedef boost::intrusive::list_member_hook<
-    boost::intrusive::link_mode<boost::intrusive::auto_unlink> >
-    FiberContextHook;
-
-class BaseFiberCtx {
- public:
-  string name;
-
-  virtual ~BaseFiberCtx();
-
-  FiberContextHook list_hook{};  // 16 bytes
-
-  void StartMain();
-
-  void Resume();
-  void Suspend();
-  void SetReady();
-
-  bool IsDefined() const {
-    return bool(c_);
-  }
-
- protected:
-  void Terminate();
-
-  // holds its own fiber_context when it's not active.
-  // the difference between fiber_context and continuation is that continuation is launched
-  // straight away via callcc and fiber is created without switching to it.
-  // TODO: I still do not know how continuation_fcontext and fiber_fcontext achieve this
-  // difference because their code looks very similar except some renaming.
-  ctx::fiber_context c_;  // 8 bytes
-};
-
-thread_local BaseFiberCtx* active_fb_ctx = nullptr;
-thread_local BaseFiberCtx* main_ctx = nullptr;
-
-typedef boost::intrusive::list<
-    BaseFiberCtx,
-    boost::intrusive::member_hook<BaseFiberCtx, FiberContextHook, &BaseFiberCtx::list_hook>,
-    boost::intrusive::constant_time_size<false> >
-    ContextQueue;
-
-thread_local ContextQueue ready_queue;
-thread_local ContextQueue terminated_queue;
-
-constexpr size_t kSizeOfCtx = sizeof(BaseFiberCtx);  // because of the virtual +8 bytes.
-
-template <typename Fn> class FiberCtx : public BaseFiberCtx {
- public:
-  template <typename StackAlloc>
-  FiberCtx(const boost::context::preallocated& palloc, StackAlloc&& salloc, Fn&& fn)
-      : fn_(std::forward<Fn>(fn)) {
-    c_ =
-        ctx::fiber_context(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
-                           [this](ctx::fiber_context&& caller) { return run_(std::move(caller)); });
-  }
-
- private:
-  ctx::fiber_context run_(ctx::fiber_context&& c) {
-    {
-      // fn and tpl must be destroyed before calling terminate()
-      auto fn = std::move(fn_);
-      fn();
-    }
-
-    Terminate();
-
-    // Only main_cntx reaches this point because all the rest should switch to main_ctx and never
-    // switch back.
-    DCHECK(this == main_ctx);
-    DCHECK(ready_queue.empty());
-    DCHECK(c);
-    return std::move(c);
-  }
-
-  Fn fn_;
-};
-
-template <typename StackAlloc, typename Fn>
-static FiberCtx<Fn>* MakeFiberCtx(StackAlloc&& salloc, Fn&& fn) {
-  ctx::stack_context sctx = salloc.allocate();
-  // reserve space for control structure
-  uintptr_t storage =
-      (reinterpret_cast<uintptr_t>(sctx.sp) - sizeof(FiberCtx<Fn>)) & ~static_cast<uintptr_t>(0xff);
-  uintptr_t stack_bottom = reinterpret_cast<uintptr_t>(sctx.sp) - static_cast<uintptr_t>(sctx.size);
-  const std::size_t size = storage - stack_bottom;
-  void* st_ptr = reinterpret_cast<void*>(storage);
-
-  // placement new of context on top of fiber's stack
-  FiberCtx<Fn>* fctx =
-      new (st_ptr) FiberCtx<Fn>{ctx::preallocated{st_ptr, size, sctx},
-                                std::forward<StackAlloc>(salloc), std::forward<Fn>(fn)};
-  return fctx;
-}
-
-BaseFiberCtx::~BaseFiberCtx() {
-  DVLOG(1) << "~BaseFiberCtx";
-}
-
-void BaseFiberCtx::Suspend() {
-  main_ctx->Resume();
-}
-
-void BaseFiberCtx::Terminate() {
-  DCHECK(this == active_fb_ctx);
-  DCHECK(!list_hook.is_linked());
-
-
-  if (this != main_ctx) {
-    terminated_queue.push_back(*this);
-    main_ctx->Resume();
-  }
-}
-
-void BaseFiberCtx::Resume() {
-  BaseFiberCtx* prev = this;
-
-  std::swap(active_fb_ctx, prev);
-
-  // pass pointer to the context that resumes `this`
-  std::move(c_).resume_with([prev](ctx::fiber_context&& c) {
-    DCHECK(!prev->c_);
-
-    prev->c_ = std::move(c);  // update the return address in the context we just switch from.
-    return ctx::fiber_context{};
-  });
-}
-
-void BaseFiberCtx::StartMain() {
-  DCHECK(!active_fb_ctx);
-  active_fb_ctx = this;
-
-  std::move(c_).resume();
-}
-
-void BaseFiberCtx::SetReady() {
-  DCHECK(!list_hook.is_linked());
-  ready_queue.push_back(*this);
-}
-
-template <typename StackAlloc, typename Fn>
-BaseFiberCtx* LaunchFiber(std::allocator_arg_t, StackAlloc&& salloc, Fn&& fn) {
-  auto* base_ctx = MakeFiberCtx(std::forward<StackAlloc>(salloc), std::forward<Fn>(fn));
-  base_ctx->SetReady();
-  return base_ctx;
-}
-
-template <typename Fn> BaseFiberCtx* LaunchFiber(Fn&& fn) {
-  return LaunchFiber(std::allocator_arg, ctx::fixedsize_stack(), std::forward<Fn>(fn));
-}
-
 struct ResumeablePoint {
-  BaseFiberCtx* cntx = nullptr;
+  BaseFiberWrapper* cntx = nullptr;
   union {
     CqeResult* cqe_res;
     uint32_t next;
@@ -266,10 +210,10 @@ CqeResult SuspendMyself(io_uring_sqe* sqe) {
 
   auto& rp = suspended_list[myindex];
   rp.cqe_res = &cqe_result;
-  rp.cntx = active_fb_ctx;
+  rp.cntx = active_fb_wrapper;
 
-  DCHECK(main_ctx);
-  main_ctx->Resume();
+  DCHECK(main_wrapper);
+  main_wrapper->Resume();
 
   return cqe_result;
 }
@@ -315,7 +259,7 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
     io_uring_prep_send(sqe, fd, buf + offs, len, MSG_NOSIGNAL);
     cqe_result = SuspendMyself(sqe);
 
-    DCHECK(main_ctx);
+    DCHECK(main_wrapper);
 
     if (cqe_result.res >= 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -366,8 +310,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
       // sockets.back().fd = res;
 
       // new fiber
-      BaseFiberCtx* cntx = LaunchFiber([ring, res] { HandleSocket(ring, res); });
-      cntx->name = "handlesock";
+      Fiber("conn", [ring, res] { HandleSocket(ring, res); }).Detach();
 
       DVLOG(1) << "After HandleSocket fd " << res;
     } else if (errno == EAGAIN) {
@@ -378,7 +321,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
       DVLOG(1) << "Resuming to main from AcceptFiber";
       cqe_result = SuspendMyself(sqe);
 
-      DCHECK(main_ctx);
+      DCHECK(main_wrapper);
       DVLOG(1) << "Resuming AcceptFiber after main";
 
       if ((cqe_result.res & (POLLERR | POLLHUP)) != 0) {
@@ -396,7 +339,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
 
 void RunReadyFbs() {
   while (!ready_queue.empty()) {
-    BaseFiberCtx* cntx = &ready_queue.front();
+    BaseFiberWrapper* cntx = &ready_queue.front();
     ready_queue.pop_front();
 
     cntx->Resume();
@@ -481,16 +424,17 @@ int main(int argc, char* argv[]) {
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  main_ctx = MakeFiberCtx(ctx::fixedsize_stack(), [&ring] { RunEventLoop(&ring); });
-  main_ctx->name = "main";
-  DCHECK(main_ctx->IsDefined());
+  main_wrapper =
+      detail::MakeCustomFiberWrapper("main", ctx::fixedsize_stack(), [&ring] { RunEventLoop(&ring); });
+  DCHECK(main_wrapper->IsDefined());
 
   DCHECK(ready_queue.empty());
-  BaseFiberCtx* cntx = LaunchFiber([&] { AcceptFiber(&ring, listen_fd); });
-  cntx->name = "accept";
+  Fiber accept_fb("accept", [&] { AcceptFiber(&ring, listen_fd); });
+  accept_fb.Detach();
+
   DCHECK(!ready_queue.empty());
 
-  main_ctx->StartMain();  // blocking
+  main_wrapper->StartMain();  // blocking
 
   close(listen_fd);
   io_uring_queue_exit(&ring);
