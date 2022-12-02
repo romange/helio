@@ -6,7 +6,9 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-#include <boost/context/continuation.hpp>
+#include <boost/context/fiber.hpp>
+#include <boost/intrusive/list.hpp>
+#include <queue>
 
 #include "base/init.h"
 #include "base/logging.h"
@@ -79,8 +81,159 @@ struct CqeResult {
   uint32_t flags;
 };
 
+typedef boost::intrusive::list_member_hook<
+    boost::intrusive::link_mode<boost::intrusive::auto_unlink> >
+    FiberContextHook;
+
+class BaseFiberCtx {
+ public:
+  string name;
+
+  virtual ~BaseFiberCtx();
+
+  FiberContextHook list_hook{};  // 16 bytes
+
+  void StartMain();
+
+  void Resume();
+  void Suspend();
+  void SetReady();
+
+  bool IsDefined() const {
+    return bool(c_);
+  }
+
+ protected:
+  void Terminate();
+
+  // holds its own fiber_context when it's not active.
+  // the difference between fiber_context and continuation is that continuation is launched
+  // straight away via callcc and fiber is created without switching to it.
+  // TODO: I still do not know how continuation_fcontext and fiber_fcontext achieve this
+  // difference because their code looks very similar except some renaming.
+  ctx::fiber_context c_;  // 8 bytes
+};
+
+thread_local BaseFiberCtx* active_fb_ctx = nullptr;
+thread_local BaseFiberCtx* main_ctx = nullptr;
+
+typedef boost::intrusive::list<
+    BaseFiberCtx,
+    boost::intrusive::member_hook<BaseFiberCtx, FiberContextHook, &BaseFiberCtx::list_hook>,
+    boost::intrusive::constant_time_size<false> >
+    ContextQueue;
+
+thread_local ContextQueue ready_queue;
+thread_local ContextQueue terminated_queue;
+
+constexpr size_t kSizeOfCtx = sizeof(BaseFiberCtx);  // because of the virtual +8 bytes.
+
+template <typename Fn> class FiberCtx : public BaseFiberCtx {
+ public:
+  template <typename StackAlloc>
+  FiberCtx(const boost::context::preallocated& palloc, StackAlloc&& salloc, Fn&& fn)
+      : fn_(std::forward<Fn>(fn)) {
+    c_ =
+        ctx::fiber_context(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
+                           [this](ctx::fiber_context&& caller) { return run_(std::move(caller)); });
+  }
+
+ private:
+  ctx::fiber_context run_(ctx::fiber_context&& c) {
+    {
+      // fn and tpl must be destroyed before calling terminate()
+      auto fn = std::move(fn_);
+      fn();
+    }
+
+    Terminate();
+
+    // Only main_cntx reaches this point because all the rest should switch to main_ctx and never
+    // switch back.
+    DCHECK(this == main_ctx);
+    DCHECK(ready_queue.empty());
+    DCHECK(c);
+    return std::move(c);
+  }
+
+  Fn fn_;
+};
+
+template <typename StackAlloc, typename Fn>
+static FiberCtx<Fn>* MakeFiberCtx(StackAlloc&& salloc, Fn&& fn) {
+  ctx::stack_context sctx = salloc.allocate();
+  // reserve space for control structure
+  uintptr_t storage =
+      (reinterpret_cast<uintptr_t>(sctx.sp) - sizeof(FiberCtx<Fn>)) & ~static_cast<uintptr_t>(0xff);
+  uintptr_t stack_bottom = reinterpret_cast<uintptr_t>(sctx.sp) - static_cast<uintptr_t>(sctx.size);
+  const std::size_t size = storage - stack_bottom;
+  void* st_ptr = reinterpret_cast<void*>(storage);
+
+  // placement new of context on top of fiber's stack
+  FiberCtx<Fn>* fctx =
+      new (st_ptr) FiberCtx<Fn>{ctx::preallocated{st_ptr, size, sctx},
+                                std::forward<StackAlloc>(salloc), std::forward<Fn>(fn)};
+  return fctx;
+}
+
+BaseFiberCtx::~BaseFiberCtx() {
+  DVLOG(1) << "~BaseFiberCtx";
+}
+
+void BaseFiberCtx::Suspend() {
+  main_ctx->Resume();
+}
+
+void BaseFiberCtx::Terminate() {
+  DCHECK(this == active_fb_ctx);
+  DCHECK(!list_hook.is_linked());
+
+
+  if (this != main_ctx) {
+    terminated_queue.push_back(*this);
+    main_ctx->Resume();
+  }
+}
+
+void BaseFiberCtx::Resume() {
+  BaseFiberCtx* prev = this;
+
+  std::swap(active_fb_ctx, prev);
+
+  // pass pointer to the context that resumes `this`
+  std::move(c_).resume_with([prev](ctx::fiber_context&& c) {
+    DCHECK(!prev->c_);
+
+    prev->c_ = std::move(c);  // update the return address in the context we just switch from.
+    return ctx::fiber_context{};
+  });
+}
+
+void BaseFiberCtx::StartMain() {
+  DCHECK(!active_fb_ctx);
+  active_fb_ctx = this;
+
+  std::move(c_).resume();
+}
+
+void BaseFiberCtx::SetReady() {
+  DCHECK(!list_hook.is_linked());
+  ready_queue.push_back(*this);
+}
+
+template <typename StackAlloc, typename Fn>
+BaseFiberCtx* LaunchFiber(std::allocator_arg_t, StackAlloc&& salloc, Fn&& fn) {
+  auto* base_ctx = MakeFiberCtx(std::forward<StackAlloc>(salloc), std::forward<Fn>(fn));
+  base_ctx->SetReady();
+  return base_ctx;
+}
+
+template <typename Fn> BaseFiberCtx* LaunchFiber(Fn&& fn) {
+  return LaunchFiber(std::allocator_arg, ctx::fixedsize_stack(), std::forward<Fn>(fn));
+}
+
 struct ResumeablePoint {
-  ctx::continuation cont;
+  BaseFiberCtx* cntx = nullptr;
   union {
     CqeResult* cqe_res;
     uint32_t next;
@@ -90,50 +243,47 @@ struct ResumeablePoint {
   }
 };
 
-struct Socket {
-  int fd;
-  ctx::continuation cont;
-};
-
-std::vector<ResumeablePoint> resume_points;
-std::vector<Socket> sockets;
-thread_local ctx::continuation main_caller;
+std::vector<ResumeablePoint> suspended_list;
 
 uint32_t next_rp_id = UINT32_MAX;
 bool loop_exit = false;
 
 uint32_t NextRp() {
-  ResumeablePoint* rp = &resume_points[next_rp_id];
-  CHECK_LT(rp->next, resume_points.size());
+  ResumeablePoint* rp = &suspended_list[next_rp_id];
+  CHECK_LT(rp->next, suspended_list.size());
   uint32_t res = next_rp_id;
   next_rp_id = rp->next;
 
   return res;
 }
 
-CqeResult SuspendMyself(io_uring_sqe* sqe, ctx::continuation* caller) {
+CqeResult SuspendMyself(io_uring_sqe* sqe) {
+  DVLOG(1) << "SuspendMyself";
+
   CqeResult cqe_result;
   uint32_t myindex = NextRp();
   sqe->user_data = myindex;
 
-  auto& rp = resume_points[myindex];
+  auto& rp = suspended_list[myindex];
   rp.cqe_res = &cqe_result;
-  *caller = caller->resume_with([&](ctx::continuation&& myself) {
-    rp.cont = std::move(myself);
-    return ctx::continuation{};  // the caller won't have a continuation to switch back to.
-  });
+  rp.cntx = active_fb_ctx;
+
+  DCHECK(main_ctx);
+  main_ctx->Resume();
 
   return cqe_result;
 }
 
 // return 0 if succeeded.
-int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring, ctx::continuation* caller) {
+int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring) {
+  DCHECK_GE(fd, 0);
+
   CqeResult cqe_result;
   size_t offs = 0;
   while (len > 0) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
     io_uring_prep_recv(sqe, fd, buf + offs, len, 0);
-    cqe_result = SuspendMyself(sqe, caller);
+    cqe_result = SuspendMyself(sqe);
 
     if (cqe_result.res > 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -156,17 +306,16 @@ int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring, ctx::continuation* ca
   return 0;
 }
 
-int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring, ctx::continuation* caller) {
+int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
   CqeResult cqe_result;
 
   size_t offs = 0;
   while (len > 0) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
     io_uring_prep_send(sqe, fd, buf + offs, len, MSG_NOSIGNAL);
-    cqe_result = SuspendMyself(sqe, caller);
+    cqe_result = SuspendMyself(sqe);
 
-    bool has_cont = bool(*caller);
-    DCHECK(has_cont);
+    DCHECK(main_ctx);
 
     if (cqe_result.res >= 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -181,21 +330,21 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring, ctx::continuati
   return 0;
 }
 
-void HandleSocket(io_uring* ring, int fd, ctx::continuation* caller) {
+void HandleSocket(io_uring* ring, int fd) {
   DVLOG(1) << "Handle socket";
   uint32_t size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> buf(new uint8_t[size]);
 
   while (true) {
     DVLOG(1) << "Trying to recv from socket " << fd;
-    int res = Recv(fd, buf.get(), size, ring, caller);
+    int res = Recv(fd, buf.get(), size, ring);
 
     if (res > 0) {  // error
       break;
     }
 
     DVLOG(1) << "After recv from socket " << fd;
-    res = Send(fd, buf.get(), size, ring, caller);
+    res = Send(fd, buf.get(), size, ring);
     if (res > 0) {
       break;
     }
@@ -204,35 +353,22 @@ void HandleSocket(io_uring* ring, int fd, ctx::continuation* caller) {
   close(fd);
 }
 
-template <typename U> void SpawnFiber(U&& u) {
-  auto cb = [u = std::forward<U>(u)](ctx::continuation&& caller) {
-    main_caller.swap(caller);
-    u();
-
-    return std::move(main_caller);
-  };
-
-  ctx::continuation cont = ctx::callcc(std::move(cb));
-  CHECK(!cont);
-}
-
 void AcceptFiber(io_uring* ring, int listen_fd) {
+  VLOG(1) << "AcceptFiber";
+
   CqeResult cqe_result;
 
   while (true) {
     int res = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       VLOG(1) << "Accepted fd " << res;
-      sockets.emplace_back();
-      sockets.back().fd = res;
+      // sockets.emplace_back();
+      // sockets.back().fd = res;
 
       // new fiber
-      ctx::continuation cont = ctx::callcc([&](ctx::continuation&& caller) {
-        HandleSocket(ring, res, &caller);
-        return std::move(caller);
-      });
-      CHECK(main_caller);
-      CHECK(!cont);
+      BaseFiberCtx* cntx = LaunchFiber([ring, res] { HandleSocket(ring, res); });
+      cntx->name = "handlesock";
+
       DVLOG(1) << "After HandleSocket fd " << res;
     } else if (errno == EAGAIN) {
       io_uring_sqe* sqe = io_uring_get_sqe(ring);
@@ -240,9 +376,9 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
 
       // switch back to the main loop.
       DVLOG(1) << "Resuming to main from AcceptFiber";
-      cqe_result = SuspendMyself(sqe, &main_caller);
+      cqe_result = SuspendMyself(sqe);
 
-      CHECK(main_caller);
+      DCHECK(main_ctx);
       DVLOG(1) << "Resuming AcceptFiber after main";
 
       if ((cqe_result.res & (POLLERR | POLLHUP)) != 0) {
@@ -257,6 +393,49 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
     }
   }
 };
+
+void RunReadyFbs() {
+  while (!ready_queue.empty()) {
+    BaseFiberCtx* cntx = &ready_queue.front();
+    ready_queue.pop_front();
+
+    cntx->Resume();
+  }
+}
+
+void RunEventLoop(io_uring* ring) {
+  VLOG(1) << "RunEventLoop";
+
+  io_uring_cqe* cqe = nullptr;
+  RunReadyFbs();
+  while (!loop_exit) {
+    int num_submitted = io_uring_submit(ring);
+    CHECK_GE(num_submitted, 0);
+    uint32_t head = 0;
+    unsigned i = 0;
+    io_uring_for_each_cqe(ring, head, cqe) {
+      uint32_t index = cqe->user_data;
+      CHECK_LT(index, suspended_list.size());
+
+      auto* cqe_res = suspended_list[index].cqe_res;
+      cqe_res->res = cqe->res;
+      cqe_res->flags = cqe->flags;
+      suspended_list[index].next = next_rp_id;
+      next_rp_id = index;
+
+      suspended_list[index].cntx->SetReady();
+      ++i;
+    }
+    io_uring_cq_advance(ring, i);
+
+    if (i) {
+      RunReadyFbs();
+      continue;
+    }
+
+    io_uring_wait_cqe_nr(ring, &cqe, 1);
+  }
+}
 
 }  // namespace
 
@@ -276,9 +455,9 @@ int main(int argc, char* argv[]) {
   int res = io_uring_register_ring_fd(&ring);
   VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
 
-  resume_points.resize(1024);
-  for (size_t i = 0; i < resume_points.size(); ++i) {
-    resume_points[i].next = i + 1;
+  suspended_list.resize(1024);
+  for (size_t i = 0; i < suspended_list.size(); ++i) {
+    suspended_list[i].next = i + 1;
   }
   next_rp_id = 0;
 
@@ -302,48 +481,20 @@ int main(int argc, char* argv[]) {
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  SpawnFiber([&] { AcceptFiber(&ring, listen_fd); });
+  main_ctx = MakeFiberCtx(ctx::fixedsize_stack(), [&ring] { RunEventLoop(&ring); });
+  main_ctx->name = "main";
+  DCHECK(main_ctx->IsDefined());
 
-  io_uring_cqe* cqe = nullptr;
+  DCHECK(ready_queue.empty());
+  BaseFiberCtx* cntx = LaunchFiber([&] { AcceptFiber(&ring, listen_fd); });
+  cntx->name = "accept";
+  DCHECK(!ready_queue.empty());
 
-  vector<ctx::continuation> active;
-
-  while (!loop_exit) {
-    int num_submitted = io_uring_submit(&ring);
-    CHECK_GE(num_submitted, 0);
-    uint32_t head = 0;
-    unsigned i = 0;
-    io_uring_for_each_cqe(&ring, head, cqe) {
-      uint32_t index = cqe->user_data;
-      CHECK_LT(index, resume_points.size());
-
-      auto* cqe_res = resume_points[index].cqe_res;
-      cqe_res->res = cqe->res;
-      cqe_res->flags = cqe->flags;
-      resume_points[index].next = next_rp_id;
-      next_rp_id = index;
-
-      // switch to that fiber immediately. we probably do not want to do that when
-      // we have a scheduler.
-      active.push_back(std::move(resume_points[index].cont));
-      ++i;
-    }
-    io_uring_cq_advance(&ring, i);
-
-    if (i) {
-      DVLOG(1) << "Resuming " << active.size() << " fibers";
-      for (auto& cont : active) {
-        std::move(cont).resume();
-      }
-      active.clear();
-      continue;
-    }
-
-    io_uring_wait_cqe_nr(&ring, &cqe, 1);
-  }
+  main_ctx->StartMain();  // blocking
 
   close(listen_fd);
   io_uring_queue_exit(&ring);
+  terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;
 }

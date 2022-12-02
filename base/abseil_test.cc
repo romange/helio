@@ -73,6 +73,19 @@ void BM_CycleClock(benchmark::State& state) {
 }
 BENCHMARK(BM_CycleClock);
 
+#if defined(__x86_64__)
+
+void BM_RDTSC(benchmark::State& state) {
+  uint64_t low, high;
+  while (state.KeepRunning()) {
+    for (unsigned i = 0; i < 10; ++i) {
+      __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    }
+  }
+}
+BENCHMARK(BM_RDTSC);
+
+#endif
 
 void BM_AbslCurrentTime(benchmark::State& state) {
   while (state.KeepRunning()) {
