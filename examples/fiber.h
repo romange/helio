@@ -17,20 +17,18 @@ typedef boost::intrusive::list_member_hook<
     boost::intrusive::link_mode<boost::intrusive::auto_unlink> >
     FiberContextHook;
 
-}  // namespace detail
-
-class BaseFiberWrapper {
+class FiberInterface {
  public:
-  BaseFiberWrapper(uint32_t init_count, std::string_view nm = std::string_view{});
+  FiberInterface(uint32_t init_count, std::string_view nm = std::string_view{});
 
-  virtual ~BaseFiberWrapper();
+  virtual ~FiberInterface();
 
   detail::FiberContextHook list_hook{};  // 16 bytes
 
   void StartMain();
 
   void Resume();
-  void Suspend();
+  void Join();
   void SetReady();
 
   bool IsDefined() const {
@@ -38,17 +36,17 @@ class BaseFiberWrapper {
   }
 
   // We need refcounting for referencing handles via .
-  friend void intrusive_ptr_add_ref(BaseFiberWrapper* ctx) noexcept {
+  friend void intrusive_ptr_add_ref(FiberInterface* ctx) noexcept {
     ctx->use_count_.fetch_add(1, std::memory_order_relaxed);
   }
 
-  friend void intrusive_ptr_release(BaseFiberWrapper* ctx) noexcept {
+  friend void intrusive_ptr_release(FiberInterface* ctx) noexcept {
     if (1 == ctx->use_count_.fetch_sub(1, std::memory_order_release)) {
       std::atomic_thread_fence(std::memory_order_acquire);
       boost::context::fiber c = std::move(ctx->c_);
 
       // destruct context
-      ctx->~BaseFiberWrapper();
+      ctx->~FiberInterface();
 
       // deallocated stack
       std::move(c).resume();
@@ -56,9 +54,16 @@ class BaseFiberWrapper {
   }
 
  protected:
-  void Terminate();
+  virtual void Terminate();
 
   std::atomic<uint32_t> use_count_;
+
+  union {
+    uint32_t flags_;
+    struct {
+      uint32_t terminated : 1;
+    } bits;
+  };
 
   // holds its own fiber_context when it's not active.
   // the difference between fiber_context and continuation is that continuation is launched
@@ -70,16 +75,14 @@ class BaseFiberWrapper {
   char name_[24];
 };
 
-namespace detail {
-
-template <typename Fn> class CustomFiberWrapper : public BaseFiberWrapper {
+template <typename Fn> class CustomFiberWrapper : public FiberInterface {
   using FbCntx = ::boost::context::fiber_context;
 
  public:
   template <typename StackAlloc>
   CustomFiberWrapper(std::string_view name, const boost::context::preallocated& palloc,
                      StackAlloc&& salloc, Fn&& fn)
-      : BaseFiberWrapper(1, name), fn_(std::forward<Fn>(fn)) {
+      : FiberInterface(1, name), fn_(std::forward<Fn>(fn)) {
     c_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                 [this](FbCntx&& caller) { return run_(std::move(caller)); });
   }
@@ -120,6 +123,11 @@ static CustomFiberWrapper<Fn>* MakeCustomFiberWrapper(std::string_view name, Sta
                                           std::forward<StackAlloc>(salloc), std::forward<Fn>(fn)};
   return fctx;
 }
+
+FiberInterface* FiberActive() noexcept;
+void SetSched(FiberInterface* fi);
+
+void RunReadyFbs();
 
 }  // namespace detail
 
@@ -166,10 +174,18 @@ class Fiber {
 
   void Detach();
 
+  static void SchedNext();
+
+  template <typename Fn> static void InitSched(Fn&& fn) {
+    detail::FiberInterface* sched = detail::MakeCustomFiberWrapper(
+        "sched", boost::context::fixedsize_stack(), std::forward<Fn>(fn));
+    detail::SetSched(sched);
+  }
+
  private:
   void Start();
 
-  boost::intrusive_ptr<BaseFiberWrapper> impl_;
+  boost::intrusive_ptr<detail::FiberInterface> impl_;
 };
 
 }  // namespace example

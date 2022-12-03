@@ -22,95 +22,6 @@ using namespace std;
 
 namespace example {
 
-thread_local BaseFiberWrapper* active_fb_wrapper = nullptr;
-thread_local BaseFiberWrapper* main_wrapper = nullptr;
-constexpr size_t kSizeOfCtx = sizeof(BaseFiberWrapper);  // because of the virtual +8 bytes.
-
-typedef boost::intrusive::list<
-    BaseFiberWrapper,
-    boost::intrusive::member_hook<BaseFiberWrapper, detail::FiberContextHook,
-                                  &BaseFiberWrapper::list_hook>,
-    boost::intrusive::constant_time_size<false> >
-    FiberWrapperQueue;
-
-thread_local FiberWrapperQueue ready_queue;
-thread_local FiberWrapperQueue terminated_queue;
-
-BaseFiberWrapper::BaseFiberWrapper(uint32_t cnt, std::string_view nm) : use_count_(cnt) {
-  size_t len = std::min(nm.size(), sizeof(name_) - 1);
-  name_[len] = 0;
-  if (len) {
-    memcpy(name_, nm.data(), len);
-  }
-}
-
-BaseFiberWrapper::~BaseFiberWrapper() {
-  DVLOG(1) << "~BaseFiberWrapper";
-}
-
-void BaseFiberWrapper::Suspend() {
-  main_wrapper->Resume();
-}
-
-void BaseFiberWrapper::Terminate() {
-  DCHECK(this == active_fb_wrapper);
-  DCHECK(!list_hook.is_linked());
-
-  if (this != main_wrapper) {
-    terminated_queue.push_back(*this);
-    main_wrapper->Resume();
-  }
-}
-
-void BaseFiberWrapper::Resume() {
-  BaseFiberWrapper* prev = this;
-
-  std::swap(active_fb_wrapper, prev);
-
-  // pass pointer to the context that resumes `this`
-  std::move(c_).resume_with([prev](ctx::fiber_context&& c) {
-    DCHECK(!prev->c_);
-
-    prev->c_ = std::move(c);  // update the return address in the context we just switch from.
-    return ctx::fiber_context{};
-  });
-}
-
-void BaseFiberWrapper::StartMain() {
-  DCHECK(!active_fb_wrapper);
-  active_fb_wrapper = this;
-
-  std::move(c_).resume();
-}
-
-void BaseFiberWrapper::SetReady() {
-  DCHECK(!list_hook.is_linked());
-  ready_queue.push_back(*this);
-}
-
-Fiber::~Fiber() {
-  CHECK(!joinable());
-}
-
-Fiber& Fiber::operator=(Fiber&& other) noexcept {
-  CHECK(!joinable());
-
-  if (this == &other) {
-    return *this;
-  }
-
-  impl_.swap(other.impl_);
-  return *this;
-}
-
-void Fiber::Start() {
-  impl_->SetReady();
-}
-
-void Fiber::Detach() {
-  impl_.reset();
-}
-
 }  // namespace example
 
 namespace {
@@ -177,7 +88,7 @@ struct CqeResult {
 };
 
 struct ResumeablePoint {
-  BaseFiberWrapper* cntx = nullptr;
+  detail::FiberInterface* cntx = nullptr;
   union {
     CqeResult* cqe_res;
     uint32_t next;
@@ -210,10 +121,9 @@ CqeResult SuspendMyself(io_uring_sqe* sqe) {
 
   auto& rp = suspended_list[myindex];
   rp.cqe_res = &cqe_result;
-  rp.cntx = active_fb_wrapper;
+  rp.cntx = detail::FiberActive();
 
-  DCHECK(main_wrapper);
-  main_wrapper->Resume();
+  Fiber::SchedNext();
 
   return cqe_result;
 }
@@ -258,8 +168,6 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
     io_uring_prep_send(sqe, fd, buf + offs, len, MSG_NOSIGNAL);
     cqe_result = SuspendMyself(sqe);
-
-    DCHECK(main_wrapper);
 
     if (cqe_result.res >= 0) {
       CHECK_LE(uint32_t(cqe_result.res), len);
@@ -318,11 +226,10 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
       io_uring_prep_poll_add(sqe, listen_fd, POLLIN);
 
       // switch back to the main loop.
-      DVLOG(1) << "Resuming to main from AcceptFiber";
+      DVLOG(1) << "Resuming to loop from AcceptFiber";
       cqe_result = SuspendMyself(sqe);
 
-      DCHECK(main_wrapper);
-      DVLOG(1) << "Resuming AcceptFiber after main";
+      DVLOG(1) << "Resuming AcceptFiber after loop";
 
       if ((cqe_result.res & (POLLERR | POLLHUP)) != 0) {
         LOG(ERROR) << "aborted " << cqe_result.res;
@@ -337,20 +244,12 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   }
 };
 
-void RunReadyFbs() {
-  while (!ready_queue.empty()) {
-    BaseFiberWrapper* cntx = &ready_queue.front();
-    ready_queue.pop_front();
-
-    cntx->Resume();
-  }
-}
 
 void RunEventLoop(io_uring* ring) {
   VLOG(1) << "RunEventLoop";
 
   io_uring_cqe* cqe = nullptr;
-  RunReadyFbs();
+  detail::RunReadyFbs();
   while (!loop_exit) {
     int num_submitted = io_uring_submit(ring);
     CHECK_GE(num_submitted, 0);
@@ -372,7 +271,7 @@ void RunEventLoop(io_uring* ring) {
     io_uring_cq_advance(ring, i);
 
     if (i) {
-      RunReadyFbs();
+      detail::RunReadyFbs();
       continue;
     }
 
@@ -424,21 +323,15 @@ int main(int argc, char* argv[]) {
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  main_wrapper =
-      detail::MakeCustomFiberWrapper("main", ctx::fixedsize_stack(), [&ring] { RunEventLoop(&ring); });
-  DCHECK(main_wrapper->IsDefined());
+  Fiber::InitSched([&ring] { RunEventLoop(&ring); });
 
-  DCHECK(ready_queue.empty());
   Fiber accept_fb("accept", [&] { AcceptFiber(&ring, listen_fd); });
-  accept_fb.Detach();
 
-  DCHECK(!ready_queue.empty());
-
-  main_wrapper->StartMain();  // blocking
+  accept_fb.Join();
 
   close(listen_fd);
   io_uring_queue_exit(&ring);
-  terminated_queue.clear();  // TODO: there is a resource leak here.
+  // terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;
 }
