@@ -133,7 +133,7 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void DispatchOnAll(Func&& func) {
     DispatchBrief([func = std::forward<Func>(func)](unsigned i, ProactorBase* context) {
-      ::boost::fibers::fiber(func, i, context).detach();
+      fibers_ext::Fiber(func, i, context).Detach();
     });
   }
 
@@ -148,7 +148,7 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
   void DispatchOnAll(Func&& func) {
     DispatchBrief([func = std::forward<Func>(func)](ProactorBase* context) {
-      ::boost::fibers::fiber(func, context).detach();
+      fibers_ext::Fiber(func, context).Detach();
     });
   }
 

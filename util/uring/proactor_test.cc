@@ -16,6 +16,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/accept_server.h"
+#include "util/fibers/fiber.h"
 #include "util/fibers/fibers_ext.h"
 #include "util/sliding_counter.h"
 #include "util/uring/uring_fiber_algo.h"
@@ -233,7 +234,7 @@ TEST_F(ProactorTest, Migrate) {
   unique_lock lk(mu);
   cv.wait(lk, [&] { return dest_tid != 0; });
 
-  fibers::fiber fb = proactor_->LaunchFiber([&] {
+  fibers_ext::Fiber fb = proactor_->LaunchFiber([&] {
     // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
     // thus it allows compiler to eliminate subsequent calls to this function.
     // Therefore I use syscall variant to get fresh values.
@@ -243,7 +244,7 @@ TEST_F(ProactorTest, Migrate) {
     LOG(INFO) << "After migrate";
     ASSERT_EQ(dest_tid, gettid());
   });
-  fb.join();
+  fb.Join();
   dest->Stop();
   dest_thread.join();
 }
@@ -289,7 +290,7 @@ TEST_F(ProactorTest, DispatchTest) {
     cnd1.notify_one();
   }
   LOG(INFO) << "BeforeJoin";
-  fb.join();
+  fb.Join();
 }
 
 TEST_F(ProactorTest, SlidingCounter) {
@@ -361,8 +362,8 @@ TEST_F(ProactorTest, TimedWait) {
   cv.notify_one();
   mu.unlock();
 
-  fb1.join();
-  fb2.join();
+  fb1.Join();
+  fb2.Join();
 }
 
 TEST_F(ProactorTest, File) {

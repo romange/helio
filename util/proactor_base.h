@@ -20,6 +20,7 @@
 #include <functional>
 
 #include "base/mpmc_bounded_queue.h"
+#include "util/fibers/fiber.h"
 #include "util/fibers/fibers_ext.h"
 
 namespace util {
@@ -119,7 +120,7 @@ class ProactorBase {
     // So I just copy them into capture.
     // We forward captured variables so we need lambda to be mutable.
     DispatchBrief([f = std::forward<Func>(f), args...]() mutable {
-      ::boost::fibers::fiber(std::forward<Func>(f), std::forward<Args>(args)...).detach();
+      fibers_ext::Fiber(std::forward<Func>(f), std::forward<Args>(args)...).Detach();
     });
   }
 
@@ -135,8 +136,8 @@ class ProactorBase {
 
   // Please note that this function uses Await, therefore can not be used inside
   // Proactor main fiber (i.e. Async callbacks).
-  template <typename... Args> boost::fibers::fiber LaunchFiber(Args&&... args) {
-    ::boost::fibers::fiber fb;
+  template <typename... Args> fibers_ext::Fiber LaunchFiber(Args&&... args) {
+    fibers_ext::Fiber fb;
 
     // It's safe to use & capture since we await before returning.
     AwaitBrief([&] { fb = boost::fibers::fiber(std::forward<Args>(args)...); });
@@ -349,7 +350,7 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
   using ResultType = decltype(f());
   fibers_ext::detail::ResultMover<ResultType> mover;
   auto fb = LaunchFiber([&] { mover.Apply(std::forward<Func>(f)); });
-  fb.join();
+  fb.Join();
 
   return std::move(mover).get();
 }

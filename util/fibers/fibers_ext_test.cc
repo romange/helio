@@ -10,6 +10,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/epoll/epoll_pool.h"
+#include "util/fibers/fiber.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/uring/uring_fiber_algo.h"
@@ -42,7 +43,7 @@ TEST_F(FibersTest, EventCount) {
   bool signal = false;
   bool fb_exit = false;
 
-  fibers::fiber fb(fibers::launch::dispatch, [&] {
+  Fiber fb(launch::dispatch, [&] {
     ec.await([&] { return signal; });
     fb_exit = true;
   });
@@ -52,7 +53,7 @@ TEST_F(FibersTest, EventCount) {
 
   signal = true;
   ec.notify();
-  fb.join();
+  fb.Join();
 }
 
 TEST_F(FibersTest, EventCountTimeout) {
@@ -251,14 +252,14 @@ TYPED_TEST(ChannelTest, SimpleChannel) {
   ASSERT_TRUE(channel.Pop(val));
   EXPECT_EQ(4, val);
 
-  fibers::fiber fb(fibers::launch::post, [&] { EXPECT_TRUE(channel.Pop(val)); });
+  Fiber fb(launch::post, [&] { EXPECT_TRUE(channel.Pop(val)); });
   channel.Push(7);
-  fb.join();
+  fb.Join();
   EXPECT_EQ(7, val);
 
-  fb = fibers::fiber(fibers::launch::post, [&] { EXPECT_FALSE(channel.Pop(val)); });
+  fb = Fiber(launch::post, [&] { EXPECT_FALSE(channel.Pop(val)); });
   channel.StartClosing();
-  fb.join();
+  fb.Join();
 }
 
 }  // namespace fibers_ext
