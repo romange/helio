@@ -6,6 +6,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/fiber.h"
 
 namespace util {
 namespace uring {
@@ -32,7 +33,7 @@ class UringSocketTest : public testing::Test {
   unique_ptr<LinuxSocketBase> conn_socket_;
 
   uint16_t listen_port_ = 0;
-  fibers::fiber accept_fb_;
+  fibers_ext::Fiber accept_fb_;
   std::error_code accept_ec_;
   FiberSocketBase::endpoint_type listen_ep_;
 };
@@ -70,8 +71,8 @@ void UringSocketTest::TearDown() {
 
   listen_socket_.reset();
   conn_socket_.reset();
-  if (accept_fb_.joinable()) {
-    accept_fb_.join();
+  if (accept_fb_.IsJoinable()) {
+    accept_fb_.Join();
   }
   proactor_->Stop();
   proactor_thread_.join();
@@ -84,7 +85,7 @@ TEST_F(UringSocketTest, Basic) {
   proactor_->Await([&] {
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
-    accept_fb_.join();
+    accept_fb_.Join();
 
     ASSERT_FALSE(accept_ec_);
     uint8_t buf[16];
@@ -106,7 +107,7 @@ TEST_F(UringSocketTest, Timeout) {
       EXPECT_FALSE(ec);
     }
   });
-  accept_fb_.join();
+  accept_fb_.Join();
   ASSERT_FALSE(accept_ec_);
 
   unique_ptr<LinuxSocketBase> tm_sock(proactor_->CreateSocket());
@@ -137,7 +138,7 @@ TEST_F(UringSocketTest, Poll) {
     // See https://stackoverflow.com/a/13088864/2280111
     CHECK_EQ(0, setsockopt(sock->native_handle(), SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
   });
-  accept_fb_.join();
+  accept_fb_.Join();
 
   auto poll_cb = [](uint32_t mask) {
     LOG(INFO) << "Res: " << mask;

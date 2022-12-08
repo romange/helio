@@ -20,9 +20,7 @@ ABSL_FLAG(uint32_t, size, 512, "Message size");
 namespace ctx = boost::context;
 using namespace std;
 
-namespace example {
-
-}  // namespace example
+namespace example {}  // namespace example
 
 namespace {
 
@@ -121,9 +119,11 @@ CqeResult SuspendMyself(io_uring_sqe* sqe) {
 
   auto& rp = suspended_list[myindex];
   rp.cqe_res = &cqe_result;
-  rp.cntx = detail::FiberActive();
 
-  Fiber::SchedNext();
+  detail::FiberInterface* fi = detail::FiberActive();
+  rp.cntx = fi;
+
+  fi->scheduler()->Preempt();
 
   return cqe_result;
 }
@@ -244,13 +244,12 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   }
 };
 
-
-void RunEventLoop(io_uring* ring) {
+void RunEventLoop(io_uring* ring, detail::Scheduler* sched) {
   VLOG(1) << "RunEventLoop";
+  DCHECK(!sched->HasReady());
 
   io_uring_cqe* cqe = nullptr;
-  detail::RunReadyFbs();
-  while (!loop_exit) {
+  do {
     int num_submitted = io_uring_submit(ring);
     CHECK_GE(num_submitted, 0);
     uint32_t head = 0;
@@ -265,18 +264,23 @@ void RunEventLoop(io_uring* ring) {
       suspended_list[index].next = next_rp_id;
       next_rp_id = index;
 
-      suspended_list[index].cntx->SetReady();
+      suspended_list[index].cntx->Activate();
       ++i;
     }
     io_uring_cq_advance(ring, i);
 
-    if (i) {
-      detail::RunReadyFbs();
+    if (sched->HasReady()) {
+      do {
+        detail::FiberInterface* fi = sched->PopReady();
+        fi->Resume();
+      } while (sched->HasReady());
       continue;
     }
 
     io_uring_wait_cqe_nr(ring, &cqe, 1);
-  }
+  } while (!loop_exit);
+
+  VLOG(1) << "Exit RunEventLoop";
 }
 
 }  // namespace
@@ -284,9 +288,11 @@ void RunEventLoop(io_uring* ring) {
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
-  RegisterSignal({SIGINT, SIGTERM}, [](int signal) {
+  int listen_fd = -1;
+
+  RegisterSignal({SIGINT, SIGTERM}, [&](int signal) {
     LOG(INFO) << "Exiting on signal " << strsignal(signal);
-    loop_exit = true;
+    shutdown(listen_fd, SHUT_RDWR);
   });
 
   // setup iouring
@@ -306,7 +312,7 @@ int main(int argc, char* argv[]) {
   // setup listening socket
   uint16_t port = absl::GetFlag(FLAGS_port);
 
-  int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   CHECK_GE(listen_fd, 0);
 
   const int val = 1;
@@ -323,13 +329,17 @@ int main(int argc, char* argv[]) {
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  Fiber::InitSched([&ring] { RunEventLoop(&ring); });
+  SetCustomScheduler([&ring](detail::Scheduler* sched) {
+    RunEventLoop(&ring, sched);
+  });
+
 
   Fiber accept_fb("accept", [&] { AcceptFiber(&ring, listen_fd); });
-
   accept_fb.Join();
 
-  close(listen_fd);
+  loop_exit = true;
+  // detail::FiberActive()->scheduler()->DestroyTerminated();
+
   io_uring_queue_exit(&ring);
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 

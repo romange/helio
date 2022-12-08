@@ -177,7 +177,7 @@ void ProactorBase::Migrate(ProactorBase* dest) {
   CHECK(dest != this);
 
   fibers::context* me = fibers::context::active();
-  fibers::fiber fb2 = LaunchFiber([&] {
+  fibers_ext::Fiber fb2 = LaunchFiber([&] {
     me->detach();
     VLOG(1) << "After me detach";
     dest->AwaitBrief([me] {
@@ -186,7 +186,7 @@ void ProactorBase::Migrate(ProactorBase* dest) {
     });
     VLOG(1) << "After Migrate/AwaitBrief";
   });
-  fb2.join();
+  fb2.Join();
 }
 
 void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> cb) {

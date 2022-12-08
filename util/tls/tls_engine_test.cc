@@ -12,6 +12,8 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+
+#include "util/fibers/fiber.h"
 #include "util/tls/tls_socket.h"
 
 namespace util {
@@ -19,6 +21,7 @@ namespace tls {
 
 using namespace std;
 using namespace boost;
+using fibers_ext::Fiber;
 
 string SSLError(unsigned long e) {
   char buf[256];
@@ -222,16 +225,16 @@ TEST_F(SslStreamTest, BIO_s_bio_ZeroCopy) {
 TEST_F(SslStreamTest, Handshake) {
   unsigned long cl_err = 0, srv_err = 0;
 
-  auto client_fb = fibers::fiber([&] {
+  auto client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, client_handshake_, client_engine_.get(), server_engine_.get());
   });
 
-  auto server_fb = fibers::fiber([&] {
+  auto server_fb = Fiber([&] {
     srv_err = RunPeer(srv_opts_, srv_handshake_, server_engine_.get(), client_engine_.get());
   });
 
-  client_fb.join();
-  server_fb.join();
+  client_fb.Join();
+  server_fb.Join();
   ASSERT_EQ(0, cl_err);
   ASSERT_EQ(0, srv_err);
 }
