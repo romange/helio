@@ -116,7 +116,7 @@ TEST_F(FibersTest, FiberQueue) {
     });
   }
   fq.Shutdown();
-  fiber.join();
+  fiber.Join();
 
   EXPECT_EQ(kIters, invocations);
   EXPECT_LT(delay / kIters, 2000);  //

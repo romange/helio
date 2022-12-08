@@ -99,7 +99,7 @@ TEST_F(EpollProactorTest, DispatchTest) {
     cnd1.notify_one();
   }
   LOG(INFO) << "BeforeJoin";
-  fb.join();
+  fb.Join();
 }
 
 TEST_F(EpollProactorTest, Periodic) {

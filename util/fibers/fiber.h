@@ -44,6 +44,10 @@ class Fiber {
     return *this;
   }
 
+  bool IsJoinable() const {
+    return fb_.joinable();
+  }
+
  private:
   ::boost::fibers::fiber fb_;
 };
