@@ -48,7 +48,8 @@ TEST_F(FibersTest, EventCount) {
     fb_exit = true;
   });
   ec.notify();
-  this_fiber::yield();
+  Yield();
+
   EXPECT_FALSE(fb_exit);
 
   signal = true;

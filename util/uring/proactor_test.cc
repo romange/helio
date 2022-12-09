@@ -82,7 +82,7 @@ TEST_F(ProactorTest, Await) {
 TEST_F(ProactorTest, Sleep) {
   proactor_->Await([] {
     LOG(INFO) << "Before Sleep";
-    this_fiber::sleep_for(20ms);
+    fibers_ext::SleepFor(20ms);
     LOG(INFO) << "After Sleep";
   });
 }
@@ -94,13 +94,13 @@ TEST_F(ProactorTest, SleepMany) {
   constexpr size_t kNumIters = 600;
 
   auto cb = []() {
-    this_fiber::properties<FiberProps>().set_name("sleeper");
+    FiberProps::SetName("sleeper");
     for (unsigned i = 0; i < kNumIters; ++i) {
       auto sleep = chrono::steady_clock::now();
       sleep += 15us;
 
       DVLOG(1) << "sleep_until " << sleep.time_since_epoch().count();
-      this_fiber::sleep_until(sleep);
+      fibers_ext::SleepUntil(sleep);
     }
     LOG(INFO) << "Sleeper finished ";
   };
@@ -271,7 +271,7 @@ TEST_F(ProactorTest, DispatchTest) {
 
   LOG(INFO) << "LaunchFiber";
   auto fb = proactor_->LaunchFiber([&] {
-    this_fiber::properties<FiberProps>().set_name("jessie");
+    FiberProps::SetName("jessie");
 
     std::unique_lock<fibers::mutex> g(mu);
     state = 1;
@@ -348,15 +348,15 @@ TEST_F(ProactorTest, TimedWait) {
   });
 
   auto fb2 = proactor_->LaunchFiber([&] {
-    this_fiber::properties<FiberProps>().set_name("waiter");
-    this_fiber::sleep_for(1ms);
+    FiberProps::SetName("waiter");
+    fibers_ext::SleepFor(1ms);
 
     chrono::steady_clock::time_point tp = chrono::steady_clock::now() + 1ms;
     cv_status status = ec.await_until([] { return false; }, tp);
     LOG(INFO) << "await_until " << int(status);
   });
 
-  this_fiber::sleep_for(1ms);
+  fibers_ext::SleepFor(1ms);
   mu.lock();
   res = true;
   cv.notify_one();

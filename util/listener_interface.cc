@@ -77,8 +77,7 @@ thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
-  auto& fiber_props = this_fiber::properties<FiberProps>();
-  fiber_props.set_name("AcceptLoop");
+  FiberProps::SetName("AcceptLoop");
 
   FiberSocketBase::endpoint_type ep;
 
@@ -123,7 +122,7 @@ void ListenerInterface::RunAcceptLoop() {
   // to start running and decrease the probability we continue without the up to date conn_list.
   // Since we are during the shutdown phase, waiting for 10ms is "probably" enough to let all the
   // callback to unwind and run.
-  this_fiber::sleep_for(10ms);
+  fibers_ext::SleepFor(10ms);
   atomic_uint32_t cur_conn_cnt{0};
 
   pool_->AwaitFiberOnAll([&](auto* pb) {

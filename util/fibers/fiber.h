@@ -5,6 +5,7 @@
 #pragma once
 
 #include <boost/fiber/fiber.hpp>
+#include <boost/fiber/operations.hpp>
 
 namespace util {
 
@@ -51,6 +52,20 @@ class Fiber {
  private:
   ::boost::fibers::fiber fb_;
 };
+
+template <typename Clock, typename Duration>
+void SleepUntil(std::chrono::time_point<Clock, Duration> const& sleep_time) {
+  boost::this_fiber::sleep_until(sleep_time);
+}
+
+template <typename Rep, typename Period>
+void SleepFor(std::chrono::duration<Rep, Period> const& timeout_duration) {
+  SleepUntil(std::chrono::steady_clock::now() + timeout_duration);
+}
+
+inline void Yield() noexcept {
+  boost::fibers::context::active()->yield();
+}
 
 }  // namespace fibers_ext
 }  // namespace util

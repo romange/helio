@@ -159,7 +159,8 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
 
       return ERR_PACK(ERR_LIB_USER, 0, ERR_R_OPERATION_FAIL);
     }
-    this_fiber::yield();
+    fibers_ext::Yield();
+
     input_pending = src->InputPending();
     VLOG(1) << "Input size: " << input_pending;
   }

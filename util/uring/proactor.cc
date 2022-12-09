@@ -102,7 +102,7 @@ void Proactor::Run() {
 
   scheduler_ = new UringFiberAlgo(this);
   sched->set_algo(scheduler_);
-  this_fiber::properties<FiberProps>().set_name("ioloop");
+  FiberProps::SetName("ioloop");
 
   is_stopped_ = false;
 
@@ -214,8 +214,8 @@ void Proactor::Run() {
       // yield(), tq_seq_ would be invalidated.
       tq_seq_.fetch_and(~1, memory_order_acq_rel);
       tq_seq &= ~1;
-      this_fiber::yield();
-      VPRO(2) << "this_fiber::yield_end " << loop_cnt << " " << read_cnt << " "
+      fibers_ext::Yield();
+      VPRO(2) << "Yield_end " << loop_cnt << " " << read_cnt << " "
               << scheduler_->ready_cnt();
 
       // we preempted without passing through suspend_until.
@@ -301,7 +301,8 @@ void Proactor::Run() {
       DCHECK(!sched->has_ready_fibers());
 
       if (task_queue_.empty()) {
-        this_fiber::yield();
+        fibers_ext::Yield();
+
         if (!sched->has_ready_fibers()) {
           VPRO(2) << "wait_for_cqe " << loop_cnt;
           wait_for_cqe(&ring_, 1);

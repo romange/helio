@@ -19,9 +19,8 @@ EpollFiberAlgo::EpollFiberAlgo(ProactorBase* ev_cntr) : FiberSchedAlgo(ev_cntr) 
   auto cb = [tfd = timer_fd_](uint32_t event_mask, EpollProactor*) {
     uint64_t val;
     int res = read(tfd, &val, sizeof(val));
-    DVLOG(2) << "this_fiber::yield " << event_mask << "/" << res;
-
-    this_fiber::yield();
+    DVLOG(2) << "Yield " << event_mask << "/" << res;
+    fibers_ext::Yield();
   };
 
   arm_index_ = static_cast<EpollProactor*>(ev_cntr)->Arm(timer_fd_, std::move(cb), EPOLLIN);

@@ -67,9 +67,8 @@ class PingConnection : public Connection {
 atomic_int conn_id{1};
 
 void PingConnection::HandleRequests() {
+  FiberProps::SetName(absl::StrCat("ping/", conn_id.fetch_add(1, memory_order_relaxed)));
   auto& props = this_fiber::properties<FiberProps>();
-
-  props.set_name(absl::StrCat("ping/", conn_id.fetch_add(1, memory_order_relaxed)));
 
   system::error_code ec;
   unique_ptr<tls::TlsSocket> tls_sock;

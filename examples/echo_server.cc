@@ -184,7 +184,8 @@ std::error_code EchoConnection::ReadMsg(size_t* sz) {
 }
 
 void EchoConnection::HandleRequests() {
-  boost::this_fiber::properties<FiberProps>().set_name("HandleRequests");
+  FiberProps::SetName("HandleRequests");
+
   std::error_code ec;
   size_t sz;
   iovec vec[2];
@@ -307,7 +308,7 @@ void RunServer(ProactorPool* pp) {
         se.PrepWrite(tl->file->fd(), blob, 4096, 0);
         se.sqe()->flags |= IOSQE_ASYNC;
         if (i % 1000 == 0) {
-          boost::this_fiber::yield();
+          fibers_ext::Yield();
         }
       }
       LOG(INFO) << "Write file finished " << index;
@@ -498,7 +499,7 @@ void TLocalClient::Connect(tcp::endpoint ep) {
   vector<::boost::fibers::fiber> fbs(drivers_.size());
   for (size_t i = 0; i < fbs.size(); ++i) {
     fbs[i] = ::boost::fibers::fiber([&, i] {
-      ::boost::this_fiber::properties<FiberProps>().set_name(absl::StrCat("connect/", i));
+      FiberProps::SetName(absl::StrCat("connect/", i));
       uint64_t start = absl::GetCurrentTimeNanos();
       drivers_[i]->Connect(i, ep);
       uint64_t delta_msec = (absl::GetCurrentTimeNanos() - start) / 1000000;
@@ -512,7 +513,7 @@ void TLocalClient::Connect(tcp::endpoint ep) {
 }
 
 size_t TLocalClient::Run() {
-  ::boost::this_fiber::properties<FiberProps>().set_name("RunClient");
+  FiberProps::SetName("RunClient");
   base::Histogram hist;
 
   LOG(INFO) << "RunClient " << p_->GetIndex();
@@ -521,7 +522,7 @@ size_t TLocalClient::Run() {
   size_t res = 0;
   for (size_t i = 0; i < fbs.size(); ++i) {
     fbs[i] = fiber([&, i] {
-      ::boost::this_fiber::properties<FiberProps>().set_name(absl::StrCat("run/", i));
+      FiberProps::SetName(absl::StrCat("run/", i));
       res += drivers_[i]->Run(&hist);
     });
   }

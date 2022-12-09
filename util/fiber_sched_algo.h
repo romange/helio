@@ -1,6 +1,8 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
+// Copyright 2022, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
+
+#include <boost/fiber/operations.hpp>
 #include <boost/fiber/scheduler.hpp>
 #include <string>
 
@@ -24,7 +26,13 @@ class FiberProps : public ::boost::fibers::fiber_properties {
     return name_;
   }
 
-  uint64_t resume_ts() const { return resume_ts_;}
+  uint64_t resume_ts() const {
+    return resume_ts_;
+  }
+
+  static void SetName(std::string_view name) {
+    boost::this_fiber::properties<FiberProps>().set_name(std::string(name));
+  }
 
  private:
   uint64_t resume_ts_ = 0, awaken_ts_ = 0;
@@ -60,7 +68,9 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   // Returns true if suspend_until has been called before resuming back to ioloop.
   bool SuspendIoLoop(uint64_t now);
 
-  uint32_t ready_cnt() const { return ready_cnt_;}
+  uint32_t ready_cnt() const {
+    return ready_cnt_;
+  }
 
  protected:
   virtual void SuspendWithTimer(const time_point& tp) noexcept = 0;
@@ -72,7 +82,7 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   ProactorBase* proactor_;
 
   ready_queue_type rqueue_;
-  FiberContext* main_cntx_, *prev_picked_;
+  FiberContext *main_cntx_, *prev_picked_;
   uint64_t suspend_main_ts_ = 0, prev_pick_ts_ = 0;  // in nanos.
   uint32_t ready_cnt_ = 0;
   int timer_fd_ = -1;
@@ -80,13 +90,12 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   union {
     uint8_t flag_val_ = 0;
     struct {
-      uint8_t ioloop_suspended: 1;  // io loop fiber is suspended
-      uint8_t ioloop_yielded: 1;   // while suspended, ioloop switched to another fiber.
-      uint8_t ioloop_woke: 1;
-      uint8_t suspenduntil_called: 1;
+      uint8_t ioloop_suspended : 1;  // io loop fiber is suspended
+      uint8_t ioloop_yielded : 1;    // while suspended, ioloop switched to another fiber.
+      uint8_t ioloop_woke : 1;
+      uint8_t suspenduntil_called : 1;
     } flags_;
   };
-
 };
 
 }  // namespace util

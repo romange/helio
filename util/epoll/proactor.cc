@@ -29,7 +29,6 @@
 
 namespace ctx = boost::context;
 namespace fibers = boost::fibers;
-namespace this_fiber = boost::this_fiber;
 using namespace std;
 
 namespace util {
@@ -84,7 +83,8 @@ void EpollProactor::Run() {
 
   EpollFiberAlgo* algo = new EpollFiberAlgo(this);
   sched->set_algo(algo);
-  this_fiber::properties<FiberProps>().set_name("ioloop");
+
+  FiberProps::SetName("ioloop");
 
   is_stopped_ = false;
 
@@ -138,7 +138,7 @@ void EpollProactor::Run() {
 
     // we got notifications from 3rd party threads via tq_seq_ lsb.
     if (tq_seq & 1) {  // We allow dispatch fiber to run.
-      // we use ack_req so that this store won't be reordered with `this_fiber::yield` below.
+      // we use ack_req so that this store won't be reordered with `Yield` below.
       // That makes sure that subsequent notifications via tq_seq_ won't get lost.
       // In other words, if another thread sets the bit right after fetch_and -
       // we will call again yield() at some point, but if `fetch_and` would move
@@ -148,7 +148,7 @@ void EpollProactor::Run() {
       tq_seq &= ~1;
 
       // This eventually calls dispatcher fiber.
-      this_fiber::yield();
+      fibers_ext::Yield();
 
       // we preempted without passing through suspend_until so we should not block on epoll_wait
       // before we call suspend_until.

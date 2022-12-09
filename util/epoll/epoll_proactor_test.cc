@@ -68,7 +68,7 @@ TEST_F(EpollProactorTest, Await) {
 TEST_F(EpollProactorTest, Sleep) {
   ev_cntrl_->Await([] {
     LOG(INFO) << "Before Sleep";
-    this_fiber::sleep_for(20ms);
+    fibers_ext::SleepFor(20ms);
     LOG(INFO) << "After Sleep";
   });
 }
@@ -80,7 +80,7 @@ TEST_F(EpollProactorTest, DispatchTest) {
 
   LOG(INFO) << "LaunchFiber";
   auto fb = ev_cntrl_->LaunchFiber([&] {
-    this_fiber::properties<FiberProps>().set_name("jessie");
+    FiberProps::SetName("jessie");
 
     std::unique_lock<fibers::mutex> g(mu);
     state = 1;
@@ -123,13 +123,13 @@ TEST_F(EpollProactorTest, SleepMany) {
   constexpr size_t kNumIters = 600;
 
   auto cb = []() {
-    this_fiber::properties<FiberProps>().set_name("sleeper");
+    FiberProps::SetName("sleeper");
     for (unsigned i = 0; i < kNumIters; ++i) {
       auto sleep = chrono::steady_clock::now();
       sleep += 15us;
 
       DVLOG(1) << "sleep_until " << sleep.time_since_epoch().count();
-      this_fiber::sleep_until(sleep);
+      fibers_ext::SleepUntil(sleep);
     }
     LOG(INFO) << "Sleeper finished ";
   };
