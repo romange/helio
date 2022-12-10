@@ -167,7 +167,7 @@ class SharedMutex {
 class BlockingCounter {
   class Impl {
    public:
-    Impl(unsigned count) : count_(count) {
+    Impl(unsigned count) : count_{count} {
     }
     Impl(const Impl&) = delete;
     void operator=(const Impl&) = delete;
@@ -205,7 +205,7 @@ class BlockingCounter {
     friend class BlockingCounter;
     EventCount ec_;
     std::atomic<std::uint32_t> use_count_{0};
-    std::atomic_long count_;
+    std::atomic<uint64_t> count_;
   };
   using ptr_t = ::boost::intrusive_ptr<Impl>;
 
