@@ -187,7 +187,7 @@ class BlockingCounter {
     void Wait() {
       ec_.await([this] {
         auto cnt = count_.load(std::memory_order_acquire);
-        return cnt == 0 || (cnt & (1 << 63));
+        return cnt == 0 || (cnt & (1ULL << 63));
       });
     }
 
