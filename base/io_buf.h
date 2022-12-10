@@ -65,6 +65,15 @@ class IoBuf {
     size_ += sz;
   }
 
+  void Clear() {
+    size_ = 0;
+    offs_ = 0;
+  }
+
+  void EnsureCapacity(size_t sz) {
+    Reserve(InputLen() + sz);
+  }
+
   void Reserve(size_t sz) {
     if (sz < capacity_)
       return;
