@@ -185,7 +185,15 @@ class BlockingCounter {
 
     // I suspect all memory order accesses here could be "relaxed" but I do not bother.
     void Wait() {
-      ec_.await([this] { return 0 == count_.load(std::memory_order_acquire); });
+      ec_.await([this] {
+        auto cnt = count_.load(std::memory_order_acquire);
+        return cnt == 0 || (cnt & (1 << 63));
+      });
+    }
+
+    void Cancel() {
+      count_.fetch_or(1ULL << 63, std::memory_order_acquire);
+      ec_.notify();
     }
 
     void Dec() {
@@ -215,6 +223,10 @@ class BlockingCounter {
 
   void Add(unsigned delta) {
     impl_->count_.fetch_add(delta, std::memory_order_acq_rel);
+  }
+
+  void Cancel() {
+    impl_->Cancel();
   }
 
   void Wait() {
