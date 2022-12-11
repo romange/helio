@@ -118,7 +118,6 @@ class PosixReadFile final : public ReadonlyFile {
 //                 |_|
 */
 
-
 SizeOrError PosixReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   if (len == 0)
     return 0;
@@ -262,7 +261,6 @@ io::Result<size_t> FileSource::ReadSome(const iovec* v, uint32_t len) {
   return res;
 }
 
-
 ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len) {
   DCHECK_GT(len, 0u);
 
@@ -284,7 +282,7 @@ ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len) {
 
     read_total += read;
 
-    while (v->iov_len <= size_t(read)) {  // pass through all completed entries.
+    while (len > 0 && v->iov_len <= size_t(read)) {  // pass through all completed entries.
       --len;
       read -= v->iov_len;
       ++v;
