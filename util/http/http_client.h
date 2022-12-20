@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <openssl/ssl.h>  // required by SSL_CTX
+
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/message.hpp>
@@ -67,7 +69,12 @@ class Client {
     headers_.emplace_back(std::move(name), std::move(value));
   }
 
-  const std::string host() const { return host_; }
+  const std::string host() const {
+    return host_;
+  }
+
+ protected:
+  std::unique_ptr<FiberSocketBase> socket_;
 
  private:
   static bool IsIoError(std::error_code ec) {
@@ -86,7 +93,6 @@ class Client {
   using HeaderPair = std::pair<std::string, std::string>;
 
   std::vector<HeaderPair> headers_;
-  std::unique_ptr<FiberSocketBase> socket_;
   std::string host_;
 };
 
@@ -127,6 +133,37 @@ template <typename Req> std::error_code Client::Send(const Req& req) {
 
   return HandleError(ec);
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Add support for HTTPS on top of the client above.
+class TlsClient : public Client {
+ public:
+  // note: This context is for client only! it should never be used
+  // on the server side!!
+  // Call this function before you starting any connection.
+  static SSL_CTX* CreateSslContext();
+
+  // This should be called when you're done with the clients you're
+  // using. But it should be safe, since internally open SSL are using
+  // ref count when freeing resources.
+  static void FreeContext(SSL_CTX* ctx);
+
+  explicit TlsClient(ProactorBase* proactor) : Client(proactor) {
+  }
+
+  /*! @brief Connect to remote server and preform TLS handshake.
+   *
+   *  @param host: the name of the host to connect to.
+   *  @param service: the port number (this must be convertible to short).
+   *  @param context a valid SSL context that was created with the function CreateSslContext
+   */
+  std::error_code Connect(StringPiece host, StringPiece service, SSL_CTX* context);
+
+ private:
+  // holds the socket that was generated with the base class, it should live as long as we're
+  // connected.
+  std::unique_ptr<FiberSocketBase> tcp_socket_;
+};
 
 }  // namespace http
 }  // namespace util

@@ -106,8 +106,14 @@ auto TlsSocket::Accept() -> AcceptResult {
   return nullptr;
 }
 
-auto TlsSocket::Connect(const endpoint_type& ep) -> error_code {
+auto TlsSocket::Connect(const endpoint_type&) -> error_code {
   DCHECK(engine_);
+  auto io_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
+  if (io_result.has_value()) {
+    return std::error_code{};
+  } else {
+    return std::error_code(io_result.error(), std::system_category());
+  }
 
   return error_code{};
 }
