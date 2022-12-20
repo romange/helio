@@ -12,9 +12,11 @@
 #include <boost/beast/http/write.hpp>
 
 #include "base/logging.h"
+#include "util/dns_resolve.h"
 #include "util/fiber_socket_base.h"
 #include "util/proactor_base.h"
-#include "util/dns_resolve.h"
+#include "util/tls/tls_engine.h"
+#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace http {
@@ -24,10 +26,22 @@ using namespace std;
 namespace h2 = boost::beast::http;
 namespace ip = boost::asio::ip;
 using boost_error = boost::system::error_code;
+using util::tls::TlsSocket;
 
-Client::Client(ProactorBase* proactor) : proactor_(proactor) {}
+namespace {
+// This can be used for debugging
+int VerifyCallback(int ok, X509_STORE_CTX* ctx) {
+  // since this is a client side, we don't do much here,
+  VLOG(1) << "verify_callback: " << std::boolalpha << bool(ok);
+  return ok;
+}
+}  // namespace
 
-Client::~Client() {}
+Client::Client(ProactorBase* proactor) : proactor_(proactor) {
+}
+
+Client::~Client() {
+}
 
 std::error_code Client::Connect(StringPiece host, StringPiece service) {
   uint32_t port;
@@ -53,8 +67,7 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
   return socket_->Connect(ep);
 }
 
-std::error_code Client::Send(Verb verb, StringPiece url, StringPiece body,
-                                         Response* response) {
+std::error_code Client::Send(Verb verb, StringPiece url, StringPiece body, Response* response) {
   // Set the URL
   h2::request<h2::string_body> req{verb, boost::string_view(url.data(), url.size()), 11};
 
@@ -95,6 +108,66 @@ void Client::Shutdown() {
 
 bool Client::IsConnected() const {
   return socket_ && socket_->IsOpen();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+SSL_CTX* TlsClient::CreateSslContext() {
+  SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+  if (ctx) {
+    // Use the default locations for certificates. This means that any trusted
+    // remote host by this local host, will be trusted as well.
+    // see https://www.openssl.org/docs/man3.0/man1/openssl-verification-options.html
+    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+      LOG(WARNING) << "failed to set default verify path on client context for TLS connection";
+      FreeContext(ctx);
+      return nullptr;
+    }
+    SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, VerifyCallback);
+    SSL_CTX_set_verify_depth(ctx, 4);
+    // see https://www.openssl.org/docs/man1.1.1/man3/SSL_CTX_set_security_level.html
+    // this default is for Security level set to 112 bits of security
+    SSL_CTX_set_security_level(ctx, 2);
+    SSL_CTX_dane_enable(ctx);  // see https://www.internetsociety.org/resources/deploy360/dane/
+  }
+  return ctx;
+}
+
+std::error_code TlsClient::Connect(StringPiece host, StringPiece service, SSL_CTX* context) {
+  DCHECK(context) << " NULL SSL context";
+  // Four phases:
+  // 1. TCP connection
+  // 2. Setting SSL level verification for the remote host
+  // 3. Using the connected TCP for SSL (handshake).
+  // 4. Setting the base class to use the "new" TLS socket from here on end
+
+  std::error_code ec = Client::Connect(host, service);
+  if (!ec) {
+    tcp_socket_.reset(socket_.release());
+    std::unique_ptr<TlsSocket> tls_socket(new TlsSocket(tcp_socket_.get()));
+    tls_socket->InitSSL(context);
+
+    const std::string& hn = Client::host();
+    const char* host = hn.c_str();
+    SSL* ssl_handle = tls_socket->ssl_handle();
+    // add SNI
+    SSL_set_tlsext_host_name(ssl_handle, host);
+    // verify server cert using server hostname
+    SSL_dane_enable(ssl_handle, host);
+    ec = tls_socket->Connect(FiberSocketBase::endpoint_type{});
+    if (!ec) {
+      socket_.reset(tls_socket.release());
+    }
+  }
+  return ec;
+}
+
+void TlsClient::FreeContext(SSL_CTX* ctx) {
+  if (ctx) {
+    SSL_CTX_free(ctx);
+  }
 }
 
 }  // namespace http

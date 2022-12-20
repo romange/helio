@@ -8,7 +8,6 @@
 
 #include "util/fiber_socket_base.h"
 
-
 namespace util {
 namespace tls {
 
@@ -28,7 +27,9 @@ class TlsSocket : public FiberSocketBase {
 
   AcceptResult Accept() final;
 
-  error_code Connect(const endpoint_type& ep) final;
+  // The endpoint should not really pass here, it is to keep
+  // the interface with FiberSocketBase.
+  error_code Connect(const endpoint_type&) final;
 
   error_code Close() final;
 
