@@ -26,7 +26,7 @@ using namespace std;
 namespace h2 = boost::beast::http;
 namespace ip = boost::asio::ip;
 using boost_error = boost::system::error_code;
-using TlsSocket = util::tls::TlsSocket;
+using util::tls::TlsSocket;
 
 namespace {
 // This can be used for debugging
@@ -115,7 +115,7 @@ bool Client::IsConnected() const {
 SSL_CTX* TlsClient::CreateSslContext() {
   SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
   if (ctx) {
-    // USe the default locations for certificates. This means that any trusted
+    // Use the default locations for certificates. This means that any trusted
     // remote host by this local host, will be trusted as well.
     // see https://www.openssl.org/docs/man3.0/man1/openssl-verification-options.html
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
@@ -136,12 +136,12 @@ SSL_CTX* TlsClient::CreateSslContext() {
 }
 
 std::error_code TlsClient::Connect(StringPiece host, StringPiece service, SSL_CTX* context) {
-  DCHECK(context) << "invalid NULL SSL context";
+  DCHECK(context) << " NULL SSL context";
   // Four phases:
   // 1. TCP connection
   // 2. Setting SSL level verification for the remote host
   // 3. Using the connected TCP for SSL (handshake).
-  // 4. Setting the base class to use the "new" TLS socket for here on end
+  // 4. Setting the base class to use the "new" TLS socket from here on end
 
   std::error_code ec = Client::Connect(host, service);
   if (!ec) {
