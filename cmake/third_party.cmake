@@ -265,10 +265,10 @@ else()
   set(MI_OVERRIDE OFF)
 endif()
 
-set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.5.patch)
+set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.7.patch)
 
  add_third_party(mimalloc
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.5.tar.gz
+   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.7.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
   # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug

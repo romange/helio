@@ -1,0 +1,68 @@
+From 833c30962d5eef54cd492b63f7f4de23ccaeea1a Mon Sep 17 00:00:00 2001
+From: Boaz Sade <boaz@dragonflydb.io>
+Date: Wed, 21 Dec 2022 20:30:28 +0200
+Subject: [PATCH] patching new version
+
+---
+ include/mimalloc-types.h |  2 +-
+ include/mimalloc.h       |  2 ++
+ src/alloc.c              | 20 ++++++++++++++++++++
+ 3 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/include/mimalloc-types.h b/include/mimalloc-types.h
+index 800d941..d364fd3 100644
+--- a/include/mimalloc-types.h
++++ b/include/mimalloc-types.h
+@@ -67,7 +67,7 @@ terms of the MIT license. A copy of the license can be found in the file
+ // Encoded free lists allow detection of corrupted free lists
+ // and can detect buffer overflows, modify after free, and double `free`s.
+ #if (MI_SECURE>=3 || MI_DEBUG>=1)
+-#define MI_ENCODE_FREELIST  1 
++//#define MI_ENCODE_FREELIST  1
+ #endif
+ 
+ 
+diff --git a/include/mimalloc.h b/include/mimalloc.h
+index 32eab19..46cdbaa 100644
+--- a/include/mimalloc.h
++++ b/include/mimalloc.h
+@@ -280,6 +280,8 @@ mi_decl_export bool mi_manage_os_memory(void* start, size_t size, bool is_commit
+ 
+ mi_decl_export void mi_debug_show_arenas(void) mi_attr_noexcept;
+ 
++mi_decl_export bool mi_heap_page_is_underutilized(mi_heap_t* heap, void* p, float ratio) mi_attr_noexcept;
++
+ // Experimental: heaps associated with specific memory arena's
+ typedef int mi_arena_id_t;
+ mi_decl_export void* mi_arena_area(mi_arena_id_t arena_id, size_t* size);
+diff --git a/src/alloc.c b/src/alloc.c
+index 02d009e..6bcc0b2 100644
+--- a/src/alloc.c
++++ b/src/alloc.c
+@@ -956,3 +956,23 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
+     return mi_new_realloc(p, total);
+   }
+ }
++
++bool mi_heap_page_is_underutilized(mi_heap_t* heap, void* p, float ratio) mi_attr_noexcept {
++  mi_page_t* page = _mi_ptr_page(p);   // get the page that this belongs to
++
++  mi_heap_t* page_heap = (mi_heap_t*)(mi_atomic_load_relaxed(&(page)->xheap));
++
++  // the heap id matches and it is not a full page
++  if (mi_likely(page_heap == heap && page->flags.x.in_full == 0)) {
++    // mi_page_queue_t* pq = mi_heap_page_queue_of(heap, page);
++
++    // first in the list, meaning it's the head of page queue, thus being used for malloc
++    if (page->prev == NULL)
++      return false;
++
++    // this page belong to this heap and is not first in the page queue. Lets check its
++    // utilization.
++    return page->used <= (unsigned)(page->capacity * ratio);
++  }
++  return false;
++}
+-- 
+2.34.1
+
