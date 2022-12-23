@@ -264,10 +264,12 @@ void RunEventLoop(io_uring* ring, detail::Scheduler* sched) {
       suspended_list[index].next = next_rp_id;
       next_rp_id = index;
 
-      suspended_list[index].cntx->Activate();
+      sched->MarkReady(suspended_list[index].cntx);
       ++i;
     }
     io_uring_cq_advance(ring, i);
+
+    sched->ProcessSleep();
 
     if (sched->HasReady()) {
       do {

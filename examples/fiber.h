@@ -6,23 +6,27 @@
 
 #include <atomic>
 #include <boost/context/fiber.hpp>
+#include <boost/intrusive/set.hpp>
 #include <boost/intrusive/slist.hpp>
+#include <chrono>
 #include <string_view>
 
 namespace example {
 
 namespace detail {
 
-typedef boost::intrusive::slist_member_hook<
-    boost::intrusive::link_mode<boost::intrusive::safe_link>>
-    FiberContextHook;
+using FI_ListHook =
+    boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
+
+using FI_SleepHook =
+    boost::intrusive::set_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
 class Scheduler;
 
 class FiberInterface {
   friend class Scheduler;
 
-protected:
+ protected:
   // holds its own fiber_context when it's not active.
   // the difference between fiber_context and continuation is that continuation is launched
   // straight away via callcc and fiber is created without switching to it.
@@ -38,21 +42,22 @@ protected:
   ::boost::context::fiber_context entry_;  // 8 bytes
 
  public:
-  enum Type : uint8_t { MAIN, DISPATCH, WORKER};
+  enum Type : uint8_t { MAIN, DISPATCH, WORKER };
 
   FiberInterface(Type type, uint32_t init_count, std::string_view nm = std::string_view{});
 
   virtual ~FiberInterface();
 
-  detail::FiberContextHook list_hook{};
+  FI_ListHook list_hook;
+  FI_SleepHook sleep_hook;
 
   void StartMain();
 
   ::boost::context::fiber_context Resume();
 
   void Join();
-  void Activate();
   void Yield();
+  void WaitUntil(std::chrono::steady_clock::time_point tp);
 
   bool IsDefined() const {
     return bool(entry_);
@@ -90,13 +95,16 @@ protected:
     return scheduler_;
   }
 
-  Type type() const { return type_;}
+  Type type() const {
+    return type_;
+  }
 
  protected:
   // TODO: should be mpsc lock-free intrusive queue.
   using WaitQueue = boost::intrusive::slist<
       FiberInterface,
-      boost::intrusive::member_hook<FiberInterface, FiberContextHook, &FiberInterface::list_hook>>;
+      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
+
 
   ::boost::context::fiber_context Terminate();
 
@@ -115,6 +123,8 @@ protected:
   WaitQueue wait_queue_;
 
   Scheduler* scheduler_ = nullptr;
+  std::chrono::steady_clock::time_point tp_;
+
   char name_[24];
 };
 
@@ -139,29 +149,46 @@ class Scheduler {
 
   ::boost::context::fiber_context Preempt();
 
+  void WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
+
   FiberInterface* PopReady() {
     FiberInterface* res = &ready_queue_.front();
     ready_queue_.pop_front();
     return res;
   }
 
-  FiberInterface* main_context() { return main_cntx_; }
+  FiberInterface* main_context() {
+    return main_cntx_;
+  }
 
   void DestroyTerminated();
+  void ProcessSleep();
 
  private:
-
   // I use cache_last<true> so that slist will have push_back support.
-  using FiberInterfaceQueue = boost::intrusive::slist<
+  using FI_Queue = boost::intrusive::slist<
       FiberInterface,
-      boost::intrusive::member_hook<FiberInterface, FiberContextHook, &FiberInterface::list_hook>,
+      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>,
       boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
-  static constexpr size_t kQSize = sizeof(FiberInterfaceQueue);
+   struct TpLess {
+    bool operator()(const FiberInterface& l, const FiberInterface& r) const noexcept {
+      return l.tp_ < r.tp_;
+    }
+  };
+
+  using SleepQueue = boost::intrusive::multiset<
+      FiberInterface,
+      boost::intrusive::member_hook<FiberInterface, FI_SleepHook, &FiberInterface::sleep_hook>,
+      boost::intrusive::constant_time_size<false>, boost::intrusive::compare<TpLess>>;
+
+  static constexpr size_t kQSize = sizeof(FI_Queue);
 
   FiberInterface* main_cntx_;
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
-  FiberInterfaceQueue ready_queue_, terminate_queue_;
+  FI_Queue ready_queue_, terminate_queue_;
+  SleepQueue sleep_queue_;
+
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;
 };
@@ -222,13 +249,13 @@ static WorkerFiberImpl<Fn>* MakeWorkerFiberImpl(std::string_view name, StackAllo
 
 FiberInterface* FiberActive() noexcept;
 
-inline void FiberInterface::Activate() {
+inline void FiberInterface::Yield() {
   scheduler_->MarkReady(this);
+  scheduler_->Preempt();
 }
 
-inline void FiberInterface::Yield() {
-  Activate();
-  scheduler_->Preempt();
+inline void FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) {
+  scheduler_->WaitUntil(tp, this);
 }
 
 }  // namespace detail
@@ -284,5 +311,18 @@ class Fiber {
 
 using DispatcherAlgo = std::function<void(detail::Scheduler* sched)>;
 void SetCustomScheduler(DispatcherAlgo algo);
+
+namespace ThisFiber {
+
+inline void SleepUntil(std::chrono::steady_clock::time_point tp) {
+  static_assert(sizeof(tp) == 8);
+  detail::FiberActive()->WaitUntil(tp);
+}
+
+inline void Yield() {
+  detail::FiberActive()->Yield();
+}
+
+};  // namespace ThisFiber
 
 }  // namespace example

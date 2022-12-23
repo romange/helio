@@ -6,6 +6,8 @@
 
 #include "base/logging.h"
 
+using namespace std;
+
 namespace example {
 
 namespace ctx = boost::context;
@@ -15,6 +17,8 @@ namespace detail {
 namespace {
 
 constexpr size_t kSizeOfCtx = sizeof(FiberInterface);  // because of the virtual +8 bytes.
+constexpr size_t kSizeOfSH = sizeof(FI_SleepHook);
+constexpr size_t kSizeOfLH = sizeof(FI_ListHook);
 
 class DispatcherImpl final : public FiberInterface {
  public:
@@ -82,7 +86,7 @@ FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
 }
 
-FiberInterface::FiberInterface(Type type, uint32_t cnt, std::string_view nm)
+FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), flagval_(0), type_(type) {
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
@@ -221,6 +225,29 @@ void Scheduler::DestroyTerminated() {
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
+  }
+}
+
+void Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* me) {
+  DCHECK(!me->sleep_hook.is_linked());
+  me->tp_ = tp;
+  sleep_queue_.insert(*me);
+  auto fc = Preempt();
+  DCHECK(!fc);
+}
+
+
+void Scheduler::ProcessSleep() {
+  if (sleep_queue_.empty())
+    return;
+
+  chrono::steady_clock::time_point now = chrono::steady_clock::now();
+  while (sleep_queue_.begin()->tp_ >= now) {
+    FiberInterface& fi = *sleep_queue_.begin();
+    MarkReady(&fi);
+    sleep_queue_.erase(fi);
+    if (sleep_queue_.empty())
+      break;
   }
 }
 
