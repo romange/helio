@@ -57,6 +57,22 @@ TEST_F(FibersTest, EventCount) {
   fb.Join();
 }
 
+TEST_F(FibersTest, BarrierTest) {
+  Barrier barrier(2);
+
+  auto cb = [&] { barrier.Wait(); };
+
+  fibers::fiber fb1(cb);
+  fibers::fiber fb2(cb);
+
+  fb1.join();
+  fb2.join();
+
+  fibers::fiber fb3(cb);
+  barrier.Cancel();
+  fb3.join();
+}
+
 TEST_F(FibersTest, EventCountTimeout) {
   EventCount ec;
   std::chrono::steady_clock::time_point tp = std::chrono::steady_clock::now() + 5ms;
@@ -238,7 +254,9 @@ TEST_F(FibersTest, BoostContextResumeWith) {
 typedef testing::Types<base::mpmc_bounded_queue<int>, folly::ProducerConsumerQueue<int>>
     QueueImplementations;
 
-template <typename Q> class ChannelTest : public ::testing::Test { public: };
+template <typename Q> class ChannelTest : public ::testing::Test {
+ public:
+};
 TYPED_TEST_SUITE(ChannelTest, QueueImplementations);
 
 TYPED_TEST(ChannelTest, SimpleChannel) {

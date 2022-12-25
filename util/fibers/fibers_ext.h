@@ -3,6 +3,7 @@
 //
 #pragma once
 
+#include <boost/fiber/barrier.hpp>
 #include <boost/fiber/channel_op_status.hpp>
 #include <boost/fiber/condition_variable.hpp>
 #include <optional>
@@ -319,6 +320,24 @@ template <typename T> class Cell {
     val_ = std::nullopt;
     cv_.notify_one();
   }
+};
+
+class Barrier {
+ public:
+  explicit Barrier(std::size_t);
+
+  Barrier(Barrier const&) = delete;
+  Barrier& operator=(Barrier const&) = delete;
+
+  bool Wait();
+  void Cancel();
+
+ private:
+  std::size_t initial_;
+  std::size_t current_;
+  std::size_t cycle_{0};
+  boost::fibers::mutex mtx_{};
+  boost::fibers::condition_variable cond_{};
 };
 
 namespace detail {
