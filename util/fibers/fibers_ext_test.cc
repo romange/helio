@@ -67,7 +67,7 @@ TEST_F(FibersTest, BarrierTest) {
   fb2.join();
 
   fibers::fiber fb3(cb);
-  barrier.Cancle();
+  barrier.Cancel();
   fb3.join();
 }
 

@@ -318,7 +318,7 @@ class Barrier {
   Barrier& operator=(Barrier const&) = delete;
 
   bool Wait();
-  void Cancle();
+  void Cancel();
 
  private:
   std::size_t initial_;

@@ -48,7 +48,7 @@ bool Barrier::Wait() {
   return false;
 }
 
-void Barrier::Cancle() {
+void Barrier::Cancel() {
   {
     std::lock_guard lg{mtx_};
     cycle_ = std::numeric_limits<std::size_t>::max();
