@@ -73,16 +73,16 @@ void AsyncWriteState::OnCb(Result<size_t> res) {
   owner->AsyncWriteSome(cur, arr.end() - cur, [this](Result<size_t> res) { this->OnCb(res); });
 }
 
-// Read some bytes from buf starting at given offset offs and update it.
-Result<size_t> ReadSomeBytes(const iovec* v, uint32_t len, Bytes buf, off_t* offs) {
+// Read some bytes from source starting at given offset offs and update it.
+Result<size_t> ReadSomeBytes(const iovec* dest, uint32_t len, Bytes source, off_t* offs) {
   ssize_t read_total = 0;
-  while (size_t(*offs) < buf.size() && len > 0) {
-    size_t read_sz = min(buf.size() - *offs, v->iov_len);
-    memcpy(v->iov_base, buf.data() + *offs, read_sz);
+  while (size_t(*offs) < source.size() && len > 0) {
+    size_t read_sz = min(source.size() - *offs, dest->iov_len);
+    memcpy(dest->iov_base, source.data() + *offs, read_sz);
     read_total += read_sz;
     *offs += read_sz;
 
-    ++v;
+    ++dest;
     --len;
   }
 
@@ -152,7 +152,7 @@ Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {
 Result<size_t> BufSink::WriteSome(const iovec* ptr, uint32_t len) {
   size_t res = 0;
   for (size_t i = 0; i < len; ++i) {
-    buf_->WriteAndCommit(ptr[i].iov_len, ptr[i].iov_base);
+    buf_->WriteAndCommit(ptr[i].iov_base, ptr[i].iov_len);
     res += ptr[i].iov_len;
   }
   return res;

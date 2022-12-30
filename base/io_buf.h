@@ -79,7 +79,7 @@ class IoBuf {
 
   // Copy num_copy bytes from source to append buffer and mark them as written.
   // Ensures append buffer is large enough.
-  void WriteAndCommit(size_t num_copy, const void* source);
+  void WriteAndCommit(const void* source, size_t num_copy);
 
   // Ensure required append buffer size.
   void EnsureCapacity(size_t sz) {

@@ -26,7 +26,7 @@ void IoBuf::ReadAndConsume(size_t sz, void* dest) {
   ConsumeInput(sz);
 }
 
-void IoBuf::WriteAndCommit(size_t num_write, const void* source) {
+void IoBuf::WriteAndCommit(const void* source, size_t num_write) {
   EnsureCapacity(num_write);
   memcpy(AppendBuffer().data(), source, num_write);
   CommitWrite(num_write);
