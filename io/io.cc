@@ -73,6 +73,22 @@ void AsyncWriteState::OnCb(Result<size_t> res) {
   owner->AsyncWriteSome(cur, arr.end() - cur, [this](Result<size_t> res) { this->OnCb(res); });
 }
 
+// Read some bytes from buf starting at given offset offs and update it.
+Result<size_t> ReadSomeBytes(const iovec* v, uint32_t len, Bytes buf, off_t* offs) {
+  ssize_t read_total = 0;
+  while (size_t(*offs) < buf.size() && len > 0) {
+    size_t read_sz = min(buf.size() - *offs, v->iov_len);
+    memcpy(v->iov_base, buf.data() + *offs, read_sz);
+    read_total += read_sz;
+    *offs += read_sz;
+
+    ++v;
+    --len;
+  }
+
+  return read_total;
+}
+
 }  // namespace
 
 Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
@@ -95,19 +111,15 @@ Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
   return to_read;
 }
 
-io::Result<size_t> BytesSource::ReadSome(const iovec* v, uint32_t len) {
-  ssize_t read_total = 0;
-  while (size_t(offs_) < buf_.size() && len > 0) {
-    size_t read_sz = min(buf_.size() - offs_, v->iov_len);
-    memcpy(v->iov_base, buf_.data() + offs_, read_sz);
-    read_total += read_sz;
-    offs_ += read_sz;
+Result<size_t> BytesSource::ReadSome(const iovec* v, uint32_t len) {
+  return ReadSomeBytes(v, len, buf_, &offs_);
+}
 
-    ++v;
-    --len;
-  }
-
-  return read_total;
+Result<size_t> BufSource::ReadSome(const iovec* v, uint32_t len) {
+  off_t offs = 0;
+  auto res = ReadSomeBytes(v, len, buf_->InputBuffer(), &offs);
+  buf_->ConsumeInput(offs);
+  return res;
 }
 
 Result<size_t> PrefixSource::ReadSome(const iovec* v, uint32_t len) {
@@ -137,7 +149,16 @@ Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {
   return res;
 }
 
-::io::Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
+Result<size_t> BufSink::WriteSome(const iovec* ptr, uint32_t len) {
+  size_t res = 0;
+  for (size_t i = 0; i < len; ++i) {
+    buf_->WriteAndCommit(ptr[i].iov_len, ptr[i].iov_base);
+    res += ptr[i].iov_len;
+  }
+  return res;
+}
+
+Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
   size_t res = 0;
   for (size_t i = 0; i < len; ++i) {
     str_.append((char*)ptr[i].iov_base, ptr[i].iov_len);

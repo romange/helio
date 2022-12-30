@@ -4,8 +4,9 @@
 
 #include "io/io.h"
 
-#include <deque>
 #include <gmock/gmock.h>
+
+#include <deque>
 
 #include "base/gtest.h"
 #include "base/logging.h"
@@ -14,8 +15,8 @@
 
 using namespace std;
 using ::testing::_;
-using testing::UnorderedElementsAre;
 using testing::Pair;
+using testing::UnorderedElementsAre;
 
 namespace io {
 
@@ -26,19 +27,6 @@ class FakeSink : public Sink {
   deque<uint32_t> call_sz;
   string value;
 };
-
-
-class StringSource : public Source {
- public:
-  StringSource(string buf) : buf_(buf) {}
-
-  Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
-
- protected:
-  std::string buf_;
-  off_t offs_ = 0;
-};
-
 
 Result<size_t> FakeSink::WriteSome(const iovec* v, uint32_t len) {
   if (call_sz.empty() || len == 0)
@@ -61,22 +49,6 @@ Result<size_t> FakeSink::WriteSome(const iovec* v, uint32_t len) {
   }
   return io_res;
 }
-
-Result<size_t> StringSource::ReadSome(const iovec* v, uint32_t len) {
-  ssize_t read_total = 0;
-  while (size_t(offs_) < buf_.size() && len > 0) {
-    size_t read_sz = min(buf_.size() - offs_, v->iov_len);
-    memcpy(v->iov_base, buf_.data() + offs_, read_sz);
-    read_total += read_sz;
-    offs_ += read_sz;
-
-    ++v;
-    --len;
-  }
-
-  return read_total;
-}
-
 
 class IoTest : public testing::Test {
  protected:
@@ -101,7 +73,7 @@ TEST_F(IoTest, Write) {
 }
 
 TEST_F(IoTest, LineReader) {
-  StringSource ss("one\ntwo\r\nthree");
+  BytesSource ss("one\ntwo\r\nthree");
   LineReader lr(&ss, DO_NOT_TAKE_OWNERSHIP);
   std::string_view result;
   EXPECT_TRUE(lr.Next(&result));
@@ -132,7 +104,7 @@ TEST_F(IoTest, ProcReader) {
 }
 
 TEST_F(IoTest, IniReader) {
-  StringSource ss(R"(
+  BytesSource ss(R"(
     foo = bar
     [sec1 ]
     x = y
@@ -144,6 +116,28 @@ TEST_F(IoTest, IniReader) {
   ASSERT_EQ(1, contents->count("sec1"));
   ASSERT_THAT(contents->at(""), UnorderedElementsAre(Pair("foo", "bar")));
   ASSERT_THAT(contents->at("sec1"), UnorderedElementsAre(Pair("x", "y"), Pair("z", "1")));
+}
+
+TEST_F(IoTest, IoBuf) {
+  string_view test = "TEST---STRING---VIEW"sv;
+  base::IoBuf buf{};
+
+  // Write to buf through sink.
+  BufSink sink{&buf};
+  sink.Write(Buffer(test));
+
+  // Check it contains it.
+  ASSERT_EQ(View(buf.InputBuffer()), test);
+
+  // Read it back through source.
+  uint8_t dest[100];
+  BufSource source{&buf};
+  auto res = source.Read(dest);
+  ASSERT_TRUE(res);
+  ASSERT_EQ(res.value(), test.size());
+
+  auto fetched = string_view{reinterpret_cast<const char*>(dest), test.size()};
+  ASSERT_EQ(fetched, test);
 }
 
 }  // namespace io

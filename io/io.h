@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "base/expected.hpp"
+#include "base/io_buf.h"
 
 namespace io {
 
@@ -20,11 +21,19 @@ inline Bytes Buffer(std::string_view str) {
   return Bytes{reinterpret_cast<const uint8_t*>(str.data()), str.size()};
 }
 
+inline std::string_view View(Bytes bytes) {
+  return std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+inline std::string_view View(MutableBytes bytes) {
+  return View(Bytes{bytes});
+}
+
 /// Similar to Rust std::io::Result.
 template <typename T, typename E = ::std::error_code> using Result = nonstd::expected<T, E>;
 
 /**
- * @brief The Source class allows for reading bytes from a source. Similar to Rust io::Read trait.
+ * @brief The Source class allows reading bytes from a source. Similar to Rust io::Read trait.
  *
  */
 class Source {
@@ -87,6 +96,10 @@ class Source {
   }
 };
 
+/**
+ * @brief The Sink class allows wiriting bytes to a sink. Similar to Rust io::Write trait.
+ *
+ */
 class Sink {
  public:
   virtual ~Sink() {
@@ -159,6 +172,7 @@ class AsyncSink {
   }
 };
 
+// Transparently prefixes any source with a byte slice.
 class PrefixSource : public Source {
  public:
   PrefixSource(Bytes prefix, Source* upstream) : prefix_(prefix), upstream_(upstream) {
@@ -166,7 +180,7 @@ class PrefixSource : public Source {
 
   Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
 
-  Bytes unused_prefix() const {
+  Bytes UnusedPrefix() const {
     return offs_ >= prefix_.size() ? Bytes{} : prefix_.subspan(offs_);
   }
 
@@ -176,9 +190,12 @@ class PrefixSource : public Source {
   size_t offs_ = 0;
 };
 
+// Allows using a byte slice as a source.
 class BytesSource : public Source {
  public:
   BytesSource(Bytes buf) : buf_(buf) {
+  }
+  BytesSource(std::string_view view) : buf_{Buffer(view)} {
   }
 
   Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
@@ -188,14 +205,38 @@ class BytesSource : public Source {
   off_t offs_ = 0;
 };
 
+// Allows using an IoBuf as a source.
+class BufSource : public Source {
+ public:
+  BufSource(base::IoBuf* source) : buf_{source} {
+  }
+
+  Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
+
+ protected:
+  base::IoBuf* buf_;
+};
+
 class NullSink final : public Sink {
  public:
   Result<size_t> WriteSome(const iovec* v, uint32_t len);
 };
 
-class StringSink final : public ::io::Sink {
+// Allows using an IoBuf as a sink.
+class BufSink : public Sink {
  public:
-  ::io::Result<size_t> WriteSome(const iovec* v, uint32_t len);
+  BufSink(base::IoBuf* sink) : buf_{sink} {
+  }
+
+  Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
+
+ protected:
+  base::IoBuf* buf_;
+};
+
+class StringSink final : public Sink {
+ public:
+  Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
 
   const std::string& str() const {
     return str_;
