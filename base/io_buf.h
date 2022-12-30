@@ -10,17 +10,16 @@
 
 namespace base {
 
+// Generic buffer for reads and writes.
+// Write directly to AppendBuffer() and mark bytes as written with CommitWrite.
+// Read from InputBuffer() and mark bytes as read with ConsumeInput.
 class IoBuf {
  public:
-  IoBuf(const IoBuf&) = delete;
-  IoBuf& operator=(const IoBuf&) = delete;
-
   using Bytes = absl::Span<uint8_t>;
   using ConstBytes = absl::Span<const uint8_t>;
 
   explicit IoBuf(size_t capacity = 256) {
     assert(capacity > 0);
-
     Reserve(capacity);
   }
 
@@ -28,12 +27,25 @@ class IoBuf {
     Reserve(capacity);
   }
 
+  IoBuf(const IoBuf&) = delete;
+  IoBuf& operator=(const IoBuf&) = delete;
+
+  IoBuf(IoBuf&& other) {
+    Swap(other);
+  }
+  IoBuf& operator=(IoBuf&& other) {
+    Swap(other);
+    return *this;
+  }
+
   ~IoBuf() {
     delete[] buf_;
   }
 
-  size_t Capacity() const {
-    return capacity();
+  // ============== INPUT =======================
+
+  size_t InputLen() const {
+    return size_ - offs_;
   }
 
   ConstBytes InputBuffer() const {
@@ -44,65 +56,55 @@ class IoBuf {
     return Bytes{buf_ + offs_, InputLen()};
   }
 
-  size_t InputLen() const {
-    return size_ - offs_;
-  }
+  // Mark num_read bytes from the input as read.
+  void ConsumeInput(size_t num_read);
 
-  void ConsumeInput(size_t offs);
+  // Write num_write bytes to dest and mark them as read.
+  void ReadAndConsume(size_t num_write, void* dest);
 
-  void ReadAndConsume(size_t sz, void* dest) {
-    ConstBytes b = InputBuffer();
-    assert(b.size() >= sz);
-    memcpy(dest, b.data(), sz);
-    ConsumeInput(sz);
+  // ============== OUTPUT ============
+
+  size_t AppendLen() {
+    return capacity_ - size_;
   }
 
   Bytes AppendBuffer() {
-    return Bytes{buf_ + size_, Available()};
+    return Bytes{buf_ + size_, AppendLen()};
   }
 
-  void CommitWrite(size_t sz) {
-    size_ += sz;
+  // Mark num_written bytes as written and transform them to input.
+  void CommitWrite(size_t num_written) {
+    size_ += num_written;
   }
 
+  // Copy num_copy bytes from source to append buffer and mark them as written.
+  // Ensures append buffer is large enough.
+  void WriteAndCommit(const void* source, size_t num_copy);
+
+  // Ensure required append buffer size.
+  void EnsureCapacity(size_t sz) {
+    Reserve(size_ + sz);
+  }
+
+  // Reserve by whole buffer size.
+  // Use EnsureCapacity instead for resizing only by desired append buffer size.
+  void Reserve(size_t full_size);
+
+  // ============== GENERIC ===========
+
+  // Clear all input.
   void Clear() {
     size_ = 0;
     offs_ = 0;
   }
 
-  void EnsureCapacity(size_t sz) {
-    Reserve(InputLen() + sz);
-  }
-
-  void Reserve(size_t sz) {
-    if (sz < capacity_)
-      return;
-
-    sz = absl::bit_ceil(sz);
-    uint8_t* nb = new (std::align_val_t{alignment_}) uint8_t[sz];
-    if (buf_) {
-      if (size_ > offs_) {
-        memcpy(nb, buf_ + offs_, size_ - offs_);
-        size_ -= offs_;
-        offs_ = 0;
-      } else {
-        size_ = offs_ = 0;
-      }
-      delete[] buf_;
-    }
-
-    buf_ = nb;
-    capacity_ = sz;
+  // Return capacity of whole buffer.
+  size_t Capacity() const {
+    return capacity_;
   }
 
  private:
-  size_t Available() const {
-    return capacity() - size_;
-  }
-
-  uint32_t capacity() const {
-    return capacity_;
-  }
+  void Swap(IoBuf& other);
 
   uint8_t* buf_ = nullptr;
   uint32_t offs_ = 0;
@@ -110,19 +112,5 @@ class IoBuf {
   uint32_t alignment_ = 8;
   uint32_t capacity_ = 0;
 };
-
-inline void IoBuf::ConsumeInput(size_t sz) {
-  if (offs_ + sz >= size_) {
-    size_ = 0;
-    offs_ = 0;
-  } else {
-    offs_ += sz;
-    if (2 * offs_ > size_ && size_ - offs_ < 512) {
-      memcpy(buf_, buf_ + offs_, size_ - offs_);
-      size_ -= offs_;
-      offs_ = 0;
-    }
-  }
-}
 
 }  // namespace base
