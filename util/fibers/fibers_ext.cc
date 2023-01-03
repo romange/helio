@@ -29,7 +29,7 @@ namespace util {
 namespace fibers_ext {
 
 Barrier::Barrier(std::size_t initial) : initial_{initial}, current_{initial_} {
-  DCHECK_NE(0, initial);
+  DCHECK_NE(0u, initial);
 }
 
 bool Barrier::Wait() {
