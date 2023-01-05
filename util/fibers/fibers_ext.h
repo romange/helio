@@ -194,12 +194,12 @@ class BlockingCounter {
 
     void Cancel() {
       count_.fetch_or(1ULL << 63, std::memory_order_acquire);
-      ec_.notify();
+      ec_.notifyAll();
     }
 
     void Dec() {
       if (1 == count_.fetch_sub(1, std::memory_order_acq_rel))
-        ec_.notify();
+        ec_.notifyAll();
     }
 
    private:
