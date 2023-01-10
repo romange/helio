@@ -18,15 +18,24 @@ namespace util {
 
 using namespace std;
 
-#ifdef GAI_NOWAIT
 
+#ifdef GAI_NOWAIT
+// We had to disable the usage of getaddrinfo_a and for now we use the syncronous version.
+// There are several reasons for this:
+// 1. getaddrinfo_a brings uncompatible linker dependencies between different linux versions
+// 2. getaddrinfo_a is not supported by some GLIBC implementations (musl)
+// TODO: The correct solution would be to use c-ares (see the comment below).
+// #define USE_GAI_ASYNC
+#endif
+
+#ifdef USE_GAI_ASYNC
 struct NotifyStruct {
   atomic_bool gate{false};
   fibers_ext::EventCount evc;
 };
 
 // To ensure compatibility between different versions of Glibc,
-// we use sigval_t instead of __sigval_t. However, some older 
+// we use sigval_t instead of __sigval_t. However, some older
 // versions may still require __sigval_t, such as when __USE_POSIX199309
 // is defined. The following text is derived from the comments in Glibc 2.31:
 // To avoid sigval_t (not a standard type name) having C++ name
@@ -34,7 +43,7 @@ struct NotifyStruct {
 // sigval, it should not be defined at all when using a standard for
 // which the sigval name is not reserved; in that case, headers should
 // not include <bits/types/sigval_t.h> and should use only the
-// internal __sigval_t name.  
+// internal __sigval_t name.
 static void DnsResolveNotify(sigval_t val) {
   NotifyStruct* ns = (NotifyStruct*)val.sival_ptr;
   ns->gate.store(true, memory_order_relaxed);
@@ -59,7 +68,7 @@ error_code DnsResolve(const char* dns, uint32_t wait_ms, char dest_ip[]) {
 
   static_assert(INET_ADDRSTRLEN < INET6_ADDRSTRLEN, "");
 
-#ifdef GAI_NOWAIT
+#ifdef USE_GAI_ASYNC
   struct gaicb gai_req;
   gai_req.ar_name = dns;
   gai_req.ar_request = &hints;
