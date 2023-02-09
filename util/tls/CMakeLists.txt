@@ -1,5 +1,3 @@
-set(OPENSSL_ROOT_DIR "/opt/openssl/")
-find_package(OpenSSL REQUIRED)
 Message(STATUS "OpenSSL libs ${OPENSSL_SSL_LIBRARIES} ${OPENSSL_VERSION}")
 
 add_library(tls_lib tls_engine.cc tls_socket.cc)

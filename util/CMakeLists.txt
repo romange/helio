@@ -12,6 +12,9 @@ endif()
 cxx_link(proactor_lib base absl::flat_hash_map Boost::fiber Boost::headers ${ANL_LIB})
 cxx_test(accept_server_test uring_fiber_lib epoll_fiber_lib http_beast_prebuilt LABELS CI)
 
+set(OPENSSL_ROOT_DIR "/opt/openssl/")
+find_package(OpenSSL)
+
 add_subdirectory(fibers)
 add_subdirectory(epoll)
 add_subdirectory(uring)
