@@ -161,7 +161,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.6.1.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.7.1.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -176,7 +176,7 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20220623.0.tar.gz
+  URL https://github.com/abseil/abseil-cpp/archive/20230125.0.tar.gz
 )
 
 FetchContent_GetProperties(abseil_cpp)
@@ -264,21 +264,18 @@ add_third_party(
 set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
 # asan interferes with mimalloc. See https://github.com/microsoft/mimalloc/issues/317
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-  set(MI_OVERRIDE OFF)
-else()
-  set(MI_OVERRIDE OFF)
-endif()
 
-set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.7.patch)
+set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.9.patch)
 
  add_third_party(mimalloc
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.7.tar.gz
+   #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+   #GIT_TAG v2.0.9
+   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.9.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
-  # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
-  CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
-                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=${MI_OVERRIDE} -DCMAKE_C_FLAGS=-g"
+   # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
+   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
+                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DCMAKE_C_FLAGS=-g"
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
@@ -304,8 +301,9 @@ add_third_party(
 
 add_third_party(
   uring
-  GIT_REPOSITORY https://github.com/axboe/liburing.git
-  GIT_TAG liburing-2.2
+  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.2.tar.gz
+  #GIT_REPOSITORY https://github.com/axboe/liburing.git
+  # GIT_TAG liburing-2.3
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_IN_SOURCE 1
 )
