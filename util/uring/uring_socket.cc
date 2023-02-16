@@ -132,12 +132,6 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   if (io_res < 0) {  // In that case connect returns -errno.
     ec = error_code(-io_res, system_category());
-  } else {
-    // Not sure if this check is needed, to be on the safe side.
-    int serr = 0;
-    socklen_t slen = sizeof(serr);
-    CHECK_EQ(0, getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen));
-    CHECK_EQ(0, serr);
   }
   return ec;
 }
