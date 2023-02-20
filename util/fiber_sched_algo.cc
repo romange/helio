@@ -65,6 +65,8 @@ void FiberSchedAlgo::awakened(FiberContext* ctx, FiberProps& props) noexcept {
 auto FiberSchedAlgo::pick_next() noexcept -> FiberContext* {
   DVLOG(2) << "pick_next: " << ready_cnt_ << "/" << rqueue_.size();
 
+  DCHECK_EQ(0u, ProactorBase::tl_info_.atomic_section) << "Preemption in atomic section!";
+
   if (rqueue_.empty()) {
     prev_picked_ = nullptr;
     return nullptr;
