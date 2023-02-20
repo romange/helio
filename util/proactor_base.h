@@ -104,6 +104,14 @@ class ProactorBase {
     tl_info_.proactor_index = index;
   }
 
+  static void EnterFiberAtomicSection() {
+    ++tl_info_.atomic_section;
+  }
+
+  static void LeaveFiberAtomicSection() {
+    --tl_info_.atomic_section;
+  }
+
   bool IsTaskQueueFull() const {
     return task_queue_.is_full();
   }
@@ -263,6 +271,7 @@ class ProactorBase {
 
   struct TLInfo {
     int32_t proactor_index = -1;
+    uint32_t atomic_section = 0;
     uint64_t monotonic_time = 0;  // in nanoseconds
     ProactorBase* owner = nullptr;
   };
@@ -276,6 +285,19 @@ class ProactorBase {
       return true;
     }
     return false;
+  }
+};
+
+class FiberAtomicGuard {
+  FiberAtomicGuard(const FiberAtomicGuard&) = delete;
+
+public:
+  FiberAtomicGuard() {
+    ProactorBase::EnterFiberAtomicSection();
+  }
+
+  ~FiberAtomicGuard() {
+    ProactorBase::LeaveFiberAtomicSection();
   }
 };
 
