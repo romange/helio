@@ -30,8 +30,6 @@ namespace h2 = boost::beast::http;
 
 namespace {
 
-const char* kExpiredTokenSentinel = "<Error><Code>ExpiredToken</Code>";
-
 /*void EVPDigest(const ::boost::beast::multi_buffer& mb, unsigned char* md) {
   EVP_MD_CTX* ctx = EVP_MD_CTX_new();
   CHECK_EQ(1, EVP_DigestInit_ex(ctx, EVP_sha256(), NULL));
@@ -325,12 +323,6 @@ void PopulateAwsConnectionData(const AwsConnectionData& src, AwsConnectionData* 
     dest->region = region;
 }
 
-// Return true if the response indicates an expired token.
-bool IsExpiredSessionResponse(const h2::response<h2::string_body>& resp) {
-  return resp.result() == h2::status::bad_request &&
-         resp.body().find(kExpiredTokenSentinel) != std::string::npos;
-}
-
 }  // namespace
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -423,40 +415,20 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
   header->set(h2::field::authorization, auth_header);
 }
 
-std::error_code AWS::SendRequest(std::string_view payload_sig, http::Client* client,
-                                 h2::request<h2::empty_body>* req,
-                                 h2::response<h2::string_body>* resp) {
-  Sign(payload_sig, req);
-
-  VLOG(1) << "Req: " << *req;
-  auto ec = client->Send(*req, resp);
-
-  // Check if session_token expired on an aws connection, established via instance metadata.
-  // In this case, try to update it, re-sign the request and re-try it.
-  if (!ec && !connection_data_.role_name.empty() && IsExpiredSessionResponse(*resp)) {
+bool AWS::RefreshToken() {
+  if (!connection_data_.role_name.empty() ) {
     VLOG(1) << "Trying to update expired session token";
 
     auto updated_data = GetConnectionDataFromMetadata(connection_data_.role_name);
     if (!updated_data)
-      return ec;
+      return false;
 
     PopulateAwsConnectionData(std::move(*updated_data), &connection_data_);
     SetScopeAndSignKey();
-
-    // Re-connect client if needed.
-    if ((*resp)[h2::field::connection] == "close") {
-      auto ec = client->Connect(client->host(), "80");
-      if (ec)
-        return ec;
-    }
-
-    Sign(payload_sig, req);
-    *resp = h2::response<h2::string_body>{};
-    VLOG(1) << "Req: " << *req;
-    return client->Send(*req, resp);
+    return true;
   }
 
-  return ec;
+  return false;
 }
 
 error_code AWS::Init() {

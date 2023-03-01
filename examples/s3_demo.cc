@@ -19,6 +19,7 @@ using cloud::AWS;
 ABSL_FLAG(string, cmd, "ls", "");
 ABSL_FLAG(string, region, "us-east-1", "");
 ABSL_FLAG(string, path, "", "s3://bucket/path");
+ABSL_FLAG(string, endpoint, "", "s3 endpoint");
 
 namespace h2 = boost::beast::http;
 
@@ -39,11 +40,19 @@ template <typename Body> std::ostream& operator<<(std::ostream& os, const h2::re
 }
 
 void ListBuckets(AWS* aws, ProactorBase* proactor) {
+  string endpoint = absl::GetFlag(FLAGS_endpoint);
+  if (endpoint.empty()) {
+    endpoint = "s3.amazonaws.com:80";
+  }
+
+  vector<string> parts = absl::StrSplit(endpoint, ':');
+  CHECK_EQ(parts.size(), 2u);
+
   http::Client http_client{proactor};
 
   http_client.set_connect_timeout_ms(2000);
   auto list_res = proactor->Await([&] {
-    CHECK_EC(http_client.Connect("s3.amazonaws.com", "80"));
+    CHECK_EC(http_client.Connect(parts[0], parts[1]));
     return ListS3Buckets(aws, &http_client);
   });
 
@@ -68,6 +77,7 @@ int main(int argc, char* argv[]) {
 
   string cmd = absl::GetFlag(FLAGS_cmd);
   string path = absl::GetFlag(FLAGS_path);
+  string endpoint = absl::GetFlag(FLAGS_endpoint);
 
   if (cmd == "ls") {
     if (path.empty()) {
@@ -80,8 +90,10 @@ int main(int argc, char* argv[]) {
       if (pos != string_view::npos) {
         obj_path = clean.substr(pos + 1);
       }
-      cloud::S3Bucket bucket(aws, bucket_name);
-      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) { LOG(INFO) << name; };
+      cloud::S3Bucket bucket(aws, endpoint, bucket_name);
+      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) {
+        CONSOLE_INFO << name;
+      };
 
       error_code ec = pp->GetNextProactor()->Await([&] {
         auto ec = bucket.Connect(300);

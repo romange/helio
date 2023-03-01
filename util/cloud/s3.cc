@@ -14,6 +14,7 @@
 
 #include "base/logging.h"
 #include "util/cloud/aws.h"
+#include "util/cloud/cloud_utils.h"
 #include "util/http/encoding.h"
 #include "util/proactor_base.h"
 
@@ -24,14 +25,18 @@ using namespace std;
 namespace h2 = boost::beast::http;
 using nonstd::make_unexpected;
 
-const char kRootDomain[] = "s3.amazonaws.com";
-
 // Max number of keys in AWS response.
 const unsigned kAwsMaxKeys = 1000;
 
 inline std::string_view std_sv(const ::boost::beast::string_view s) {
   return std::string_view{s.data(), s.size()};
 }
+
+bool IsAwsEndpoint(string_view endpoint) {
+  return absl::EndsWith(endpoint, ".amazonaws.com");
+}
+
+
 
 namespace xml {
 
@@ -135,12 +140,13 @@ ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
 
 ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
   h2::request<h2::empty_body> req{h2::verb::get, "/", 11};
-  req.set(h2::field::host, kRootDomain);
+  req.set(h2::field::host, http_client->host());
   h2::response<h2::string_body> resp;
 
-  error_code ec = aws->SendRequest(AWS::kEmptySig, http_client, &req, &resp);
-  if (ec)
+  auto ec = SendRequest(aws, http_client, &req, &resp);
+  if (ec) {
     return make_unexpected(ec);
+  }
 
   if (resp.result() != h2::status::ok) {
     LOG(ERROR) << "http error: " << resp;
@@ -152,28 +158,38 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
   return xml::ParseXmlListBuckets(resp.body());
 }
 
-S3Bucket::S3Bucket(const AWS& aws, std::string_view bucket) : aws_(aws), bucket_(bucket) {
+S3Bucket::S3Bucket(const AWS& aws, string_view bucket) : aws_(aws), bucket_(bucket) {
+}
+
+S3Bucket::S3Bucket(const AWS& aws, string_view endpoint, string_view bucket)
+    : S3Bucket(aws, bucket) {
+  endpoint_ = endpoint;
 }
 
 std::error_code S3Bucket::Connect(uint32_t ms) {
   ProactorBase* pb = ProactorBase::me();
   CHECK(pb);
 
-  string host = GetHost();
   http_client_.reset(new http::Client{pb});
   http_client_->set_connect_timeout_ms(ms);
 
-  VLOG(1) << "Connecting to " << host;
-
-  return http_client_->Connect(host, "80");
+  return ConnectInternal();
 }
 
 ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb,
                                         std::string_view marker, unsigned max_keys) {
   CHECK(max_keys <= kAwsMaxKeys);
 
+  string host = http_client_->host();
+  std::string path;
+
   // Build full request path.
-  std::string path = "/?";
+  if (IsAwsEndpoint(host)) {
+    path.append("/?");
+  } else {
+    path.append("/").append(bucket_).append("?");
+  }
+
   if (bucket_path != "")
     path += absl::StrCat("prefix=", util::http::UrlEncode(bucket_path), "&");
 
@@ -188,11 +204,11 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
 
   // Send request.
   h2::request<h2::empty_body> req{h2::verb::get, path, 11};
-  req.set(h2::field::host, http_client_->host());
+  req.set(h2::field::host, host);
 
   h2::response<h2::string_body> resp;
 
-  error_code ec = aws_.SendRequest(AWS::kEmptySig, http_client_.get(), &req, &resp);
+  error_code ec = SendRequest(&aws_, http_client_.get(), &req, &resp);
   if (ec)
     return make_unexpected(ec);
 
@@ -202,16 +218,14 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
       return make_unexpected(make_error_code(errc::network_unreachable));
     }
     aws_.UpdateRegion(std_sv(new_region));
-    string host = GetHost();
+    ec = ConnectInternal();
+    host = http_client_->host();
 
     VLOG(1) << "Redirecting to " << host;
-    ec = http_client_->Connect(host, "80");
-    if (ec)
-      return make_unexpected(ec);
 
     req.set(h2::field::host, host);
 
-    ec = aws_.SendRequest(AWS::kEmptySig, http_client_.get(), &req, &resp);
+    ec = SendRequest(&aws_, http_client_.get(), &req, &resp);
     if (ec)
       return make_unexpected(ec);
   }
@@ -251,7 +265,29 @@ error_code S3Bucket::ListAllObjects(string_view bucket_path, ListObjectCb cb) {
 }
 
 std::string S3Bucket::GetHost() const {
-  return absl::StrCat(bucket_, ".s3.", aws_.region(), ".amazonaws.com");
+  if (!endpoint_.empty())
+    return endpoint_;
+
+  return absl::StrCat("s3.", aws_.region(), ".amazonaws.com");
+}
+
+std::error_code S3Bucket::ConnectInternal() {
+  string host = GetHost();
+  auto pos = host.rfind(':');
+  string port;
+
+  if (pos != string::npos) {
+    port = host.substr(pos + 1);
+    host = host.substr(0, pos);
+  } else {
+    port = "80";
+  }
+
+  if (IsAwsEndpoint(host))
+    host = absl::StrCat(bucket_, ".", host);
+
+  VLOG(1) << "Connecting to " << host << ":" << port;
+  return http_client_->Connect(host, port);
 }
 
 }  // namespace cloud

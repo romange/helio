@@ -36,6 +36,7 @@ class Client {
   ~Client();
 
   std::error_code Connect(StringPiece host, StringPiece service);
+  std::error_code Reconnect();
 
   std::error_code Send(Verb verb, StringPiece url, StringPiece body, Response* response);
   std::error_code Send(Verb verb, StringPiece url, Response* response) {
@@ -55,6 +56,8 @@ class Client {
    *  See set_retry_count(uint32_t) method for details.
    */
   template <typename Req, typename Resp> std::error_code Send(const Req& req, Resp* resp);
+  template <typename Resp> std::error_code Recv(Resp* resp);
+  std::error_code ReadHeader(::boost::beast::http::basic_parser<false>* parser);
 
   void Shutdown();
 
@@ -78,7 +81,7 @@ class Client {
 
  private:
   static bool IsIoError(std::error_code ec) {
-    return bool(ec);  // TODO: currently all erros are io errors
+    return bool(ec);  // TODO: currently all errors are io errors
   }
 
   static std::error_code HandleError(std::error_code ec) {
@@ -94,6 +97,7 @@ class Client {
 
   std::vector<HeaderPair> headers_;
   std::string host_;
+  uint16_t port_ = 0;
 };
 
 template <typename Req, typename Resp> std::error_code Client::Send(const Req& req, Resp* resp) {
@@ -130,6 +134,23 @@ template <typename Req> std::error_code Client::Send(const Req& req) {
       break;
     }
   }
+
+  return HandleError(ec);
+}
+
+template <typename Resp> std::error_code Client::Recv(Resp* resp) {
+  ::boost::system::error_code ec;
+  AsioStreamAdapter<> adapter(*socket_);
+
+  ::boost::beast::http::read(adapter, tmp_buffer_, *resp, ec);
+
+  return HandleError(ec);
+}
+
+inline std::error_code Client::ReadHeader(::boost::beast::http::basic_parser<false>* parser) {
+  ::boost::system::error_code ec;
+  AsioStreamAdapter<> adapter(*socket_);
+  ::boost::beast::http::read_header(adapter, tmp_buffer_, *parser, ec);
 
   return HandleError(ec);
 }

@@ -48,9 +48,19 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
   CHECK(absl::SimpleAtoi(service, &port));
   CHECK_LT(port, 1u << 16);
 
-  char ip[INET_ADDRSTRLEN];
+  port_ = port;
+  host_ = host;
+  return Reconnect();
+}
 
-  error_code ec = DnsResolve(host.data(), 2000, ip);
+std::error_code Client::Reconnect() {
+  if (socket_) {
+    socket_->Close();
+    socket_.reset();
+  }
+
+  char ip[INET_ADDRSTRLEN];
+  error_code ec = DnsResolve(host_.data(), 2000, ip);
   if (ec) {
     return ec;
   }
@@ -60,9 +70,8 @@ std::error_code Client::Connect(StringPiece host, StringPiece service) {
   if (berr)
     return berr;
 
-  FiberSocketBase::endpoint_type ep{address, uint16_t(port)};
   socket_.reset(proactor_->CreateSocket());
-  host_ = host;
+  FiberSocketBase::endpoint_type ep{address, port_};
 
   return socket_->Connect(ep);
 }

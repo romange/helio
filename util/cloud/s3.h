@@ -24,6 +24,7 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client);
 class S3Bucket {
  public:
   S3Bucket(const AWS& aws, std::string_view bucket);
+  S3Bucket(const AWS& aws, std::string_view endpoint, std::string_view bucket);
 
   std::error_code Connect(uint32_t ms);
 
@@ -41,8 +42,10 @@ class S3Bucket {
 
  private:
   std::string GetHost() const;
+  std::error_code ConnectInternal();
 
   AWS aws_;
+  std::string endpoint_;
   std::string bucket_;
   std::unique_ptr<http::Client> http_client_;
 };
