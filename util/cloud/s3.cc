@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "util/cloud/aws.h"
 #include "util/cloud/cloud_utils.h"
+#include "util/cloud/s3_file.h"
 #include "util/http/encoding.h"
 #include "util/proactor_base.h"
 
@@ -35,8 +36,6 @@ inline std::string_view std_sv(const ::boost::beast::string_view s) {
 bool IsAwsEndpoint(string_view endpoint) {
   return absl::EndsWith(endpoint, ".amazonaws.com");
 }
-
-
 
 namespace xml {
 
@@ -264,14 +263,19 @@ error_code S3Bucket::ListAllObjects(string_view bucket_path, ListObjectCb cb) {
   return std::error_code{};
 }
 
-std::string S3Bucket::GetHost() const {
+io::Result<io::ReadonlyFile*> S3Bucket::OpenReadFile(string_view path,
+                                                     const io::ReadonlyFile::Options& opts) {
+  return OpenS3ReadFile(path, &aws_, http_client_.get(), opts);
+}
+
+string S3Bucket::GetHost() const {
   if (!endpoint_.empty())
     return endpoint_;
 
   return absl::StrCat("s3.", aws_.region(), ".amazonaws.com");
 }
 
-std::error_code S3Bucket::ConnectInternal() {
+error_code S3Bucket::ConnectInternal() {
   string host = GetHost();
   auto pos = host.rfind(':');
   string port;

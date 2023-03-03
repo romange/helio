@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "io/io.h"
+#include "io/file.h"
 #include "util/cloud/aws.h"
 #include "util/http/http_client.h"
 
@@ -23,6 +24,8 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client);
 
 class S3Bucket {
  public:
+  S3Bucket(const S3Bucket&) = delete;
+
   S3Bucket(const AWS& aws, std::string_view bucket);
   S3Bucket(const AWS& aws, std::string_view endpoint, std::string_view bucket);
 
@@ -39,6 +42,9 @@ class S3Bucket {
 
   // Iterate over all bucket objects for the given path.
   std::error_code ListAllObjects(std::string_view path, ListObjectCb cb);
+
+  io::Result<io::ReadonlyFile*> OpenReadFile(std::string_view path,
+      const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
 
  private:
   std::string GetHost() const;

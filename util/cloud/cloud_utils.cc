@@ -4,6 +4,7 @@
 
 #include "util/cloud/cloud_utils.h"
 
+#include "base/logging.h"
 #include "util/cloud/aws.h"
 
 using namespace std;
@@ -26,6 +27,8 @@ bool IsExpiredBody(string_view body) {
 error_code SendRequest(AWS* aws, http::Client* client, h2::request<h2::empty_body>* req,
                        h2::response<h2::string_body>* resp) {
   aws->Sign(AWS::kEmptySig, req);
+  DVLOG(1) << "Signed request: " << req;
+
   error_code ec = client->Send(*req);
   if (ec)
     return ec;
@@ -60,6 +63,8 @@ error_code SendRequest(AWS* aws, http::Client* client, h2::request<h2::empty_bod
 error_code SendRequest(AWS* aws, http::Client* client, h2::request<h2::empty_body>* req,
                        HttpParser* parser) {
   aws->Sign(AWS::kEmptySig, req);
+  VLOG(1) << "Sending request: " << *req;
+
   error_code ec = client->Send(*req);
   if (ec)
     return ec;

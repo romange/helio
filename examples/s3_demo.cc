@@ -9,6 +9,7 @@
 #include "base/init.h"
 #include "util/cloud/aws.h"
 #include "util/cloud/s3.h"
+#include "util/cloud/s3_file.h"
 #include "util/http/http_client.h"
 #include "util/uring/uring_pool.h"
 
@@ -56,7 +57,10 @@ void ListBuckets(AWS* aws, ProactorBase* proactor) {
     return ListS3Buckets(aws, &http_client);
   });
 
-  CHECK(list_res);
+  if (!list_res) {
+    cout << "Error: " << list_res.error() << endl;
+    return;
+  }
 
   for (const auto& b : *list_res) {
     cout << b << endl;
@@ -79,21 +83,21 @@ int main(int argc, char* argv[]) {
   string path = absl::GetFlag(FLAGS_path);
   string endpoint = absl::GetFlag(FLAGS_endpoint);
 
-  if (cmd == "ls") {
-    if (path.empty()) {
-      ListBuckets(&aws, pp->GetNextProactor());
-    } else {
-      string_view clean = absl::StripPrefix(path, "s3://");
-      string_view obj_path;
-      size_t pos = clean.find('/');
-      string_view bucket_name = clean.substr(0, pos);
-      if (pos != string_view::npos) {
-        obj_path = clean.substr(pos + 1);
-      }
-      cloud::S3Bucket bucket(aws, endpoint, bucket_name);
-      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) {
-        CONSOLE_INFO << name;
-      };
+  if (path.empty()) {
+    CHECK(cmd == "ls");
+    ListBuckets(&aws, pp->GetNextProactor());
+  } else {
+    string_view clean = absl::StripPrefix(path, "s3://");
+    string_view obj_path;
+    size_t pos = clean.find('/');
+    string_view bucket_name = clean.substr(0, pos);
+    if (pos != string_view::npos) {
+      obj_path = clean.substr(pos + 1);
+    }
+    cloud::S3Bucket bucket(aws, endpoint, bucket_name);
+
+    if (cmd == "ls") {
+      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) { CONSOLE_INFO << name; };
 
       error_code ec = pp->GetNextProactor()->Await([&] {
         auto ec = bucket.Connect(300);
@@ -102,9 +106,23 @@ int main(int argc, char* argv[]) {
       });
 
       CHECK(!ec) << ec;
+    } else if (cmd == "read") {
+      pp->GetNextProactor()->Await([&] {
+        auto ec = bucket.Connect(300);
+        CHECK(!ec);
+
+        io::Result<io::ReadonlyFile*> res = bucket.OpenReadFile(obj_path);
+        if (res) {
+          io::ReadonlyFile* file = *res;
+          std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
+          file->Read(0, io::MutableBytes(buf.get(), 1024));
+        } else {
+          LOG(ERROR) << "Error: " << res.error();
+        }
+      });
+    } else {
+      LOG(ERROR) << "Unknown command " << cmd;
     }
-  } else {
-    LOG(ERROR) << "Unknown command " << cmd;
   }
 
   pp->Stop();

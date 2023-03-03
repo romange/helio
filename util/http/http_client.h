@@ -30,17 +30,17 @@ class Client {
  public:
   using Response = boost::beast::http::response<boost::beast::http::dynamic_body>;
   using Verb = boost::beast::http::verb;
-  using StringPiece = ::std::string_view;
+  using BoostError = boost::system::error_code;
 
   explicit Client(ProactorBase* proactor);
   ~Client();
 
-  std::error_code Connect(StringPiece host, StringPiece service);
+  std::error_code Connect(std::string_view host, std::string_view service);
   std::error_code Reconnect();
 
-  std::error_code Send(Verb verb, StringPiece url, StringPiece body, Response* response);
-  std::error_code Send(Verb verb, StringPiece url, Response* response) {
-    return Send(verb, url, StringPiece{}, response);
+  BoostError Send(Verb verb, std::string_view url, std::string_view body, Response* response);
+  BoostError Send(Verb verb, std::string_view url, Response* response) {
+    return Send(verb, url, std::string_view{}, response);
   }
 
   /*! @brief Sends http request but does not read response back.
@@ -48,16 +48,16 @@ class Client {
    *  Possibly retries and reconnects if there are problems with connection.
    *  See set_retry_count(uint32_t) method.
    */
-  template <typename Req> std::error_code Send(const Req& req);
+  template <typename Req> BoostError Send(const Req& req);
 
   /*! @brief Sends http request and reads response back.
    *
    *  Possibly retries and reconnects if there are problems with connection.
    *  See set_retry_count(uint32_t) method for details.
    */
-  template <typename Req, typename Resp> std::error_code Send(const Req& req, Resp* resp);
-  template <typename Resp> std::error_code Recv(Resp* resp);
-  std::error_code ReadHeader(::boost::beast::http::basic_parser<false>* parser);
+  template <typename Req, typename Resp> BoostError Send(const Req& req, Resp* resp);
+  template <typename Resp> BoostError Recv(Resp* resp);
+  BoostError ReadHeader(::boost::beast::http::basic_parser<false>* parser);
 
   void Shutdown();
 
@@ -80,11 +80,11 @@ class Client {
   std::unique_ptr<FiberSocketBase> socket_;
 
  private:
-  static bool IsIoError(std::error_code ec) {
+  static bool IsIoError(BoostError ec) {
     return bool(ec);  // TODO: currently all errors are io errors
   }
 
-  static std::error_code HandleError(std::error_code ec) {
+  static BoostError HandleError(BoostError ec) {
     return ec;  // TODO: a hook to print warning errors, change state etc.
   }
 
@@ -100,9 +100,9 @@ class Client {
   uint16_t port_ = 0;
 };
 
-template <typename Req, typename Resp> std::error_code Client::Send(const Req& req, Resp* resp) {
+template <typename Req, typename Resp> auto Client::Send(const Req& req, Resp* resp) -> BoostError {
   namespace h2 = ::boost::beast::http;
-  std::error_code ec;
+  BoostError ec;
   ::boost::system::error_code read_ec;
   AsioStreamAdapter<> adapter(*socket_);
 
@@ -123,8 +123,8 @@ template <typename Req, typename Resp> std::error_code Client::Send(const Req& r
   return HandleError(ec);
 }
 
-template <typename Req> std::error_code Client::Send(const Req& req) {
-  ::boost::system::error_code ec;
+template <typename Req> auto Client::Send(const Req& req) -> BoostError {
+  BoostError ec;
   AsioStreamAdapter<> adapter(*socket_);
 
   for (uint32_t i = 0; i < retry_cnt_; ++i) {
@@ -138,8 +138,8 @@ template <typename Req> std::error_code Client::Send(const Req& req) {
   return HandleError(ec);
 }
 
-template <typename Resp> std::error_code Client::Recv(Resp* resp) {
-  ::boost::system::error_code ec;
+template <typename Resp> auto Client::Recv(Resp* resp) -> BoostError {
+  BoostError ec;
   AsioStreamAdapter<> adapter(*socket_);
 
   ::boost::beast::http::read(adapter, tmp_buffer_, *resp, ec);
@@ -147,8 +147,8 @@ template <typename Resp> std::error_code Client::Recv(Resp* resp) {
   return HandleError(ec);
 }
 
-inline std::error_code Client::ReadHeader(::boost::beast::http::basic_parser<false>* parser) {
-  ::boost::system::error_code ec;
+inline auto Client::ReadHeader(::boost::beast::http::basic_parser<false>* parser) -> BoostError {
+  BoostError ec;
   AsioStreamAdapter<> adapter(*socket_);
   ::boost::beast::http::read_header(adapter, tmp_buffer_, *parser, ec);
 
@@ -178,7 +178,7 @@ class TlsClient : public Client {
    *  @param service: the port number (this must be convertible to short).
    *  @param context a valid SSL context that was created with the function CreateSslContext
    */
-  std::error_code Connect(StringPiece host, StringPiece service, SSL_CTX* context);
+  std::error_code Connect(std::string_view host, std::string_view service, SSL_CTX* context);
 
  private:
   // holds the socket that was generated with the base class, it should live as long as we're

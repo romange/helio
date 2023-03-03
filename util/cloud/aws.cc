@@ -70,6 +70,9 @@ void Sha256String(string_view str, char out[65]) {
 void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
   // HMAC_xxx are deprecated since openssl 3.0
   // Ubuntu 20.04 uses openssl 1.1.
+
+  unsigned len = 32;
+#if 0
   HMAC_CTX* hmac = HMAC_CTX_new();
 
   CHECK_EQ(1, HMAC_Init_ex(hmac, reinterpret_cast<const uint8_t*>(key.data()), key.size(),
@@ -78,11 +81,17 @@ void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
   CHECK_EQ(1, HMAC_Update(hmac, reinterpret_cast<const uint8_t*>(msg.data()), msg.size()));
 
   uint8_t* ptr = reinterpret_cast<uint8_t*>(dest);
-  unsigned len = 32;
+
   CHECK_EQ(1, HMAC_Final(hmac, ptr, &len));
   HMAC_CTX_free(hmac);
+#else
+  const uint8_t *data = reinterpret_cast<const uint8_t*>(msg.data());
+  ::HMAC(EVP_sha256(), key.data(), key.size(), data, msg.size(), dest, &len);
+#endif
   CHECK_EQ(len, 32u);
 }
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
 string DeriveSigKey(absl::string_view key, absl::string_view datestamp, absl::string_view region,
                     absl::string_view service) {
@@ -93,6 +102,8 @@ string DeriveSigKey(absl::string_view key, absl::string_view datestamp, absl::st
   string start_key{"AWS4"};
   string_view sign_key{reinterpret_cast<char*>(sign), sizeof(sign)};
 
+  // TODO: to replace with EVP_MAC_CTX_new and EVP_MAC_CTX_free etc which appeared only
+  // in openssl 3.0.
   absl::StrAppend(&start_key, key);
   CHECK_EQ(1, HMAC_Init_ex(hmac, start_key.data(), start_key.size(), EVP_sha256(), NULL));
   CHECK_EQ(1,

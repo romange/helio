@@ -43,7 +43,7 @@ Client::Client(ProactorBase* proactor) : proactor_(proactor) {
 Client::~Client() {
 }
 
-std::error_code Client::Connect(StringPiece host, StringPiece service) {
+std::error_code Client::Connect(string_view host, string_view service) {
   uint32_t port;
   CHECK(absl::SimpleAtoi(service, &port));
   CHECK_LT(port, 1u << 16);
@@ -76,7 +76,7 @@ std::error_code Client::Reconnect() {
   return socket_->Connect(ep);
 }
 
-std::error_code Client::Send(Verb verb, StringPiece url, StringPiece body, Response* response) {
+auto Client::Send(Verb verb, string_view url, string_view body, Response* response) -> BoostError {
   // Set the URL
   h2::request<h2::string_body> req{verb, boost::string_view(url.data(), url.size()), 11};
 
@@ -144,7 +144,7 @@ SSL_CTX* TlsClient::CreateSslContext() {
   return ctx;
 }
 
-std::error_code TlsClient::Connect(StringPiece host, StringPiece service, SSL_CTX* context) {
+std::error_code TlsClient::Connect(string_view host, string_view service, SSL_CTX* context) {
   DCHECK(context) << " NULL SSL context";
   // Four phases:
   // 1. TCP connection
