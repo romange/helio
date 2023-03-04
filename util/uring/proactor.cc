@@ -172,7 +172,7 @@ void Proactor::Run() {
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
       task_queue_avail_.notifyAll();
-
+      spin_loops = 0;
 #ifndef NDEBUG
       hist.Add(cnt);
 #endif
@@ -200,6 +200,7 @@ void Proactor::Run() {
         SchedulePeriodic(task_pair.first, task_pair.second);
       }
       schedule_periodic_list_.clear();
+      spin_loops = 0;
       sqe_avail_.notifyAll();
     }
 
@@ -239,7 +240,7 @@ void Proactor::Run() {
       should_suspend = false;
       ++num_suspends;
       VPRO(2) << "Resuming ioloop " << loop_cnt << " " << scheduler_->ready_cnt();
-
+      spin_loops = 0;
       continue;
     }
 
@@ -294,8 +295,11 @@ void Proactor::Run() {
      * (see WakeRing()) but only one will actually call the syscall.
      */
     if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
-      if (is_stopped_)
+      if (is_stopped_) {
+        tq_seq_.store(0, std::memory_order_release);  // clear WAIT section
         break;
+      }
+
       DCHECK(!should_suspend);
       DCHECK(!sched->has_ready_fibers());
 
@@ -365,6 +369,11 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   }
 #endif
 
+  // If we setup flags that kernel does not recognize, it fails the setup call.
+  if (kver.kernel >5 || kver.minor >= 19) {
+    params.flags |= IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN;
+  }
+
   // it seems that SQPOLL requires registering each fd, including sockets fds.
   // need to check if its worth pursuing.
   // For sure not in short-term.
@@ -386,6 +395,11 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
                << detail::SafeErrorMessage(init_res);
   }
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
+
+  io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
+  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  io_uring_free_probe(uring_probe);
+  VLOG_IF(1, msgring_f_) << "msgring supported!";
 
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
   CHECK_EQ(req_feats, params.features & req_feats)
@@ -678,11 +692,11 @@ void Proactor::WakeRing() {
 
   Proactor* caller = static_cast<Proactor*>(ProactorBase::me());
 
-  // Disabled because it deadlocks in github actions.
-  // It could be kernel issue or a bug in my code - needs investigation.
-  if (false && caller) {
+  DCHECK(caller != this);
+
+  if (caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
-    se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
+    se.PrepMsgRing(ring_.ring_fd, 0, kIgnoreIndex);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
