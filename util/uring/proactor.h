@@ -92,6 +92,18 @@ class Proactor : public ProactorBase {
     return IOURING;
   }
 
+  // Currently only a single bin of 1024 buffers of size 64 bytes (total 64K) is supported.
+  // Returns 0 on success, errno on failure.
+  int RegisterBuffers();
+
+  bool HasRegisteredBuffers() const {
+    return bool(registered_buf_);
+  }
+
+  // Returns a buffer of size 64 or null if no buffers are found.
+  uint8_t* ProvideRegisteredBuffer();
+  void ReturnRegisteredBuffer(uint8_t* addr);
+
  private:
   void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
 
@@ -137,6 +149,9 @@ class Proactor : public ProactorBase {
   uint32_t pending_cb_cnt_ = 0;
   uint32_t next_free_fd_ = 0;  // next available fd for register files.
   uint32_t get_entry_sq_full_ = 0, get_entry_submit_fail_ = 0, get_entry_await_ = 0;
+
+  int32_t free_req_buf_id_ = -1;
+  std::unique_ptr<uint8_t[]> registered_buf_;
 };
 
 class FiberCall {

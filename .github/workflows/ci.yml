@@ -45,6 +45,8 @@ jobs:
     - name: Build & Test
       run: |
           cd ${{github.workspace}}/build
+          uname -a
+          ulimit -a
           cat /proc/cpuinfo
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli
           GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \

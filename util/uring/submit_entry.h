@@ -62,6 +62,14 @@ class SubmitEntry {
     sqe_->off = offset;
   }
 
+  void PrepReadFixed(int fd, void* buf, unsigned size, size_t offset, uint16_t buf_index) {
+    PrepFd(IORING_OP_READ_FIXED, fd);
+    sqe_->addr = (unsigned long)buf;
+    sqe_->len = size;
+    sqe_->off = offset;
+    sqe_->buf_index = buf_index;
+  }
+
   void PrepReadV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
                  unsigned flags = 0) {
     PrepFd(IORING_OP_READV, fd);
@@ -76,6 +84,14 @@ class SubmitEntry {
     sqe_->addr = (unsigned long)buf;
     sqe_->len = size;
     sqe_->off = offset;
+  }
+
+  void PrepWriteFixed(int fd, void* buf, unsigned size, size_t offset, uint16_t buf_index) {
+    PrepFd(IORING_OP_WRITE_FIXED, fd);
+    sqe_->addr = (unsigned long)buf;
+    sqe_->len = size;
+    sqe_->off = offset;
+    sqe_->buf_index = buf_index;
   }
 
   void PrepWriteV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,

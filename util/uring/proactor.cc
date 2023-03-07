@@ -215,8 +215,7 @@ void Proactor::Run() {
       tq_seq_.fetch_and(~1, memory_order_acq_rel);
       tq_seq &= ~1;
       fibers_ext::Yield();
-      VPRO(2) << "Yield_end " << loop_cnt << " " << read_cnt << " "
-              << scheduler_->ready_cnt();
+      VPRO(2) << "Yield_end " << loop_cnt << " " << read_cnt << " " << scheduler_->ready_cnt();
 
       // we preempted without passing through suspend_until.
       suspendioloop_called = false;
@@ -515,6 +514,46 @@ SubmitEntry Proactor::GetSubmitEntry(CbType cb, int64_t payload) {
   }
 
   return SubmitEntry{res};
+}
+
+int Proactor::RegisterBuffers() {
+  unique_ptr<uint8_t[]> reg_buf(new uint8_t[1U << 16]);
+  iovec vec[1];
+  vec[0].iov_base = reg_buf.get();
+  vec[0].iov_len = 1U << 16;
+  int res = io_uring_register_buffers(&ring_, vec, 1);
+  if (res < 0) {
+    return -res;
+  }
+
+  free_req_buf_id_ = 0;
+  for (int i = 0; i < 1024; ++i) {
+    uint8_t* next = reg_buf.get() + i * 64;
+    absl::little_endian::Store16(next, i + 1);
+  }
+
+  registered_buf_ = std::move(reg_buf);
+  return 0;
+}
+
+uint8_t* Proactor::ProvideRegisteredBuffer() {
+  if (free_req_buf_id_ < 0 || free_req_buf_id_ >= 1024)
+    return nullptr;
+
+  int res = free_req_buf_id_;
+  free_req_buf_id_ = absl::little_endian::Load16(&registered_buf_[free_req_buf_id_ * 64]);
+  return registered_buf_.get() + res * 64;
+}
+
+void Proactor::ReturnRegisteredBuffer(uint8_t* addr) {
+  DCHECK(registered_buf_);
+  intptr_t offs = addr - registered_buf_.get();
+  DCHECK_GE(offs, 0);
+  DCHECK_LT(offs, 1 << 16);
+
+  unsigned buf_id = offs / 64;
+  absl::little_endian::Store16(&registered_buf_[buf_id * 64], free_req_buf_id_);
+  free_req_buf_id_ = buf_id;
 }
 
 void Proactor::RegrowCentries() {

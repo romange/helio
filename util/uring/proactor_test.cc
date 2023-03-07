@@ -388,6 +388,48 @@ TEST_F(ProactorTest, File) {
   ASSERT_EQ(1 << 19, sbuf.st_size);
 }
 
+TEST_F(ProactorTest, RegisterBuffers) {
+  vector<uint8_t*> bufs;
+
+  int res = proactor_->Await([&] {
+    return proactor_->RegisterBuffers();
+  });
+
+  if (res != 0) {
+    LOG(ERROR) << "RegisterBuffers failed " << res << " skipping tests";
+    return;
+  }
+
+  proactor_->Await([&] {
+
+    uint8_t* addr1 = proactor_->ProvideRegisteredBuffer();
+    uint8_t* addr2 = proactor_->ProvideRegisteredBuffer();
+    ASSERT_TRUE(addr1 && addr2);
+
+    proactor_->ReturnRegisteredBuffer(addr1);
+    proactor_->ReturnRegisteredBuffer(addr2);
+
+    while (true) {
+      addr1 = proactor_->ProvideRegisteredBuffer();
+      if (addr1 == nullptr)
+        break;
+      bufs.push_back(addr1);
+    }
+    EXPECT_EQ(1024, bufs.size());
+  });
+
+  int fd = open("/dev/null", O_WRONLY);
+  ASSERT_GE(fd, 0);
+  FiberCall::IoResult io_res = proactor_->Await([&] {
+    FiberCall fc(proactor_.get());
+    fc->PrepWriteFixed(fd, bufs.back(), 64, 0, 0);
+    return fc.Get();
+  });
+  ASSERT_EQ(64, io_res);
+
+  close(fd);
+}
+
 TEST_F(ProactorTest, LinuxFile) {
   string path = base::GetTestTempPath("bar.txt");
 
