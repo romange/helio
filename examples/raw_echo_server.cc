@@ -2,9 +2,11 @@
 // See LICENSE for licensing terms.
 //
 
+#include <absl/strings/str_cat.h>
 #include <liburing.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <gperftools/profiler.h>
 
 #include <boost/context/fiber.hpp>
 #include <boost/intrusive/list.hpp>
@@ -12,15 +14,19 @@
 
 #include "base/init.h"
 #include "base/logging.h"
+#include "base/mpmc_bounded_queue.h"
+#include "base/pthread_utils.h"
 #include "examples/fiber.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");
+ABSL_FLAG(uint16_t, threads, 0,
+          "Number of connection threads. 0 to run as single threaded. "
+          "Otherwise, the main thread accepts connections and worker threads are handling TCP "
+          "connections");
 
 namespace ctx = boost::context;
 using namespace std;
-
-namespace example {}  // namespace example
 
 namespace {
 
@@ -96,9 +102,18 @@ struct ResumeablePoint {
   }
 };
 
-std::vector<ResumeablePoint> suspended_list;
+struct Worker {
+  unique_ptr<base::mpmc_bounded_queue<int>> queue;
+  pthread_t pid;
 
-uint32_t next_rp_id = UINT32_MAX;
+  Worker() : queue(new base::mpmc_bounded_queue<int>(32)){};
+};
+
+std::vector<Worker> workers;
+
+thread_local std::vector<ResumeablePoint> suspended_list;
+thread_local uint32_t next_rp_id = UINT32_MAX;
+
 bool loop_exit = false;
 
 uint32_t NextRp() {
@@ -183,7 +198,7 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
 }
 
 void HandleSocket(io_uring* ring, int fd) {
-  DVLOG(1) << "Handle socket";
+  VLOG(1) << "Handle socket " << fd;
   uint32_t size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> buf(new uint8_t[size]);
 
@@ -206,21 +221,21 @@ void HandleSocket(io_uring* ring, int fd) {
 }
 
 void AcceptFiber(io_uring* ring, int listen_fd) {
-  VLOG(1) << "AcceptFiber";
+  LOG(INFO) << "AcceptFiber";
 
   CqeResult cqe_result;
+  unsigned next_worker = 0;
 
   while (true) {
     int res = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       VLOG(1) << "Accepted fd " << res;
-      // sockets.emplace_back();
-      // sockets.back().fd = res;
-
-      // new fiber
-      Fiber("conn", [ring, res] { HandleSocket(ring, res); }).Detach();
-
-      DVLOG(1) << "After HandleSocket fd " << res;
+      if (!workers.empty()) {
+        CHECK(workers[next_worker].queue->try_enqueue(res));
+        next_worker = (next_worker + 1) % workers.size();
+      } else {
+        Fiber("conn", [ring, res] { HandleSocket(ring, res); }).Detach();
+      }
     } else if (errno == EAGAIN) {
       io_uring_sqe* sqe = io_uring_get_sqe(ring);
       io_uring_prep_poll_add(sqe, listen_fd, POLLIN);
@@ -244,12 +259,21 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   }
 };
 
-void RunEventLoop(io_uring* ring, detail::Scheduler* sched) {
+void RunEventLoop(int worker_id, io_uring* ring, detail::Scheduler* sched) {
   VLOG(1) << "RunEventLoop";
   DCHECK(!sched->HasReady());
 
   io_uring_cqe* cqe = nullptr;
+  unsigned spins = 0;
   do {
+    if (worker_id >= 0) {
+      int fd = -1;
+      while (workers[worker_id].queue->try_dequeue(fd)) {
+        Fiber("conn", [ring, fd] { HandleSocket(ring, fd); }).Detach();
+
+        DVLOG(1) << "After HandleSocket fd " << fd;
+      }
+    }
     int num_submitted = io_uring_submit(ring);
     CHECK_GE(num_submitted, 0);
     uint32_t head = 0;
@@ -274,35 +298,31 @@ void RunEventLoop(io_uring* ring, detail::Scheduler* sched) {
     if (sched->HasReady()) {
       do {
         detail::FiberInterface* fi = sched->PopReady();
-        fi->Resume();
+        auto fc = fi->SwitchTo();
+        DCHECK(!fc);
       } while (sched->HasReady());
       continue;
     }
 
-    io_uring_wait_cqe_nr(ring, &cqe, 1);
+    if (spins++ < 20)
+      continue;
+
+    struct __kernel_timespec ts {
+      .tv_sec = 0, .tv_nsec = 100000
+    };
+    io_uring_wait_cqe_timeout(ring, &cqe, &ts);
+    spins = 0;
+    // io_uring_wait_cqe_timeout(ring, &cqe, nullptr);
   } while (!loop_exit);
 
   VLOG(1) << "Exit RunEventLoop";
 }
 
-}  // namespace
-
-int main(int argc, char* argv[]) {
-  MainInitGuard guard(&argc, &argv);
-
-  int listen_fd = -1;
-
-  RegisterSignal({SIGINT, SIGTERM}, [&](int signal) {
-    LOG(INFO) << "Exiting on signal " << strsignal(signal);
-    shutdown(listen_fd, SHUT_RDWR);
-  });
-
-  // setup iouring
-  io_uring ring;
+void SetupIORing(io_uring* ring) {
   io_uring_params params;
   memset(&params, 0, sizeof(params));
-  CHECK_EQ(0, io_uring_queue_init_params(512, &ring, &params));
-  int res = io_uring_register_ring_fd(&ring);
+  CHECK_EQ(0, io_uring_queue_init_params(512, ring, &params));
+  int res = io_uring_register_ring_fd(ring);
   VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
 
   suspended_list.resize(1024);
@@ -310,11 +330,10 @@ int main(int argc, char* argv[]) {
     suspended_list[i].next = i + 1;
   }
   next_rp_id = 0;
+}
 
-  // setup listening socket
-  uint16_t port = absl::GetFlag(FLAGS_port);
-
-  listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+int SetupListener(uint16_t port) {
+  int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   CHECK_GE(listen_fd, 0);
 
   const int val = 1;
@@ -326,22 +345,78 @@ int main(int argc, char* argv[]) {
   server_addr.sin_port = htons(port);
   server_addr.sin_addr.s_addr = INADDR_ANY;
 
-  res = bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+  int res = bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
   CHECK_EQ(0, res);
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
 
-  SetCustomScheduler([&ring](detail::Scheduler* sched) {
-    RunEventLoop(&ring, sched);
+  return listen_fd;
+}
+
+void WorkerThread(unsigned index) {
+  io_uring ring;
+
+  SetupIORing(&ring);
+  SetCustomScheduler([&](detail::Scheduler* sched) { RunEventLoop(index, &ring, sched); });
+
+  ctx::fiber_context fc = detail::FiberActive()->scheduler()->Preempt();
+
+  DCHECK(!fc);
+
+  VLOG(1) << "Exiting worker " << index << " " << bool(fc);
+}
+
+}  // namespace
+
+int main(int argc, char* argv[]) {
+  MainInitGuard guard(&argc, &argv);
+  // ProfilerEnable();
+
+  int listen_fd = -1;
+
+  RegisterSignal({SIGINT, SIGTERM}, [&](int signal) {
+    LOG(INFO) << "Exiting on signal " << strsignal(signal);
+    shutdown(listen_fd, SHUT_RDWR);
   });
 
+  // setup iouring
+  io_uring ring;
+
+  SetupIORing(&ring);
+
+  // setup listening socket
+  uint16_t port = absl::GetFlag(FLAGS_port);
+
+  listen_fd = SetupListener(port);
+
+  SetCustomScheduler([&ring](detail::Scheduler* sched) { RunEventLoop(-1, &ring, sched); });
+
+  uint16_t num_workers = absl::GetFlag(FLAGS_threads);
+  workers.resize(num_workers);
+  LOG(INFO) << "Num threads " << num_workers;
+
+  cpu_set_t cps;
+  CPU_ZERO(&cps);
+
+  for (size_t i = 0; i < num_workers; ++i) {
+    string nm = absl::StrCat("worker", i);
+    pthread_t tid = base::StartThread(nm.c_str(), [i] { WorkerThread(i); });
+
+    CPU_SET(i, &cps);
+    pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
+    CPU_CLR(i, &cps);
+
+    workers[i].pid = tid;
+  }
 
   Fiber accept_fb("accept", [&] { AcceptFiber(&ring, listen_fd); });
   accept_fb.Join();
 
   loop_exit = true;
   // detail::FiberActive()->scheduler()->DestroyTerminated();
-
+  for (size_t i = 0; i < num_workers; ++i) {
+    pthread_join(workers[i].pid, nullptr);
+  }
   io_uring_queue_exit(&ring);
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 

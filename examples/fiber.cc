@@ -26,8 +26,15 @@ class DispatcherImpl final : public FiberInterface {
                  Scheduler* sched) noexcept;
   ~DispatcherImpl();
 
+  bool is_terminating() const {
+    return is_terminating_;
+  }
+
  private:
+
   ctx::fiber Run(ctx::fiber&& c);
+
+  bool is_terminating_ = false;
 };
 
 class MainFiberImpl final : public FiberInterface {
@@ -143,7 +150,7 @@ void FiberInterface::Join() {
   }
 }
 
-ctx::fiber_context FiberInterface::Resume() {
+ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = this;
 
   std::swap(FbInitializer().active, prev);
@@ -168,16 +175,23 @@ Scheduler::~Scheduler() {
   DCHECK(main_cntx_ == FiberActive());
   DCHECK(ready_queue_.empty());
 
-  auto fc = dispatch_cntx_->Resume();
-  CHECK(!fc);
+  DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
+  if (!dimpl->is_terminating()) {
+    DVLOG(1) << "~Scheduler switching to dispatch " << dispatch_cntx_->IsDefined();
+    auto fc = dispatch_cntx_->SwitchTo();
+    CHECK(!fc);
+    CHECK(dimpl->is_terminating());
+  }
   DCHECK_EQ(0u, num_worker_fibers_);
 
+  // destroys the stack and the object via intrusive_ptr_release.
+  dispatch_cntx_.reset();
   DestroyTerminated();
 }
 
 ctx::fiber_context Scheduler::Preempt() {
   if (ready_queue_.empty()) {
-    return dispatch_cntx_->Resume();
+    return dispatch_cntx_->SwitchTo();
   }
 
   DCHECK(!ready_queue_.empty());
@@ -185,7 +199,7 @@ ctx::fiber_context Scheduler::Preempt() {
   ready_queue_.pop_front();
 
   __builtin_prefetch(fi);
-  return fi->Resume();
+  return fi->SwitchTo();
 }
 
 void Scheduler::Attach(FiberInterface* cntx) {
@@ -260,6 +274,8 @@ DispatcherImpl::DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_s
 }
 
 DispatcherImpl::~DispatcherImpl() {
+  DVLOG(1) << "~DispatcherImpl";
+
   DCHECK(!entry_);
 }
 
@@ -269,7 +285,7 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
     return std::move(c);
   }
 
-  // Normal Resume operation.
+  // Normal SwitchTo operation.
 
   auto& fb_init = detail::FbInitializer();
   if (fb_init.custom_algo) {
@@ -278,7 +294,16 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
     fb_init.sched->DefaultDispatch();
   }
 
-  return fb_init.sched->main_context()->Resume();
+  DVLOG(1) << "Dispatcher exiting, switching to main_cntx";
+  is_terminating_ = true;
+
+  // Like with worker fibers, we switch to another fiber, but in this case to the main fiber.
+  // We will come back here during the deallocation of DispatcherImpl from intrusive_ptr_release
+  // in order to return from Run() and come back to main context.
+  auto fc = fb_init.sched->main_context()->SwitchTo();
+
+  DCHECK(fc);  // Should bring us back to main, into intrusive_ptr_release.
+  return fc;
 }
 
 }  // namespace detail

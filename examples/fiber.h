@@ -51,9 +51,7 @@ class FiberInterface {
   FI_ListHook list_hook;
   FI_SleepHook sleep_hook;
 
-  void StartMain();
-
-  ::boost::context::fiber_context Resume();
+  ::boost::context::fiber_context SwitchTo();
 
   void Join();
   void Yield();
@@ -160,6 +158,8 @@ class Scheduler {
   FiberInterface* main_context() {
     return main_cntx_;
   }
+
+  bool IsShutdown() const { return shutdown_;}
 
   void DestroyTerminated();
   void ProcessSleep();
