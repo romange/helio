@@ -2,7 +2,7 @@ add_subdirectory(pingserver)
 add_subdirectory(redis_dict)
 
 add_library(ex_fibers_lib fiber.cc)
-cxx_link(ex_fibers_lib base Boost::context)
+cxx_link(ex_fibers_lib base fibers2)
 cxx_test(fiber_test ex_fibers_lib)
 
 add_executable(raw_echo_server raw_echo_server.cc)

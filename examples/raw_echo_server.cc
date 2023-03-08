@@ -3,10 +3,10 @@
 //
 
 #include <absl/strings/str_cat.h>
+#include <gperftools/profiler.h>
 #include <liburing.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <gperftools/profiler.h>
 
 #include <boost/context/fiber.hpp>
 #include <boost/intrusive/list.hpp>
@@ -27,6 +27,8 @@ ABSL_FLAG(uint16_t, threads, 0,
 
 namespace ctx = boost::context;
 using namespace std;
+using namespace util;
+using util::fb2::detail::FiberInterface;
 
 namespace {
 
@@ -92,7 +94,7 @@ struct CqeResult {
 };
 
 struct ResumeablePoint {
-  detail::FiberInterface* cntx = nullptr;
+  FiberInterface* cntx = nullptr;
   union {
     CqeResult* cqe_res;
     uint32_t next;
@@ -135,7 +137,7 @@ CqeResult SuspendMyself(io_uring_sqe* sqe) {
   auto& rp = suspended_list[myindex];
   rp.cqe_res = &cqe_result;
 
-  detail::FiberInterface* fi = detail::FiberActive();
+  FiberInterface* fi = fb2::detail::FiberActive();
   rp.cntx = fi;
 
   fi->scheduler()->Preempt();
@@ -259,7 +261,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   }
 };
 
-void RunEventLoop(int worker_id, io_uring* ring, detail::Scheduler* sched) {
+void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) {
   VLOG(1) << "RunEventLoop";
   DCHECK(!sched->HasReady());
 
@@ -297,7 +299,7 @@ void RunEventLoop(int worker_id, io_uring* ring, detail::Scheduler* sched) {
 
     if (sched->HasReady()) {
       do {
-        detail::FiberInterface* fi = sched->PopReady();
+        FiberInterface* fi = sched->PopReady();
         auto fc = fi->SwitchTo();
         DCHECK(!fc);
       } while (sched->HasReady());
@@ -357,9 +359,10 @@ void WorkerThread(unsigned index) {
   io_uring ring;
 
   SetupIORing(&ring);
-  SetCustomScheduler([&](detail::Scheduler* sched) { RunEventLoop(index, &ring, sched); });
+  fb2::SetCustomDispatcher(
+      [&](fb2::detail::Scheduler* sched) { RunEventLoop(index, &ring, sched); });
 
-  ctx::fiber_context fc = detail::FiberActive()->scheduler()->Preempt();
+  ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt();
 
   DCHECK(!fc);
 
@@ -389,7 +392,8 @@ int main(int argc, char* argv[]) {
 
   listen_fd = SetupListener(port);
 
-  SetCustomScheduler([&ring](detail::Scheduler* sched) { RunEventLoop(-1, &ring, sched); });
+  fb2::SetCustomDispatcher(
+      [&ring](fb2::detail::Scheduler* sched) { RunEventLoop(-1, &ring, sched); });
 
   uint16_t num_workers = absl::GetFlag(FLAGS_threads);
   workers.resize(num_workers);
