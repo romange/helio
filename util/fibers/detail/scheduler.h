@@ -4,11 +4,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <boost/context/fiber.hpp>
 #include <boost/intrusive/set.hpp>
 #include <boost/intrusive/slist.hpp>
-
-#include <atomic>
 #include <chrono>
 
 namespace util {
@@ -99,7 +98,6 @@ class FiberInterface {
   }
 
  protected:
-  // TODO: should be mpsc lock-free intrusive queue.
   using WaitQueue = boost::intrusive::slist<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
@@ -108,13 +106,7 @@ class FiberInterface {
   ::boost::context::fiber_context Terminate();
 
   std::atomic<uint32_t> use_count_;
-
-  union {
-    uint16_t flagval_;
-    struct {
-      uint16_t terminated : 1;
-    } flags;
-  };
+  std::atomic<uint16_t> flags_;
 
   Type type_;
 
@@ -201,7 +193,6 @@ class Scheduler {
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;
 };
-
 
 template <typename Fn> class WorkerFiberImpl : public FiberInterface {
   using FbCntx = ::boost::context::fiber_context;

@@ -17,6 +17,22 @@ namespace {
 constexpr size_t kSizeOfCtx = sizeof(FiberInterface);  // because of the virtual +8 bytes.
 constexpr size_t kSizeOfSH = sizeof(FI_SleepHook);
 constexpr size_t kSizeOfLH = sizeof(FI_ListHook);
+
+constexpr uint16_t kTerminatedBit = 0x1;
+constexpr uint16_t kBusyBit = 0x2;
+
+inline void CpuPause() {
+#if defined(__i386__) || defined(__amd64__)
+    __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+      /* Use an isb here as we've found it's much closer in duration to
+      * the x86 pause instruction vs. yield which is a nop and thus the
+      * loop count is lower and the interconnect gets a lot more traffic
+      * from loading the ticket above. */
+    __asm__ __volatile__ ("isb");
+#endif
+}
+
 class DispatcherImpl final : public FiberInterface {
  public:
   DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_stack&& salloc,
@@ -39,6 +55,10 @@ class DispatcherImpl final : public FiberInterface {
 class MainFiberImpl final : public FiberInterface {
  public:
   MainFiberImpl() noexcept : FiberInterface{MAIN, 1, "main"} {
+  }
+
+  ~MainFiberImpl() {
+    use_count_.fetch_sub(1, memory_order_relaxed);
   }
 
  protected:
@@ -246,7 +266,7 @@ FiberInterface* FiberActive() noexcept {
 
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
-    : use_count_(cnt), flagval_(0), type_(type) {
+    : use_count_(cnt), flags_(0), type_(type) {
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
   if (len) {
@@ -256,6 +276,7 @@ FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
 
 FiberInterface::~FiberInterface() {
   DVLOG(2) << "Destroying " << name_;
+  DCHECK_EQ(use_count_.load(), 0u);
   DCHECK(wait_queue_.empty());
   DCHECK(!list_hook.is_linked());
 }
@@ -268,10 +289,16 @@ FiberInterface::~FiberInterface() {
 ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(this == FiberActive());
   DCHECK(!list_hook.is_linked());
-  DCHECK(!flags.terminated);
 
-  flags.terminated = 1;
   scheduler_->ScheduleTermination(this);
+
+  while (true) {
+    uint16_t fprev = flags_.fetch_or(kTerminatedBit | kBusyBit, memory_order_acquire);
+    if ((fprev & kBusyBit) == 0) {
+      break;
+    }
+    CpuPause();
+  }
 
   while (!wait_queue_.empty()) {
     FiberInterface* blocked = &wait_queue_.front();
@@ -280,6 +307,8 @@ ctx::fiber_context FiberInterface::Terminate() {
     // should be the scheduler of the blocked fiber.
     blocked->scheduler_->MarkReady(blocked);
   }
+
+  flags_.fetch_and(~kBusyBit, memory_order_release);
 
   // usually Preempt returns empty fc but here we return the value of where
   // to switch to when this fiber completes. See intrusive_ptr_release for more info.
@@ -297,15 +326,24 @@ void FiberInterface::Join() {
 
   CHECK(active != this);
 
-  // currently single threaded.
-  // TODO: to use Vyukov's intrusive mpsc queue:
-  // https://www.boost.org/doc/libs/1_63_0/boost/fiber/detail/context_mpsc_queue.hpp
-  CHECK(active->scheduler_ == scheduler_);
+  while (true) {
+    uint16_t fprev = flags_.fetch_or(kBusyBit, memory_order_acquire);
+    if (fprev & kTerminatedBit) {
+      if ((fprev & kBusyBit) == 0) {  // Caller became the owner.
+        flags_.fetch_and(~kBusyBit, memory_order_relaxed);  // release the lock
+      }
+      return;
+    }
 
-  if (!flags.terminated) {
-    wait_queue_.push_front(*active);
-    scheduler_->Preempt();
+    if ((fprev & kBusyBit) == 0) {  // Caller became the owner.
+      break;
+    }
+    CpuPause();
   }
+
+  wait_queue_.push_front(*active);
+  flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
+  active->scheduler_->Preempt();
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {

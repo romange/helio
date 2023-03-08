@@ -57,6 +57,14 @@ template <typename T> class MPSCIntrusiveQueue {
   }
 
   T* Pop() noexcept;
+
+  // Can be run only on a consumer thread.
+  bool Empty() const noexcept {
+    T* head = head_;
+    T* next = MPSC_intrusive_load_next(*head);
+
+    return stub() == head && next == nullptr;
+  }
 };
 
 template <typename T> T* MPSCIntrusiveQueue<T>::Pop() noexcept {
