@@ -13,6 +13,7 @@ target_link_libraries(gtest_main_ext gmock base benchmark TRDP::gperf)
 add_subdirectory(pmr)
 
 cxx_test(mpmc_bounded_queue_test base LABELS CI)
+cxx_test(mpsc_intrusive_queue_test base LABELS CI)
 cxx_test(abseil_test base absl::str_format LABELS CI)
 cxx_test(hash_test base absl::random_random LABELS CI)
 cxx_test(cuckoo_map_test base absl::flat_hash_map LABELS CI)
