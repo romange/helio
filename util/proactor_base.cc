@@ -52,7 +52,9 @@ std::once_flag module_init;
 
 }  // namespace
 
-thread_local ProactorBase::TLInfo ProactorBase::tl_info_;
+// Apparently __thread is more efficient than thread_local when a variable is referenced
+// in cc file that does not define it.
+__thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
 ProactorBase::ProactorBase() : task_queue_(512) {
   call_once(module_init, &ModuleInit);

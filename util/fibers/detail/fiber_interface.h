@@ -64,8 +64,16 @@ class FiberInterface {
   void Start(Launch launch);
 
   void Join();
+
+  // inline
   void Yield();
+
+  // inline
   void WaitUntil(std::chrono::steady_clock::time_point tp);
+
+  // Schedules another fiber without switching to it.
+  // other can belong to another thread.
+  void ActivateOther(FiberInterface* other);
 
   bool IsDefined() const {
     return bool(entry_);
