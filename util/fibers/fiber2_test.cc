@@ -1,8 +1,8 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 
-#include "examples/fiber.h"
+#include "util/fibers/fiber2.h"
 
 #include <condition_variable>
 #include <mutex>
@@ -13,7 +13,8 @@
 
 using namespace std;
 
-namespace example {
+namespace util {
+namespace fb2 {
 
 class FiberTest : public testing::Test {
  public:
@@ -35,9 +36,7 @@ TEST_F(FiberTest, Remote) {
   condition_variable cnd;
   bool set = false;
   std::thread t1([&] {
-    fb1 = Fiber("test1", [] {
-      LOG(INFO) << "test1 run";
-    });
+    fb1 = Fiber("test1", [] { LOG(INFO) << "test1 run"; });
 
     {
       unique_lock lk(mu);
@@ -56,4 +55,24 @@ TEST_F(FiberTest, Remote) {
   t1.join();
 }
 
-}  // namespace example
+TEST_F(FiberTest, Dispatch) {
+  int val1 = 0, val2 = 0;
+
+  Fiber fb2;
+
+  Fiber fb1(Launch::dispatch, "test1", [&] {
+    val1 = 1;
+    fb2 = Fiber(Launch::dispatch, "test2", [&] { val2 = 1; });
+    val1 = 2;
+  });
+  EXPECT_EQ(1, val1);
+  EXPECT_EQ(1, val2);
+
+  fb1.Join();
+  EXPECT_EQ(2, val1);
+
+  fb2.Join();
+}
+
+}  // namespace fb2
+}  // namespace util

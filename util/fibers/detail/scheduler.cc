@@ -263,8 +263,6 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
 
 void Scheduler::Attach(FiberInterface* cntx) {
   cntx->scheduler_ = this;
-  ready_queue_.push_back(*cntx);
-
   if (cntx->type() == FiberInterface::WORKER) {
     ++num_worker_fibers_;
   }
@@ -387,9 +385,22 @@ ctx::fiber_context FiberInterface::Terminate() {
   return scheduler_->Preempt();
 }
 
-void FiberInterface::Start() {
+void FiberInterface::Start(Launch launch) {
   auto& fb_init = detail::FbInitializer();
   fb_init.sched->Attach(this);
+
+  switch (launch) {
+    case Launch::post:
+      fb_init.sched->Schedule(this);
+      break;
+    case Launch::dispatch:
+      fb_init.sched->Schedule(fb_init.active);
+      {
+        auto fc = SwitchTo();
+        DCHECK(!fc);
+      }
+      break;
+  }
 }
 
 void FiberInterface::Join() {
