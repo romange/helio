@@ -3,6 +3,9 @@
 //
 #include "util/fibers/detail/scheduler.h"
 
+#include <condition_variable>
+#include <mutex>
+
 #include "base/logging.h"
 
 namespace util {
@@ -23,13 +26,13 @@ constexpr uint16_t kBusyBit = 0x2;
 
 inline void CpuPause() {
 #if defined(__i386__) || defined(__amd64__)
-    __asm__ __volatile__("pause");
+  __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
-      /* Use an isb here as we've found it's much closer in duration to
-      * the x86 pause instruction vs. yield which is a nop and thus the
-      * loop count is lower and the interconnect gets a lot more traffic
-      * from loading the ticket above. */
-    __asm__ __volatile__ ("isb");
+  /* Use an isb here as we've found it's much closer in duration to
+   * the x86 pause instruction vs. yield which is a nop and thus the
+   * loop count is lower and the interconnect gets a lot more traffic
+   * from loading the ticket above. */
+  __asm__ __volatile__("isb");
 #endif
 }
 
@@ -44,10 +47,17 @@ class DispatcherImpl final : public FiberInterface {
   }
 
  private:
+  void DefaultDispatch(Scheduler* sched);
 
   ctx::fiber Run(ctx::fiber&& c);
 
   bool is_terminating_ = false;
+
+  // This is used to wake up the scheduler from sleep.
+  bool wake_suspend_ = false;
+
+  std::mutex mu_;
+  std::condition_variable cnd_;
 };
 
 // Serves as a stub Fiber since it does not allocate any stack.
@@ -66,7 +76,6 @@ class MainFiberImpl final : public FiberInterface {
   }
 };
 
-
 DispatcherImpl* MakeDispatcher(Scheduler* sched) {
   ctx::fixedsize_stack salloc;
   ctx::stack_context sctx = salloc.allocate();
@@ -77,7 +86,6 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
   // placement new of context on top of fiber's stack
   return new (sp_ptr) DispatcherImpl{std::move(palloc), std::move(salloc), sched};
 }
-
 
 // Per thread initialization structure.
 struct FiberInitializer {
@@ -141,7 +149,7 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
   if (fb_init.custom_algo) {
     fb_init.custom_algo(fb_init.sched);
   } else {
-    fb_init.sched->DefaultDispatch();
+    DefaultDispatch(fb_init.sched);
   }
 
   DVLOG(1) << "Dispatcher exiting, switching to main_cntx";
@@ -156,8 +164,34 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
   return fc;
 }
 
-}  // namespace
+void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
+  DCHECK(!sched->HasReady());
+  DCHECK(FiberActive() == this);
 
+  while (true) {
+    if (sched->IsShutdown()) {
+      if (sched->num_worker_fibers() == 0)
+        break;
+    }
+    sched->DestroyTerminated();
+    if (sched->HasReady()) {
+      FiberInterface* fi = sched->PopReady();
+      DCHECK(!fi->list_hook.is_linked());
+      DCHECK(!fi->sleep_hook.is_linked());
+      sched->MarkReady(this);
+      fi->SwitchTo();
+      DCHECK(FiberActive() == this);
+    } else {
+      unique_lock<mutex> lk{mu_};
+
+      cnd_.wait(lk, [&]() { return wake_suspend_; });
+      wake_suspend_ = false;
+    }
+  }
+  sched->DestroyTerminated();
+}
+
+}  // namespace
 
 Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   DCHECK(!main_cntx->scheduler_);
@@ -168,7 +202,6 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
 Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
-  DCHECK(ready_queue_.empty());
 
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
   if (!dimpl->is_terminating()) {
@@ -211,21 +244,6 @@ void Scheduler::ScheduleTermination(FiberInterface* cntx) {
   }
 }
 
-void Scheduler::DefaultDispatch() {
-  DCHECK(ready_queue_.empty());
-
-  /*while (true) {
-    if (shutdown_) {
-      if (num_worker_fibers_ == 0)
-        break;
-    }
-    DestroyTerminated();
-
-  }*/
-  DestroyTerminated();
-  LOG(WARNING) << "No thread suspension is supported";
-}
-
 void Scheduler::DestroyTerminated() {
   while (!terminate_queue_.empty()) {
     FiberInterface* tfi = &terminate_queue_.front();
@@ -262,8 +280,6 @@ void Scheduler::ProcessSleep() {
 FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
 }
-
-
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), flags_(0), type_(type) {
@@ -329,7 +345,7 @@ void FiberInterface::Join() {
   while (true) {
     uint16_t fprev = flags_.fetch_or(kBusyBit, memory_order_acquire);
     if (fprev & kTerminatedBit) {
-      if ((fprev & kBusyBit) == 0) {  // Caller became the owner.
+      if ((fprev & kBusyBit) == 0) {                        // Caller became the owner.
         flags_.fetch_and(~kBusyBit, memory_order_relaxed);  // release the lock
       }
       return;

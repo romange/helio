@@ -14,10 +14,12 @@ class FiberTest : public testing::Test {
 
 TEST_F(FiberTest, Basic) {
   int run = 0;
-  Fiber fb("test1", [&] {run = 1;});
-  fb.Join();
+  Fiber fb1("test1", [&] {++run;});
+  Fiber fb2("test2", [&] {++run;});
+  fb1.Join();
+  fb2.Join();
 
-  EXPECT_EQ(1, run);
+  EXPECT_EQ(2, run);
 }
 
 }  // namespace example

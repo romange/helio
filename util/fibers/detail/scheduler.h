@@ -141,8 +141,6 @@ class Scheduler {
     return !ready_queue_.empty();
   }
 
-  void DefaultDispatch();
-
   ::boost::context::fiber_context Preempt();
 
   void WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
@@ -160,6 +158,10 @@ class Scheduler {
 
   bool IsShutdown() const {
     return shutdown_;
+  }
+
+  uint32_t num_worker_fibers() const {
+    return num_worker_fibers_;
   }
 
   void DestroyTerminated();
