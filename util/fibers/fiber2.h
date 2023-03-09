@@ -7,9 +7,10 @@
 #include <chrono>
 #include <string_view>
 
-#include "util/fibers/detail/scheduler.h"
+#include "util/fibers/detail/fiber_interface.h"
 
-namespace example {
+namespace util {
+namespace fb2 {
 
 class Fiber {
  public:
@@ -21,10 +22,14 @@ class Fiber {
   }
 
   template <typename Fn>
-  Fiber(std::string_view name, Fn&& fn)
+  Fiber(std::string_view name, Fn&& fn) : Fiber(Launch::post, name, std::forward<Fn>(fn)) {
+  }
+
+  template <typename Fn>
+  Fiber(Launch policy, std::string_view name, Fn&& fn)
       : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
                                                      std::forward<Fn>(fn))} {
-    Start();
+    Start(policy);
   }
 
   ~Fiber();
@@ -55,8 +60,8 @@ class Fiber {
   void Detach();
 
  private:
-  void Start() {
-    impl_->Start();
+  void Start(Launch launch) {
+    impl_->Start(launch);
   }
 
   boost::intrusive_ptr<util::fb2::detail::FiberInterface> impl_;
@@ -75,4 +80,5 @@ inline void Yield() {
 
 };  // namespace ThisFiber
 
-}  // namespace example
+}  // namespace fb2
+}  // namespace util

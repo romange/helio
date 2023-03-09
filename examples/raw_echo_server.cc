@@ -16,7 +16,8 @@
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
-#include "examples/fiber.h"
+#include "util/fibers/fiber2.h"
+#include "util/fibers/detail/scheduler.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");
@@ -29,6 +30,7 @@ namespace ctx = boost::context;
 using namespace std;
 using namespace util;
 using util::fb2::detail::FiberInterface;
+using util::fb2::Fiber;
 
 namespace {
 
@@ -86,7 +88,6 @@ void RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> 
 }
 
 using IoResult = int;
-using namespace example;
 
 struct CqeResult {
   int32_t res;

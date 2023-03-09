@@ -1,14 +1,15 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 
-#include "examples/fiber.h"
+#include "util/fibers/fiber2.h"
 
 #include "base/logging.h"
 
 using namespace std;
 
-namespace example {
+namespace util {
+namespace fb2 {
 
 Fiber::~Fiber() {
   CHECK(!joinable());
@@ -35,5 +36,5 @@ void Fiber::Join() {
   impl_.reset();
 }
 
-
-}  // namespace example
+}  // namespace fb2
+}  // namespace util
