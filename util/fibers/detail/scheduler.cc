@@ -46,6 +46,12 @@ class DispatcherImpl final : public FiberInterface {
     return is_terminating_;
   }
 
+  void Notify() {
+    unique_lock<mutex> lk(mu_);
+    wake_suspend_ = true;
+    cnd_.notify_one();
+  }
+
  private:
   void DefaultDispatch(Scheduler* sched);
 
@@ -56,8 +62,8 @@ class DispatcherImpl final : public FiberInterface {
   // This is used to wake up the scheduler from sleep.
   bool wake_suspend_ = false;
 
-  std::mutex mu_;
-  std::condition_variable cnd_;
+  mutex mu_;
+  condition_variable cnd_;
 };
 
 // Serves as a stub Fiber since it does not allocate any stack.
@@ -95,7 +101,6 @@ struct FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
-  DispatcherAlgo custom_algo;
 
   FiberInitializer(const FiberInitializer&) = delete;
 
@@ -146,8 +151,8 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
   // Normal SwitchTo operation.
 
   auto& fb_init = detail::FbInitializer();
-  if (fb_init.custom_algo) {
-    fb_init.custom_algo(fb_init.sched);
+  if (fb_init.sched->policy()) {
+    fb_init.sched->policy()->Run(fb_init.sched);
   } else {
     DefaultDispatch(fb_init.sched);
   }
@@ -165,8 +170,8 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 }
 
 void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
-  DCHECK(!sched->HasReady());
   DCHECK(FiberActive() == this);
+  DCHECK(!list_hook.is_linked());
 
   while (true) {
     if (sched->IsShutdown()) {
@@ -174,12 +179,17 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
         break;
     }
     sched->DestroyTerminated();
+    sched->ProcessRemoteReady();
+
     if (sched->HasReady()) {
       FiberInterface* fi = sched->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
-      sched->MarkReady(this);
+      sched->Schedule(this);
+
+      DVLOG(2) << "Switching to " << fi->name();
       fi->SwitchTo();
+      DCHECK(!list_hook.is_linked());
       DCHECK(FiberActive() == this);
     } else {
       unique_lock<mutex> lk{mu_};
@@ -203,6 +213,13 @@ Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
 
+  while (HasReady()) {
+    FiberInterface* fi = PopReady();
+    DCHECK(!fi->list_hook.is_linked());
+    DCHECK(!fi->sleep_hook.is_linked());
+    fi->SwitchTo();
+  }
+
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
   if (!dimpl->is_terminating()) {
     DVLOG(1) << "~Scheduler switching to dispatch " << dispatch_cntx_->IsDefined();
@@ -210,7 +227,10 @@ Scheduler::~Scheduler() {
     CHECK(!fc);
     CHECK(dimpl->is_terminating());
   }
-  DCHECK_EQ(0u, num_worker_fibers_);
+  delete custom_policy_;
+  custom_policy_ = nullptr;
+
+  CHECK_EQ(0u, num_worker_fibers_);
 
   // destroys the stack and the object via intrusive_ptr_release.
   dispatch_cntx_.reset();
@@ -230,8 +250,21 @@ ctx::fiber_context Scheduler::Preempt() {
   return fi->SwitchTo();
 }
 
+void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
+  remote_ready_queue_.Push(cntx);
+
+  if (custom_policy_) {
+    custom_policy_->Notify();
+  } else {
+    DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
+    dimpl->Notify();
+  }
+}
+
 void Scheduler::Attach(FiberInterface* cntx) {
   cntx->scheduler_ = this;
+  ready_queue_.push_back(*cntx);
+
   if (cntx->type() == FiberInterface::WORKER) {
     ++num_worker_fibers_;
   }
@@ -248,7 +281,7 @@ void Scheduler::DestroyTerminated() {
   while (!terminate_queue_.empty()) {
     FiberInterface* tfi = &terminate_queue_.front();
     terminate_queue_.pop_front();
-    DVLOG(1) << "Destructing " << tfi->name_;
+    DVLOG(1) << "Releasing terminated " << tfi->name_;
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
@@ -263,18 +296,36 @@ void Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   DCHECK(!fc);
 }
 
+void Scheduler::ProcessRemoteReady() {
+  while (true) {
+    FiberInterface* fi = remote_ready_queue_.Pop();
+    if (!fi)
+      break;
+    DVLOG(1) << "set ready " << fi->name();
+
+    ready_queue_.push_back(*fi);
+  }
+}
+
 void Scheduler::ProcessSleep() {
   if (sleep_queue_.empty())
     return;
 
   chrono::steady_clock::time_point now = chrono::steady_clock::now();
-  while (sleep_queue_.begin()->tp_ >= now) {
-    FiberInterface& fi = *sleep_queue_.begin();
-    MarkReady(&fi);
-    sleep_queue_.erase(fi);
-    if (sleep_queue_.empty())
+  do {
+    auto it = sleep_queue_.begin();
+    if (it->tp_ > now)
       break;
-  }
+
+    FiberInterface& fi = *it;
+    sleep_queue_.erase(it);
+    ready_queue_.push_back(fi);
+  } while (!sleep_queue_.empty());
+}
+
+void Scheduler::AttachCustomPolicy(DispatchPolicy* policy) {
+  CHECK(custom_policy_ == nullptr);
+  custom_policy_ = policy;
 }
 
 FiberInterface* FiberActive() noexcept {
@@ -307,6 +358,7 @@ ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(!list_hook.is_linked());
 
   scheduler_->ScheduleTermination(this);
+  DVLOG(1) << "Terminating " << name_;
 
   while (true) {
     uint16_t fprev = flags_.fetch_or(kTerminatedBit | kBusyBit, memory_order_acquire);
@@ -317,11 +369,15 @@ ctx::fiber_context FiberInterface::Terminate() {
   }
 
   while (!wait_queue_.empty()) {
-    FiberInterface* blocked = &wait_queue_.front();
+    FiberInterface* wait_fib = &wait_queue_.front();
     wait_queue_.pop_front();
-
-    // should be the scheduler of the blocked fiber.
-    blocked->scheduler_->MarkReady(blocked);
+    DVLOG(2) << "Scheduling " << wait_fib;
+    // should be the scheduler of the blocked fiber but this is handled by our own scheduler.
+    if (wait_fib->scheduler_ == scheduler_) {
+      scheduler_->Schedule(wait_fib);
+    } else {
+      wait_fib->scheduler_->ScheduleFromRemote(wait_fib);
+    }
   }
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
@@ -334,7 +390,6 @@ ctx::fiber_context FiberInterface::Terminate() {
 void FiberInterface::Start() {
   auto& fb_init = detail::FbInitializer();
   fb_init.sched->Attach(this);
-  fb_init.sched->MarkReady(this);
 }
 
 void FiberInterface::Join() {
@@ -378,9 +433,12 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 
 }  // namespace detail
 
-void SetCustomDispatcher(DispatcherAlgo algo) {
+void SetCustomDispatcher(DispatchPolicy* policy) {
   detail::FiberInitializer& fb_init = detail::FbInitializer();
-  fb_init.custom_algo = std::move(algo);
+  fb_init.sched->AttachCustomPolicy(policy);
+}
+
+DispatchPolicy::~DispatchPolicy() {
 }
 
 }  // namespace fb2
