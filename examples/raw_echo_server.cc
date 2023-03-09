@@ -290,7 +290,7 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
       suspended_list[index].next = next_rp_id;
       next_rp_id = index;
 
-      sched->MarkReady(suspended_list[index].cntx);
+      sched->Schedule(suspended_list[index].cntx);
       ++i;
     }
     io_uring_cq_advance(ring, i);
@@ -355,13 +355,36 @@ int SetupListener(uint16_t port) {
   return listen_fd;
 }
 
+class MyPolicy : public fb2::DispatchPolicy {
+ public:
+  MyPolicy(int index) : index_(index) {
+    SetupIORing(&ring_);
+  }
+
+  ~MyPolicy() {
+    VLOG(1) << "~MyPolicy";
+    io_uring_queue_exit(&ring_);
+  }
+
+  void Run(fb2::detail::Scheduler* sched) final {
+    RunEventLoop(index_, &ring_, sched);
+  }
+
+  void Notify() final {
+  }
+
+  io_uring* ring() {
+    return &ring_;
+  }
+
+ private:
+  int index_;
+  io_uring ring_;
+};
+
 void WorkerThread(unsigned index) {
-  io_uring ring;
-
-  SetupIORing(&ring);
-  fb2::SetCustomDispatcher(
-      [&](fb2::detail::Scheduler* sched) { RunEventLoop(index, &ring, sched); });
-
+  MyPolicy* policy = new MyPolicy(index);
+  fb2::SetCustomDispatcher(policy);
   ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt();
 
   DCHECK(!fc);
@@ -382,18 +405,13 @@ int main(int argc, char* argv[]) {
     shutdown(listen_fd, SHUT_RDWR);
   });
 
-  // setup iouring
-  io_uring ring;
-
-  SetupIORing(&ring);
+  MyPolicy* policy = new MyPolicy(-1);
+  fb2::SetCustomDispatcher(policy);
 
   // setup listening socket
   uint16_t port = absl::GetFlag(FLAGS_port);
 
   listen_fd = SetupListener(port);
-
-  fb2::SetCustomDispatcher(
-      [&ring](fb2::detail::Scheduler* sched) { RunEventLoop(-1, &ring, sched); });
 
   uint16_t num_workers = absl::GetFlag(FLAGS_threads);
   workers.resize(num_workers);
@@ -413,7 +431,7 @@ int main(int argc, char* argv[]) {
     workers[i].pid = tid;
   }
 
-  Fiber accept_fb("accept", [&] { AcceptFiber(&ring, listen_fd); });
+  Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
   accept_fb.Join();
 
   loop_exit = true;
@@ -421,7 +439,6 @@ int main(int argc, char* argv[]) {
   for (size_t i = 0; i < num_workers; ++i) {
     pthread_join(workers[i].pid, nullptr);
   }
-  io_uring_queue_exit(&ring);
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;

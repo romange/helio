@@ -10,8 +10,13 @@
 #include <boost/intrusive/slist.hpp>
 #include <chrono>
 
+#include "base/mpsc_intrusive_queue.h"
+
 namespace util {
 namespace fb2 {
+
+class DispatchPolicy;
+
 namespace detail {
 
 using FI_ListHook =
@@ -97,11 +102,23 @@ class FiberInterface {
     return type_;
   }
 
+  // For MPSCIntrusiveQueue queue.
+  friend void MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
+    dest->next_.store(next_node, std::memory_order_relaxed);
+  }
+
+  friend FiberInterface* MPSC_intrusive_load_next(const FiberInterface& src) {
+    return src.next_.load(std::memory_order_acquire);
+  }
+
+  const char* name() const {
+    return name_;
+  }
+
  protected:
   using WaitQueue = boost::intrusive::slist<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
-
 
   ::boost::context::fiber_context Terminate();
 
@@ -114,11 +131,11 @@ class FiberInterface {
   WaitQueue wait_queue_;
 
   Scheduler* scheduler_ = nullptr;
+  std::atomic<FiberInterface*> next_{nullptr};
   std::chrono::steady_clock::time_point tp_;
 
   char name_[24];
 };
-
 
 // The class that is responsible for fiber management and scheduling.
 // It's main loop is in DefaultDispatch() and it runs in the context of Dispatch fiber.
@@ -129,9 +146,11 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void MarkReady(FiberInterface* cntx) {
+  void Schedule(FiberInterface* cntx) {
     ready_queue_.push_back(*cntx);
   }
+
+  void ScheduleFromRemote(FiberInterface* cntx);
 
   void Attach(FiberInterface* cntx);
 
@@ -165,7 +184,13 @@ class Scheduler {
   }
 
   void DestroyTerminated();
+  void ProcessRemoteReady();
   void ProcessSleep();
+
+  void AttachCustomPolicy(DispatchPolicy* policy);
+  DispatchPolicy* policy() {
+    return custom_policy_;
+  }
 
  private:
   // I use cache_last<true> so that slist will have push_back support.
@@ -188,9 +213,12 @@ class Scheduler {
   static constexpr size_t kQSize = sizeof(FI_Queue);
 
   FiberInterface* main_cntx_;
+  DispatchPolicy* custom_policy_ = nullptr;
+
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
+  base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
 
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;
@@ -253,7 +281,7 @@ static WorkerFiberImpl<Fn>* MakeWorkerFiberImpl(std::string_view name, StackAllo
 FiberInterface* FiberActive() noexcept;
 
 inline void FiberInterface::Yield() {
-  scheduler_->MarkReady(this);
+  scheduler_->Schedule(this);
   scheduler_->Preempt();
 }
 
@@ -263,8 +291,15 @@ inline void FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) 
 
 }  // namespace detail
 
-using DispatcherAlgo = std::function<void(detail::Scheduler* sched)>;
-void SetCustomDispatcher(DispatcherAlgo algo);
+class DispatchPolicy {
+public:
+  virtual ~DispatchPolicy();
+
+  virtual void Run(detail::Scheduler* sched) = 0;
+  virtual void Notify() = 0;
+};
+
+void SetCustomDispatcher(DispatchPolicy* policy);
 
 }  // namespace fb2
 }  // namespace util
