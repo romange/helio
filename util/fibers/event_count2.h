@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <condition_variable>  // for cv_status
+
 #include "absl/base/internal/spinlock.h"
 #include "util/fibers/detail/scheduler.h"
 
@@ -102,22 +104,131 @@ class EventCount {
   static constexpr uint64_t kWaiterMask = kAddEpoch - 1;
 };
 
+class Done {
+  class Impl;
+
+ public:
+  enum DoneWaitDirective { AND_NOTHING = 0, AND_RESET = 1 };
+
+  Done() : impl_(new Impl) {
+  }
+  ~Done() {
+  }
+
+  void Notify() {
+    impl_->Notify();
+  }
+  bool Wait(DoneWaitDirective reset = AND_NOTHING) {
+    return impl_->Wait(reset);
+  }
+
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    return impl_->WaitFor(duration);
+  }
+
+  void Reset() {
+    impl_->Reset();
+  }
+
+ private:
+  class Impl {
+   public:
+    Impl() : ready_(false) {
+    }
+    Impl(const Impl&) = delete;
+    void operator=(const Impl&) = delete;
+
+    friend void intrusive_ptr_add_ref(Impl* done) noexcept {
+      done->use_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    friend void intrusive_ptr_release(Impl* impl) noexcept {
+      if (1 == impl->use_count_.fetch_sub(1, std::memory_order_release)) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        delete impl;
+      }
+    }
+
+    bool Wait(DoneWaitDirective reset) {
+      bool res = ec_.await([this] { return ready_.load(std::memory_order_acquire); });
+      if (reset == AND_RESET)
+        ready_.store(false, std::memory_order_release);
+      return res;
+    }
+
+    // Returns true if predicate became true, false if timeout reached.
+    bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+      auto tp = std::chrono::steady_clock::now() + duration;
+      std::cv_status status =
+          ec_.await_until([this] { return ready_.load(std::memory_order_acquire); }, tp);
+      return status == std::cv_status::no_timeout;
+    }
+
+    // We use EventCount to wake threads without blocking.
+    void Notify() {
+      ready_.store(true, std::memory_order_release);
+      ec_.notify();
+    }
+
+    void Reset() {
+      ready_ = false;
+    }
+
+    bool IsReady() const {
+      return ready_.load(std::memory_order_acquire);
+    }
+
+   private:
+    EventCount ec_;
+    std::atomic<std::uint32_t> use_count_{0};
+    std::atomic_bool ready_;
+  };
+
+  using ptr_t = ::boost::intrusive_ptr<Impl>;
+  ptr_t impl_;
+};
+
 inline bool EventCount::notify() noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
-    SpinLockHolder holder(&lock_);
+    lock_.Lock();
 
     if (!wait_queue_.empty()) {
       detail::FiberInterface* fi = &wait_queue_.front();
       wait_queue_.pop_front();
+      lock_.Unlock();
+
       active->ActivateOther(fi);
       return true;
     }
+    lock_.Unlock();
   }
   return false;
 }
+
+
+inline bool EventCount::notifyAll() noexcept {
+  uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
+
+  if (prev & kWaiterMask) {
+    FI_Queue tmp_queue;
+    {
+      SpinLockHolder holder(&lock_);
+      tmp_queue.swap(wait_queue_);
+    }
+    detail::FiberInterface* active = detail::FiberActive();
+
+    while (!tmp_queue.empty()) {
+      detail::FiberInterface* fi = &tmp_queue.front();
+      tmp_queue.pop_front();
+      active->ActivateOther(fi);
+    }
+  }
+
+  return false;
+};
 
 // Atomically checks for epoch and waits on cond_var.
 inline void EventCount::wait(uint32_t epoch) noexcept {
@@ -151,6 +262,26 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   }
 
   return preempt;
+}
+
+
+template <typename Condition>
+std::cv_status EventCount::await_until(Condition condition,
+                                       const std::chrono::steady_clock::time_point& tp) {
+  if (condition())
+    return std::cv_status::no_timeout;  // fast path
+
+  cv_status status = std::cv_status::no_timeout;
+  while (true) {
+    Key key = prepareWait();  // Key destructor restores back the sequence counter.
+    if (condition()) {
+      break;
+    }
+    status = wait_until(key.epoch(), tp);
+    if (status == std::cv_status::timeout)
+      break;
+  }
+  return status;
 }
 
 }  // namespace fb2

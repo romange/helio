@@ -178,10 +178,11 @@ class SubmitEntry {
     PrepFd(IORING_OP_NOP, -1);
   }
 
- private:
+  // Used only by Proactor.
   explicit SubmitEntry(io_uring_sqe* sqe) : sqe_(sqe) {
   }
 
+ private:
   void PrepFd(int op, int fd) {
     sqe_->opcode = op;
     sqe_->fd = fd;

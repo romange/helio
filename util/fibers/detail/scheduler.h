@@ -22,7 +22,7 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void Schedule(FiberInterface* cntx) {
+  void AddReady(FiberInterface* cntx) {
     ready_queue_.push_back(*cntx);
   }
 
@@ -64,6 +64,7 @@ class Scheduler {
   void ProcessSleep();
 
   void AttachCustomPolicy(DispatchPolicy* policy);
+
   DispatchPolicy* policy() {
     return custom_policy_;
   }
@@ -102,7 +103,7 @@ class Scheduler {
 
 
 inline void FiberInterface::Yield() {
-  scheduler_->Schedule(this);
+  scheduler_->AddReady(this);
   scheduler_->Preempt();
 }
 

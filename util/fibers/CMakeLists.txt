@@ -1,9 +1,9 @@
-add_library(fibers2 fiber2.cc detail/scheduler.cc)
-cxx_link(fibers2 base Boost::context)
+add_library(fibers2 fiber2.cc proactor_base.cc uring_proactor.cc detail/scheduler.cc)
+cxx_link(fibers2 base TRDP::uring Boost::context)
 
 
 add_library(fibers_ext fibers_ext.cc fiber_file.cc fiberqueue_threadpool.cc)
 cxx_link(fibers_ext base io Boost::fiber absl_strings)
 
 cxx_test(fibers_ext_test fibers_ext uring_fiber_lib epoll_fiber_lib LABELS CI)
-cxx_test(fiber2_test fibers2)
+cxx_test(fiber2_test fibers2 LABELS CI)
