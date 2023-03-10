@@ -185,7 +185,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       FiberInterface* fi = sched->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
-      sched->Schedule(this);
+      sched->AddReady(this);
 
       DVLOG(2) << "Switching to " << fi->name();
       fi->SwitchTo();
@@ -387,10 +387,10 @@ void FiberInterface::Start(Launch launch) {
 
   switch (launch) {
     case Launch::post:
-      fb_init.sched->Schedule(this);
+      fb_init.sched->AddReady(this);
       break;
     case Launch::dispatch:
-      fb_init.sched->Schedule(fb_init.active);
+      fb_init.sched->AddReady(fb_init.active);
       {
         auto fc = SwitchTo();
         DCHECK(!fc);
@@ -425,12 +425,18 @@ void FiberInterface::Join() {
 }
 
 void FiberInterface::ActivateOther(FiberInterface* other) {
+  DCHECK(other->scheduler_);
+
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
-    scheduler_->Schedule(other);
+    scheduler_->AddReady(other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
   }
+}
+
+void FiberInterface::Suspend() {
+  scheduler_->Preempt();
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {

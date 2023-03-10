@@ -11,14 +11,44 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fibers/event_count2.h"
+#include "util/fibers/uring_proactor.h"
 
 using namespace std;
 
 namespace util {
 namespace fb2 {
 
+constexpr uint32_t kRingDepth = 16;
+
 class FiberTest : public testing::Test {
  public:
+};
+
+class ProactorTest : public testing::Test {
+ protected:
+  void SetUp() final {
+    proactor_ = std::make_unique<UringProactor>();
+    proactor_thread_ = thread{[this] {
+      proactor_->SetIndex(0);
+      proactor_->Init(kRingDepth);
+      proactor_->Run();
+    }};
+  }
+
+  void TearDown() final {
+    proactor_->Stop();
+    proactor_thread_.join();
+    proactor_.reset();
+  }
+
+  static void SetUpTestCase() {
+    testing::FLAGS_gtest_death_test_style = "threadsafe";
+  }
+
+  using IoResult = UringProactor::IoResult;
+
+  std::unique_ptr<UringProactor> proactor_;
+  std::thread proactor_thread_;
 };
 
 TEST_F(FiberTest, Basic) {
@@ -92,6 +122,21 @@ TEST_F(FiberTest, EventCount) {
   signal = true;
   ec.notify();
   fb.Join();
+}
+
+TEST_F(ProactorTest, AsyncCall) {
+  ASSERT_FALSE(UringProactor::IsProactorThread());
+  ASSERT_EQ(-1, UringProactor::GetIndex());
+
+  for (unsigned i = 0; i < ProactorBase::kTaskQueueLen * 2; ++i) {
+    VLOG(1) << "Dispatch: " << i;
+    proactor_->DispatchBrief([i] {
+      VLOG(1) << "I: " << i;
+    });
+  }
+  LOG(INFO) << "DispatchBrief done";
+  // proactor_->AwaitBrief([] {});
+  usleep(5000);
 }
 
 }  // namespace fb2

@@ -75,6 +75,8 @@ class FiberInterface {
   // other can belong to another thread.
   void ActivateOther(FiberInterface* other);
 
+  void Suspend();
+
   bool IsDefined() const {
     return bool(entry_);
   }

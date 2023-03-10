@@ -5,6 +5,7 @@
 
 #include "base/mpmc_bounded_queue.h"
 #include "util/fibers/fibers_ext.h"
+#include "util/fibers/detail/result_mover.h"
 
 namespace util {
 namespace fibers_ext {

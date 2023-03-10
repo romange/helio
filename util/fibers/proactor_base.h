@@ -1,4 +1,4 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 
@@ -17,12 +17,12 @@
 
 #include "base/mpmc_bounded_queue.h"
 #include "util/fibers/detail/result_mover.h"
-#include "util/fibers/fiber.h"
-#include "util/fibers/fibers_ext.h"
+#include "util/fibers/event_count2.h"
+#include "util/fibers/fiber2.h"
 
 namespace util {
+namespace fb2 {
 
-class FiberSchedAlgo;
 class LinuxSocketBase;
 
 class ProactorBase {
@@ -31,6 +31,8 @@ class ProactorBase {
   friend class FiberSchedAlgo;
 
  public:
+  enum { kTaskQueueLen = 256 };
+
   enum ProactorKind { EPOLL = 1, IOURING = 2 };
 
   // Corresponds to level 0.
@@ -125,7 +127,7 @@ class ProactorBase {
     // So I just copy them into capture.
     // We forward captured variables so we need lambda to be mutable.
     DispatchBrief([f = std::forward<Func>(f), args...]() mutable {
-      fibers_ext::Fiber(std::forward<Func>(f), std::forward<Args>(args)...).Detach();
+      Fiber(std::forward<Func>(f), std::forward<Args>(args)...).Detach();
     });
   }
 
@@ -141,11 +143,11 @@ class ProactorBase {
 
   // Please note that this function uses Await, therefore can not be used inside
   // Proactor main fiber (i.e. Async callbacks).
-  template <typename... Args> fibers_ext::Fiber LaunchFiber(Args&&... args) {
-    fibers_ext::Fiber fb;
+  template <typename... Args> Fiber LaunchFiber(Args&&... args) {
+    Fiber fb;
 
     // It's safe to use & capture since we await before returning.
-    AwaitBrief([&] { fb = boost::fibers::fiber(std::forward<Args>(args)...); });
+    AwaitBrief([&] { fb = Fiber(std::forward<Args>(args)...); });
     return fb;
   }
 
@@ -221,10 +223,6 @@ class ProactorBase {
     // absl::GetCurrentTimeNanos() might be non-monotonic and sync with the system clock.
     // but it's much more efficient than clock_gettime.
     return absl::GetCurrentTimeNanos();
-    /*timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_nsec + ts.tv_sec * 1000000000UL;*/
   }
 
   pthread_t thread_id_ = 0U;
@@ -247,13 +245,10 @@ class ProactorBase {
 
   using FuncQ = base::mpmc_bounded_queue<Tasklet>;
 
-  using EventCount = fibers_ext::EventCount;
-
   FuncQ task_queue_;
   EventCount task_queue_avail_;
 
   uint32_t next_task_id_{1};
-  FiberSchedAlgo* scheduler_ = nullptr;
 
   // Runs tasks when there is available cpu time and no I/O events demand it.
   struct OnIdleWrapper {
@@ -342,9 +337,9 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
     // TODO:
   }
 
-  fibers_ext::Done done;
+  Done done;
   using ResultType = decltype(f());
-  detail::ResultMover<ResultType> mover;
+  util::detail::ResultMover<ResultType> mover;
 
   // Store done-ptr by value to increase the refcount while lambda is running.
   DispatchBrief([&mover, f = std::forward<Func>(f), done]() mutable {
@@ -367,31 +362,12 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
   }
 
   using ResultType = decltype(f());
-  detail::ResultMover<ResultType> mover;
+  util::detail::ResultMover<ResultType> mover;
   auto fb = LaunchFiber([&] { mover.Apply(std::forward<Func>(f)); });
   fb.Join();
 
   return std::move(mover).get();
 }
 
-namespace detail {
-
-// GLIBC/MUSL has 2 flavors of strerror_r.
-// this wrappers work around these incompatibilities.
-inline char const* strerror_r_helper(char const* r, char const*) noexcept {
-  return r;
-}
-
-inline char const* strerror_r_helper(int r, char const* buffer) noexcept {
-  return r == 0 ? buffer : "Unknown error";
-}
-
-inline std::string SafeErrorMessage(int ev) noexcept {
-  char buf[128];
-
-  return strerror_r_helper(strerror_r(ev, buf, sizeof(buf)), buf);
-}
-
-}  // namespace detail
-
+}  // namespace fb2
 }  // namespace util
