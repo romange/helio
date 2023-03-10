@@ -275,7 +275,7 @@ class ProactorBase {
     uint64_t monotonic_time = 0;  // in nanoseconds
     ProactorBase* owner = nullptr;
   };
-  static thread_local TLInfo tl_info_;
+  static __thread TLInfo tl_info_;
 
  private:
   template <typename Func> bool EmplaceTaskQueue(Func&& f) {

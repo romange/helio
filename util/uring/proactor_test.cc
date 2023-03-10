@@ -63,6 +63,9 @@ class ProactorTest : public testing::Test {
 };
 
 TEST_F(ProactorTest, AsyncCall) {
+  ASSERT_FALSE(Proactor::IsProactorThread());
+  ASSERT_EQ(-1, Proactor::GetIndex());
+
   for (unsigned i = 0; i < 10000; ++i) {
     proactor_->DispatchBrief([] {});
   }

@@ -370,12 +370,8 @@ ctx::fiber_context FiberInterface::Terminate() {
     FiberInterface* wait_fib = &wait_queue_.front();
     wait_queue_.pop_front();
     DVLOG(2) << "Scheduling " << wait_fib;
-    // should be the scheduler of the blocked fiber but this is handled by our own scheduler.
-    if (wait_fib->scheduler_ == scheduler_) {
-      scheduler_->Schedule(wait_fib);
-    } else {
-      wait_fib->scheduler_->ScheduleFromRemote(wait_fib);
-    }
+
+    ActivateOther(wait_fib);
   }
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
@@ -426,6 +422,15 @@ void FiberInterface::Join() {
   wait_queue_.push_front(*active);
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
   active->scheduler_->Preempt();
+}
+
+void FiberInterface::ActivateOther(FiberInterface* other) {
+  // Check first if we the fiber belongs to the active thread.
+  if (other->scheduler_ == scheduler_) {
+    scheduler_->Schedule(other);
+  } else {
+    other->scheduler_->ScheduleFromRemote(other);
+  }
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {

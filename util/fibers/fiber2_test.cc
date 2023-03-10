@@ -10,6 +10,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/event_count2.h"
 
 using namespace std;
 
@@ -72,6 +73,25 @@ TEST_F(FiberTest, Dispatch) {
   EXPECT_EQ(2, val1);
 
   fb2.Join();
+}
+
+TEST_F(FiberTest, EventCount) {
+  EventCount ec;
+  bool signal = false;
+  bool fb_exit = false;
+
+  Fiber fb(Launch::dispatch, "fb", [&] {
+    ec.await([&] { return signal; });
+    fb_exit = true;
+  });
+  ec.notify();
+  ThisFiber::Yield();
+
+  EXPECT_FALSE(fb_exit);
+
+  signal = true;
+  ec.notify();
+  fb.Join();
 }
 
 }  // namespace fb2
