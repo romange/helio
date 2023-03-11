@@ -414,7 +414,16 @@ class string_view_sso {
                ? static_cast<int>(length_a > length_b) - static_cast<int>(length_a < length_b)
                : (compare_result < 0 ? -1 : 1);
   }
-  enum { LOCAL_CAPACITY = 15 };
+  enum {
+    // Test file makes sure that local capacity is not smaller than actual SSO.
+#if defined(_LIBCPP_VERSION)
+    // libc++ supports SSO of up-to 22 bytes
+    LOCAL_CAPACITY = 22
+#else
+    // Both libstdc++ and MSVC's STL support SSO of up-to 15 bytes.
+    LOCAL_CAPACITY = 15
+#endif
+  };
 
   constexpr const char* ptr() const {
     return size_ <= LOCAL_CAPACITY ? buffer_.local.data() : buffer_.begin;
