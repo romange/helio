@@ -577,7 +577,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
       cqe_count = 1;
     }
 
-    if (cqe_count) {
+    if (cqe_count || io_uring_sq_ready(&ring_) > 0) {
       continue;
     }
 
@@ -595,7 +595,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < kMaxSpinLimit) {
+    if (!ring_busy && spin_loops++ < 0) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
@@ -604,8 +604,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
 
     spin_loops = 0;  // Reset the spinning.
-
-    DCHECK_EQ(0U, tq_seq & 1) << tq_seq;
+    DCHECK_EQ(0u, io_uring_sq_ready(&ring_));
 
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then

@@ -10,7 +10,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
-#include "util/fibers/event_count2.h"
+#include "util/fibers/synchronization.h"
 #include "util/fibers/uring_proactor.h"
 
 using namespace std;
@@ -137,6 +137,61 @@ TEST_F(ProactorTest, AsyncCall) {
   LOG(INFO) << "DispatchBrief done";
   // proactor_->AwaitBrief([] {});
   usleep(5000);
+}
+
+TEST_F(ProactorTest, Await) {
+  thread_local int val = 5;
+
+  proactor_->AwaitBrief([] { val = 15; });
+  EXPECT_EQ(5, val);
+
+  int j = proactor_->AwaitBrief([] { return val; });
+  EXPECT_EQ(15, j);
+}
+
+TEST_F(ProactorTest, AsyncEvent) {
+  Done done;
+
+  auto cb = [done](IoResult, uint32_t, int64_t payload) mutable {
+    done.Notify();
+    LOG(INFO) << "notify";
+  };
+
+  proactor_->DispatchBrief([&] {
+    uring::SubmitEntry se = proactor_->GetSubmitEntry(std::move(cb), 1);
+    se.sqe()->opcode = IORING_OP_NOP;
+    LOG(INFO) << "submit";
+  });
+  LOG(INFO) << "DispatchBrief";
+  done.Wait();
+}
+
+TEST_F(ProactorTest, DispatchTest) {
+  CondVarAny cnd1, cnd2;
+  Mutex mu;
+  int state = 0;
+
+  LOG(INFO) << "LaunchFiber";
+  auto fb = proactor_->LaunchFiber("jessie", [&] {
+
+    unique_lock g(mu);
+    state = 1;
+    LOG(INFO) << "state 1";
+
+    cnd2.notify_one();
+    cnd1.wait(g, [&] { return state == 2; });
+    LOG(INFO) << "End";
+  });
+
+  {
+    unique_lock g(mu);
+    cnd2.wait(g, [&] { return state == 1; });
+    state = 2;
+    LOG(INFO) << "state 2";
+    cnd1.notify_one();
+  }
+  LOG(INFO) << "BeforeJoin";
+  fb.Join();
 }
 
 }  // namespace fb2

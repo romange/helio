@@ -17,7 +17,7 @@
 
 #include "base/mpmc_bounded_queue.h"
 #include "util/fibers/detail/result_mover.h"
-#include "util/fibers/event_count2.h"
+#include "util/fibers/synchronization.h"
 #include "util/fibers/fiber2.h"
 
 namespace util {

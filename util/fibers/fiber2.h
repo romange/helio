@@ -67,6 +67,7 @@ class Fiber {
   boost::intrusive_ptr<util::fb2::detail::FiberInterface> impl_;
 };
 
+
 namespace ThisFiber {
 
 inline void SleepUntil(std::chrono::steady_clock::time_point tp) {

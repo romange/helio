@@ -1,4 +1,5 @@
-add_library(fibers2 fiber2.cc proactor_base.cc uring_proactor.cc detail/scheduler.cc)
+add_library(fibers2 fiber2.cc proactor_base.cc synchronization.cc uring_proactor.cc
+             detail/scheduler.cc)
 cxx_link(fibers2 base TRDP::uring Boost::context)
 
 

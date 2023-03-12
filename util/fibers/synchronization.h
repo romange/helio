@@ -12,6 +12,18 @@
 namespace util {
 namespace fb2 {
 
+namespace detail {
+using SpinLockType = ::absl::base_internal::SpinLock;
+using SpinLockHolder = ::absl::base_internal::SpinLockHolder;
+
+using WaitQueue = boost::intrusive::slist<
+    detail::FiberInterface,
+    boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
+                                  &detail::FiberInterface::list_hook>,
+    boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+
+}  // namespace detail
+
 // This class is all about reducing the contention on the producer side (notifications).
 // We want notifications to be as light as possible, while waits are less important
 // since they on the path of being suspended anyway. However, we also want to reduce number of
@@ -86,23 +98,139 @@ class EventCount {
   // waiter count in the least significant 32 bits.
   std::atomic_uint64_t val_;
 
-  using SpinLockType = ::absl::base_internal::SpinLock;
-  using SpinLockHolder = ::absl::base_internal::SpinLockHolder;
-
-  using FI_Queue = boost::intrusive::slist<
-      detail::FiberInterface,
-      boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
-                                    &detail::FiberInterface::list_hook>,
-      boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
-
-  SpinLockType lock_;
-  FI_Queue wait_queue_;
+  detail::SpinLockType lock_;
+  detail::WaitQueue wait_queue_;
 
   static constexpr uint64_t kAddWaiter = 1ULL;
   static constexpr size_t kEpochShift = 32;
   static constexpr uint64_t kAddEpoch = 1ULL << kEpochShift;
   static constexpr uint64_t kWaiterMask = kAddEpoch - 1;
 };
+
+class CondVar;
+
+class Mutex {
+ private:
+  friend class CondVar;
+
+  detail::SpinLockType wait_queue_splk_;
+  detail::WaitQueue wait_queue_;
+  detail::FiberInterface* owner_{nullptr};
+
+ public:
+  Mutex() = default;
+
+  ~Mutex() {
+    assert(!owner_);
+  }
+
+  Mutex(Mutex const&) = delete;
+  Mutex& operator=(Mutex const&) = delete;
+
+  void lock();
+
+  bool try_lock();
+
+  void unlock();
+};
+
+class CondVarAny {
+ private:
+  detail::SpinLockType wait_queue_splk_;
+  detail::WaitQueue wait_queue_;
+
+ public:
+  CondVarAny() = default;
+
+  ~CondVarAny() {
+    assert(wait_queue_.empty());
+  }
+
+  CondVarAny(CondVarAny const&) = delete;
+  CondVarAny& operator=(CondVarAny const&) = delete;
+
+  void notify_one() noexcept;
+
+  void notify_all() noexcept;
+
+  template <typename LockType> void wait(LockType& lt) {
+    detail::FiberInterface* active = detail::FiberActive();
+
+    // atomically call lt.unlock() and block on *this
+    // store this fiber in waiting-queue
+    wait_queue_splk_.Lock();
+    lt.unlock();
+    wait_queue_.push_back(*active);
+    wait_queue_splk_.Unlock();
+    active->scheduler()->Preempt();
+
+    // relock external again before returning
+    try {
+      lt.lock();
+    } catch (...) {
+      std::terminate();
+    }
+  }
+
+  template <typename LockType, typename Pred> void wait(LockType& lt, Pred pred) {
+    while (!pred()) {
+      wait(lt);
+    }
+  }
+
+#if 0
+  template <typename LockType, typename Clock, typename Duration>
+  std::cv_status wait_until(LockType& lt,
+                       std::chrono::time_point<Clock, Duration> const& timeout_time_) {
+    detail::FiberInterface* active = detail::FiberActive();
+    std::cv_status status = std::cv_status::no_timeout;
+    std::chrono::steady_clock::time_point timeout_time = detail::convert(timeout_time_);
+    // atomically call lt.unlock() and block on *this
+    // store this fiber in waiting-queue
+    wait_queue_splk_.Lock();
+
+    // unlock external lt
+    lt.unlock();
+    if (!wait_queue_.suspend_and_wait_until(lk, active_ctx, timeout_time)) {
+      status = cv_status::timeout;
+    }
+    // relock external again before returning
+    try {
+      lt.lock();
+#if defined(BOOST_CONTEXT_HAS_CXXABI_H)
+    } catch (abi::__forced_unwind const&) {
+      throw;
+#endif
+    } catch (...) {
+      std::terminate();
+    }
+    return status;
+  }
+
+  template <typename LockType, typename Clock, typename Duration, typename Pred>
+  bool wait_until(LockType& lt, std::chrono::time_point<Clock, Duration> const& timeout_time,
+                  Pred pred) {
+    while (!pred()) {
+      if (cv_status::timeout == wait_until(lt, timeout_time)) {
+        return pred();
+      }
+    }
+    return true;
+  }
+
+  template <typename LockType, typename Rep, typename Period>
+  std::cv_status wait_for(LockType& lt, std::chrono::duration<Rep, Period> const& timeout_duration) {
+    return wait_until(lt, std::chrono::steady_clock::now() + timeout_duration);
+  }
+
+  template <typename LockType, typename Rep, typename Period, typename Pred>
+  bool wait_for(LockType& lt, std::chrono::duration<Rep, Period> const& timeout_duration,
+                Pred pred) {
+    return wait_until(lt, std::chrono::steady_clock::now() + timeout_duration, pred);
+  }
+#endif
+};
+
 
 class Done {
   class Impl;
@@ -208,14 +336,13 @@ inline bool EventCount::notify() noexcept {
   return false;
 }
 
-
 inline bool EventCount::notifyAll() noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
 
   if (prev & kWaiterMask) {
-    FI_Queue tmp_queue;
+    decltype(wait_queue_) tmp_queue;
     {
-      SpinLockHolder holder(&lock_);
+      detail::SpinLockHolder holder(&lock_);
       tmp_queue.swap(wait_queue_);
     }
     detail::FiberInterface* active = detail::FiberActive();
@@ -263,7 +390,6 @@ template <typename Condition> bool EventCount::await(Condition condition) {
 
   return preempt;
 }
-
 
 template <typename Condition>
 std::cv_status EventCount::await_until(Condition condition,
