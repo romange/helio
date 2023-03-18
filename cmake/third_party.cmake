@@ -317,6 +317,12 @@ add_third_party(
   LIB "none"
 )
 
+add_third_party(
+  cares
+  URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
+  CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON"
+)
+
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES

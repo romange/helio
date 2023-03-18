@@ -4,10 +4,12 @@
 
 #include "util/dns_resolve.h"
 
+#include <ares.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -15,115 +17,113 @@
 #include "util/fibers/fibers_ext.h"
 
 namespace util {
+namespace {
 
 using namespace std;
 
-
-#ifdef GAI_NOWAIT
-// We had to disable the usage of getaddrinfo_a and for now we use the syncronous version.
-// There are several reasons for this:
-// 1. getaddrinfo_a brings uncompatible linker dependencies between different linux versions
-// 2. getaddrinfo_a is not supported by some GLIBC implementations (musl)
-// TODO: The correct solution would be to use c-ares (see the comment below).
-// #define USE_GAI_ASYNC
-#endif
-
-#ifdef USE_GAI_ASYNC
-struct NotifyStruct {
-  atomic_bool gate{false};
-  fibers_ext::EventCount evc;
+struct DnsResolveCallbackArgs {
+  char* dest_ip = nullptr;
+  std::error_code ec;
+  bool done = false;  // Should we use optional<ec> above instead of the additional bool field?
 };
 
-// To ensure compatibility between different versions of Glibc,
-// we use sigval_t instead of __sigval_t. However, some older
-// versions may still require __sigval_t, such as when __USE_POSIX199309
-// is defined. The following text is derived from the comments in Glibc 2.31:
-// To avoid sigval_t (not a standard type name) having C++ name
-// mangling depending on whether the selected standard includes union
-// sigval, it should not be defined at all when using a standard for
-// which the sigval name is not reserved; in that case, headers should
-// not include <bits/types/sigval_t.h> and should use only the
-// internal __sigval_t name.
-static void DnsResolveNotify(sigval_t val) {
-  NotifyStruct* ns = (NotifyStruct*)val.sival_ptr;
-  ns->gate.store(true, memory_order_relaxed);
-  ns->evc.notify();
-}
-#endif
+void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int writable) {
+  int epoll_fd = (int64_t)arg;
 
-/// TODO: to reimplement it with c-ares because getaddrinfo_a is not supported by musl and
-/// older glibc versions.
-/// check out in c-ares: ares_init, ares_gethostbyname,etc.
-///
-error_code DnsResolve(const char* dns, uint32_t wait_ms, char dest_ip[]) {
-  // TODO: to implemet deadline semantics with wait_ms. currently ignored.
-  struct addrinfo hints;
-  struct addrinfo *servinfo = nullptr;
-
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  hints.ai_flags = AI_ALL;
-
-  static_assert(INET_ADDRSTRLEN < INET6_ADDRSTRLEN, "");
-
-#ifdef USE_GAI_ASYNC
-  struct gaicb gai_req;
-  gai_req.ar_name = dns;
-  gai_req.ar_request = &hints;
-  gai_req.ar_result = nullptr;
-  gai_req.ar_service = nullptr;
-
-  struct gaicb* gai_list[] = {&gai_req};
-
-  NotifyStruct* ns = new NotifyStruct;
-
-  struct sigevent sigev;
-  sigev.sigev_notify = SIGEV_THREAD;
-  sigev.sigev_notify_function = DnsResolveNotify;
-  sigev.sigev_value.sival_ptr = ns;
-  sigev.sigev_notify_attributes = nullptr;
-
-  CHECK_EQ(0, getaddrinfo_a(GAI_NOWAIT, gai_list, 1, &sigev));
-  ns->evc.await([ns] { return ns->gate.load(memory_order_relaxed); });
-  delete ns;
-
-  int res = gai_error(&gai_req);
-  if (res == EAI_CANCELED) {
-    return make_error_code(errc::operation_canceled);
+  struct epoll_event ev;
+  ev.data.fd = socket_fd;
+  ev.events = 0;
+  if (readable) {
+    ev.events |= EPOLLIN;
+  }
+  if (writable) {
+    ev.events |= EPOLLOUT;
   }
 
-  if (res == EAI_NONAME) {
-    return make_error_code(errc::bad_address);
-  }
-
-  CHECK_EQ(0, res);
-  servinfo = gai_req.ar_result;
-#else
-  int res = getaddrinfo(dns, NULL, &hints, &servinfo);
-  if (res != 0) {
-    LOG(ERROR) << "Error calling getaddrinfo " << gai_strerror(res);
-    return make_error_code(errc::address_not_available);
-  }
-
-#endif
-
-  res = EAI_FAMILY;
-  for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-    if (p->ai_family == AF_INET) {
-      struct sockaddr_in* ipv4 = (struct sockaddr_in*)p->ai_addr;
-      const char* inet_res = inet_ntop(p->ai_family, &ipv4->sin_addr, dest_ip, INET6_ADDRSTRLEN);
-      CHECK_NOTNULL(inet_res);
-      res = 0;
-      break;
+  if (ev.events != 0) {
+    int ctl_result = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, socket_fd, &ev);
+    if (ctl_result < 0) {
+      CHECK_EQ(errno, EEXIST);
+      CHECK_EQ(epoll_ctl(epoll_fd, EPOLL_CTL_MOD, socket_fd, &ev), 0);
     }
-    LOG(WARNING) << "Only IPv4 is supported";
+  } else {
+    CHECK_EQ(epoll_ctl(epoll_fd, EPOLL_CTL_DEL, socket_fd, &ev), 0);
+  }
+}
+
+void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hostent) {
+  CHECK(ares_arg != nullptr);
+
+  auto* cb_args = static_cast<DnsResolveCallbackArgs*>(ares_arg);
+  auto set_error = [&]() {
+    cb_args->ec = make_error_code(errc::address_not_available);
+    cb_args->done = true;
+  };
+
+  if (status != ARES_SUCCESS || hostent == nullptr) {
+    return set_error();
   }
 
-  freeaddrinfo(servinfo);
+  if (hostent->h_addrtype != AF_INET) {
+    // We currently only support IPv4
+    return set_error();
+  }
 
-  return res == 0 ? error_code{} : make_error_code(errc::address_family_not_supported);
+  char** addr = hostent->h_addr_list;
+  if (addr == nullptr) {
+    return set_error();
+  }
+
+  ares_inet_ntop(AF_INET, *addr, cb_args->dest_ip, INET_ADDRSTRLEN);
+  cb_args->done = true;
+}
+
+void ProcessChannel(ares_channel channel, int epoll_fd, DnsResolveCallbackArgs& args) {
+  while (!args.done) {
+    std::array<epoll_event, 16> events = {};
+    // TODO: Use fibers scheduler here.
+    int nfds = epoll_wait(epoll_fd, events.data(), events.size(), -1);
+    CHECK_NE(nfds, 0) << "epoll_wait() must return non-zero with infinite timeout";
+
+    for (const auto& event : events) {
+      ares_socket_t read_sock = ARES_SOCKET_BAD;
+      if (event.events & EPOLLIN) {
+        read_sock = event.data.fd;
+      }
+
+      ares_socket_t write_sock = ARES_SOCKET_BAD;
+      if (event.events & EPOLLOUT) {
+        read_sock = event.data.fd;
+      }
+
+      ares_process_fd(channel, read_sock, write_sock);
+    }
+  }
+}
+
+}  // namespace
+
+error_code DnsResolve(const char* dns, uint32_t wait_ms, char dest_ip[]) {
+  int epoll_fd = epoll_create1(0);
+  CHECK_GE(epoll_fd, 0);
+
+  ares_options options = {};
+  options.sock_state_cb = &UpdateSocketsCallback;
+  options.sock_state_cb_data = (void*)(int64_t)epoll_fd;
+
+  ares_channel channel;
+  CHECK_EQ(ares_init_options(&channel, &options, ARES_OPT_SOCK_STATE_CB), ARES_SUCCESS);
+
+  DnsResolveCallbackArgs cb_args;
+  cb_args.dest_ip = dest_ip;
+  ares_gethostbyname(channel, dns, AF_INET, &DnsResolveCallback, &cb_args);
+
+  ProcessChannel(channel, epoll_fd, cb_args);
+  ares_destroy(channel);
+
+  close(epoll_fd);
+
+  return cb_args.ec;
 }
 
 }  // namespace util
