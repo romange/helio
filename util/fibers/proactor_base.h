@@ -337,17 +337,19 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
     // TODO:
   }
 
-  Done done;
+  auto* active = detail::FiberActive();
   using ResultType = decltype(f());
   util::detail::ResultMover<ResultType> mover;
 
+  active->PrepareSuspend();
   // Store done-ptr by value to increase the refcount while lambda is running.
-  DispatchBrief([&mover, f = std::forward<Func>(f), done]() mutable {
+  DispatchBrief([&mover, f = std::forward<Func>(f), active]() mutable {
     mover.Apply(f);
-    done.Notify();
+    detail::FiberActive()->WakeupOther(active);
   });
 
-  done.Wait();
+  active->SuspendUntilWakeup();
+
   return std::move(mover).get();
 }
 

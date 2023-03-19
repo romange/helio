@@ -22,15 +22,17 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void AddReady(FiberInterface* cntx) {
-    ready_queue_.push_back(*cntx);
+  void AddReady(FiberInterface* fibi) {
+    ready_queue_.push_back(*fibi);
   }
 
-  void ScheduleFromRemote(FiberInterface* cntx);
+  // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
+  // fibi must exist during the run of this function.
+  void ScheduleFromRemote(FiberInterface* fibi);
 
-  void Attach(FiberInterface* cntx);
+  void Attach(FiberInterface* fibi);
 
-  void ScheduleTermination(FiberInterface* cntx);
+  void ScheduleTermination(FiberInterface* fibi);
 
   bool HasReady() const {
     return !ready_queue_.empty();
@@ -69,6 +71,12 @@ class Scheduler {
     return custom_policy_;
   }
 
+  void Defer(uint64_t epoch, std::function<void()> fn) {
+    deferred_cb_.emplace_back(epoch, std::move(fn));
+  }
+
+  void RunDeferred();
+
  private:
   // I use cache_last<true> so that slist will have push_back support.
   using FI_Queue = boost::intrusive::slist<
@@ -96,6 +104,7 @@ class Scheduler {
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
+  std::vector<std::pair<uint64_t, std::function<void()>>> deferred_cb_;
 
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;

@@ -6,7 +6,7 @@
 
 #include <condition_variable>  // for cv_status
 
-#include "absl/base/internal/spinlock.h"
+#include <absl/base/internal/spinlock.h>
 #include "util/fibers/detail/scheduler.h"
 
 namespace util {
@@ -321,6 +321,12 @@ inline bool EventCount::notify() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
+    /*detail::FiberInterface* dest = active->UnparkOne(this);
+    if (dest) {
+      active->ActivateOther(dest);
+      return true;
+    }*/
+
     lock_.Lock();
 
     if (!wait_queue_.empty()) {

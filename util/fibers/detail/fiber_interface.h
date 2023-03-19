@@ -81,6 +81,21 @@ class FiberInterface {
     return bool(entry_);
   }
 
+  // Suspend/Wakeup interface that does not miss notifications.
+  void PrepareSuspend() {
+    flags_.fetch_and(~kWakeupBit, std::memory_order_relaxed);
+  }
+
+  void WakeupOther(FiberInterface* other);
+  void SuspendUntilWakeup();
+  void set_park_token(uint64_t token) {
+    park_token_ = token;
+  }
+
+  uint64_t park_token() const {
+    return park_token_;
+  }
+
   // We need refcounting for referencing handles via .
   friend void intrusive_ptr_add_ref(FiberInterface* ctx) noexcept {
     ctx->use_count_.fetch_add(1, std::memory_order_relaxed);
@@ -131,6 +146,11 @@ class FiberInterface {
   }
 
  protected:
+
+  static constexpr uint16_t kTerminatedBit = 0x1;
+  static constexpr uint16_t kBusyBit = 0x2;
+  static constexpr uint16_t kWakeupBit = 0x4;
+
   using WaitQueue = boost::intrusive::slist<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
@@ -146,6 +166,8 @@ class FiberInterface {
   WaitQueue wait_queue_;
 
   Scheduler* scheduler_ = nullptr;
+  uint64_t park_token_ = 0;
+
   std::atomic<FiberInterface*> next_{nullptr};
   std::chrono::steady_clock::time_point tp_;
 

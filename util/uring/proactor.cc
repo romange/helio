@@ -4,6 +4,7 @@
 
 #include "util/uring/proactor.h"
 
+#include <absl/base/attributes.h>
 #include <liburing.h>
 #include <poll.h>
 #include <string.h>
@@ -12,7 +13,6 @@
 #include <boost/fiber/operations.hpp>
 #include <boost/fiber/scheduler.hpp>
 
-#include "absl/base/attributes.h"
 #include "base/flags.h"
 #include "base/histogram.h"
 #include "base/logging.h"
