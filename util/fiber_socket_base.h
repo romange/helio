@@ -5,9 +5,10 @@
 #pragma once
 
 // for tcp::endpoint. Consider introducing our own.
+#include <absl/base/attributes.h>
+
 #include <boost/asio/ip/tcp.hpp>
 
-#include "absl/base/attributes.h"
 #include "io/io.h"
 
 namespace util {
@@ -136,16 +137,24 @@ class LinuxSocketBase : public FiberSocketBase {
   //! in process of completing.
   virtual uint32_t CancelPoll(uint32_t id) = 0;
 
-  bool IsUDS() const { return fd_ & IS_UDS; }
+  bool IsUDS() const {
+    return fd_ & IS_UDS;
+  }
 
   // Whether it was registered with io_uring engine.
-  bool IsDirect() const { return fd_ & REGISTER_FD; }
+  bool IsDirect() const {
+    return fd_ & REGISTER_FD;
+  }
 
  protected:
   LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd > 0 ? fd << 3 : fd) {
   }
 
-  enum { IS_SHUTDOWN = 0x1, IS_UDS = 0x2, REGISTER_FD = 0x4,};
+  enum {
+    IS_SHUTDOWN = 0x1,
+    IS_UDS = 0x2,
+    REGISTER_FD = 0x4,
+  };
 
   // 3 low bits are used for masking the state of fd.
   // gives me 512M descriptors.

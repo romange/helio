@@ -4,6 +4,8 @@
 
 #include "util/fibers/fiber2.h"
 
+#include <absl/strings/str_cat.h>
+
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -14,6 +16,7 @@
 #include "util/fibers/uring_proactor.h"
 
 using namespace std;
+using absl::StrCat;
 
 namespace util {
 namespace fb2 {
@@ -24,21 +27,33 @@ class FiberTest : public testing::Test {
  public:
 };
 
-class ProactorTest : public testing::Test {
- protected:
-  void SetUp() final {
-    proactor_ = std::make_unique<UringProactor>();
-    proactor_thread_ = thread{[this] {
-      proactor_->SetIndex(0);
-      proactor_->Init(kRingDepth);
-      proactor_->Run();
+struct ProactorThread {
+  std::unique_ptr<UringProactor> proactor;
+  std::thread proactor_thread;
+
+  ProactorThread(unsigned index) : proactor(new UringProactor) {
+    proactor_thread = thread{[this, index] {
+      proactor->SetIndex(index);
+      proactor->Init(kRingDepth);
+      proactor->Run();
     }};
   }
 
+  ~ProactorThread() {
+    proactor->Stop();
+    proactor_thread.join();
+    proactor.reset();
+  }
+};
+
+class ProactorTest : public testing::Test {
+ protected:
+  void SetUp() final {
+    proactor_th_ = std::make_unique<ProactorThread>(0);
+  }
+
   void TearDown() final {
-    proactor_->Stop();
-    proactor_thread_.join();
-    proactor_.reset();
+    proactor_th_.reset();
   }
 
   static void SetUpTestCase() {
@@ -47,8 +62,7 @@ class ProactorTest : public testing::Test {
 
   using IoResult = UringProactor::IoResult;
 
-  std::unique_ptr<UringProactor> proactor_;
-  std::thread proactor_thread_;
+  std::unique_ptr<ProactorThread> proactor_th_;
 };
 
 TEST_F(FiberTest, Basic) {
@@ -130,9 +144,7 @@ TEST_F(ProactorTest, AsyncCall) {
 
   for (unsigned i = 0; i < ProactorBase::kTaskQueueLen * 2; ++i) {
     VLOG(1) << "Dispatch: " << i;
-    proactor_->DispatchBrief([i] {
-      VLOG(1) << "I: " << i;
-    });
+    proactor_th_->proactor->DispatchBrief([i] { VLOG(1) << "I: " << i; });
   }
   LOG(INFO) << "DispatchBrief done";
   // proactor_->AwaitBrief([] {});
@@ -142,10 +154,10 @@ TEST_F(ProactorTest, AsyncCall) {
 TEST_F(ProactorTest, Await) {
   thread_local int val = 5;
 
-  proactor_->AwaitBrief([] { val = 15; });
+  proactor_th_->proactor->AwaitBrief([] { val = 15; });
   EXPECT_EQ(5, val);
 
-  int j = proactor_->AwaitBrief([] { return val; });
+  int j = proactor_th_->proactor->AwaitBrief([] { return val; });
   EXPECT_EQ(15, j);
 }
 
@@ -157,8 +169,8 @@ TEST_F(ProactorTest, AsyncEvent) {
     LOG(INFO) << "notify";
   };
 
-  proactor_->DispatchBrief([&] {
-    uring::SubmitEntry se = proactor_->GetSubmitEntry(std::move(cb), 1);
+  proactor_th_->proactor->DispatchBrief([&] {
+    uring::SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
     se.sqe()->opcode = IORING_OP_NOP;
     LOG(INFO) << "submit";
   });
@@ -172,8 +184,7 @@ TEST_F(ProactorTest, DispatchTest) {
   int state = 0;
 
   LOG(INFO) << "LaunchFiber";
-  auto fb = proactor_->LaunchFiber("jessie", [&] {
-
+  auto fb = proactor_th_->proactor->LaunchFiber("jessie", [&] {
     unique_lock g(mu);
     state = 1;
     LOG(INFO) << "state 1";
@@ -192,6 +203,47 @@ TEST_F(ProactorTest, DispatchTest) {
   }
   LOG(INFO) << "BeforeJoin";
   fb.Join();
+}
+
+TEST_F(ProactorTest, MultiParking) {
+  constexpr unsigned kNumFibers = 64;
+  constexpr unsigned kNumThreads = 32;
+
+  EventCount ec;
+  unique_ptr<ProactorThread> ths[kNumThreads];
+  atomic_uint num_started{0};
+  Fiber fbs[kNumThreads][kNumFibers];
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    ths[i] = make_unique<ProactorThread>(i + 1);
+  }
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    for (unsigned j = 0; j < kNumFibers; ++j) {
+      fbs[i][j] = ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&, i] {
+        num_started.fetch_add(1, std::memory_order_relaxed);
+        ec.notify();
+
+        for (unsigned iter = 0; iter < 10; ++iter) {
+          for (unsigned k = 0; k < kNumThreads; ++k) {
+            ths[k]->proactor->AwaitBrief([] { return true; });
+          }
+        }
+      });
+    }
+  }
+
+  ec.await([&] { return num_started == kNumThreads * kNumFibers; });
+  LOG(INFO) << "After the first await";
+
+  for (auto& fb_arr : fbs) {
+    for (auto& fb : fb_arr)
+      fb.Join();
+  }
+
+  LOG(INFO) << "After fiber join";
+  for (auto& th : ths)
+    th.reset();
 }
 
 }  // namespace fb2

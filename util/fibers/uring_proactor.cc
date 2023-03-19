@@ -4,12 +4,12 @@
 
 #include "util/fibers/uring_proactor.h"
 
+#include <absl/base/attributes.h>
 #include <liburing.h>
 #include <poll.h>
 #include <string.h>
 #include <sys/eventfd.h>
 
-#include "absl/base/attributes.h"
 #include "base/flags.h"
 #include "base/histogram.h"
 #include "base/logging.h"
@@ -458,7 +458,7 @@ void UringProactor::UnregisterFd(unsigned fixed_fd) {
   }
 }
 
-LinuxSocketBase* UringProactor::CreateSocket(int fd)  {
+LinuxSocketBase* UringProactor::CreateSocket(int fd) {
   return nullptr;
 }
 
@@ -582,6 +582,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
 
     scheduler->DestroyTerminated();
+    scheduler->RunDeferred();
 
     bool should_spin = RunOnIdleTasks();
     if (should_spin) {

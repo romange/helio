@@ -3,9 +3,12 @@
 //
 #include "util/fibers/detail/scheduler.h"
 
+#include <absl/base/internal/spinlock.h>
+
 #include <condition_variable>
 #include <mutex>
 
+#include "base/function2.hpp"
 #include "base/logging.h"
 
 namespace util {
@@ -21,8 +24,7 @@ constexpr size_t kSizeOfCtx = sizeof(FiberInterface);  // because of the virtual
 constexpr size_t kSizeOfSH = sizeof(FI_SleepHook);
 constexpr size_t kSizeOfLH = sizeof(FI_ListHook);
 
-constexpr uint16_t kTerminatedBit = 0x1;
-constexpr uint16_t kBusyBit = 0x2;
+using SpinLockType = ::absl::base_internal::SpinLock;
 
 inline void CpuPause() {
 #if defined(__i386__) || defined(__amd64__)
@@ -35,6 +37,78 @@ inline void CpuPause() {
   __asm__ __volatile__("isb");
 #endif
 }
+
+template <typename T> void WriteOnce(T src, T* dest) {
+  std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,
+                             std::memory_order_relaxed);
+}
+
+template <typename T> T ReadOnce(T* src) {
+  return std::atomic_load_explicit(reinterpret_cast<std::atomic<T>*>(src),
+                                   std::memory_order_relaxed);
+}
+
+// Thomas Wang's 64 bit Mix Function.
+inline uint64_t MixHash(uint64_t key) {
+  key += ~(key << 32);
+  key ^= (key >> 22);
+  key += ~(key << 13);
+  key ^= (key >> 8);
+  key += (key << 3);
+  key ^= (key >> 15);
+  key += ~(key << 27);
+  key ^= (key >> 31);
+  return key;
+}
+
+using WaitQueue = boost::intrusive::slist<
+    detail::FiberInterface,
+    boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
+                                  &detail::FiberInterface::list_hook>,
+    boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+
+struct ParkingBucket {
+  SpinLockType lock;
+  WaitQueue waiters;
+  bool was_rehashed = 0;
+};
+
+constexpr size_t kSzPB = sizeof(ParkingBucket);
+
+class ParkingHT {
+  struct SizedBuckets {
+    unsigned num_buckets;
+    ParkingBucket* arr;
+
+    SizedBuckets(unsigned shift) : num_buckets(1 << shift) {
+      arr = new ParkingBucket[num_buckets];
+    }
+
+    unsigned GetBucket(uint64_t hash) const {
+      return hash & bucket_mask();
+    }
+
+    unsigned bucket_mask() const {
+      return num_buckets - 1;
+    }
+  };
+
+ public:
+  ParkingHT();
+  ~ParkingHT();
+
+  // if validate returns true, the fiber is not added to the queue.
+  bool Emplace(uint64_t token, FiberInterface* fi, fu2::unique_function<bool()> validate);
+
+  FiberInterface* Remove(uint64_t token, fu2::function<void(FiberInterface*)> wakeup_fn);
+
+ private:
+  void TryRehash(SizedBuckets* cur_sb);
+
+  atomic<SizedBuckets*> buckets_;
+  atomic_uint32_t num_entries_{0};
+  atomic_bool rehashing_{false};
+};
 
 class DispatcherImpl final : public FiberInterface {
  public:
@@ -93,8 +167,21 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
   return new (sp_ptr) DispatcherImpl{std::move(palloc), std::move(salloc), sched};
 }
 
+ParkingHT* g_parking_ht = nullptr;
+mutex g_scheduler_lock;
+
+using QsbrEpoch = uint32_t;
+constexpr QsbrEpoch kEpochInc = 2;
+atomic<QsbrEpoch> qsbr_global_epoch{1};  // global is always non-zero.
+
+struct TL_FiberInitializer;
+TL_FiberInitializer* g_fiber_thread_list = nullptr;
+
 // Per thread initialization structure.
-struct FiberInitializer {
+struct TL_FiberInitializer {
+  TL_FiberInitializer* next = nullptr;
+  QsbrEpoch local_epoch = 0;
+
   // Currently active fiber.
   FiberInterface* active;
 
@@ -102,29 +189,220 @@ struct FiberInitializer {
   // Allows overriding the main dispatch loop
   Scheduler* sched;
 
-  FiberInitializer(const FiberInitializer&) = delete;
+  TL_FiberInitializer(const TL_FiberInitializer&) = delete;
 
-  FiberInitializer() : sched(nullptr) {
-    DVLOG(1) << "Initializing FiberLib";
+  TL_FiberInitializer() noexcept;
 
-    // main fiber context of this thread.
-    // We use it as a stub
-    FiberInterface* main_ctx = new MainFiberImpl{};
-    active = main_ctx;
-    sched = new Scheduler(main_ctx);
-  }
-
-  ~FiberInitializer() {
-    FiberInterface* main_cntx = sched->main_context();
-    delete sched;
-    delete main_cntx;
-  }
+  ~TL_FiberInitializer();
 };
 
-FiberInitializer& FbInitializer() noexcept {
+TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
+  DVLOG(1) << "Initializing FiberLib";
+
+  // main fiber context of this thread.
+  // We use it as a stub
+  FiberInterface* main_ctx = new MainFiberImpl{};
+  active = main_ctx;
+  sched = new Scheduler(main_ctx);
+  unique_lock lk(g_scheduler_lock);
+  if (g_parking_ht == nullptr) {
+    g_parking_ht = new ParkingHT{};
+  }
+  next = g_fiber_thread_list;
+  g_fiber_thread_list = this;
+}
+
+TL_FiberInitializer::~TL_FiberInitializer() {
+  FiberInterface* main_cntx = sched->main_context();
+  delete sched;
+  delete main_cntx;
+  unique_lock lk(g_scheduler_lock);
+  TL_FiberInitializer** p = &g_fiber_thread_list;
+  while (*p != this) {
+    p = &(*p)->next;
+  }
+  *p = next;
+  if (g_fiber_thread_list == nullptr) {
+    delete g_parking_ht;
+    g_parking_ht = nullptr;
+  }
+}
+
+TL_FiberInitializer& FbInitializer() noexcept {
   // initialized the first time control passes; per thread
-  thread_local static FiberInitializer fb_initializer;
+  thread_local static TL_FiberInitializer fb_initializer;
   return fb_initializer;
+}
+
+void qsbr_checkpoint() {
+  atomic_thread_fence(memory_order_seq_cst);
+
+  // syncs the local_epoch with the global_epoch.
+  WriteOnce(qsbr_global_epoch.load(memory_order_relaxed), &FbInitializer().local_epoch);
+}
+
+void qsbr_worker_fiber_offline() {
+  atomic_thread_fence(memory_order_release);
+  WriteOnce(0U, &FbInitializer().local_epoch);
+}
+
+void qsbr_worker_fiber_online() {
+  WriteOnce(qsbr_global_epoch.load(memory_order_relaxed), &FbInitializer().local_epoch);
+  atomic_thread_fence(memory_order_seq_cst);
+}
+
+bool qsbr_sync(uint64_t target) {
+  unique_lock lk(g_scheduler_lock, try_to_lock);
+
+  if (!lk)
+    return false;
+
+  FbInitializer().local_epoch = target;
+  for (TL_FiberInitializer* p = g_fiber_thread_list; p != nullptr; p = p->next) {
+    auto local_epoch = ReadOnce(&p->local_epoch);
+    if (local_epoch && local_epoch != target) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+ParkingHT::ParkingHT() {
+  SizedBuckets* sb = new SizedBuckets(6);
+  buckets_.store(sb, memory_order_release);
+}
+
+ParkingHT::~ParkingHT() {
+  SizedBuckets* sb = buckets_.load(memory_order_relaxed);
+
+  DVLOG(1) << "Destroying ParkingHT with " << sb->num_buckets << " buckets";
+
+  for (unsigned i = 0; i < sb->num_buckets; ++i) {
+    ParkingBucket* pb = sb->arr + i;
+    absl::base_internal::SpinLockHolder h(&pb->lock);
+    CHECK(pb->waiters.empty());
+  }
+  delete[] sb->arr;
+  delete sb;
+}
+
+bool ParkingHT::Emplace(uint64_t token, FiberInterface* fi, fu2::unique_function<bool()> validate) {
+  uint32_t num_items = 0;
+  unsigned bucket = 0;
+  SizedBuckets* sb = nullptr;
+  uint64_t hash = MixHash(token);
+  while (true) {
+    sb = buckets_.load(memory_order_acquire);
+    DCHECK(sb);
+    bucket = sb->GetBucket(hash);
+    DVLOG(2) << "Emplace: token=" << token << " bucket=" << bucket;
+
+    ParkingBucket* pb = sb->arr + bucket;
+    {
+      absl::base_internal::SpinLockHolder h(&pb->lock);
+      if (validate()) {
+        qsbr_checkpoint();
+        return false;  // did not park
+      }
+      if (pb->was_rehashed) {  // has grown
+        continue;              // reload the buckets because it could change during the lock
+      }
+      fi->set_park_token(token);
+      pb->waiters.push_front(*fi);
+      num_items = num_entries_.fetch_add(1, memory_order_relaxed);
+      break;
+    }
+  }
+  DVLOG(2) << "EmplaceEnd: token=" << token << " bucket=" << bucket;
+
+  if (num_items > sb->num_buckets * 2) {
+    TryRehash(sb);
+  }
+
+  // we do not call qsbr_checkpoint here because we are going to park
+  // and call qsbr_worker_fiber_offline.
+  return true;
+}
+
+FiberInterface* ParkingHT::Remove(uint64_t token, fu2::function<void(FiberInterface*)> wakeup_fn) {
+  uint64_t hash = MixHash(token);
+  SizedBuckets* sb = nullptr;
+  while (true) {
+    sb = buckets_.load(memory_order_acquire);
+    unsigned bucket = sb->GetBucket(hash);
+    ParkingBucket* pb = sb->arr + bucket;
+    {
+      absl::base_internal::SpinLockHolder h(&pb->lock);
+      if (pb->was_rehashed) {
+        continue;
+      }
+
+      for (auto it = pb->waiters.begin(); it != pb->waiters.end(); ++it) {
+        if (it->park_token() == token) {
+          FiberInterface* fi = &*it;
+          pb->waiters.erase(it);
+          auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
+          DCHECK_GT(prev, 0u);
+          wakeup_fn(fi);
+          qsbr_checkpoint();
+
+          return fi;
+        }
+      }
+    }
+  }
+
+  qsbr_checkpoint();
+  return nullptr;
+}
+
+void ParkingHT::TryRehash(SizedBuckets* cur_sb) {
+  if (rehashing_.exchange(true, memory_order_acquire)) {
+    return;
+  }
+
+  SizedBuckets* sb = buckets_.load(memory_order_relaxed);
+  if (sb != cur_sb) {
+    rehashing_.store(false, memory_order_release);
+    return;
+  }
+
+  DVLOG(1) << "Rehashing parking hash table from " << sb->num_buckets;
+
+  // log2(x)
+  static_assert(__builtin_ctz(32) == 5);
+
+  SizedBuckets* new_sb = new SizedBuckets(__builtin_ctz(sb->num_buckets) + 2);
+  for (unsigned i = 0; i < sb->num_buckets; ++i) {
+    sb->arr[i].lock.Lock();
+  }
+  for (unsigned i = 0; i < sb->num_buckets; ++i) {
+    ParkingBucket* pb = sb->arr + i;
+    pb->was_rehashed = true;
+    while (!pb->waiters.empty()) {
+      FiberInterface* fi = &pb->waiters.front();
+      pb->waiters.pop_front();
+      uint64_t hash = MixHash(fi->park_token());
+      unsigned bucket = new_sb->GetBucket(hash);
+      ParkingBucket* new_pb = new_sb->arr + bucket;
+      new_pb->waiters.push_back(*fi);
+    }
+  }
+  buckets_.store(new_sb, memory_order_release);
+
+  for (unsigned i = 0; i < sb->num_buckets; ++i) {
+    sb->arr[i].lock.Unlock();
+  }
+
+  uint64_t next_epoch = qsbr_global_epoch.fetch_add(kEpochInc, memory_order_relaxed) + kEpochInc;
+
+  FbInitializer().sched->Defer(next_epoch, [sb] {
+    DVLOG(1) << "Destroying old SizedBuckets with " << sb->num_buckets << " buckets";
+    delete sb;
+  });
+
+  rehashing_.store(false, memory_order_release);
 }
 
 // DispatcherImpl implementation.
@@ -188,15 +466,18 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->AddReady(this);
 
       DVLOG(2) << "Switching to " << fi->name();
+      qsbr_worker_fiber_online();
       fi->SwitchTo();
       DCHECK(!list_hook.is_linked());
       DCHECK(FiberActive() == this);
+      qsbr_worker_fiber_offline();
     } else {
       unique_lock<mutex> lk{mu_};
 
       cnd_.wait(lk, [&]() { return wake_suspend_; });
       wake_suspend_ = false;
     }
+    sched->RunDeferred();
   }
   sched->DestroyTerminated();
 }
@@ -279,7 +560,7 @@ void Scheduler::DestroyTerminated() {
   while (!terminate_queue_.empty()) {
     FiberInterface* tfi = &terminate_queue_.front();
     terminate_queue_.pop_front();
-    DVLOG(1) << "Releasing terminated " << tfi->name_;
+    DVLOG(2) << "Releasing terminated " << tfi->name_;
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
@@ -299,7 +580,7 @@ void Scheduler::ProcessRemoteReady() {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
       break;
-    DVLOG(1) << "set ready " << fi->name();
+    DVLOG(2) << "set ready " << fi->name();
 
     ready_queue_.push_back(*fi);
   }
@@ -324,6 +605,27 @@ void Scheduler::ProcessSleep() {
 void Scheduler::AttachCustomPolicy(DispatchPolicy* policy) {
   CHECK(custom_policy_ == nullptr);
   custom_policy_ = policy;
+}
+
+void Scheduler::RunDeferred() {
+  bool skip_validation = false;
+
+  while (!deferred_cb_.empty()) {
+    const auto& k_v = deferred_cb_.back();
+    if (skip_validation) {
+      k_v.second();
+      deferred_cb_.pop_back();
+
+      continue;
+    }
+
+    if (!qsbr_sync(k_v.first))
+      break;
+
+    k_v.second();
+    skip_validation = true;
+    deferred_cb_.pop_back();
+  }
 }
 
 FiberInterface* FiberActive() noexcept {
@@ -356,7 +658,7 @@ ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(!list_hook.is_linked());
 
   scheduler_->ScheduleTermination(this);
-  DVLOG(1) << "Terminating " << name_;
+  DVLOG(2) << "Terminating " << name_;
 
   while (true) {
     uint16_t fprev = flags_.fetch_or(kTerminatedBit | kBusyBit, memory_order_acquire);
@@ -439,6 +741,26 @@ void FiberInterface::Suspend() {
   scheduler_->Preempt();
 }
 
+void FiberInterface::WakeupOther(FiberInterface* other) {
+  DCHECK(other->scheduler_ && other->scheduler_ != scheduler_);
+
+  uintptr_t token = uintptr_t(other);
+  FiberInterface* item = g_parking_ht->Remove(
+      token, [](FiberInterface* fibi) { fibi->flags_.fetch_or(kWakeupBit, memory_order_relaxed); });
+
+  CHECK(item == other);
+  other->scheduler_->ScheduleFromRemote(other);
+}
+
+void FiberInterface::SuspendUntilWakeup() {
+  uintptr_t token = uintptr_t(this);
+  bool parked = g_parking_ht->Emplace(
+      token, this, [this] { return flags_.load(memory_order_relaxed) & kWakeupBit; });
+  if (parked) {
+    scheduler_->Preempt();
+  }
+}
+
 ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = this;
 
@@ -456,7 +778,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 }  // namespace detail
 
 void SetCustomDispatcher(DispatchPolicy* policy) {
-  detail::FiberInitializer& fb_init = detail::FbInitializer();
+  detail::TL_FiberInitializer& fb_init = detail::FbInitializer();
   fb_init.sched->AttachCustomPolicy(policy);
 }
 
