@@ -6,6 +6,10 @@
 // https://software.intel.com/en-us/forums/intel-threading-building-blocks/topic/299245
 #pragma once
 
+#ifdef USE_FB2
+#error "This file is not compatible with fb2"
+#endif
+
 #include <absl/base/macros.h>
 #include <boost/fiber/context.hpp>
 #include <boost/version.hpp>

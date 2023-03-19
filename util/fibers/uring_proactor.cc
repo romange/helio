@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/uring/uring_socket.h"
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
 
@@ -258,7 +259,7 @@ void UringProactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
   }
 }
 
-uring::SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
+SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
   if (res == NULL) {
     ++get_entry_sq_full_;
@@ -302,7 +303,7 @@ uring::SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
     res->user_data = kIgnoreIndex;
   }
 
-  return uring::SubmitEntry{res};
+  return SubmitEntry{res};
 }
 
 int UringProactor::RegisterBuffers() {
@@ -376,7 +377,7 @@ void UringProactor::ArmWakeupEvent() {
 }
 
 void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
-  uring::SubmitEntry se = GetSubmitEntry(
+  SubmitEntry se = GetSubmitEntry(
       [this, item](IoResult res, uint32_t flags, int64_t task_id) {
         DCHECK_GE(task_id, 0);
         this->PeriodicCb(res, task_id, std::move(item));
@@ -409,7 +410,7 @@ void UringProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   auto cb = [me](IoResult res, uint32_t flags, int64_t task_id) {
     detail::FiberActive()->ActivateOther(me);
   };
-  uring::SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
+  SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
 
   DVLOG(1) << "Cancel timer " << val1 << ", cb userdata: " << se.sqe()->user_data;
   se.PrepTimeoutRemove(val1);  // cancel using userdata id sent to io-uring.
@@ -459,7 +460,7 @@ void UringProactor::UnregisterFd(unsigned fixed_fd) {
 }
 
 LinuxSocketBase* UringProactor::CreateSocket(int fd) {
-  return nullptr;
+  return new UringSocket{fd, this};
 }
 
 void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
@@ -658,7 +659,7 @@ void UringProactor::WakeRing() {
   // Disabled because it deadlocks in github actions.
   // It could be kernel issue or a bug in my code - needs investigation.
   if (false && caller) {
-    uring::SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
+    SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
     se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.

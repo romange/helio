@@ -141,12 +141,13 @@ class FiberInterface {
     return src.next_.load(std::memory_order_acquire);
   }
 
+  void SetName(std::string_view nm);
+
   const char* name() const {
     return name_;
   }
 
  protected:
-
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
   static constexpr uint16_t kWakeupBit = 0x4;
@@ -174,14 +175,15 @@ class FiberInterface {
   char name_[24];
 };
 
-template <typename Fn> class WorkerFiberImpl : public FiberInterface {
+template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {
   using FbCntx = ::boost::context::fiber_context;
 
  public:
   template <typename StackAlloc>
   WorkerFiberImpl(std::string_view name, const boost::context::preallocated& palloc,
-                  StackAlloc&& salloc, Fn&& fn)
-      : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)) {
+                  StackAlloc&& salloc, Fn&& fn, Arg&&... arg)
+      : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)),
+        arg_(std::forward<Arg>(arg)...) {
     entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                     [this](FbCntx&& caller) { return run_(std::move(caller)); });
   }
@@ -193,13 +195,15 @@ template <typename Fn> class WorkerFiberImpl : public FiberInterface {
     {
       // fn and tpl must be destroyed before calling terminate()
       auto fn = std::move(fn_);
-      fn();
+      auto arg = std::move(arg_);
+      std::apply(std::move(fn), std::move(arg));
     }
 
     return Terminate();
   }
 
   Fn fn_;
+  std::tuple<Arg...> arg_;
 };
 
 template <typename FbImpl>
@@ -214,17 +218,19 @@ boost::context::preallocated MakePreallocated(const boost::context::stack_contex
   return boost::context::preallocated{sp_ptr, size, sctx};
 }
 
-template <typename StackAlloc, typename Fn>
-static WorkerFiberImpl<Fn>* MakeWorkerFiberImpl(std::string_view name, StackAlloc&& salloc,
-                                                Fn&& fn) {
+template <typename StackAlloc, typename Fn, typename... Arg>
+static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, StackAlloc&& salloc,
+                                                        Fn&& fn, Arg&&... arg) {
   boost::context::stack_context sctx = salloc.allocate();
   boost::context::preallocated palloc = MakePreallocated<WorkerFiberImpl<Fn>>(sctx);
 
   void* sp_ptr = palloc.sp;
 
+  using WorkerImpl = WorkerFiberImpl<Fn, Arg...>;
   // placement new of context on top of fiber's stack
-  WorkerFiberImpl<Fn>* fctx = new (sp_ptr) WorkerFiberImpl<Fn>{
-      name, std::move(palloc), std::forward<StackAlloc>(salloc), std::forward<Fn>(fn)};
+  WorkerImpl* fctx =
+      new (sp_ptr) WorkerImpl{name, std::move(palloc), std::forward<StackAlloc>(salloc),
+                              std::forward<Fn>(fn), std::forward<Arg>(arg)...};
   return fctx;
 }
 

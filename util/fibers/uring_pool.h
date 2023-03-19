@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
@@ -7,7 +7,7 @@
 #include "util/proactor_pool.h"
 
 namespace util {
-namespace uring {
+namespace fb2 {
 
 class UringPool : public ProactorPool {
  public:
@@ -28,5 +28,5 @@ class UringPool : public ProactorPool {
   unsigned ring_depth_;
 };
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

@@ -12,6 +12,12 @@ namespace util {
 namespace metrics {
 using namespace std;
 
+#ifdef USE_FB2
+using fb2::Mutex;
+#else
+using Mutex = ::boost::fibers::mutex;
+#endif
+
 namespace {
 
 shared_mutex list_mu;
@@ -149,7 +155,7 @@ void Iterate(MetricRowCb cb) {
     ++index;
   }
 
-  boost::fibers::mutex mu;
+  Mutex mu;
   vector<double> result(total_metrics, 0.0);
   auto per_thread_cb = [&](unsigned tindex, auto*) {
     uint32_t offset = 0;

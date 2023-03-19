@@ -11,14 +11,23 @@
 #include "base/logging.h"
 #include "util/asio_stream_adapter.h"
 #include "util/listener_interface.h"
+
+#ifdef USE_FB2
+#include "util/fibers/uring_pool.h"
+#else
 #include "util/uring/uring_pool.h"
+#endif
 
 namespace util {
-namespace uring {
 
 using namespace std;
 namespace h2 = boost::beast::http;
-using fibers_ext::BlockingCounter;
+
+#ifdef USE_FB2
+using fb2::UringPool;
+#else
+using uring::UringPool;
+#endif
 
 #define USE_URING 1
 
@@ -122,5 +131,4 @@ TEST_F(AcceptServerTest, Break) {
   as_->Stop(true);
 }
 
-}  // namespace uring
 }  // namespace util

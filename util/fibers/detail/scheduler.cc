@@ -648,6 +648,14 @@ FiberInterface::~FiberInterface() {
   DCHECK(!list_hook.is_linked());
 }
 
+void FiberInterface::SetName(std::string_view nm) {
+  if (nm.empty())
+    return;
+  size_t len = std::min(nm.size(), sizeof(name_) - 1);
+  memcpy(name_, nm.data(), len);
+  name_[len] = 0;
+}
+
 // We can not destroy this instance within the context of the fiber it's been running in.
 // The reason: the instance is hosted within the stack region of the fiber itself, and it
 // implicitly destroys the stack when destroying its 'entry_' member variable.

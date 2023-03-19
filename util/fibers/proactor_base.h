@@ -21,14 +21,13 @@
 #include "util/fibers/fiber2.h"
 
 namespace util {
-namespace fb2 {
-
 class LinuxSocketBase;
+
+namespace fb2 {
 
 class ProactorBase {
   ProactorBase(const ProactorBase&) = delete;
   void operator=(const ProactorBase&) = delete;
-  friend class FiberSchedAlgo;
 
  public:
   enum { kTaskQueueLen = 256 };
@@ -127,7 +126,7 @@ class ProactorBase {
     // So I just copy them into capture.
     // We forward captured variables so we need lambda to be mutable.
     DispatchBrief([f = std::forward<Func>(f), args...]() mutable {
-      Fiber(std::forward<Func>(f), std::forward<Args>(args)...).Detach();
+      Fiber("Dispatched", std::forward<Func>(f), std::forward<Args>(args)...).Detach();
     });
   }
 

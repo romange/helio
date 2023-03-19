@@ -73,6 +73,9 @@ TEST_F(FiberTest, Basic) {
   fb2.Join();
 
   EXPECT_EQ(2, run);
+
+  Fiber fb3("test3", [](int i) {}, 1);
+  fb3.Join();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -170,7 +173,7 @@ TEST_F(ProactorTest, AsyncEvent) {
   };
 
   proactor_th_->proactor->DispatchBrief([&] {
-    uring::SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
+    SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
     se.sqe()->opcode = IORING_OP_NOP;
     LOG(INFO) << "submit";
   });

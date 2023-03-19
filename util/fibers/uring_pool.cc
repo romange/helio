@@ -2,27 +2,27 @@
 // See LICENSE for licensing terms.
 //
 
-#include "util/uring/uring_pool.h"
+#include "util/fibers/uring_pool.h"
 
 #include "base/logging.h"
-#include "util/uring/proactor.h"
+#include "util/fibers/uring_proactor.h"
 
 using namespace std;
 
 namespace util {
-namespace uring {
+namespace fb2 {
 
 UringPool::~UringPool() {
 }
 
 ProactorBase* UringPool::CreateProactor() {
-  return new Proactor;
+  return new UringProactor;
 }
 
 void UringPool::InitInThread(unsigned index) {
-  Proactor* p = static_cast<Proactor*>(proactor_[index]);
+  UringProactor* p = static_cast<UringProactor*>(proactor_[index]);
   p->Init(ring_depth_);
 }
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

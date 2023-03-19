@@ -12,6 +12,11 @@
 namespace util {
 namespace fb2 {
 
+namespace detail {
+template <typename X, typename Y>
+using disable_overload = boost::context::detail::disable_overload<X, Y>;
+}
+
 class Fiber {
  public:
   using ID = uint64_t;
@@ -30,6 +35,19 @@ class Fiber {
       : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
                                                      std::forward<Fn>(fn))} {
     Start(policy);
+  }
+
+  template <typename Fn, typename... Arg>
+  Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
+      : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
+                                                     std::forward<Fn>(fn),
+                                                     std::forward<Arg>(arg)...)} {
+    Start(policy);
+  }
+
+  template <typename Fn, typename... Arg>
+  Fiber(std::string_view name, Fn&& fn, Arg&&... arg)
+      : Fiber(Launch::post, name, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
   }
 
   ~Fiber();
@@ -67,19 +85,30 @@ class Fiber {
   boost::intrusive_ptr<util::fb2::detail::FiberInterface> impl_;
 };
 
-
 namespace ThisFiber {
 
 inline void SleepUntil(std::chrono::steady_clock::time_point tp) {
   static_assert(sizeof(tp) == 8);
-  util::fb2::detail::FiberActive()->WaitUntil(tp);
+  fb2::detail::FiberActive()->WaitUntil(tp);
 }
 
 inline void Yield() {
-  util::fb2::detail::FiberActive()->Yield();
+  fb2::detail::FiberActive()->Yield();
 }
 
 };  // namespace ThisFiber
 
 }  // namespace fb2
+
+template <typename Fn, typename... Arg>
+fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {
+  return fb2::Fiber(std::string_view{}, std::forward<Fn>(fn), std::forward<Arg>(arg)...);
+}
+
+namespace FiberProps {
+  inline void SetName(std::string_view name) {
+    fb2::detail::FiberActive()->SetName(name);
+  }
+}
+
 }  // namespace util

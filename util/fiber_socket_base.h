@@ -13,7 +13,16 @@
 
 namespace util {
 
+#ifdef USE_FB2
+namespace fb2 {
 class ProactorBase;
+}  // namespace fb2
+
+using fb2::ProactorBase;
+
+#else
+class ProactorBase;
+#endif
 
 class FiberSocketBase : public io::Sink, io::AsyncSink {
   FiberSocketBase(const FiberSocketBase&) = delete;

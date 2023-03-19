@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/uring/uring_socket.h"
@@ -7,17 +7,20 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-#include <boost/fiber/context.hpp>
+// #include <boost/fiber/context.hpp>
 
 #include "base/logging.h"
 #include "base/stl_util.h"
-#include "util/uring/proactor.h"
 
 #define VSOCK(verbosity) VLOG(verbosity) << "sock[" << native_handle() << "] "
 #define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
 
 namespace util {
+#ifdef USE_FB2
+namespace fb2 {
+#else
 namespace uring {
+#endif
 
 using namespace std;
 using IoResult = Proactor::IoResult;

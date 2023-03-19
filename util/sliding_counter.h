@@ -104,7 +104,7 @@ template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCoun
       res.fetch_add(sc_thread_map_[i].Sum(), std::memory_order_relaxed);
     });
 
-    return res.load(std::memory_order_release);
+    return res.load(std::memory_order_acquire);
   }
 
   uint32_t SumTail() const {
@@ -115,7 +115,7 @@ template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCoun
       res.fetch_add(sc_thread_map_[i].SumTail(), std::memory_order_relaxed);
     });
 
-    return res.load(std::memory_order_release);
+    return res.load(std::memory_order_acquire);
   }
 
  private:

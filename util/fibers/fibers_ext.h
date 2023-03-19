@@ -1,7 +1,13 @@
-// Copyright 2018, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #pragma once
+
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+using util::fb2::SharedMutex;
+#else
 
 #include <boost/fiber/barrier.hpp>
 #include <boost/fiber/channel_op_status.hpp>
@@ -341,4 +347,10 @@ class Barrier {
 };
 
 }  // namespace fibers_ext
+
+using fibers_ext::BlockingCounter;
+using fibers_ext::SharedMutex;
+
 }  // namespace util
+
+#endif  // USE_FB2
