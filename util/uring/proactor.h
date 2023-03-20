@@ -4,6 +4,10 @@
 
 #pragma once
 
+#ifdef USE_FB2
+#error "This file should not be included when using fb2"
+#else
+
 #include <liburing.h>
 #include <pthread.h>
 
@@ -192,3 +196,4 @@ class FiberCall {
 
 }  // namespace uring
 }  // namespace util
+#endif

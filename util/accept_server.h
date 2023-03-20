@@ -60,7 +60,7 @@ class AcceptServer {
   std::function<void()> on_break_hook_;
 
   std::vector<std::unique_ptr<ListenerInterface>> list_interface_;
-  fibers_ext::BlockingCounter ref_bc_;  // to synchronize listener threads during the shutdown.
+  BlockingCounter ref_bc_;  // to synchronize listener threads during the shutdown.
 
   bool was_run_ = false;
 

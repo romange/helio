@@ -73,6 +73,42 @@ TEST_F(FiberTest, Basic) {
   fb2.Join();
 
   EXPECT_EQ(2, run);
+
+  Fiber fb3(
+      "test3", [](int i) {}, 1);
+  fb3.Join();
+}
+
+TEST_F(FiberTest, Stack) {
+  Fiber fb1, fb2;
+  {
+    uint64_t val1 = 42;
+    uint64_t arg1 = 43;
+    auto cb1 = [val1](uint64_t arg) {
+      ASSERT_EQ(val1, 42);
+      ASSERT_EQ(arg, 43);
+    };
+
+    fb1 = Fiber(Launch::post, "test1", cb1, arg1);
+  }
+
+  {
+    uint64_t val = 142;
+    auto cb1 = [val](uint64_t arg) {
+      EXPECT_EQ(val, 142);
+      EXPECT_EQ(arg, 143);
+    };
+
+    fb2 = Fiber(Launch::post, "test2", cb1, 143);
+  }
+  fb1.Join();
+  fb2.Join();
+
+  // Test with moveable only arguments.
+  unique_ptr<int> pass(new int(42));
+  Fiber("test3", [](unique_ptr<int> p) {
+    EXPECT_EQ(42, *p);
+  }, move(pass)).Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -170,7 +206,7 @@ TEST_F(ProactorTest, AsyncEvent) {
   };
 
   proactor_th_->proactor->DispatchBrief([&] {
-    uring::SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
+    SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
     se.sqe()->opcode = IORING_OP_NOP;
     LOG(INFO) << "submit";
   });

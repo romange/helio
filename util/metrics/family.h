@@ -1,6 +1,7 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #pragma once
 
 #include <absl/container/flat_hash_map.h>
@@ -129,7 +130,7 @@ class Family {
   std::vector<LabelValues> label_values_;  // Guarded by mu_
   LabelMap label_map_;                     // Guarded by mu_
 
-  fibers_ext::SharedMutex mu_;
+  SharedMutex mu_;
 
   ProactorPool* pp_;
   Family* next_ = nullptr;

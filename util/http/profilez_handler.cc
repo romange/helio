@@ -1,18 +1,25 @@
-// Copyright 2018, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
-#include <unordered_map>
-
-#include <gperftools/profiler.h>
 
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
+#include <gperftools/profiler.h>
+
+#include <thread>
+#include <unordered_map>
+
 #include "base/logging.h"
 #include "base/proc_util.h"
-
-#include "util/fibers/fibers_ext.h"
 #include "util/http/http_common.h"
 
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+using util::fb2::Done;
+#else
+#include "util/fibers/fibers_ext.h"
+using util::fibers_ext::Done;
+#endif
 
 namespace util {
 namespace http {
@@ -54,7 +61,7 @@ static void HandleCpuProfile(bool enable, StringResponse* response) {
   ProfilerStop();
   if (last_profile_suffix[0] == '\0') {
     body.append("<h3>Profiling is off, commander!</h3> \n")
-    .append("<img src='https://i.giphy.com/media/l0IykG0AM7911MrCM/giphy.webp'>\n");
+        .append("<img src='https://i.giphy.com/media/l0IykG0AM7911MrCM/giphy.webp'>\n");
     return;
   }
   string cmd("nice -n 15 pprof -noinlines -lines -unit ms --svg ");
@@ -91,7 +98,6 @@ static void HandleCpuProfile(bool enable, StringResponse* response) {
   response->result(h2::status::moved_permanently);
 }
 
-
 StringResponse ProfilezHandler(const QueryArgs& args) {
   bool enable = false;
   bool heap = false;
@@ -104,7 +110,7 @@ StringResponse ProfilezHandler(const QueryArgs& args) {
     }
   }
 
-  fibers_ext::Done done;
+  Done done;
   StringResponse response;
   std::thread([=, &response]() mutable {
     if (!heap) {

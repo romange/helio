@@ -6,11 +6,14 @@
 
 #include <signal.h>
 
-#include <boost/fiber/operations.hpp>
+// #include <boost/fiber/operations.hpp>
 
 #include "base/logging.h"
 #include "util/accept_server.h"
+#ifndef USE_FB2
 #include "util/fiber_sched_algo.h"
+#endif
+
 #include "util/proactor_pool.h"
 
 #define VSOCK(verbosity, sock) VLOG(verbosity) << "sock[" << native_handle(sock) << "] "
@@ -20,6 +23,10 @@ namespace util {
 
 using namespace boost;
 using namespace std;
+
+#ifndef USE_FB2
+using fibers_ext::Await;
+#endif
 
 namespace {
 
@@ -40,7 +47,11 @@ using ListType =
 
 struct ListenerInterface::TLConnList {
   ListType list;
+#ifdef USE_FB2
+  fb2::CondVarAny empty_cv;
+#else
   fibers::condition_variable_any empty_cv;
+#endif
 
   void Link(Connection* c) {
     DCHECK(!c->hook_.is_linked());
@@ -67,7 +78,7 @@ struct ListenerInterface::TLConnList {
 
     DVLOG(1) << "AwaitEmpty: List size: " << list.size();
 
-    fibers_ext::Await(empty_cv, [this] { return this->list.empty(); });
+    Await(empty_cv, [this] { return this->list.empty(); });
     DVLOG(1) << "AwaitEmpty finished ";
   }
 };
@@ -78,7 +89,6 @@ thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
   FiberProps::SetName("AcceptLoop");
-
   FiberSocketBase::endpoint_type ep;
 
   if (!sock_->IsUDS() && !sock_->IsDirect()) {
@@ -88,7 +98,10 @@ void ListenerInterface::RunAcceptLoop() {
 
   PreAcceptLoop(sock_->proactor());
 
-  pool_->Await([this](auto*) { conn_list.emplace(this, new TLConnList{}); });
+  pool_->Await([this](auto*) {
+    DVLOG(1) << "Emplacing " << this;
+    conn_list.emplace(this, new TLConnList{});
+  });
 
   while (true) {
     FiberSocketBase::AcceptResult res = sock_->Accept();
@@ -118,15 +131,20 @@ void ListenerInterface::RunAcceptLoop() {
 
   PreShutdown();
 
+#ifdef USE_FB2
+#else
   // I am not a fan of "almost works" solutions. Here, I wait for Dispatch() calls
   // to start running and decrease the probability we continue without the up to date conn_list.
   // Since we are during the shutdown phase, waiting for 10ms is "probably" enough to let all the
   // callback to unwind and run.
   fibers_ext::SleepFor(10ms);
+#endif
   atomic_uint32_t cur_conn_cnt{0};
 
   pool_->AwaitFiberOnAll([&](auto* pb) {
-    auto* clist = conn_list.find(this)->second;
+    auto it = conn_list.find(this);
+    DCHECK(it != conn_list.end());
+    auto* clist = it->second;
 
     cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
 
@@ -141,8 +159,10 @@ void ListenerInterface::RunAcceptLoop() {
   VLOG(1) << "Listener - " << ep.port() << " waiting for "
           << cur_conn_cnt << " connections to close";
 
-  pool_->AwaitFiberOnAll([&](auto* pb) {
+  pool_->AwaitFiberOnAll([this](auto* pb) {
     auto it = conn_list.find(this);
+    DCHECK(it != conn_list.end());
+
     it->second->AwaitEmpty();
     delete it->second;
     conn_list.erase(this);

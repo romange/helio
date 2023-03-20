@@ -13,6 +13,10 @@
 namespace util {
 namespace fb2 {
 
+#ifndef USE_FB2
+using uring::SubmitEntry;
+#endif
+
 namespace detail {
   class Scheduler;
 }
@@ -60,7 +64,7 @@ class UringProactor : public ProactorBase {
    *       In that case we will need RegisterCallback function that takes an unregistered SQE
    *       and assigns a callback to it. GetSubmitEntry will be implemented using those functions.
    */
-  uring::SubmitEntry GetSubmitEntry(CbType cb, int64_t payload);
+  SubmitEntry GetSubmitEntry(CbType cb, int64_t payload);
 
   // Returns number of entries available for submitting to io_uring.
   uint32_t GetSubmitRingAvailability() const {
@@ -170,7 +174,7 @@ class FiberCall {
 
   ~FiberCall();
 
-  uring::SubmitEntry* operator->() {
+  SubmitEntry* operator->() {
     return &se_;
   }
 
@@ -186,8 +190,8 @@ class FiberCall {
   }
 
  private:
-  uring::SubmitEntry se_;
-  uring::SubmitEntry tm_;
+  SubmitEntry se_;
+  SubmitEntry tm_;
 
   detail::FiberInterface* me_;
   UringProactor::IoResult io_res_ = 0;

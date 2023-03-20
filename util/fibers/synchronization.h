@@ -4,9 +4,10 @@
 
 #pragma once
 
+#include <absl/base/internal/spinlock.h>
+
 #include <condition_variable>  // for cv_status
 
-#include <absl/base/internal/spinlock.h>
 #include "util/fibers/detail/scheduler.h"
 
 namespace util {
@@ -231,7 +232,6 @@ class CondVarAny {
 #endif
 };
 
-
 class Done {
   class Impl;
 
@@ -314,6 +314,123 @@ class Done {
 
   using ptr_t = ::boost::intrusive_ptr<Impl>;
   ptr_t impl_;
+};
+
+// Callbacks must capture BlockingCounter object by value if they call Dec() function.
+// The reason is that if a thread preempts right after count_.fetch_sub returns 1 but before
+// ec_.notify was called, the object may be destroyed before ec_.notify is called.
+class BlockingCounter {
+  class Impl {
+   public:
+    Impl(unsigned count) : count_{count} {
+    }
+    Impl(const Impl&) = delete;
+    void operator=(const Impl&) = delete;
+
+    friend void intrusive_ptr_add_ref(Impl* done) noexcept {
+      done->use_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    friend void intrusive_ptr_release(Impl* impl) noexcept {
+      if (1 == impl->use_count_.fetch_sub(1, std::memory_order_release)) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        delete impl;
+      }
+    }
+
+    // I suspect all memory order accesses here could be "relaxed" but I do not bother.
+    void Wait() {
+      ec_.await([this] {
+        auto cnt = count_.load(std::memory_order_acquire);
+        return cnt == 0 || (cnt & (1ULL << 63));
+      });
+    }
+
+    void Cancel() {
+      count_.fetch_or(1ULL << 63, std::memory_order_acquire);
+      ec_.notifyAll();
+    }
+
+    void Dec() {
+      if (1 == count_.fetch_sub(1, std::memory_order_acq_rel))
+        ec_.notifyAll();
+    }
+
+   private:
+    friend class BlockingCounter;
+    EventCount ec_;
+    std::atomic<std::uint32_t> use_count_{0};
+    std::atomic<uint64_t> count_;
+  };
+  using ptr_t = ::boost::intrusive_ptr<Impl>;
+
+ public:
+  explicit BlockingCounter(unsigned count) : impl_(new Impl(count)) {
+  }
+
+  void Inc() {
+    Add(1);
+  }
+
+  void Dec() {
+    impl_->Dec();
+  }
+
+  void Add(unsigned delta) {
+    impl_->count_.fetch_add(delta, std::memory_order_acq_rel);
+  }
+
+  void Cancel() {
+    impl_->Cancel();
+  }
+
+  void Wait() {
+    impl_->Wait();
+  }
+
+ private:
+  ptr_t impl_;
+};
+
+class SharedMutex {
+ public:
+  bool try_lock() {
+    uint32_t expect = 0;
+    return state_.compare_exchange_strong(expect, WRITER, std::memory_order_acq_rel);
+  }
+
+  void lock() {
+    ec_.await([this] { return try_lock(); });
+  }
+
+  bool try_lock_shared() {
+    uint32_t value = state_.fetch_add(READER, std::memory_order_acquire);
+    if (value & WRITER) {
+      state_.fetch_add(-READER, std::memory_order_release);
+      return false;
+    }
+    return true;
+  }
+
+  void lock_shared() {
+    ec_.await([this] { return try_lock_shared(); });
+  }
+
+  void unlock() {
+    state_.fetch_and(~(WRITER), std::memory_order_relaxed);
+    ec_.notifyAll();
+  }
+
+  void unlock_shared() {
+    state_.fetch_add(-READER, std::memory_order_relaxed);
+    ec_.notifyAll();
+  }
+
+ private:
+
+  enum : int32_t { READER = 4, WRITER = 1 };
+  EventCount ec_;
+  std::atomic_uint32_t state_{0};
 };
 
 inline bool EventCount::notify() noexcept {
@@ -416,5 +533,21 @@ std::cv_status EventCount::await_until(Condition condition,
   return status;
 }
 
+// For synchronizing fibers in single-threaded environment.
+struct NoOpLock {
+  void lock() {
+  }
+  void unlock() {
+  }
+};
+
 }  // namespace fb2
+
+using fb2::BlockingCounter;
+
+template <typename Pred> void Await(fb2::CondVarAny& cv, Pred&& pred) {
+  fb2::NoOpLock lock;
+  cv.wait(lock, std::forward<Pred>(pred));
+}
+
 }  // namespace util

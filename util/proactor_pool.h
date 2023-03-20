@@ -11,9 +11,18 @@
 
 #include "base/RWSpinLock.h"
 #include "base/type_traits.h"
+
+#ifdef USE_FB2
+#include "util/fibers/proactor_base.h"
+#else
 #include "util/proactor_base.h"
+#endif
 
 namespace util {
+
+#ifdef USE_FB2
+using fb2::ProactorBase;
+#endif
 
 class ProactorPool {
   template <typename Func, typename... Args>
@@ -97,7 +106,7 @@ class ProactorPool {
    * Func must accept "ProactorBase&" and it should not block.
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void Await(Func&& func) {
-    fibers_ext::BlockingCounter bc(size());
+    BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
       bc.Dec();
@@ -113,7 +122,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void Await(Func&& func) {
-    fibers_ext::BlockingCounter bc(size());
+    BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
       bc.Dec();
@@ -133,7 +142,7 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void DispatchOnAll(Func&& func) {
     DispatchBrief([func = std::forward<Func>(func)](unsigned i, ProactorBase* context) {
-      fibers_ext::Fiber(func, i, context).Detach();
+      MakeFiber(std::move(func), i, context).Detach();
     });
   }
 
@@ -148,7 +157,7 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
   void DispatchOnAll(Func&& func) {
     DispatchBrief([func = std::forward<Func>(func)](ProactorBase* context) {
-      fibers_ext::Fiber(func, context).Detach();
+      MakeFiber(std::move(func), context).Detach();
     });
   }
 
@@ -162,7 +171,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
-    fibers_ext::BlockingCounter bc(size());
+    BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned i, ProactorBase* context) mutable {
       func(i, context);
       bc.Dec();
@@ -181,7 +190,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
-    fibers_ext::BlockingCounter bc(size());
+    BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
       bc.Dec();
@@ -209,7 +218,7 @@ class ProactorPool {
  private:
   void SetupProactors();
 
-  void WrapLoop(size_t index, fibers_ext::BlockingCounter* bc);
+  void WrapLoop(size_t index, BlockingCounter* bc);
   void CheckRunningState();
 
   /// The next io_context to use for a connection.

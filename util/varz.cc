@@ -1,15 +1,20 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/varz.h"
 #include "base/logging.h"
 
-using namespace boost;
-
 using base::VarzValue;
 using namespace std;
 
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+using util::fb2::Mutex;
+#else
+#include <boost/fiber/mutex.hpp>
+using Mutex = boost::fibers::mutex;
+#endif
 namespace util {
 
 VarzValue VarzQps::GetData() const {
@@ -55,7 +60,7 @@ VarzValue VarzMapAverage::GetData() const {
   CHECK(pp_);
 
   AnyValue::Map result;
-  fibers::mutex mu;
+  Mutex mu;
 
   auto cb = [&](unsigned index, auto*) {
     auto& map = avg_map_[index];

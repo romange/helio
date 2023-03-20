@@ -68,4 +68,9 @@ inline void Yield() noexcept {
 }
 
 }  // namespace fibers_ext
+
+template <typename Fn, typename... Arg> fibers_ext::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {
+  return fibers_ext::Fiber(std::forward<Fn>(fn), std::forward<Arg>(arg)...);
+}
+
 }  // namespace util

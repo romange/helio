@@ -5,7 +5,12 @@ add_executable(raw_echo_server raw_echo_server.cc)
 cxx_link(raw_echo_server base fibers2 TRDP::uring TRDP::gperf)
 
 add_executable(echo_server echo_server.cc)
-cxx_link(echo_server base uring_fiber_lib epoll_fiber_lib http_server_lib)
+if (USE_FB2)
+    cxx_link(echo_server base fibers2 http_server_lib TRDP::gperf)
+else()
+    cxx_link(echo_server base uring_fiber_lib epoll_fiber_lib http_server_lib)
+endif()
+
 
 # add_executable(proactor_stress proactor_stress.cc)
 # cxx_link(proactor_stress base uring_fiber_lib http_server_lib)

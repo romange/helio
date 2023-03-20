@@ -11,31 +11,46 @@
 // clang-format on
 
 #include <boost/asio/read.hpp>
-#include <boost/fiber/operations.hpp>
 
 #include "base/histogram.h"
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
-#include "util/epoll/epoll_pool.h"
 #include "util/http/http_handler.h"
+#include "util/varz.h"
+
+using namespace util;
+
+#ifdef USE_FB2
+#include "util/fibers/uring_proactor.h"
+#include "util/fibers/uring_pool.h"
+using Proactor = fb2::UringProactor;
+using UringPool = fb2::UringPool;
+using fb2::Fiber;
+#else
+#include <boost/fiber/operations.hpp>
+#include "util/epoll/epoll_pool.h"
 #include "util/uring/uring_fiber_algo.h"
 #include "util/uring/uring_file.h"
 #include "util/uring/uring_pool.h"
 #include "util/uring/uring_socket.h"
-#include "util/varz.h"
+#include "util/fibers/fiber.h"
 
-using namespace std;
-using namespace util;
 using uring::Proactor;
 using uring::SubmitEntry;
 using uring::UringPool;
 using uring::UringSocket;
+using fibers_ext::Fiber;
+
+#endif
+
+
+using namespace std;
+
 using tcp = ::boost::asio::ip::tcp;
 
 using IoResult = Proactor::IoResult;
 using absl::GetFlag;
-using ::boost::fibers::fiber;
 
 ABSL_FLAG(bool, epoll, false, "If true use epoll for server");
 ABSL_FLAG(int32, http_port, 8080, "Http port.");
@@ -62,6 +77,7 @@ VarzCount connections("connections");
 namespace {
 
 constexpr size_t kInitialSize = 1UL << 20;
+#ifndef USE_FB2
 struct TL {
   std::unique_ptr<util::uring::LinuxFile> file;
 
@@ -122,6 +138,7 @@ void TL::WriteToFile() {
 }
 
 static thread_local TL* tl = nullptr;
+#endif
 
 // Returns 0 on success.
 int ResolveDns(string_view host, char* dest) {
@@ -248,9 +265,10 @@ void EchoConnection::HandleRequests() {
     vec[1].iov_base = work_buf_.get();
     vec[1].iov_len = sz;
 
+#ifndef USE_FB2
     if (tl)
       tl->WriteToFile();
-
+#endif
     if (is_raw) {
       ec = socket_->Write(vec + 1, 1);
     } else {
@@ -284,6 +302,7 @@ void RunServer(ProactorPool* pp) {
     LOG(INFO) << "Started http server on port " << port;
   }
 
+#ifndef USE_FB2
   if (!GetFlag(FLAGS_write_file).empty()) {
     static void* blob =
         mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -318,6 +337,7 @@ void RunServer(ProactorPool* pp) {
     pp->AwaitFiberOnAll(write_file);
     LOG(INFO) << "All Writes finished ";
   }
+#endif
 
   acceptor.Run();
   acceptor.Wait();
@@ -496,9 +516,9 @@ class TLocalClient {
 
 void TLocalClient::Connect(tcp::endpoint ep) {
   LOG(INFO) << "TLocalClient::Connect-Start";
-  vector<::boost::fibers::fiber> fbs(drivers_.size());
+  vector<Fiber> fbs(drivers_.size());
   for (size_t i = 0; i < fbs.size(); ++i) {
-    fbs[i] = ::boost::fibers::fiber([&, i] {
+    fbs[i] = MakeFiber([&, i] {
       FiberProps::SetName(absl::StrCat("connect/", i));
       uint64_t start = absl::GetCurrentTimeNanos();
       drivers_[i]->Connect(i, ep);
@@ -507,7 +527,7 @@ void TLocalClient::Connect(tcp::endpoint ep) {
     });
   }
   for (auto& fb : fbs)
-    fb.join();
+    fb.Join();
   LOG(INFO) << "TLocalClient::Connect-End";
   google::FlushLogFiles(google::INFO);
 }
@@ -518,17 +538,17 @@ size_t TLocalClient::Run() {
 
   LOG(INFO) << "RunClient " << p_->GetIndex();
 
-  vector<fiber> fbs(drivers_.size());
+  vector<Fiber> fbs(drivers_.size());
   size_t res = 0;
   for (size_t i = 0; i < fbs.size(); ++i) {
-    fbs[i] = fiber([&, i] {
+    fbs[i] = MakeFiber([&, i] {
       FiberProps::SetName(absl::StrCat("run/", i));
       res += drivers_[i]->Run(&hist);
     });
   }
 
   for (auto& fb : fbs)
-    fb.join();
+    fb.Join();
   unique_lock<mutex> lk(lat_mu);
   lat_hist.Merge(hist);
 
@@ -542,7 +562,9 @@ int main(int argc, char* argv[]) {
 
   std::unique_ptr<ProactorPool> pp;
   if (absl::GetFlag(FLAGS_epoll)) {
+#ifndef USE_FB2
     pp.reset(new epoll::EpollPool);
+#endif
   } else {
     pp.reset(new UringPool);
   }

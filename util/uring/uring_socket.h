@@ -1,5 +1,5 @@
-// Copyright 2022, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
@@ -7,10 +7,20 @@
 #include <liburing/io_uring.h>
 
 #include "util/fiber_socket_base.h"
+#ifdef USE_FB2
+#include "util/fibers/uring_proactor.h"
+#else
 #include "util/uring/proactor.h"
+#endif
 
 namespace util {
+
+#ifdef USE_FB2
+namespace fb2 {
+using Proactor = UringProactor;
+#else
 namespace uring {
+#endif
 
 class UringSocket : public LinuxSocketBase {
  public:

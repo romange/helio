@@ -1,6 +1,9 @@
-add_library(fibers2 fiber2.cc proactor_base.cc synchronization.cc uring_proactor.cc
-             detail/scheduler.cc)
-cxx_link(fibers2 base TRDP::uring Boost::context)
+add_library(fibers2 fiber2.cc proactor_base.cc synchronization.cc uring_proactor.cc uring_pool.cc
+            detail/scheduler.cc ../accept_server.cc ../fiber_socket_base.cc ../listener_interface.cc
+            ../prebuilt_asio.cc ../proactor_pool.cc ../uring/uring_socket.cc
+            ../sliding_counter.cc ../varz.cc)
+target_compile_definitions(fibers2 PRIVATE USE_FB2)
+cxx_link(fibers2 base io TRDP::uring Boost::context Boost::headers)
 
 
 add_library(fibers_ext fibers_ext.cc fiber_file.cc fiberqueue_threadpool.cc)

@@ -103,6 +103,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   ProactorBase* next = pool_->GetNextProactor();
 
   unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
+  DCHECK(fs);
 
   error_code ec;
   bool success = false;

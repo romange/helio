@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.4)
 
-set(PACKAGE_NAME    "async")
+set(PACKAGE_NAME    "helio")
 set(PROJECT_CONTACT romange@gmail.com)
 
 project(${PACKAGE_NAME} C CXX)
@@ -18,6 +18,7 @@ Message(STATUS "PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR} CMAKE_SOURCE_DIR ${CMAK
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
 option (USE_MOLD "whether to use mold linker" OFF)
+option (USE_FB2 "whether to use fibers2 library" OFF)
 
 if (PARENT_PROJ_NAME)
   Message(STATUS "PARENT_PROJ_NAME ${PARENT_PROJ_NAME}")
@@ -29,6 +30,9 @@ else()
   include(internal)
 endif()
 
+if (USE_FB2)
+  add_definitions(-DUSE_FB2)
+endif()
 
 add_subdirectory(base)
 add_subdirectory(io)

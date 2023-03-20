@@ -7,9 +7,14 @@
 #include <liburing/io_uring.h>
 
 namespace util {
+#ifdef USE_FB2
+namespace fb2 {
+class UringProactor;
+#else
 namespace uring {
-
 class Proactor;
+#endif
+
 
 /**
  * @brief Wraps and prepares SQE for submission.
@@ -188,7 +193,9 @@ class SubmitEntry {
     sqe_->fd = fd;
   }
 
+  #ifndef USE_FB2
   friend class Proactor;
+  #endif
 };
 
 }  // namespace uring
