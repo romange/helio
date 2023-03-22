@@ -79,7 +79,8 @@ class EventCount {
     return Key(this, prev >> kEpochShift);
   }
 
-  void wait(uint32_t epoch) noexcept;
+  // return true if was suspended.
+  bool wait(uint32_t epoch) noexcept;
 
   cv_status wait_until(uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept;
 
@@ -427,7 +428,6 @@ class SharedMutex {
   }
 
  private:
-
   enum : int32_t { READER = 4, WRITER = 1 };
   EventCount ec_;
   std::atomic_uint32_t state_{0};
@@ -438,12 +438,7 @@ inline bool EventCount::notify() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
-    /*detail::FiberInterface* dest = active->UnparkOne(this);
-    if (dest) {
-      active->ActivateOther(dest);
-      return true;
-    }*/
-
+#if 1
     lock_.Lock();
 
     if (!wait_queue_.empty()) {
@@ -455,6 +450,13 @@ inline bool EventCount::notify() noexcept {
       return true;
     }
     lock_.Unlock();
+#else
+    detail::FiberInterface* dest = active->NotifyParked(uintptr_t(this));
+    if (dest) {
+      return true;
+    }
+
+#endif
   }
   return false;
 }
@@ -463,6 +465,7 @@ inline bool EventCount::notifyAll() noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
 
   if (prev & kWaiterMask) {
+#if 1
     decltype(wait_queue_) tmp_queue;
     {
       detail::SpinLockHolder holder(&lock_);
@@ -475,23 +478,36 @@ inline bool EventCount::notifyAll() noexcept {
       tmp_queue.pop_front();
       active->ActivateOther(fi);
     }
+#else
+    detail::FiberInterface* active = detail::FiberActive();
+    active->NotifyAllParked(uintptr_t(this));
+    return true;
+#endif
   }
 
   return false;
 };
 
 // Atomically checks for epoch and waits on cond_var.
-inline void EventCount::wait(uint32_t epoch) noexcept {
+inline bool EventCount::wait(uint32_t epoch) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
 
+#if 1
   lock_.Lock();
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     wait_queue_.push_back(*active);
     lock_.Unlock();
     active->scheduler()->Preempt();
+    return true;
   } else {
     lock_.Unlock();
+    return false;
   }
+#else
+  return active->SuspendConditionally(uintptr_t(this), [&] {
+    return (val_.load(std::memory_order_relaxed) >> kEpochShift) != epoch;
+  });
+#endif
 }
 
 // Returns true if had to preempt, false if no preemption happenned.
@@ -507,8 +523,7 @@ template <typename Condition> bool EventCount::await(Condition condition) {
     if (condition()) {
       break;
     }
-    preempt = true;
-    wait(key.epoch());
+    preempt |= wait(key.epoch());
   }
 
   return preempt;
