@@ -241,6 +241,14 @@ TEST_F(ProactorTest, DispatchTest) {
   fb.Join();
 }
 
+TEST_F(ProactorTest, Sleep) {
+  proactor_th_->proactor->Await([] {
+    LOG(INFO) << "Before Sleep";
+    ThisFiber::SleepFor(20ms);
+    LOG(INFO) << "After Sleep";
+  });
+}
+
 TEST_F(ProactorTest, MultiParking) {
   constexpr unsigned kNumFibers = 64;
   constexpr unsigned kNumThreads = 32;

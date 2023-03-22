@@ -88,7 +88,7 @@ thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
-  FiberProps::SetName("AcceptLoop");
+  ThisFiber::SetName("AcceptLoop");
   FiberSocketBase::endpoint_type ep;
 
   if (!sock_->IsUDS() && !sock_->IsDirect()) {

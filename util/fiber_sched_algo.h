@@ -98,4 +98,11 @@ class FiberSchedAlgo : public ::boost::fibers::algo::algorithm_with_properties<F
   };
 };
 
+namespace ThisFiber {
+
+inline void SetName(std::string_view name) {
+  FiberProps::SetName(name);
+}
+
+}  // namespace ThisFiber
 }  // namespace util

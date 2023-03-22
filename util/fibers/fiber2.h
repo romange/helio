@@ -85,6 +85,12 @@ class Fiber {
   boost::intrusive_ptr<util::fb2::detail::FiberInterface> impl_;
 };
 
+}  // namespace fb2
+
+template <typename Fn, typename... Arg> fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {
+  return fb2::Fiber(std::string_view{}, std::forward<Fn>(fn), std::forward<Arg>(arg)...);
+}
+
 namespace ThisFiber {
 
 inline void SleepUntil(std::chrono::steady_clock::time_point tp) {
@@ -96,19 +102,15 @@ inline void Yield() {
   fb2::detail::FiberActive()->Yield();
 }
 
+template <typename Rep, typename Period>
+void SleepFor(const std::chrono::duration<Rep, Period>& timeout_duration) {
+  SleepUntil(std::chrono::steady_clock::now() + timeout_duration);
+}
+
+inline void SetName(std::string_view name) {
+  fb2::detail::FiberActive()->SetName(name);
+}
+
 };  // namespace ThisFiber
-
-}  // namespace fb2
-
-template <typename Fn, typename... Arg>
-fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {
-  return fb2::Fiber(std::string_view{}, std::forward<Fn>(fn), std::forward<Arg>(arg)...);
-}
-
-namespace FiberProps {
-  inline void SetName(std::string_view name) {
-    fb2::detail::FiberActive()->SetName(name);
-  }
-}
 
 }  // namespace util

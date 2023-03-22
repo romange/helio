@@ -61,7 +61,7 @@ inline std::string SafeErrorMessage(int ev) noexcept {
   return strerror_r_helper(strerror_r(ev, buf, sizeof(buf)), buf);
 }
 
-void wait_for_cqe(io_uring* ring, unsigned wait_nr, sigset_t* sig = NULL) {
+void wait_for_cqe(io_uring* ring, unsigned wait_nr, __kernel_timespec* ts, sigset_t* sig = NULL) {
   struct io_uring_cqe* cqe_ptr = nullptr;
 
   int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, NULL, sig);
@@ -565,6 +565,10 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
 
     scheduler->ProcessRemoteReady();
+    if (scheduler->HasSleepingFibers()) {
+      tl_info_.monotonic_time = GetClockNanos();
+      scheduler->ProcessSleep(tl_info_.monotonic_time);
+    }
 
     while (scheduler->HasReady()) {
       FiberInterface* fi = scheduler->PopReady();
@@ -589,7 +593,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     if (should_spin) {
       // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
       // Instead we use the cpu time on doing on_idle work.
-      wait_for_cqe(&ring_, 0);  // a dip into kernel to fetch more cqes.
+      wait_for_cqe(&ring_, 0, nullptr);  // a dip into kernel to fetch more cqes.
 
       continue;  // continue spinning until on_idle_map_ is empty.
     }
@@ -622,7 +626,22 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
 
       if (task_queue_.empty()) {
         VPRO(2) << "wait_for_cqe " << loop_cnt;
-        wait_for_cqe(&ring_, 1);
+        __kernel_timespec ts{0, 0};
+        __kernel_timespec* ts_arg = nullptr;
+
+        if (scheduler->HasSleepingFibers()) {
+          constexpr uint64_t kNsFreq = 1000000000ULL;
+          auto tp = scheduler->NextSleepPoint();
+          int64_t ns = chrono::time_point_cast<chrono::nanoseconds>(tp).time_since_epoch().count();
+          int64_t now = GetClockNanos();
+          if (now < ns) {
+            ns -= now;
+            ts.tv_sec = ns / kNsFreq;
+            ts.tv_nsec = ns % kNsFreq;
+          }
+          ts_arg = &ts;
+        }
+        wait_for_cqe(&ring_, 1, ts_arg);
         VPRO(2) << "Woke up after wait_for_cqe ";
 
         ++num_stalls;

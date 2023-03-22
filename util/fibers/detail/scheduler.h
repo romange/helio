@@ -61,9 +61,17 @@ class Scheduler {
     return num_worker_fibers_;
   }
 
+  bool HasSleepingFibers() const {
+    return !sleep_queue_.empty();
+  }
+
+  std::chrono::steady_clock::time_point NextSleepPoint() const {
+    return sleep_queue_.begin()->tp_;
+  }
+
   void DestroyTerminated();
   void ProcessRemoteReady();
-  void ProcessSleep();
+  void ProcessSleep(uint64_t now_ns);
 
   void AttachCustomPolicy(DispatchPolicy* policy);
 
