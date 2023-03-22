@@ -597,7 +597,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 0) {
+    if (!ring_busy && spin_loops++ < 2) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
@@ -630,6 +630,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
 
       tq_seq = 0;
       tq_seq_.store(0, std::memory_order_release);
+      goto spin_start;
     }
   }
 

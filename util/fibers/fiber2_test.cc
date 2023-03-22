@@ -260,6 +260,7 @@ TEST_F(ProactorTest, MultiParking) {
         num_started.fetch_add(1, std::memory_order_relaxed);
         ec.notify();
 
+        VLOG(1) << "After ec.notify()";
         for (unsigned iter = 0; iter < 10; ++iter) {
           for (unsigned k = 0; k < kNumThreads; ++k) {
             ths[k]->proactor->AwaitBrief([] { return true; });

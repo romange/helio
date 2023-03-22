@@ -5,10 +5,10 @@
 
 #include <absl/base/internal/spinlock.h>
 
+// #include <boost/fiber/detail/spinlock.hpp>
 #include <condition_variable>
 #include <mutex>
 
-#include "base/function2.hpp"
 #include "base/logging.h"
 
 namespace util {
@@ -16,6 +16,9 @@ namespace fb2 {
 namespace detail {
 
 namespace ctx = boost::context;
+using SpinLockHolder = absl::base_internal::SpinLockHolder;
+//::boost::fibers::detail::spinlock_lock;
+
 using namespace std;
 
 namespace {
@@ -38,6 +41,7 @@ inline void CpuPause() {
 #endif
 }
 
+#if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {
   std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,
                              std::memory_order_relaxed);
@@ -98,9 +102,11 @@ class ParkingHT {
   ~ParkingHT();
 
   // if validate returns true, the fiber is not added to the queue.
-  bool Emplace(uint64_t token, FiberInterface* fi, fu2::unique_function<bool()> validate);
+  bool Emplace(uint64_t token, FiberInterface* fi, absl::FunctionRef<bool()> validate);
 
-  FiberInterface* Remove(uint64_t token, fu2::function<void(FiberInterface*)> wakeup_fn);
+  FiberInterface* Remove(uint64_t token, absl::FunctionRef<void(FiberInterface*)> on_hit,
+                         absl::FunctionRef<void()> on_miss);
+  void RemoveAll(uint64_t token, WaitQueue* wq);
 
  private:
   void TryRehash(SizedBuckets* cur_sb);
@@ -109,6 +115,8 @@ class ParkingHT {
   atomic_uint32_t num_entries_{0};
   atomic_bool rehashing_{false};
 };
+
+#endif
 
 class DispatcherImpl final : public FiberInterface {
  public:
@@ -167,7 +175,7 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
   return new (sp_ptr) DispatcherImpl{std::move(palloc), std::move(salloc), sched};
 }
 
-ParkingHT* g_parking_ht = nullptr;
+// ParkingHT* g_parking_ht = nullptr;
 mutex g_scheduler_lock;
 
 using QsbrEpoch = uint32_t;
@@ -205,9 +213,9 @@ TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
   active = main_ctx;
   sched = new Scheduler(main_ctx);
   unique_lock lk(g_scheduler_lock);
-  if (g_parking_ht == nullptr) {
+  /*if (g_parking_ht == nullptr) {
     g_parking_ht = new ParkingHT{};
-  }
+  }*/
   next = g_fiber_thread_list;
   g_fiber_thread_list = this;
 }
@@ -222,10 +230,10 @@ TL_FiberInitializer::~TL_FiberInitializer() {
     p = &(*p)->next;
   }
   *p = next;
-  if (g_fiber_thread_list == nullptr) {
+  /*if (g_fiber_thread_list == nullptr) {
     delete g_parking_ht;
     g_parking_ht = nullptr;
-  }
+  }*/
 }
 
 TL_FiberInitializer& FbInitializer() noexcept {
@@ -234,6 +242,8 @@ TL_FiberInitializer& FbInitializer() noexcept {
   return fb_initializer;
 }
 
+#if PARKING_ENABLED
+// TODO: we could move this checkpoint to the proactor loop.
 void qsbr_checkpoint() {
   atomic_thread_fence(memory_order_seq_cst);
 
@@ -280,52 +290,63 @@ ParkingHT::~ParkingHT() {
 
   for (unsigned i = 0; i < sb->num_buckets; ++i) {
     ParkingBucket* pb = sb->arr + i;
-    absl::base_internal::SpinLockHolder h(&pb->lock);
+    SpinLockHolder h(&pb->lock);
     CHECK(pb->waiters.empty());
   }
   delete[] sb->arr;
   delete sb;
 }
 
-bool ParkingHT::Emplace(uint64_t token, FiberInterface* fi, fu2::unique_function<bool()> validate) {
+// if validate returns true we do not park
+bool ParkingHT::Emplace(uint64_t token, FiberInterface* fi, absl::FunctionRef<bool()> validate) {
   uint32_t num_items = 0;
   unsigned bucket = 0;
   SizedBuckets* sb = nullptr;
   uint64_t hash = MixHash(token);
+  bool res = false;
+
   while (true) {
     sb = buckets_.load(memory_order_acquire);
     DCHECK(sb);
     bucket = sb->GetBucket(hash);
-    DVLOG(2) << "Emplace: token=" << token << " bucket=" << bucket;
+    VLOG(1) << "Emplace: token=" << token << " bucket=" << bucket;
 
     ParkingBucket* pb = sb->arr + bucket;
     {
-      absl::base_internal::SpinLockHolder h(&pb->lock);
-      if (validate()) {
-        qsbr_checkpoint();
-        return false;  // did not park
+
+      SpinLockHolder h(&pb->lock);
+
+      if (!pb->was_rehashed) {  // has grown
+        if (validate()) {
+          break;
+        }
+
+        fi->set_park_token(token);
+        pb->waiters.push_front(*fi);
+        num_items = num_entries_.fetch_add(1, memory_order_relaxed);
+        res = true;
+        break;
       }
-      if (pb->was_rehashed) {  // has grown
-        continue;              // reload the buckets because it could change during the lock
-      }
-      fi->set_park_token(token);
-      pb->waiters.push_front(*fi);
-      num_items = num_entries_.fetch_add(1, memory_order_relaxed);
-      break;
     }
   }
-  DVLOG(2) << "EmplaceEnd: token=" << token << " bucket=" << bucket;
 
-  if (num_items > sb->num_buckets * 2) {
-    TryRehash(sb);
+  if (res) {
+    DVLOG(2) << "EmplaceEnd: token=" << token << " bucket=" << bucket;
+
+    if (num_items > sb->num_buckets) {
+      TryRehash(sb);
+    }
+  } else {
+    qsbr_checkpoint();
   }
 
   // we do not call qsbr_checkpoint here because we are going to park
   // and call qsbr_worker_fiber_offline.
-  return true;
+  return res;
 }
 
-FiberInterface* ParkingHT::Remove(uint64_t token, fu2::function<void(FiberInterface*)> wakeup_fn) {
+FiberInterface* ParkingHT::Remove(uint64_t token, absl::FunctionRef<void(FiberInterface*)> on_hit,
+                                  absl::FunctionRef<void()> on_miss) {
   uint64_t hash = MixHash(token);
   SizedBuckets* sb = nullptr;
   while (true) {
@@ -333,28 +354,60 @@ FiberInterface* ParkingHT::Remove(uint64_t token, fu2::function<void(FiberInterf
     unsigned bucket = sb->GetBucket(hash);
     ParkingBucket* pb = sb->arr + bucket;
     {
-      absl::base_internal::SpinLockHolder h(&pb->lock);
-      if (pb->was_rehashed) {
-        continue;
-      }
+      SpinLockHolder h(&pb->lock);
+      VLOG(1) << "Remove: token=" << token << " bucket=" << bucket;
 
-      for (auto it = pb->waiters.begin(); it != pb->waiters.end(); ++it) {
-        if (it->park_token() == token) {
-          FiberInterface* fi = &*it;
-          pb->waiters.erase(it);
-          auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
-          DCHECK_GT(prev, 0u);
-          wakeup_fn(fi);
-          qsbr_checkpoint();
+      if (!pb->was_rehashed) {
+        for (auto it = pb->waiters.begin(); it != pb->waiters.end(); ++it) {
+          if (it->park_token() == token) {
+            FiberInterface* fi = &*it;
+            pb->waiters.erase(it);
+            auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
+            DCHECK_GT(prev, 0u);
+            on_hit(fi);
+            // qsbr_checkpoint();
 
-          return fi;
+            return fi;
+          }
         }
+        on_miss();
+        return nullptr;
       }
     }
   }
 
   qsbr_checkpoint();
   return nullptr;
+}
+
+void ParkingHT::RemoveAll(uint64_t token, WaitQueue* wq) {
+  uint64_t hash = MixHash(token);
+  SizedBuckets* sb = nullptr;
+
+  while (true) {
+    sb = buckets_.load(memory_order_acquire);
+    unsigned bucket = sb->GetBucket(hash);
+    ParkingBucket* pb = sb->arr + bucket;
+    {
+      SpinLockHolder h(&pb->lock);
+      if (!pb->was_rehashed) {
+        auto it = pb->waiters.begin();
+        while (it != pb->waiters.end()) {
+          if (it->park_token() != token) {
+            ++it;
+            continue;
+          }
+          FiberInterface* fi = &*it;
+          it = pb->waiters.erase(it);
+          wq->push_back(*fi);
+          auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
+          DCHECK_GT(prev, 0u);
+        }
+        break;
+      }
+    }
+  }
+  qsbr_checkpoint();
 }
 
 void ParkingHT::TryRehash(SizedBuckets* cur_sb) {
@@ -404,6 +457,7 @@ void ParkingHT::TryRehash(SizedBuckets* cur_sb) {
 
   rehashing_.store(false, memory_order_release);
 }
+#endif
 
 // DispatcherImpl implementation.
 DispatcherImpl::DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_stack&& salloc,
@@ -466,11 +520,11 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->AddReady(this);
 
       DVLOG(2) << "Switching to " << fi->name();
-      qsbr_worker_fiber_online();
+      // qsbr_worker_fiber_online();
       fi->SwitchTo();
       DCHECK(!list_hook.is_linked());
       DCHECK(FiberActive() == this);
-      qsbr_worker_fiber_offline();
+      // qsbr_worker_fiber_offline();
     } else {
       unique_lock<mutex> lk{mu_};
 
@@ -608,6 +662,7 @@ void Scheduler::AttachCustomPolicy(DispatchPolicy* policy) {
 }
 
 void Scheduler::RunDeferred() {
+#if PARKING_ENABLED
   bool skip_validation = false;
 
   while (!deferred_cb_.empty()) {
@@ -626,6 +681,7 @@ void Scheduler::RunDeferred() {
     skip_validation = true;
     deferred_cb_.pop_back();
   }
+#endif
 }
 
 FiberInterface* FiberActive() noexcept {
@@ -749,25 +805,75 @@ void FiberInterface::Suspend() {
   scheduler_->Preempt();
 }
 
-void FiberInterface::WakeupOther(FiberInterface* other) {
+#if PARKING_ENABLED
+void FiberInterface::NotifyParked(FiberInterface* other) {
   DCHECK(other->scheduler_ && other->scheduler_ != scheduler_);
 
   uintptr_t token = uintptr_t(other);
-  FiberInterface* item = g_parking_ht->Remove(
-      token, [](FiberInterface* fibi) { fibi->flags_.fetch_or(kWakeupBit, memory_order_relaxed); });
 
+  // to avoid the missed notification case, we reset the flag even if we had not find the fiber.
+  // this handles the scenario, where the parking fiber started async process, but has not been
+  // added to the parking lot yet and now this process tries to notify it.
+  FiberInterface* item = g_parking_ht->Remove(
+      token,
+      [](FiberInterface* fibi) {
+        fibi->flags_.fetch_and(~kParkingInProgress, memory_order_relaxed);
+      },
+      [other] { return other->flags_.fetch_and(~kParkingInProgress, memory_order_relaxed); });
+
+  if (item == nullptr) {  // The fiber has not parked yet.
+    // we reset the flag, so "other" will skip the suspension.
+    return;
+  }
   CHECK(item == other);
   other->scheduler_->ScheduleFromRemote(other);
 }
 
+FiberInterface* FiberInterface::NotifyParked(uint64_t token) {
+  FiberInterface* removed = g_parking_ht->Remove(
+      token, [](FiberInterface* fibi) {}, [] {});
+  if (removed) {
+    ActivateOther(removed);
+  }
+  return removed;
+}
+
+void FiberInterface::NotifyAllParked(uint64_t token) {
+  WaitQueue res;
+
+  g_parking_ht->RemoveAll(token, &res);
+  while (!res.empty()) {
+    auto& fibi = res.front();
+    res.pop_front();
+    ActivateOther(&fibi);
+  }
+}
+
 void FiberInterface::SuspendUntilWakeup() {
   uintptr_t token = uintptr_t(this);
-  bool parked = g_parking_ht->Emplace(
-      token, this, [this] { return flags_.load(memory_order_relaxed) & kWakeupBit; });
+  bool parked = g_parking_ht->Emplace(token, this, [this] {
+    // if parking process was stopped we should not park.
+    return (flags_.load(memory_order_relaxed) & kParkingInProgress) == 0;
+  });
+
   if (parked) {
     scheduler_->Preempt();
   }
 }
+
+bool FiberInterface::SuspendConditionally(uint64_t token, absl::FunctionRef<bool()> validate) {
+  bool parked = g_parking_ht->Emplace(token, this, std::move(validate));
+
+  if (parked) {
+    scheduler_->Preempt();
+    return true;
+  }
+
+  return false;
+}
+
+#endif
+
 
 ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = this;

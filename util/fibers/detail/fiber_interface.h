@@ -41,7 +41,7 @@ class FiberInterface {
   // TODO: I still do not know how continuation_fcontext and fiber_fcontext achieve this
   // difference because their code looks very similar except some renaming.
   //
-  // Important: this must be the first data member in the class,
+  // Important: this should be the first data member in the class,
   // because it should be destroyed the last:
   // It indirectly deallocates the memory that backs up this instance so other objects will become
   // garbage. We also solve this problem by moving the entry before calling the d'tor inside
@@ -81,13 +81,20 @@ class FiberInterface {
     return bool(entry_);
   }
 
-  // Suspend/Wakeup interface that does not miss notifications.
-  void PrepareSuspend() {
-    flags_.fetch_and(~kWakeupBit, std::memory_order_relaxed);
+#if 0
+  void StartParking() {
+    flags_.fetch_or(kParkingInProgress, std::memory_order_relaxed);
   }
 
-  void WakeupOther(FiberInterface* other);
+  // Notifies a fiber that intends to park to resume itself.
+  void NotifyParked(FiberInterface* other);
+  FiberInterface* NotifyParked(uint64_t token);
+  void NotifyAllParked(uint64_t token);
   void SuspendUntilWakeup();
+
+  // Returns true if the fiber was suspended, false otherwise.
+  bool SuspendConditionally(uint64_t token, absl::FunctionRef<bool()> validate);
+
   void set_park_token(uint64_t token) {
     park_token_ = token;
   }
@@ -95,6 +102,7 @@ class FiberInterface {
   uint64_t park_token() const {
     return park_token_;
   }
+#endif
 
   // We need refcounting for referencing handles via .
   friend void intrusive_ptr_add_ref(FiberInterface* ctx) noexcept {
@@ -150,9 +158,9 @@ class FiberInterface {
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
-  static constexpr uint16_t kWakeupBit = 0x4;
+  static constexpr uint16_t kParkingInProgress = 0x4;
 
-  using WaitQueue = boost::intrusive::slist<
+  using WaitQueueType = boost::intrusive::slist<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
 
@@ -164,7 +172,7 @@ class FiberInterface {
   Type type_;
 
   // FiberInterfaces that join on this fiber to terminate are added here.
-  WaitQueue wait_queue_;
+  WaitQueueType wait_queue_;
 
   Scheduler* scheduler_ = nullptr;
   uint64_t park_token_ = 0;
