@@ -4,12 +4,20 @@
 #pragma once
 
 #include "base/mpmc_bounded_queue.h"
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+#else
 #include "util/fibers/fibers_ext.h"
+#endif
 #include "util/fibers/detail/result_mover.h"
 
 namespace util {
 namespace fibers_ext {
 
+#ifdef USE_FB2
+using fb2::EventCount;
+using fb2::Done;
+#endif
 class FiberQueueThreadPool;
 
 
@@ -46,7 +54,7 @@ class FiberQueue {
 
     bool result = false;
     while (true) {
-      EventCount::Key key = push_ec_.prepareWait();
+      auto key = push_ec_.prepareWait();
 
       if (TryAdd(std::forward<F>(f))) {
         break;
@@ -135,7 +143,7 @@ class FiberQueueThreadPool {
     size_t start = next_index_.fetch_add(1, std::memory_order_relaxed) % worker_size_;
     Worker& main_w = workers_[start];
     while (true) {
-      EventCount::Key key = main_w.q->push_ec_.prepareWait();
+      auto key = main_w.q->push_ec_.prepareWait();
       if (AddAnyWorker(start, std::forward<F>(f))) {
         break;
       }

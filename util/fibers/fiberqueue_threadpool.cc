@@ -4,6 +4,7 @@
 #include "util/fibers/fiberqueue_threadpool.h"
 
 #include <absl/strings/str_cat.h>
+#include <thread>
 #include "base/pthread_utils.h"
 
 namespace util {
