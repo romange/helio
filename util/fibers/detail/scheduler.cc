@@ -4,7 +4,7 @@
 #include "util/fibers/detail/scheduler.h"
 
 #include <absl/base/internal/spinlock.h>
-#include <absl/time/clock.h>
+// #include <absl/time/clock.h>
 
 // #include <boost/fiber/detail/spinlock.hpp>
 #include <condition_variable>
@@ -414,7 +414,7 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 
 void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
   DCHECK(FiberActive() == this);
-  DCHECK(!list_hook.is_linked());
+  DCHECK(!wait_hook.is_linked());
 
   while (true) {
     if (sched->IsShutdown()) {
@@ -424,7 +424,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
 
     sched->ProcessRemoteReady();
     if (sched->HasSleepingFibers()) {
-      sched->ProcessSleep(absl::GetCurrentTimeNanos());
+      sched->ProcessSleep();
     }
 
     if (sched->HasReady()) {
@@ -473,7 +473,7 @@ Scheduler::~Scheduler() {
 
   while (HasReady()) {
     FiberInterface* fi = PopReady();
-    DCHECK(!fi->list_hook.is_linked());
+    DCHECK(!fi->wait_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
     fi->SwitchTo();
   }
@@ -506,6 +506,15 @@ ctx::fiber_context Scheduler::Preempt() {
 
   __builtin_prefetch(fi);
   return fi->SwitchTo();
+}
+
+void Scheduler::AddReady(FiberInterface* fibi) {
+  ready_queue_.push_back(*fibi);
+
+  // Case of notifications coming to a sleeping fiber.
+  if (fibi->sleep_hook.is_linked()) {
+    sleep_queue_.erase(sleep_queue_.iterator_to(*fibi));
+  }
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
@@ -546,6 +555,8 @@ void Scheduler::DestroyTerminated() {
 
 void Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* me) {
   DCHECK(!me->sleep_hook.is_linked());
+  DCHECK(!me->list_hook.is_linked());
+
   me->tp_ = tp;
   sleep_queue_.insert(*me);
   auto fc = Preempt();
@@ -558,16 +569,14 @@ void Scheduler::ProcessRemoteReady() {
     if (!fi)
       break;
     DVLOG(2) << "set ready " << fi->name();
-
-    ready_queue_.push_back(*fi);
+    AddReady(fi);
   }
 }
 
-void Scheduler::ProcessSleep(uint64_t now_ns) {
+void Scheduler::ProcessSleep() {
   DCHECK(!sleep_queue_.empty());
-
-  auto dur = chrono::nanoseconds(now_ns);
-  chrono::steady_clock::time_point now(dur);
+  std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+  DVLOG(3) << "now " << now.time_since_epoch().count();
 
   do {
     auto it = sleep_queue_.begin();
@@ -576,6 +585,9 @@ void Scheduler::ProcessSleep(uint64_t now_ns) {
 
     FiberInterface& fi = *it;
     sleep_queue_.erase(it);
+
+    DCHECK(!fi.list_hook.is_linked());
+    DVLOG(2) << "timeout for " << fi.name();
     ready_queue_.push_back(fi);
   } while (!sleep_queue_.empty());
 }

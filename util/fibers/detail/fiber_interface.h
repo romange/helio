@@ -56,7 +56,10 @@ class FiberInterface {
 
   virtual ~FiberInterface();
 
-  FI_ListHook list_hook;
+  // we need both list and wait because it could be that
+  // the object is in the wait queue and then added to ready queue by RemoteToReady.
+  // wait_hook should be mutated under a spinlock since it is used by multiple threads.
+  FI_ListHook list_hook, wait_hook;
   FI_SleepHook sleep_hook;
 
   ::boost::context::fiber_context SwitchTo();
@@ -162,7 +165,7 @@ class FiberInterface {
 
   using WaitQueueType = boost::intrusive::slist<
       FiberInterface,
-      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>>;
+      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::wait_hook>>;
 
   ::boost::context::fiber_context Terminate();
 

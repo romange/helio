@@ -65,6 +65,26 @@ class ProactorTest : public testing::Test {
   std::unique_ptr<ProactorThread> proactor_th_;
 };
 
+struct SlistMember {
+  detail::FI_ListHook hook;
+};
+
+using TestSlist = boost::intrusive::slist<
+    SlistMember,
+    boost::intrusive::member_hook<SlistMember, detail::FI_ListHook, &SlistMember::hook>,
+    boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+
+TEST_F(FiberTest, SList) {
+  TestSlist queue;
+  SlistMember m1;
+  TestSlist::iterator it = TestSlist::s_iterator_to(m1);
+  ASSERT_FALSE(m1.hook.is_linked());
+  // queue.erase(it); <- infinite loop since the item is not there.
+  queue.push_front(m1);
+  ASSERT_TRUE(m1.hook.is_linked());
+  queue.erase(it);
+}
+
 TEST_F(FiberTest, Basic) {
   int run = 0;
   Fiber fb1("test1", [&] { ++run; });
@@ -106,9 +126,9 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber("test3", [](unique_ptr<int> p) {
-    EXPECT_EQ(42, *p);
-  }, move(pass)).Detach();
+  Fiber(
+      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, move(pass))
+      .Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -172,6 +192,32 @@ TEST_F(FiberTest, EventCount) {
   signal = true;
   ec.notify();
   fb.Join();
+
+  ASSERT_FALSE(detail::FiberActive()->wait_hook.is_linked());
+  EXPECT_EQ(std::cv_status::timeout,
+            ec.await_until([] { return false; }, chrono::steady_clock::now() + 10ms));
+
+  ASSERT_FALSE(detail::FiberActive()->sleep_hook.is_linked());
+  signal = false;
+  Fiber(Launch::post, "fb2", [&] {
+    signal = true;
+    ec.notify();
+  }).Detach();
+  auto next = chrono::steady_clock::now() + 1s;
+  LOG(INFO) << "timeout at " << next.time_since_epoch().count();
+
+  EXPECT_EQ(std::cv_status::no_timeout,
+            ec.await_until([&] { return signal; }, next));
+  signal = false;
+  Fiber fb3(Launch::post, "fb3", [&] {
+    signal = true;
+    ThisFiber::SleepFor(2ms);
+    ec.notify();
+  });
+  next = chrono::steady_clock::now();
+  EXPECT_EQ(std::cv_status::timeout,
+          ec.await_until([&] { return signal; }, next));
+  fb3.Join();
 }
 
 TEST_F(ProactorTest, AsyncCall) {
@@ -183,8 +229,19 @@ TEST_F(ProactorTest, AsyncCall) {
     proactor_th_->proactor->DispatchBrief([i] { VLOG(1) << "I: " << i; });
   }
   LOG(INFO) << "DispatchBrief done";
-  // proactor_->AwaitBrief([] {});
-  usleep(5000);
+  proactor_th_->proactor->AwaitBrief([] {});
+
+  usleep(2000);
+  EventCount ec;
+  bool signal = false;
+  proactor_th_->proactor->DispatchBrief([&] {
+    signal = true;
+    ec.notify();
+  });
+
+  auto next = chrono::steady_clock::now() + 1s;
+  EXPECT_EQ(std::cv_status::no_timeout,
+          ec.await_until([&] { return signal; }, next));
 }
 
 TEST_F(ProactorTest, Await) {

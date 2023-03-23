@@ -230,7 +230,6 @@ class ProactorBase {
 
   std::atomic_uint32_t tq_seq_{0}, tq_full_ev_{0};
   std::atomic_uint32_t tq_wakeup_ev_{0};
-  std::atomic_uint32_t algo_notify_cnt_{0} /* how many times this FiberAlgo woke up others */;
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =

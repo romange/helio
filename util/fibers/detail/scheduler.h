@@ -22,9 +22,7 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void AddReady(FiberInterface* fibi) {
-    ready_queue_.push_back(*fibi);
-  }
+  void AddReady(FiberInterface* fibi);
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
   // fibi must exist during the run of this function.
@@ -71,7 +69,7 @@ class Scheduler {
 
   void DestroyTerminated();
   void ProcessRemoteReady();
-  void ProcessSleep(uint64_t now_ns);
+  void ProcessSleep();
 
   void AttachCustomPolicy(DispatchPolicy* policy);
 

@@ -64,10 +64,10 @@ inline std::string SafeErrorMessage(int ev) noexcept {
 void wait_for_cqe(io_uring* ring, unsigned wait_nr, __kernel_timespec* ts, sigset_t* sig = NULL) {
   struct io_uring_cqe* cqe_ptr = nullptr;
 
-  int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, NULL, sig);
+  int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, ts, sig);
   if (res < 0) {
     res = -res;
-    LOG_IF(ERROR, res != EAGAIN && res != EINTR) << SafeErrorMessage(res);
+    LOG_IF(ERROR, res != EAGAIN && res != EINTR && res != ETIME) << SafeErrorMessage(res);
   }
 }
 
@@ -469,6 +469,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
   static_assert(sizeof(cqes) == 2048);
 
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_submits = 0;
+  uint64_t last_sleep_check = 0;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t busy_sq_cnt = 0;
@@ -565,9 +566,15 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
 
     scheduler->ProcessRemoteReady();
+
     if (scheduler->HasSleepingFibers()) {
+
       tl_info_.monotonic_time = GetClockNanos();
-      scheduler->ProcessSleep(tl_info_.monotonic_time);
+      // avoid calling steady_clock::now() too much.
+      if (tl_info_.monotonic_time >= last_sleep_check + 10000) {
+        last_sleep_check = tl_info_.monotonic_time;
+        scheduler->ProcessSleep();
+      }
     }
 
     while (scheduler->HasReady()) {
@@ -578,7 +585,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
 
       DVLOG(2) << "Switching to " << fi->name();
       fi->SwitchTo();
-      DCHECK(!dispatcher->list_hook.is_linked());
+      DCHECK(!dispatcher->wait_hook.is_linked());
       cqe_count = 1;
     }
 
@@ -632,10 +639,9 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
         if (scheduler->HasSleepingFibers()) {
           constexpr uint64_t kNsFreq = 1000000000ULL;
           auto tp = scheduler->NextSleepPoint();
-          int64_t ns = chrono::time_point_cast<chrono::nanoseconds>(tp).time_since_epoch().count();
-          int64_t now = GetClockNanos();
-          if (now < ns) {
-            ns -= now;
+          auto now = chrono::steady_clock::now();
+          if (now < tp) {
+            auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
             ts.tv_sec = ns / kNsFreq;
             ts.tv_nsec = ns % kNsFreq;
           }
@@ -660,8 +666,8 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
   VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << loop_cnt << "/" << num_stalls << "/"
           << cqe_fetches << "/" << num_submits;
   VPRO(1) << "Tasks/loop: " << double(num_task_runs) / loop_cnt;
-  VPRO(1) << "tq_wakeups/tq_full/tq_task_int/algo_notifies: " << tq_wakeup_ev_.load() << "/"
-          << tq_full_ev_.load() << "/" << task_interrupts << "/" << algo_notify_cnt_.load();
+  VPRO(1) << "tq_wakeups/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
+          << tq_full_ev_.load() << "/" << task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
           << get_entry_await_ << "/" << pending_cb_cnt_;

@@ -20,7 +20,7 @@ using SpinLockHolder = ::absl::base_internal::SpinLockHolder;
 using WaitQueue = boost::intrusive::slist<
     detail::FiberInterface,
     boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
-                                  &detail::FiberInterface::list_hook>,
+                                  &detail::FiberInterface::wait_hook>,
     boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
 }  // namespace detail
@@ -508,6 +508,30 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     return (val_.load(std::memory_order_relaxed) >> kEpochShift) != epoch;
   });
 #endif
+}
+
+inline std::cv_status EventCount::wait_until(
+    uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
+  detail::FiberInterface* active = detail::FiberActive();
+  cv_status status = cv_status::no_timeout;
+  lock_.Lock();
+  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+    wait_queue_.push_back(*active);
+    lock_.Unlock();
+
+    active->WaitUntil(tp);
+
+    lock_.Lock();
+    if (active->wait_hook.is_linked()) {
+      auto it = detail::WaitQueue::s_iterator_to(*active);
+      wait_queue_.erase(it);
+      status = cv_status::timeout;
+    }
+    lock_.Unlock();
+  } else {
+    lock_.Unlock();
+  }
+  return status;
 }
 
 // Returns true if had to preempt, false if no preemption happenned.

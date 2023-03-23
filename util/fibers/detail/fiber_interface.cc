@@ -128,6 +128,7 @@ FiberInterface::~FiberInterface() {
   DVLOG(2) << "Destroying " << name_;
   DCHECK_EQ(use_count_.load(), 0u);
   DCHECK(wait_queue_.empty());
+  DCHECK(!wait_hook.is_linked());
   DCHECK(!list_hook.is_linked());
 }
 
@@ -147,6 +148,7 @@ void FiberInterface::SetName(std::string_view nm) {
 ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(this == FiberActive());
   DCHECK(!list_hook.is_linked());
+  DCHECK(!wait_hook.is_linked());
 
   scheduler_->ScheduleTermination(this);
   DVLOG(2) << "Terminating " << name_;
@@ -222,6 +224,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
+    DCHECK(!other->list_hook.is_linked());
     scheduler_->AddReady(other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
