@@ -75,7 +75,7 @@ class FiberQueue {
   template <typename F> auto Await(F&& f) -> decltype(f()) {
     Done done;
     using ResultType = decltype(f());
-    detail::ResultMover<ResultType> mover;
+    util::detail::ResultMover<ResultType> mover;
 
     Add([&mover, f = std::forward<F>(f), done]() mutable {
       mover.Apply(f);
@@ -114,7 +114,7 @@ class FiberQueueThreadPool {
   template <typename F> auto Await(F&& f) -> decltype(f()) {
     Done done;
     using ResultType = decltype(f());
-    detail::ResultMover<ResultType> mover;
+    util::detail::ResultMover<ResultType> mover;
 
     Add([&, f = std::forward<F>(f), done]() mutable {
       mover.Apply(f);
@@ -128,7 +128,7 @@ class FiberQueueThreadPool {
   template <typename F> auto Await(size_t worker_index, F&& f) -> decltype(f()) {
     Done done;
     using ResultType = decltype(f());
-    detail::ResultMover<ResultType> mover;
+    util::detail::ResultMover<ResultType> mover;
 
     Add(worker_index, [&, f = std::forward<F>(f), done]() mutable {
       mover.Apply(f);

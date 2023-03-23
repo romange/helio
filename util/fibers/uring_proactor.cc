@@ -5,6 +5,7 @@
 #include "util/fibers/uring_proactor.h"
 
 #include <absl/base/attributes.h>
+#include <absl/base/internal/cycleclock.h>
 #include <liburing.h>
 #include <poll.h>
 #include <string.h>
@@ -19,13 +20,13 @@
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
 
-#define URING_CHECK(x)                                                        \
-  do {                                                                        \
-    int __res_val = (x);                                                      \
-    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                  \
-      LOG(FATAL) << "Error " << (-__res_val)                                  \
-                 << " evaluating '" #x "': " << SafeErrorMessage(-__res_val); \
-    }                                                                         \
+#define URING_CHECK(x)                                                                \
+  do {                                                                                \
+    int __res_val = (x);                                                              \
+    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                          \
+      LOG(FATAL) << "Error " << (-__res_val)                                          \
+                 << " evaluating '" #x "': " << detail::SafeErrorMessage(-__res_val); \
+    }                                                                                 \
   } while (false)
 
 #ifndef __NR_io_uring_enter
@@ -45,49 +46,14 @@ using detail::FiberInterface;
 
 namespace {
 
-// GLIBC/MUSL has 2 flavors of strerror_r.
-// this wrappers work around these incompatibilities.
-inline char const* strerror_r_helper(char const* r, char const*) noexcept {
-  return r;
-}
-
-inline char const* strerror_r_helper(int r, char const* buffer) noexcept {
-  return r == 0 ? buffer : "Unknown error";
-}
-
-inline std::string SafeErrorMessage(int ev) noexcept {
-  char buf[128];
-
-  return strerror_r_helper(strerror_r(ev, buf, sizeof(buf)), buf);
-}
-
 void wait_for_cqe(io_uring* ring, unsigned wait_nr, __kernel_timespec* ts, sigset_t* sig = NULL) {
   struct io_uring_cqe* cqe_ptr = nullptr;
 
   int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, ts, sig);
   if (res < 0) {
     res = -res;
-    LOG_IF(ERROR, res != EAGAIN && res != EINTR && res != ETIME) << SafeErrorMessage(res);
+    LOG_IF(ERROR, res != EAGAIN && res != EINTR && res != ETIME) << detail::SafeErrorMessage(res);
   }
-}
-
-inline unsigned CQReadyCount(const io_uring& ring) {
-  return io_uring_smp_load_acquire(ring.cq.ktail) - *ring.cq.khead;
-}
-
-unsigned IoRingPeek(const io_uring& ring, io_uring_cqe* cqes, unsigned count) {
-  unsigned ready = CQReadyCount(ring);
-  if (!ready)
-    return 0;
-
-  count = count > ready ? ready : count;
-  unsigned head = *ring.cq.khead;
-  unsigned mask = *ring.cq.kring_mask;
-  unsigned last = head + count;
-  for (int i = 0; head != last; head++, i++) {
-    cqes[i] = ring.cq.cqes[head & mask];
-  }
-  return count;
 }
 
 constexpr uint64_t kIgnoreIndex = 0;
@@ -178,7 +144,7 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
       exit(1);
     }
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
-               << SafeErrorMessage(init_res);
+               << detail::SafeErrorMessage(init_res);
   }
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
 
@@ -219,6 +185,41 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
   tl_info_.owner = this;
 }
 
+void UringProactor::DispatchCqe(const io_uring_cqe& cqe) {
+  if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
+    size_t index = cqe.user_data - kUserDataCbIndex;
+    DCHECK_LT(index, centries_.size());
+    auto& e = centries_[index];
+    DCHECK(e.cb) << index;
+
+    CbType func;
+    auto payload = e.val;
+    func.swap(e.cb);
+
+    // Set e to be the head of free-list.
+    e.val = next_free_ce_;
+    next_free_ce_ = index;
+    --pending_cb_cnt_;
+    func(cqe.res, cqe.flags, payload);
+    return;
+  }
+
+  if (cqe.user_data == kIgnoreIndex)
+    return;
+
+  if (cqe.user_data == kWakeIndex) {
+    // We were woken up. Need to rearm wakeup poller.
+    DCHECK_EQ(cqe.res, 8);
+    DVLOG(2) << "PRO[" << tl_info_.proactor_index << "] Wakeup " << cqe.res << "/" << cqe.flags;
+
+    // TODO: to move io_uring_get_sqe call from here to before we stall.
+    ArmWakeupEvent();
+    return;
+  }
+  LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
+}
+
+#if 0
 void UringProactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
   for (unsigned i = 0; i < count; ++i) {
     auto& cqe = cqes[i];
@@ -258,6 +259,7 @@ void UringProactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
     LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
   }
 }
+#endif
 
 SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
@@ -469,13 +471,12 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
   static_assert(sizeof(cqes) == 2048);
 
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_submits = 0;
-  uint64_t last_sleep_check = 0;
+  uint64_t last_sleep_check = absl::base_internal::CycleClock::Now();
+  uint64_t cycles_per_10us = absl::base_internal::CycleClock::Frequency() / 100'000;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
-
-  base::Histogram hist;
 
   FiberInterface* dispatcher = detail::FiberActive();
 
@@ -534,17 +535,22 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
       task_queue_avail_.notifyAll();
-
-#ifndef NDEBUG
-      hist.Add(cnt);
-#endif
     }
 
-    uint32_t cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
+    uint32_t cqe_count = 0;
+    unsigned ring_head;
+    struct io_uring_cqe* cqe;
+    io_uring_for_each_cqe(&ring_, ring_head, cqe) {
+      ++cqe_count;
+      DispatchCqe(*cqe);
+    }
+
     if (cqe_count) {
       ++cqe_fetches;
-      tl_info_.monotonic_time = GetClockNanos();
+      io_uring_cq_advance(&ring_, cqe_count);
 
+#if 0
+      tl_info_.monotonic_time = GetClockNanos();
       while (true) {
         // Once we copied the data we can mark the cqe consumed.
         io_uring_cq_advance(&ring_, cqe_count);
@@ -556,7 +562,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
         }
         cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
       };
-
+#endif
       // In case some of the timer completions filled schedule_periodic_list_.
       for (auto& task_pair : schedule_periodic_list_) {
         SchedulePeriodic(task_pair.first, task_pair.second);
@@ -568,11 +574,10 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     scheduler->ProcessRemoteReady();
 
     if (scheduler->HasSleepingFibers()) {
-
-      tl_info_.monotonic_time = GetClockNanos();
       // avoid calling steady_clock::now() too much.
-      if (tl_info_.monotonic_time >= last_sleep_check + 10000) {
-        last_sleep_check = tl_info_.monotonic_time;
+      uint64_t now = absl::base_internal::CycleClock::Now();
+      if (now >= last_sleep_check + cycles_per_10us) {
+        last_sleep_check = now;
         scheduler->ProcessSleep();
       }
     }
@@ -593,9 +598,6 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    scheduler->DestroyTerminated();
-    scheduler->RunDeferred();
-
     bool should_spin = RunOnIdleTasks();
     if (should_spin) {
       // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
@@ -608,12 +610,15 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 2) {
+    if (!ring_busy && spin_loops++ < 15) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
+      scheduler->DestroyTerminated();
+      scheduler->RunDeferred();
+
       Pause(spin_loops);
-      goto spin_start;
+      continue;
     }
 
     spin_loops = 0;  // Reset the spinning.
@@ -659,15 +664,11 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
   }
 
-#ifndef NDEBUG
-  VPRO(1) << "Task runs histogram: " << hist.ToString();
-#endif
-
   VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << loop_cnt << "/" << num_stalls << "/"
           << cqe_fetches << "/" << num_submits;
   VPRO(1) << "Tasks/loop: " << double(num_task_runs) / loop_cnt;
-  VPRO(1) << "tq_wakeups/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
-          << tq_full_ev_.load() << "/" << task_interrupts;
+  VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
+          << tq_wakeup_save_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
           << get_entry_await_ << "/" << pending_cb_cnt_;

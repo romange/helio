@@ -43,7 +43,7 @@ TEST_F(FibersTest, EventCount) {
   bool signal = false;
   bool fb_exit = false;
 
-  Fiber fb(launch::dispatch, [&] {
+  Fiber fb(Launch::dispatch, [&] {
     ec.await([&] { return signal; });
     fb_exit = true;
   });
@@ -271,12 +271,12 @@ TYPED_TEST(ChannelTest, SimpleChannel) {
   ASSERT_TRUE(channel.Pop(val));
   EXPECT_EQ(4, val);
 
-  Fiber fb(launch::post, [&] { EXPECT_TRUE(channel.Pop(val)); });
+  Fiber fb(Launch::post, [&] { EXPECT_TRUE(channel.Pop(val)); });
   channel.Push(7);
   fb.Join();
   EXPECT_EQ(7, val);
 
-  fb = Fiber(launch::post, [&] { EXPECT_FALSE(channel.Pop(val)); });
+  fb = Fiber(Launch::post, [&] { EXPECT_FALSE(channel.Pop(val)); });
   channel.StartClosing();
   fb.Join();
 }

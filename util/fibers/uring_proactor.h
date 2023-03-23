@@ -117,7 +117,8 @@ class UringProactor : public ProactorBase {
  private:
   void DispatchLoop(detail::Scheduler* sched);
 
-  void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
+  // void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
+  void DispatchCqe(const io_uring_cqe& cqe);
 
   void RegrowCentries();
   void ArmWakeupEvent();

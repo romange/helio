@@ -3,6 +3,7 @@
 //
 #pragma once
 
+#include <climits>
 #include <memory>
 
 namespace base {

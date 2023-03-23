@@ -179,58 +179,6 @@ class CondVarAny {
       wait(lt);
     }
   }
-
-#if 0
-  template <typename LockType, typename Clock, typename Duration>
-  std::cv_status wait_until(LockType& lt,
-                       std::chrono::time_point<Clock, Duration> const& timeout_time_) {
-    detail::FiberInterface* active = detail::FiberActive();
-    std::cv_status status = std::cv_status::no_timeout;
-    std::chrono::steady_clock::time_point timeout_time = detail::convert(timeout_time_);
-    // atomically call lt.unlock() and block on *this
-    // store this fiber in waiting-queue
-    wait_queue_splk_.Lock();
-
-    // unlock external lt
-    lt.unlock();
-    if (!wait_queue_.suspend_and_wait_until(lk, active_ctx, timeout_time)) {
-      status = cv_status::timeout;
-    }
-    // relock external again before returning
-    try {
-      lt.lock();
-#if defined(BOOST_CONTEXT_HAS_CXXABI_H)
-    } catch (abi::__forced_unwind const&) {
-      throw;
-#endif
-    } catch (...) {
-      std::terminate();
-    }
-    return status;
-  }
-
-  template <typename LockType, typename Clock, typename Duration, typename Pred>
-  bool wait_until(LockType& lt, std::chrono::time_point<Clock, Duration> const& timeout_time,
-                  Pred pred) {
-    while (!pred()) {
-      if (cv_status::timeout == wait_until(lt, timeout_time)) {
-        return pred();
-      }
-    }
-    return true;
-  }
-
-  template <typename LockType, typename Rep, typename Period>
-  std::cv_status wait_for(LockType& lt, std::chrono::duration<Rep, Period> const& timeout_duration) {
-    return wait_until(lt, std::chrono::steady_clock::now() + timeout_duration);
-  }
-
-  template <typename LockType, typename Rep, typename Period, typename Pred>
-  bool wait_for(LockType& lt, std::chrono::duration<Rep, Period> const& timeout_duration,
-                Pred pred) {
-    return wait_until(lt, std::chrono::steady_clock::now() + timeout_duration, pred);
-  }
-#endif
 };
 
 class Done {

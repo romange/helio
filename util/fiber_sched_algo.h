@@ -104,5 +104,9 @@ inline void SetName(std::string_view name) {
   FiberProps::SetName(name);
 }
 
+inline const std::string& GetName() {
+  return boost::this_fiber::properties<FiberProps>().name();
+}
+
 }  // namespace ThisFiber
 }  // namespace util

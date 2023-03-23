@@ -229,7 +229,7 @@ class ProactorBase {
   bool is_stopped_ = true;
 
   std::atomic_uint32_t tq_seq_{0}, tq_full_ev_{0};
-  std::atomic_uint32_t tq_wakeup_ev_{0};
+  std::atomic_uint32_t tq_wakeup_ev_{0}, tq_wakeup_save_ev_{0};
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
@@ -303,6 +303,8 @@ inline void ProactorBase::WakeupIfNeeded() {
     // proactor enters WAIT section, therefore we do not race over SQE ring with proactor thread.
     std::atomic_thread_fence(std::memory_order_acquire);
     WakeRing();
+  } else {
+    tq_wakeup_save_ev_.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
@@ -374,5 +376,24 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
   return std::move(mover).get();
 }
 
+namespace detail {
+
+// GLIBC/MUSL has 2 flavors of strerror_r.
+// this wrappers work around these incompatibilities.
+inline char const* strerror_r_helper(char const* r, char const*) noexcept {
+  return r;
+}
+
+inline char const* strerror_r_helper(int r, char const* buffer) noexcept {
+  return r == 0 ? buffer : "Unknown error";
+}
+
+inline std::string SafeErrorMessage(int ev) noexcept {
+  char buf[128];
+
+  return strerror_r_helper(strerror_r(ev, buf, sizeof(buf)), buf);
+}
+
+}  // namespace detail
 }  // namespace fb2
 }  // namespace util
