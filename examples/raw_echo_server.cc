@@ -291,7 +291,7 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
       suspended_list[index].next = next_rp_id;
       next_rp_id = index;
 
-      sched->Schedule(suspended_list[index].cntx);
+      sched->AddReady(suspended_list[index].cntx);
       ++i;
     }
     io_uring_cq_advance(ring, i);
