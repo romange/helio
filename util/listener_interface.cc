@@ -184,6 +184,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   unique_ptr<Connection> guard(conn);
   auto* clist = conn_list.find(this)->second;
   clist->Link(conn);
+  OnConnectionStart(conn);
 
   try {
     conn->HandleRequests();
@@ -194,6 +195,8 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   }
 
   // Our connection could migrate, hence we should find it again
+  OnConnectionClose(conn);
+
   clist = conn_list.find(this)->second;
   clist->Unlink(conn);
 
@@ -221,11 +224,12 @@ ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
 }
 
 void ListenerInterface::TraverseConnections(TraverseCB cb) {
-  pool_->AwaitFiberOnAll([&](auto* pb) {
+  pool_->Await([&](unsigned index, auto* pb) {
     auto it = conn_list.find(this);
+    FiberAtomicGuard fg;
 
     for (auto& conn : it->second->list) {
-      cb(&conn);
+      cb(index, &conn);
     }
   });
 }

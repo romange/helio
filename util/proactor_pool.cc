@@ -182,9 +182,11 @@ void ProactorPool::SetupProactors() {
   state_ = RUN;
 }
 
-vector<unsigned> ProactorPool::MapCpuToThreads(unsigned cpu_id) const {
+const vector<unsigned>& ProactorPool::MapCpuToThreads(unsigned cpu_id) const {
+  static vector<unsigned> empty;
+
   if (cpu_id >= cpu_threads_.size()) {
-    return vector<unsigned>{};
+    return empty;
   }
   return cpu_threads_[cpu_id];
 }

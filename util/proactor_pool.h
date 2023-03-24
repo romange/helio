@@ -201,13 +201,16 @@ class ProactorPool {
 
   // Returns vector of proactor thread indiced pinned to cpu_id.
   // Returns an empty vector if no threads are pinned to this cpu_id.
-  std::vector<unsigned> MapCpuToThreads(unsigned cpu_id) const;
+  const std::vector<unsigned>& MapCpuToThreads(unsigned cpu_id) const;
 
   // Auxillary functions
 
   // Returns a string owned by pool's global storage. Allocates only once for each new string blob.
   // Currently has average performance as it employs RW spinlock underneath.
   std::string_view GetString(std::string_view source);
+
+  // map from cpuid to thread array.
+  const std::vector<std::vector<unsigned>>& cpu_threads() const { return cpu_threads_; }
 
  protected:
   virtual ProactorBase* CreateProactor() = 0;

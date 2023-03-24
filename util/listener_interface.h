@@ -50,7 +50,10 @@ class ListenerInterface {
 
   virtual ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
 
-  using TraverseCB = std::function<void(Connection*)>;
+  // This callback should not preempt because we traverse the list of connections
+  // without locking it.
+  // TraverseCB accepts the thread index and the connection pointer.
+  using TraverseCB = std::function<void(unsigned, Connection*)>;
 
   // traverses all client connections in all threads. cb must be thread safe.
   // cb should not keep Connection* pointers beyond the run of this function because
@@ -69,6 +72,12 @@ class ListenerInterface {
  protected:
   ProactorPool* pool() {
     return pool_;
+  }
+
+  virtual void OnConnectionStart(Connection* conn) {
+  }
+
+  virtual void OnConnectionClose(Connection* conn) {
   }
 
  private:
