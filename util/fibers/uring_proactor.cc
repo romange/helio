@@ -594,7 +594,7 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
       cqe_count = 1;
     }
 
-    if (cqe_count || io_uring_sq_ready(&ring_) > 0) {
+    if (cqe_count) {
       continue;
     }
 
@@ -622,7 +622,6 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
     }
 
     spin_loops = 0;  // Reset the spinning.
-    DCHECK_EQ(0u, io_uring_sq_ready(&ring_));
 
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then

@@ -8,16 +8,18 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-#include <boost/context/fiber.hpp>
+// #include <boost/context/fiber.hpp>
 #include <boost/intrusive/list.hpp>
 #include <queue>
+#include <thread>
 
+#include "base/histogram.h"
 #include "base/init.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
-#include "util/fibers/fiber2.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/fiber2.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");
@@ -29,8 +31,8 @@ ABSL_FLAG(uint16_t, threads, 0,
 namespace ctx = boost::context;
 using namespace std;
 using namespace util;
-using util::fb2::detail::FiberInterface;
 using util::fb2::Fiber;
+using util::fb2::detail::FiberInterface;
 
 namespace {
 
@@ -109,7 +111,7 @@ struct Worker {
   unique_ptr<base::mpmc_bounded_queue<int>> queue;
   pthread_t pid;
 
-  Worker() : queue(new base::mpmc_bounded_queue<int>(32)){};
+  Worker() : queue(new base::mpmc_bounded_queue<int>(256)){};
 };
 
 std::vector<Worker> workers;
@@ -118,6 +120,7 @@ thread_local std::vector<ResumeablePoint> suspended_list;
 thread_local uint32_t next_rp_id = UINT32_MAX;
 
 bool loop_exit = false;
+int listen_fd = -1;
 
 uint32_t NextRp() {
   ResumeablePoint* rp = &suspended_list[next_rp_id];
@@ -178,6 +181,8 @@ int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring) {
   return 0;
 }
 
+static base::Histogram send_hist;
+
 int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
   CqeResult cqe_result;
 
@@ -214,7 +219,10 @@ void HandleSocket(io_uring* ring, int fd) {
     }
 
     DVLOG(1) << "After recv from socket " << fd;
+    auto prev = absl::GetCurrentTimeNanos();
     res = Send(fd, buf.get(), size, ring);
+    auto now = absl::GetCurrentTimeNanos();
+    send_hist.Add((now - prev) / 1000);
     if (res > 0) {
       break;
     }
@@ -268,7 +276,10 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
 
   io_uring_cqe* cqe = nullptr;
   unsigned spins = 0;
+  size_t total = 0, submitted = 0, stalled = 0;
+  FiberInterface* dispatcher = fb2::detail::FiberActive();
   do {
+    ++total;
     if (worker_id >= 0) {
       int fd = -1;
       while (workers[worker_id].queue->try_dequeue(fd)) {
@@ -281,6 +292,7 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     CHECK_GE(num_submitted, 0);
     uint32_t head = 0;
     unsigned i = 0;
+    submitted += (num_submitted > 0);
     io_uring_for_each_cqe(ring, head, cqe) {
       uint32_t index = cqe->user_data;
       CHECK_LT(index, suspended_list.size());
@@ -296,11 +308,15 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     }
     io_uring_cq_advance(ring, i);
 
-    sched->ProcessSleep();
+    if (sched->HasSleepingFibers()) {
+      sched->ProcessSleep();
+    }
 
     if (sched->HasReady()) {
       do {
         FiberInterface* fi = sched->PopReady();
+        sched->AddReady(dispatcher);
+
         auto fc = fi->SwitchTo();
         DCHECK(!fc);
       } while (sched->HasReady());
@@ -310,15 +326,17 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     if (spins++ < 20)
       continue;
 
+    // to ensure we exit upon signal.
     struct __kernel_timespec ts {
-      .tv_sec = 0, .tv_nsec = 100000
+      .tv_sec = 0, .tv_nsec = 1000000
     };
     io_uring_wait_cqe_timeout(ring, &cqe, &ts);
     spins = 0;
-    // io_uring_wait_cqe_timeout(ring, &cqe, nullptr);
+    ++stalled;
   } while (!loop_exit);
 
-  VLOG(1) << "Exit RunEventLoop";
+  VLOG(1) << "Exit RunEventLoop total/submitted/stalled " << total << "/" << submitted << "/"
+          << stalled;
 }
 
 void SetupIORing(io_uring* ring) {
@@ -386,20 +404,32 @@ class MyPolicy : public fb2::DispatchPolicy {
 void WorkerThread(unsigned index) {
   MyPolicy* policy = new MyPolicy(index);
   fb2::SetCustomDispatcher(policy);
-  ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt();
+  if (index == 0) {
+    uint16_t port = absl::GetFlag(FLAGS_port);
+    listen_fd = SetupListener(port);
+    Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
+    accept_fb.Join();
+  } else {
+    ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt();
 
-  DCHECK(!fc);
+    DCHECK(!fc);
 
-  VLOG(1) << "Exiting worker " << index << " " << bool(fc);
+    VLOG(1) << "Exiting worker " << index << " " << bool(fc);
+  }
 }
 
 }  // namespace
 
+// raw_echo_server can be 40% faster than echo_server in single threaded mode.
+// why? it took me months to figure this out (blamed boost.fibers on this) but
+// apparently it's due to how OS assigns CPU for raw_echo_server thread.
+// OS figures out that it's better move it to one of the CPUs handling NIC queues.
+// This is not the case for echo_server as it assigns its threads to CPUs 0-N
+// and with single thread it's always CPU 0. It is possible to tune this by
+// using taskset and this is how I verified that the difference is due to thread affinity.
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
-  // ProfilerEnable();
-
-  int listen_fd = -1;
+  ProfilerEnable();
 
   RegisterSignal({SIGINT, SIGTERM}, [&](int signal) {
     LOG(INFO) << "Exiting on signal " << strsignal(signal);
@@ -408,11 +438,6 @@ int main(int argc, char* argv[]) {
 
   MyPolicy* policy = new MyPolicy(-1);
   fb2::SetCustomDispatcher(policy);
-
-  // setup listening socket
-  uint16_t port = absl::GetFlag(FLAGS_port);
-
-  listen_fd = SetupListener(port);
 
   uint16_t num_workers = absl::GetFlag(FLAGS_threads);
   workers.resize(num_workers);
@@ -432,14 +457,19 @@ int main(int argc, char* argv[]) {
     workers[i].pid = tid;
   }
 
-  Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
-  accept_fb.Join();
+  if (num_workers == 0) {
+    uint16_t port = absl::GetFlag(FLAGS_port);
+    listen_fd = SetupListener(port);
+    Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
+    accept_fb.Join();
+  }
 
-  loop_exit = true;
   // detail::FiberActive()->scheduler()->DestroyTerminated();
   for (size_t i = 0; i < num_workers; ++i) {
     pthread_join(workers[i].pid, nullptr);
   }
+
+  LOG(INFO) << "Send histogram " << send_hist.ToString();
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;

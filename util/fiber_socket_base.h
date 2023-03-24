@@ -24,7 +24,7 @@ using fb2::ProactorBase;
 class ProactorBase;
 #endif
 
-class FiberSocketBase : public io::Sink, io::AsyncSink {
+class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source {
   FiberSocketBase(const FiberSocketBase&) = delete;
   void operator=(const FiberSocketBase&) = delete;
   FiberSocketBase(FiberSocketBase&& other) = delete;
@@ -53,6 +53,11 @@ class FiberSocketBase : public io::Sink, io::AsyncSink {
   ::io::Result<size_t> virtual RecvMsg(const msghdr& msg, int flags) = 0;
 
   ::io::Result<size_t> Recv(const iovec* ptr, size_t len);
+
+  // to satisfy io::Source concept.
+  ::io::Result<size_t> ReadSome(const iovec* v, uint32_t len) final {
+    return Recv(v, len);
+  }
 
   ::io::Result<size_t> Recv(const io::MutableBytes& mb) {
     iovec v{mb.data(), mb.size()};

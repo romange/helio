@@ -190,15 +190,19 @@ class EchoConnection : public Connection {
 };
 
 std::error_code EchoConnection::ReadMsg(size_t* sz) {
-  boost::system::error_code ec;
-  AsioStreamAdapter<FiberSocketBase> asa(*socket_);
+  io::MutableBytes mb(work_buf_.get(), req_len_);
+  auto res = socket_->Read(mb);
 
-  size_t bs = ::boost::asio::read(asa, ::boost::asio::buffer(work_buf_.get(), req_len_), ec);
-  CHECK(ec || bs == req_len_);
+  if (res) {
+    *sz = *res;
+    CHECK_EQ(*sz, req_len_);
+    return {};
+  }
 
-  *sz = bs;
-  return ec;
+  return res.error();
 }
+
+static thread_local base::Histogram send_hist;
 
 void EchoConnection::HandleRequests() {
   ThisFiber::SetName("HandleRequests");
@@ -215,7 +219,6 @@ void EchoConnection::HandleRequests() {
   }
 
   connections.IncBy(1);
-  AsioStreamAdapter<FiberSocketBase> asa(*socket_);
   vec[0].iov_base = buf;
   vec[0].iov_len = 8;
 
@@ -270,7 +273,10 @@ void EchoConnection::HandleRequests() {
       tl->WriteToFile();
 #endif
     if (is_raw) {
+      auto prev = absl::GetCurrentTimeNanos();
       ec = socket_->Write(vec + 1, 1);
+      auto now = absl::GetCurrentTimeNanos();
+      send_hist.Add((now - prev) / 1000);
     } else {
       ec = socket_->Write(vec, 2);
     }
@@ -341,6 +347,14 @@ void RunServer(ProactorPool* pp) {
 
   acceptor.Run();
   acceptor.Wait();
+  base::Histogram send_res;
+  fb2::Mutex mu;
+
+  pp->AwaitFiberOnAll([&](auto*) {
+    unique_lock lk(mu);
+    send_res.Merge(send_hist);
+  });
+  LOG(INFO) << "Send histogram " << send_res.ToString();
 }
 
 class Driver {
