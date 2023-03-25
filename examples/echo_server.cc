@@ -41,6 +41,7 @@ using uring::SubmitEntry;
 using uring::UringPool;
 using uring::UringSocket;
 using fibers_ext::Fiber;
+using fibers_ext::Mutex;
 
 #endif
 
@@ -348,7 +349,7 @@ void RunServer(ProactorPool* pp) {
   acceptor.Run();
   acceptor.Wait();
   base::Histogram send_res;
-  fb2::Mutex mu;
+  Mutex mu;
 
   pp->AwaitFiberOnAll([&](auto*) {
     unique_lock lk(mu);

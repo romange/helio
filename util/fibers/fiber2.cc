@@ -12,11 +12,11 @@ namespace util {
 namespace fb2 {
 
 Fiber::~Fiber() {
-  CHECK(!joinable());
+  CHECK(!IsJoinable());
 }
 
 Fiber& Fiber::operator=(Fiber&& other) noexcept {
-  CHECK(!joinable());
+  CHECK(!IsJoinable());
 
   if (this == &other) {
     return *this;
@@ -31,7 +31,7 @@ void Fiber::Detach() {
 }
 
 void Fiber::Join() {
-  CHECK(joinable());
+  CHECK(IsJoinable());
   impl_->Join();
   impl_.reset();
 }

@@ -3,10 +3,6 @@
 //
 #include "util/fibers/detail/scheduler.h"
 
-#include <absl/base/internal/spinlock.h>
-// #include <absl/time/clock.h>
-
-// #include <boost/fiber/detail/spinlock.hpp>
 #include <condition_variable>
 #include <mutex>
 
@@ -17,8 +13,6 @@ namespace fb2 {
 namespace detail {
 
 namespace ctx = boost::context;
-using SpinLockHolder = absl::base_internal::SpinLockHolder;
-//::boost::fibers::detail::spinlock_lock;
 
 using namespace std;
 
@@ -28,7 +22,6 @@ constexpr size_t kSizeOfCtx = sizeof(FiberInterface);  // because of the virtual
 constexpr size_t kSizeOfSH = sizeof(FI_SleepHook);
 constexpr size_t kSizeOfLH = sizeof(FI_ListHook);
 
-using SpinLockType = ::absl::base_internal::SpinLock;
 
 #if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {

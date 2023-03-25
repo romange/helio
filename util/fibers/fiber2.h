@@ -69,7 +69,7 @@ class Fiber {
     return reinterpret_cast<ID>(impl_.get());
   }
 
-  bool joinable() const noexcept {
+  bool IsJoinable() const noexcept {
     return nullptr != impl_;
   }
 

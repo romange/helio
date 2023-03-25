@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <absl/base/internal/spinlock.h>
+#include "base/spinlock.h"
 
 #include <condition_variable>  // for cv_status
 
@@ -14,8 +14,6 @@ namespace util {
 namespace fb2 {
 
 namespace detail {
-using SpinLockType = ::absl::base_internal::SpinLock;
-using SpinLockHolder = ::absl::base_internal::SpinLockHolder;
 
 using WaitQueue = boost::intrusive::slist<
     detail::FiberInterface,
@@ -100,7 +98,7 @@ class EventCount {
   // waiter count in the least significant 32 bits.
   std::atomic_uint64_t val_;
 
-  detail::SpinLockType lock_;
+  base::SpinLock lock_;
   detail::WaitQueue wait_queue_;
 
   static constexpr uint64_t kAddWaiter = 1ULL;
@@ -115,7 +113,7 @@ class Mutex {
  private:
   friend class CondVar;
 
-  detail::SpinLockType wait_queue_splk_;
+  base::SpinLock wait_queue_splk_;
   detail::WaitQueue wait_queue_;
   detail::FiberInterface* owner_{nullptr};
 
@@ -138,7 +136,7 @@ class Mutex {
 
 class CondVarAny {
  private:
-  detail::SpinLockType wait_queue_splk_;
+  base::SpinLock wait_queue_splk_;
   detail::WaitQueue wait_queue_;
 
  public:
@@ -160,10 +158,10 @@ class CondVarAny {
 
     // atomically call lt.unlock() and block on *this
     // store this fiber in waiting-queue
-    wait_queue_splk_.Lock();
+    wait_queue_splk_.lock();
     lt.unlock();
     wait_queue_.push_back(*active);
-    wait_queue_splk_.Unlock();
+    wait_queue_splk_.unlock();
     active->scheduler()->Preempt();
 
     // relock external again before returning
@@ -178,6 +176,110 @@ class CondVarAny {
     while (!pred()) {
       wait(lt);
     }
+  }
+
+  template <typename LockType>
+  std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
+    detail::FiberInterface* active = detail::FiberActive();
+    std::cv_status status = std::cv_status::no_timeout;
+    std::chrono::steady_clock::time_point timeout_time = tp;
+
+    // atomically call lt.unlock() and block on *this
+    // store this fiber in waiting-queue
+    wait_queue_splk_.lock();
+    lt.unlock();
+    wait_queue_.push_back(*active);
+    wait_queue_splk_.unlock();
+    active->WaitUntil(tp);
+
+    wait_queue_splk_.lock();
+    if (active->wait_hook.is_linked()) {
+      auto it = detail::WaitQueue::s_iterator_to(*active);
+      wait_queue_.erase(it);
+      status = std::cv_status::timeout;
+    }
+    wait_queue_splk_.unlock();
+
+    lt.lock();
+    return status;
+  }
+
+  template <typename LockType, typename Pred>
+  bool wait_until(LockType& lt, std::chrono::steady_clock::time_point tp, Pred pred) {
+    while (!pred()) {
+      if (std::cv_status::timeout == wait_until(lt, tp)) {
+        return pred();
+      }
+    }
+    return true;
+  }
+
+  template <typename LockType>
+  std::cv_status wait_for(LockType& lt, std::chrono::steady_clock::duration dur) {
+    return wait_until(lt, std::chrono::steady_clock::now() + dur);
+  }
+
+  template <typename LockType, typename Pred>
+  bool wait_for(LockType& lt, std::chrono::steady_clock::duration dur, Pred pred) {
+    return wait_until(lt, std::chrono::steady_clock::now() + dur, pred);
+  }
+};
+
+class CondVar {
+ private:
+  CondVarAny cnd_;
+
+ public:
+  CondVar() = default;
+
+  CondVar(CondVar const&) = delete;
+  CondVar& operator=(CondVar const&) = delete;
+
+  void notify_one() noexcept {
+    cnd_.notify_one();
+  }
+
+  void notify_all() noexcept {
+    cnd_.notify_all();
+  }
+
+  void wait(std::unique_lock<Mutex>& lt) {
+    // pre-condition
+    cnd_.wait(lt);
+  }
+
+  template <typename Pred> void wait(std::unique_lock<Mutex>& lt, Pred pred) {
+    cnd_.wait(lt, pred);
+  }
+
+  template <typename Clock, typename Duration>
+  std::cv_status wait_until(std::unique_lock<Mutex>& lt,
+                            std::chrono::time_point<Clock, Duration> const& timeout_time) {
+    // pre-condition
+    std::cv_status result = cnd_.wait_until(lt, timeout_time);
+    // post-condition
+    return result;
+  }
+
+  template <typename Clock, typename Duration, typename Pred>
+  bool wait_until(std::unique_lock<Mutex>& lt,
+                  std::chrono::time_point<Clock, Duration> const& timeout_time, Pred pred) {
+    bool result = cnd_.wait_until(lt, timeout_time, pred);
+    return result;
+  }
+
+  template <typename Rep, typename Period>
+  std::cv_status wait_for(std::unique_lock<Mutex>& lt,
+                          std::chrono::duration<Rep, Period> const& timeout_duration) {
+    std::cv_status result = cnd_.wait_for(lt, timeout_duration);
+    return result;
+  }
+
+  template <typename Rep, typename Period, typename Pred>
+  bool wait_for(std::unique_lock<Mutex>& lt,
+                std::chrono::duration<Rep, Period> const& timeout_duration, Pred pred) {
+    bool result = cnd_.wait_for(lt, timeout_duration, pred);
+    return result;
   }
 };
 
@@ -387,17 +489,17 @@ inline bool EventCount::notify() noexcept {
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
 #if 1
-    lock_.Lock();
+    std::unique_lock lk(lock_);
 
     if (!wait_queue_.empty()) {
       detail::FiberInterface* fi = &wait_queue_.front();
       wait_queue_.pop_front();
-      lock_.Unlock();
+      lk.unlock();
 
       active->ActivateOther(fi);
       return true;
     }
-    lock_.Unlock();
+
 #else
     detail::FiberInterface* dest = active->NotifyParked(uintptr_t(this));
     if (dest) {
@@ -416,7 +518,7 @@ inline bool EventCount::notifyAll() noexcept {
 #if 1
     decltype(wait_queue_) tmp_queue;
     {
-      detail::SpinLockHolder holder(&lock_);
+      std::unique_lock holder(lock_);
       tmp_queue.swap(wait_queue_);
     }
     detail::FiberInterface* active = detail::FiberActive();
@@ -441,16 +543,14 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
 
 #if 1
-  lock_.Lock();
+  std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     wait_queue_.push_back(*active);
-    lock_.Unlock();
+    lk.unlock();
     active->scheduler()->Preempt();
     return true;
-  } else {
-    lock_.Unlock();
-    return false;
   }
+  return false;
 #else
   return active->SuspendConditionally(uintptr_t(this), [&] {
     return (val_.load(std::memory_order_relaxed) >> kEpochShift) != epoch;
@@ -462,22 +562,19 @@ inline std::cv_status EventCount::wait_until(
     uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
   cv_status status = cv_status::no_timeout;
-  lock_.Lock();
+  std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     wait_queue_.push_back(*active);
-    lock_.Unlock();
+    lk.unlock();
 
     active->WaitUntil(tp);
 
-    lock_.Lock();
+    lk.lock();
     if (active->wait_hook.is_linked()) {
       auto it = detail::WaitQueue::s_iterator_to(*active);
       wait_queue_.erase(it);
       status = cv_status::timeout;
     }
-    lock_.Unlock();
-  } else {
-    lock_.Unlock();
   }
   return status;
 }

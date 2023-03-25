@@ -396,4 +396,8 @@ inline std::string SafeErrorMessage(int ev) noexcept {
 
 }  // namespace detail
 }  // namespace fb2
+
+// TODO:
+using fb2::FiberAtomicGuard;
+
 }  // namespace util

@@ -12,6 +12,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
 #include "util/fibers/uring_proactor.h"
 
@@ -206,8 +207,7 @@ TEST_F(FiberTest, EventCount) {
   auto next = chrono::steady_clock::now() + 1s;
   LOG(INFO) << "timeout at " << next.time_since_epoch().count();
 
-  EXPECT_EQ(std::cv_status::no_timeout,
-            ec.await_until([&] { return signal; }, next));
+  EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
   signal = false;
   Fiber fb3(Launch::post, "fb3", [&] {
     signal = true;
@@ -215,9 +215,18 @@ TEST_F(FiberTest, EventCount) {
     ec.notify();
   });
   next = chrono::steady_clock::now();
-  EXPECT_EQ(std::cv_status::timeout,
-          ec.await_until([&] { return signal; }, next));
+  EXPECT_EQ(std::cv_status::timeout, ec.await_until([&] { return signal; }, next));
   fb3.Join();
+}
+
+TEST_F(FiberTest, Future) {
+  Promise<int> p1;
+  Future<int> f1 = p1.get_future();
+
+  Fiber fb("fb3", [f1 = move(f1)]() mutable { EXPECT_EQ(42, f1.get()); });
+  p1.set_value(42);
+
+  fb.Join();
 }
 
 TEST_F(ProactorTest, AsyncCall) {
@@ -240,8 +249,7 @@ TEST_F(ProactorTest, AsyncCall) {
   });
 
   auto next = chrono::steady_clock::now() + 1s;
-  EXPECT_EQ(std::cv_status::no_timeout,
-          ec.await_until([&] { return signal; }, next));
+  EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
 }
 
 TEST_F(ProactorTest, Await) {
