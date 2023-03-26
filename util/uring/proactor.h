@@ -126,7 +126,8 @@ class Proactor : public ProactorBase {
 
   uint8_t sqpoll_f_ : 1;
   uint8_t register_fd_ : 1;
-  uint8_t reserved_f_ : 6;
+  uint8_t msgring_f_ : 1;
+  uint8_t reserved_f_ : 5;
 
   EventCount sqe_avail_;
   ::boost::fibers::context* main_loop_ctx_ = nullptr;

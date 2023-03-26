@@ -174,7 +174,13 @@ class SubmitEntry {
     sqe_->len = how;
   }
 
-  // TODO: To remove this accessor.
+  void PrepMsgRing(int fd, unsigned int len, uint64_t data) {
+    PrepFd(IORING_OP_MSG_RING, fd);
+    sqe_->len = len;
+    sqe_->off = data;
+    sqe_->rw_flags = 0;
+  }
+
   io_uring_sqe* sqe() {
     return sqe_;
   }
