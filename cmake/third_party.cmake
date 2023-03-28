@@ -275,13 +275,14 @@ set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
    CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
-                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DCMAKE_C_FLAGS=-g"
+                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DCMAKE_C_FLAGS=-g \
+                    ${HELIO_MIMALLOC_OPTS}"
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
   COMMAND cp <SOURCE_DIR>/include/mimalloc-types.h <SOURCE_DIR>/include/mimalloc-atomic.h
           ${MIMALLOC_INCLUDE_DIR}/
-  #LIB libmimalloc-debug.a
+  LIB ${HELIO_MIMALLOC_LIBNAME}
 )
 
 add_third_party(jemalloc

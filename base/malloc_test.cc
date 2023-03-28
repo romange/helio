@@ -250,6 +250,17 @@ TEST_F(MallocTest, Stats) {
   EXPECT_GT(rss, active);
 }
 
+// When MI_SECURE mode is enabled, double free is detected and the process can be killed.
+#if 0
+TEST_F(MallocTest, DoubleFree) {
+  mi_register_error([](int err, void*) { LOG_IF(FATAL, err == EAGAIN) << "Double free detected"; },
+                    nullptr);
+  void* p = mi_malloc(64);
+  mi_free(p);
+  EXPECT_DEATH(mi_free(p), "Double free detected");
+}
+#endif
+
 /* mimalloc notes:
   segment allocates itself from arena. by default only MI_MEMID_OS is being used for allocations
   which is OS backed proxy arena.
