@@ -61,4 +61,26 @@ void WriteStringToFileOrDie(std::string_view contents, std::string_view name) {
   CHECK(!ec) << ec.message();
 }
 
+Result<string> ReadFileToString(string_view path) {
+  auto res = OpenRead(path, ReadonlyFile::Options{});
+  if (!res)
+    return nonstd::make_unexpected(res.error());
+
+  unique_ptr<ReadonlyFile> fl(res.value());
+
+  string value;
+  size_t sz = fl->Size();
+  value.resize(sz);
+
+  MutableBytes mb(reinterpret_cast<uint8_t*>(value.data()), value.size());
+  auto status = fl->Read(0, mb);
+  if (!status) {
+    fl->Close();
+    return nonstd::make_unexpected(status.error());
+  }
+  fl->Close();
+
+  return value;
+}
+
 }  // namespace io

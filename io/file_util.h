@@ -4,7 +4,9 @@
 #pragma once
 
 #include <sys/types.h>
+
 #include <vector>
+
 #include "io/io.h"
 
 namespace io {
@@ -23,5 +25,8 @@ Result<StatShortVec> StatFiles(std::string_view path);
 // Create a file and write a std::string to it.
 void WriteStringToFileOrDie(std::string_view contents, std::string_view name);
 
+// Read an entire file to a std::string.  Return true if successful, false
+// otherwise.
+Result<std::string> ReadFileToString(std::string_view path);
 
-} //
+}  // namespace io
