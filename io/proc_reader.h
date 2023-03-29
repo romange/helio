@@ -23,6 +23,9 @@ struct MemInfoData {
   size_t mem_buffers = 0;
   size_t mem_cached = 0;
   size_t mem_SReclaimable = 0;
+  size_t swap_cached = 0;
+  size_t swap_total = 0;
+  size_t swap_free = 0;
 
   // in meminfo.c of free program - mem used
   // equals to: total - (free + buffers + cached + SReclaimable).
