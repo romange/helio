@@ -118,6 +118,12 @@ Result<MemInfoData> ReadMemInfo() {
       ParseKb(num, &mdata.mem_cached);
     } else if (key == "SReclaimable") {
       ParseKb(num, &mdata.mem_SReclaimable);
+    } else if (key == "SwapCached") {
+      ParseKb(num, &mdata.swap_cached);
+    } else if (key == "SwapTotal") {
+      ParseKb(num, &mdata.swap_total);
+    } else if (key == "SwapFree") {
+      ParseKb(num, &mdata.swap_free);
     }
   };
 
