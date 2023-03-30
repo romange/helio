@@ -1,11 +1,17 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "io/file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 
 namespace util {
+
+#ifdef USE_FB2
+namespace fb_namesp = fb2;
+#else
+namespace fb_namesp = fibers_ext;
+#endif
 
 // Fiber-friendly file handler. Returns ReadonlyFile* instance that does not block the current
 // thread unlike the regular posix implementation. All the read opearations will run
@@ -23,7 +29,7 @@ struct FiberReadOptions : public io::ReadonlyFile::Options {
 };
 
 ABSL_MUST_USE_RESULT io::ReadonlyFileOrError OpenFiberReadFile(
-    std::string_view name, fibers_ext::FiberQueueThreadPool* tp,
+    std::string_view name, fb_namesp::FiberQueueThreadPool* tp,
     const FiberReadOptions& opts = FiberReadOptions{});
 
 struct FiberWriteOptions : public io::WriteFile::Options {
@@ -31,7 +37,7 @@ struct FiberWriteOptions : public io::WriteFile::Options {
 };
 
 ABSL_MUST_USE_RESULT io::Result<io::WriteFile*> OpenFiberWriteFile(
-    std::string_view name, fibers_ext::FiberQueueThreadPool* tp,
+    std::string_view name, fb_namesp::FiberQueueThreadPool* tp,
     const FiberWriteOptions& opts = FiberWriteOptions());
 
 }  // namespace util

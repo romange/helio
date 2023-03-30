@@ -8,24 +8,30 @@
 #include <sys/uio.h>
 
 #include <atomic>
-#include <boost/fiber/mutex.hpp>
 
 #include "base/hash.h"
 #include "base/histogram.h"
 #include "base/logging.h"
 
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+#else
+#include "util/fibers/fibers_ext.h"
+using Mutex = ::boost::fibers::mutex;
+#endif
+
 namespace util {
 using namespace io;
 using namespace std;
 using nonstd::make_unexpected;
-using namespace boost;
+using namespace fb_namesp;
 
 namespace {
 
 class FiberReadFile : public ReadonlyFile {
  public:
   FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next,
-                util::fibers_ext::FiberQueueThreadPool* tp);
+                FiberQueueThreadPool* tp);
 
   SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
 
@@ -54,9 +60,9 @@ class FiberReadFile : public ReadonlyFile {
   size_t buf_size_ = 0;
   std::unique_ptr<ReadonlyFile> next_;
 
-  fibers_ext::FiberQueueThreadPool* tp_;
+  FiberQueueThreadPool* tp_;
   FiberReadOptions::Stats* stats_ = nullptr;
-  fibers_ext::Done done_;
+  Done done_;
   base::Histogram tp_wait_hist_;
 
   std::atomic<ssize_t> prefetch_res_{0};
@@ -66,7 +72,7 @@ class FiberReadFile : public ReadonlyFile {
 
 class WriteFileImpl : public WriteFile {
  public:
-  WriteFileImpl(WriteFile* real, ssize_t hash, fibers_ext::FiberQueueThreadPool* tp)
+  WriteFileImpl(WriteFile* real, ssize_t hash, FiberQueueThreadPool* tp)
       : WriteFile(real->create_file_name()), upstream_(real), tp_(tp), hash_(hash) {
   }
 
@@ -90,17 +96,17 @@ class WriteFileImpl : public WriteFile {
  private:
   WriteFile* upstream_;
 
-  fibers_ext::FiberQueueThreadPool* tp_;
+  FiberQueueThreadPool* tp_;
   ssize_t hash_;
 
-  fibers::mutex mu_;
+  Mutex mu_;
   error_code ec_;
   atomic_bool has_error_{false};
 };
 
 /**** Implementation *********************/
 FiberReadFile::FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next,
-                             util::fibers_ext::FiberQueueThreadPool* tp)
+                             FiberQueueThreadPool* tp)
     : next_(next), tp_(tp) {
   buf_size_ = opts.prefetch_size;
   if (buf_size_) {
@@ -112,7 +118,7 @@ FiberReadFile::FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next,
 
 error_code FiberReadFile::Close() {
   if (prefetch_ptr_) {
-    done_.Wait(AND_RESET);
+    done_.Wait(Done::AND_RESET);
     prefetch_ptr_ = nullptr;
   }
   VLOG(1) << "Read Histogram: " << tp_wait_hist_.ToString();
@@ -153,7 +159,7 @@ auto FiberReadFile::ReadAndPrefetch(size_t offset, const MutableBytes& range) ->
       total_read = ReadAllPosix(next_->Handle(), offset, io, 2);
       done_.Notify();
     });
-    done_.Wait(AND_RESET);
+    done_.Wait(Done::AND_RESET);
     if (VLOG_IS_ON(1)) {
       auto dur = absl::Now() - start;
       tp_wait_hist_.Add(absl::ToInt64Microseconds(dur));
@@ -234,7 +240,7 @@ std::pair<size_t, bool> FiberReadFile::ReadFromCache(size_t offset, const Mutabl
 }
 
 void FiberReadFile::HandleActivePrefetch() {
-  bool preempt = done_.Wait(AND_RESET);  // wait for the active prefetch to finish.
+  bool preempt = done_.Wait(Done::AND_RESET);  // wait for the active prefetch to finish.
   size_t prefetch_res = prefetch_res_.load(std::memory_order_acquire);
 
   if (prefetch_res > 0) {
@@ -280,7 +286,7 @@ auto FiberReadFile::Read(size_t offset, const iovec* v, uint32_t len) -> SizeOrE
     done_.Notify();
   });
 
-  done_.Wait(AND_RESET);
+  done_.Wait(Done::AND_RESET);
   VLOG(1) << "Read " << offset << "/" << res.value();
   return res;
 }
@@ -295,7 +301,7 @@ error_code WriteFileImpl::Close() {
   }
   // After the barrier passed we know all writes completed.
   if (!res) {
-    unique_lock<fibers::mutex> lk(mu_);
+    unique_lock lk(mu_);
     res = ec_;
   }
   return res;
@@ -332,7 +338,7 @@ void WriteFileImpl::AsyncWrite(std::string blob) {
 
 }  // namespace
 
-ReadonlyFileOrError OpenFiberReadFile(std::string_view name, fibers_ext::FiberQueueThreadPool* tp,
+ReadonlyFileOrError OpenFiberReadFile(std::string_view name, FiberQueueThreadPool* tp,
                                       const FiberReadOptions& opts) {
   ReadonlyFileOrError res = OpenRead(name, opts);
   if (!res)
@@ -340,7 +346,7 @@ ReadonlyFileOrError OpenFiberReadFile(std::string_view name, fibers_ext::FiberQu
   return new FiberReadFile(opts, res.value(), tp);
 }
 
-WriteFileOrError OpenFiberWriteFile(std::string_view name, fibers_ext::FiberQueueThreadPool* tp,
+WriteFileOrError OpenFiberWriteFile(std::string_view name, FiberQueueThreadPool* tp,
                                     const FiberWriteOptions& opts) {
   WriteFileOrError res = OpenWrite(name, opts);
   if (!res)

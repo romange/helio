@@ -26,8 +26,6 @@ ostream& operator<<(ostream& o, const ::boost::fibers::channel_op_status op);
 
 namespace util {
 
-enum DoneWaitDirective { AND_NOTHING = 0, AND_RESET = 1 };
-
 namespace fibers_ext {
 
 inline uint32_t short_id(::boost::fibers::context* ctx) {
@@ -47,6 +45,10 @@ inline uint32_t short_id() {
 // io_context friendly. Therefore we must use heap based,
 // reference counted Done object.
 class Done {
+ public:
+    enum DoneWaitDirective { AND_NOTHING = 0, AND_RESET = 1 };
+
+ private:
   class Impl {
    public:
     Impl() : ready_(false) {

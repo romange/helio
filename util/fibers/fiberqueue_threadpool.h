@@ -12,11 +12,10 @@
 #include "util/fibers/detail/result_mover.h"
 
 namespace util {
-namespace fibers_ext {
-
 #ifdef USE_FB2
-using fb2::EventCount;
-using fb2::Done;
+namespace fb2 {
+#else
+namespace fibers_ext {
 #endif
 class FiberQueueThreadPool;
 

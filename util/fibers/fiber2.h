@@ -91,6 +91,11 @@ template <typename Fn, typename... Arg> fb2::Fiber MakeFiber(Fn&& fn, Arg&&... a
   return fb2::Fiber(std::string_view{}, std::forward<Fn>(fn), std::forward<Arg>(arg)...);
 }
 
+template <typename Fn, typename... Arg>
+fb2::Fiber MakeFiber(fb2::Launch launch, Fn&& fn, Arg&&... arg) {
+  return fb2::Fiber(launch, std::string_view{}, std::forward<Fn>(fn), std::forward<Arg>(arg)...);
+}
+
 namespace ThisFiber {
 
 inline void SleepUntil(std::chrono::steady_clock::time_point tp) {
@@ -109,6 +114,10 @@ void SleepFor(const std::chrono::duration<Rep, Period>& timeout_duration) {
 
 inline void SetName(std::string_view name) {
   fb2::detail::FiberActive()->SetName(name);
+}
+
+inline std::string_view GetName() {
+  return fb2::detail::FiberActive()->name();
 }
 
 };  // namespace ThisFiber

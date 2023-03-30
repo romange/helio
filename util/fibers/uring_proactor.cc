@@ -25,7 +25,7 @@ ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file des
     int __res_val = (x);                                                              \
     if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                          \
       LOG(FATAL) << "Error " << (-__res_val)                                          \
-                 << " evaluating '" #x "': " << detail::SafeErrorMessage(-__res_val); \
+                 << " evaluating '" #x "': " << SafeErrorMessage(-__res_val); \
     }                                                                                 \
   } while (false)
 
@@ -40,6 +40,9 @@ using namespace std;
 namespace ctx = boost::context;
 
 namespace util {
+
+using detail::SafeErrorMessage;
+
 namespace fb2 {
 
 using detail::FiberInterface;
@@ -52,7 +55,7 @@ void wait_for_cqe(io_uring* ring, unsigned wait_nr, __kernel_timespec* ts, sigse
   int res = io_uring_wait_cqes(ring, &cqe_ptr, wait_nr, ts, sig);
   if (res < 0) {
     res = -res;
-    LOG_IF(ERROR, res != EAGAIN && res != EINTR && res != ETIME) << detail::SafeErrorMessage(res);
+    LOG_IF(ERROR, res != EAGAIN && res != EINTR && res != ETIME) << SafeErrorMessage(res);
   }
 }
 
@@ -144,7 +147,7 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
       exit(1);
     }
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
-               << detail::SafeErrorMessage(init_res);
+               << SafeErrorMessage(init_res);
   }
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
 

@@ -625,6 +625,24 @@ struct NoOpLock {
   }
 };
 
+class Barrier {
+ public:
+  explicit Barrier(std::size_t initial);
+
+  Barrier(Barrier const&) = delete;
+  Barrier& operator=(Barrier const&) = delete;
+
+  bool Wait();
+  void Cancel();
+
+ private:
+  std::size_t initial_;
+  std::size_t current_;
+  std::size_t cycle_{0};
+  Mutex mtx_;
+  CondVar cond_;
+};
+
 }  // namespace fb2
 
 using fb2::BlockingCounter;

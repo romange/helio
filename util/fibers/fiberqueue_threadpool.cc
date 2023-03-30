@@ -8,8 +8,12 @@
 #include "base/pthread_utils.h"
 
 namespace util {
+#ifdef USE_FB2
+namespace fb2 {
+#else
 namespace fibers_ext {
-using namespace boost;
+#endif
+
 using namespace std;
 
 FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {

@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <liburing/io_uring.h>
+#include <liburing.h>
 
 #include "util/fiber_socket_base.h"
 #ifdef USE_FB2

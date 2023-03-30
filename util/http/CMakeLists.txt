@@ -8,7 +8,12 @@ add_executable(http_main http_main.cc)
 cxx_link(http_main uring_fiber_lib html_lib http_server_lib TRDP::mimalloc)
 
 add_library(http_client_lib http_client.cc)
+
+if (USE_FB2)
+cxx_link(http_client_lib fibers2 http_beast_prebuilt tls_lib)
+else()
 cxx_link(http_client_lib proactor_lib http_beast_prebuilt tls_lib)
+endif()
 
 add_library(http_utils encoding.cc)
 

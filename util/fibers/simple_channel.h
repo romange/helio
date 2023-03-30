@@ -1,17 +1,27 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #pragma once
 
 #include <boost/fiber/context.hpp>
 
 #include "base/ProducerConsumerQueue.h"
 #include "base/mpmc_bounded_queue.h"
+
+#ifdef USE_FB2
+#include "util/fibers/synchronization.h"
+#else
 #include "util/fibers/event_count.h"
 #include "util/fibers/fibers_ext.h"
+#endif
 
 namespace util {
+#ifdef USE_FB2
+namespace fb2 {
+#else
 namespace fibers_ext {
+#endif
 
 namespace detail {
 template <typename Q> class QueueTraits;

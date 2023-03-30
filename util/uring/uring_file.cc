@@ -8,10 +8,21 @@
 #include <sys/stat.h>
 
 #include "base/logging.h"
+
+#ifdef USE_FB2
+#include "util/fibers/uring_proactor.h"
+#else
 #include "util/uring/proactor.h"
+#endif
 
 namespace util {
+
+#ifdef USE_FB2
+namespace fb2 {
+using Proactor = UringProactor;
+#else
 namespace uring {
+#endif
 
 using namespace std;
 using namespace io;

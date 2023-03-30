@@ -376,6 +376,11 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
   return std::move(mover).get();
 }
 
+}  // namespace fb2
+
+// TODO:
+using fb2::FiberAtomicGuard;
+
 namespace detail {
 
 // GLIBC/MUSL has 2 flavors of strerror_r.
@@ -395,9 +400,4 @@ inline std::string SafeErrorMessage(int ev) noexcept {
 }
 
 }  // namespace detail
-}  // namespace fb2
-
-// TODO:
-using fb2::FiberAtomicGuard;
-
 }  // namespace util

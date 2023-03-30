@@ -1,8 +1,10 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 
 #include "util/http/http_client.h"
+
+#include <absl/strings/numbers.h>
 
 #include <boost/asio/connect.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
@@ -14,9 +16,14 @@
 #include "base/logging.h"
 #include "util/dns_resolve.h"
 #include "util/fiber_socket_base.h"
-#include "util/proactor_base.h"
 #include "util/tls/tls_engine.h"
 #include "util/tls/tls_socket.h"
+
+#ifdef USE_FB2
+#include "util/fibers/proactor_base.h"
+#else
+#include "util/proactor_base.h"
+#endif
 
 namespace util {
 namespace http {

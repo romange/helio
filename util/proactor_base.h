@@ -5,7 +5,7 @@
 #pragma once
 
 #ifdef USE_FB2
-#errror "Can not compile with USE_FB2"
+#error "Can not compile with USE_FB2"
 #endif
 
 #include <pthread.h>

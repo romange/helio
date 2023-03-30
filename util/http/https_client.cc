@@ -1,5 +1,5 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/http/https_client.h"

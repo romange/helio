@@ -9,8 +9,12 @@
 #include "io/file.h"
 
 namespace util {
-namespace uring {
 
+#ifdef USE_FB2
+namespace fb2 {
+#else
+namespace uring {
+#endif
 // The following functions must be called in the context of Proactor thread.
 // The objects should be accessed and used in the context of the same thread where
 // they have been opened.
