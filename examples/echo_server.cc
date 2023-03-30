@@ -16,6 +16,7 @@
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
+#include "util/dns_resolve.h"
 #include "util/http/http_handler.h"
 #include "util/varz.h"
 
@@ -141,39 +142,6 @@ void TL::WriteToFile() {
 
 static thread_local TL* tl = nullptr;
 #endif
-
-// Returns 0 on success.
-int ResolveDns(string_view host, char* dest) {
-  struct addrinfo hints, *servinfo;
-
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  hints.ai_flags = AI_ALL;
-
-  int res = getaddrinfo(host.data(), NULL, &hints, &servinfo);
-  if (res != 0)
-    return res;
-
-  static_assert(INET_ADDRSTRLEN < INET6_ADDRSTRLEN, "");
-
-  res = EAI_FAMILY;
-  for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-    if (p->ai_family == AF_INET) {
-      struct sockaddr_in* ipv4 = (struct sockaddr_in*)p->ai_addr;
-      const char* inet_res = inet_ntop(p->ai_family, &ipv4->sin_addr, dest, INET6_ADDRSTRLEN);
-      CHECK_NOTNULL(inet_res);
-      res = 0;
-      break;
-    }
-    LOG(WARNING) << "Only IPv4 is supported";
-  }
-
-  freeaddrinfo(servinfo);
-
-  return res;
-}
 
 }  // namespace
 
@@ -612,9 +580,8 @@ int main(int argc, char* argv[]) {
 
     char ip_addr[INET6_ADDRSTRLEN];
 
-    int resolve_err = ResolveDns(absl::GetFlag(FLAGS_connect), ip_addr);
-    CHECK_EQ(0, resolve_err) << "Could not resolve " << absl::GetFlag(FLAGS_connect) << " "
-                             << gai_strerror(resolve_err);
+    error_code ec = util::DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr);
+    CHECK_EQ(0, ec.value()) << "Could not resolve " << absl::GetFlag(FLAGS_connect) << " " << ec;
     thread_local std::unique_ptr<TLocalClient> client;
     auto address = ::boost::asio::ip::make_address(ip_addr);
     tcp::endpoint ep{address, uint16_t(absl::GetFlag(FLAGS_port))};
