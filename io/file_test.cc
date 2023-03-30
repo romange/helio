@@ -23,13 +23,17 @@ TEST_F(FileTest, Util) {
   WriteStringToFileOrDie("foo", path1);
   string path2 = base::GetTestTempPath("foo2.txt");
   WriteStringToFileOrDie("foo", path2);
+
   string glob = base::GetTestTempPath("foo?.txt");
   Result<StatShortVec> res = StatFiles(glob);
-
   ASSERT_TRUE(res);
   ASSERT_THAT(res.value(), SizeIs(2));
   EXPECT_THAT(res.value()[0].name, EndsWith("/foo1.txt"));
   EXPECT_THAT(res.value()[1].name, EndsWith("/foo2.txt"));
+
+  auto res2 = ReadFileToString(path2);
+  ASSERT_TRUE(res2);
+  EXPECT_EQ(res2.value(), "foo");
 }
 
 }  // namespace io

@@ -69,15 +69,25 @@ Result<string> ReadFileToString(string_view path) {
   unique_ptr<ReadonlyFile> fl(res.value());
 
   string value;
-  size_t sz = fl->Size();
-  value.resize(sz);
+  value.resize(4096);
 
   MutableBytes mb(reinterpret_cast<uint8_t*>(value.data()), value.size());
-  auto status = fl->Read(0, mb);
-  if (!status) {
-    fl->Close();
-    return nonstd::make_unexpected(status.error());
+  size_t offset = 0;
+  while (true) {
+    auto status = fl->Read(offset, mb);
+    if (!status) {
+      fl->Close();
+      return nonstd::make_unexpected(status.error());
+    }
+    if (*status < mb.size()) {
+      value.resize(offset + *status);
+      break;
+    }
+    offset += mb.size();
+    value.resize(value.size() * 2);
+    mb = MutableBytes(reinterpret_cast<uint8_t*>(value.data() + offset), value.size() - offset);
   }
+
   fl->Close();
 
   return value;
