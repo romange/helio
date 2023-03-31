@@ -17,7 +17,6 @@ else()
   cxx_test(accept_server_test uring_fiber_lib epoll_fiber_lib http_beast_prebuilt LABELS CI)
 endif()
 
-set(OPENSSL_ROOT_DIR "/opt/openssl/")
 find_package(OpenSSL)
 
 add_subdirectory(fibers)
