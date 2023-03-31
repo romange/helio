@@ -12,6 +12,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/epoll_proactor.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
 #include "util/fibers/uring_proactor.h"
@@ -29,28 +30,64 @@ class FiberTest : public testing::Test {
 };
 
 struct ProactorThread {
-  std::unique_ptr<UringProactor> proactor;
+  std::unique_ptr<ProactorBase> proactor;
   std::thread proactor_thread;
 
-  ProactorThread(unsigned index) : proactor(new UringProactor) {
-    proactor_thread = thread{[this, index] {
-      proactor->SetIndex(index);
-      proactor->Init(kRingDepth);
-      proactor->Run();
-    }};
-  }
+  ProactorThread(unsigned index, ProactorBase::Kind kind);
 
   ~ProactorThread() {
+    LOG(INFO) << "Stopping proactor thread";
     proactor->Stop();
     proactor_thread.join();
     proactor.reset();
   }
+
+  ProactorBase* get() {
+    return proactor.get();
+  }
 };
 
-class ProactorTest : public testing::Test {
+ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
+  switch (kind) {
+    case ProactorBase::Kind::EPOLL:
+      proactor.reset(new EpollProactor);
+      break;
+    case ProactorBase::Kind::IOURING:
+      proactor.reset(new UringProactor);
+      break;
+  }
+
+  proactor_thread = thread{[=] {
+    proactor->SetIndex(index);
+    switch (kind) {
+      case ProactorBase::Kind::EPOLL:
+        static_cast<EpollProactor*>(proactor.get())->Init();
+        break;
+      case ProactorBase::Kind::IOURING:
+        static_cast<UringProactor*>(proactor.get())->Init(kRingDepth);
+        break;
+    }
+    proactor->Run();
+  }};
+}
+
+class ProactorTest : public testing::TestWithParam<string_view> {
+
  protected:
+  static unique_ptr<ProactorThread> CreateProactorThread() {
+    string_view param = GetParam();
+    if (param == "epoll") {
+      return make_unique<ProactorThread>(0, ProactorBase::EPOLL);
+    }
+    if (param == "uring") {
+      return make_unique<ProactorThread>(0, ProactorBase::IOURING);
+    }
+
+    LOG(FATAL) << "Unknown param: " << param;
+  }
+
   void SetUp() final {
-    proactor_th_ = std::make_unique<ProactorThread>(0);
+    proactor_th_ = CreateProactorThread();
   }
 
   void TearDown() final {
@@ -66,6 +103,8 @@ class ProactorTest : public testing::Test {
   std::unique_ptr<ProactorThread> proactor_th_;
 };
 
+INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
+                         testing::Values("epoll", "uring"));
 struct SlistMember {
   detail::FI_ListHook hook;
 };
@@ -229,7 +268,27 @@ TEST_F(FiberTest, Future) {
   fb.Join();
 }
 
-TEST_F(ProactorTest, AsyncCall) {
+TEST_F(FiberTest, AsyncEvent) {
+  Done done;
+
+  auto cb = [done](UringProactor::IoResult, uint32_t, int64_t payload) mutable {
+    done.Notify();
+    LOG(INFO) << "notify";
+  };
+
+  ProactorThread pth(0, ProactorBase::IOURING);
+  pth.get()->DispatchBrief(
+      [up = reinterpret_cast<UringProactor*>(pth.proactor.get()), cb = move(cb)] {
+        SubmitEntry se = up->GetSubmitEntry(std::move(cb), 1);
+        se.sqe()->opcode = IORING_OP_NOP;
+        LOG(INFO) << "submit";
+      });
+
+  LOG(INFO) << "DispatchBrief";
+  done.Wait();
+}
+
+TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(UringProactor::IsProactorThread());
   ASSERT_EQ(-1, UringProactor::GetIndex());
 
@@ -252,7 +311,7 @@ TEST_F(ProactorTest, AsyncCall) {
   EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
 }
 
-TEST_F(ProactorTest, Await) {
+TEST_P(ProactorTest, Await) {
   thread_local int val = 5;
 
   proactor_th_->proactor->AwaitBrief([] { val = 15; });
@@ -262,24 +321,7 @@ TEST_F(ProactorTest, Await) {
   EXPECT_EQ(15, j);
 }
 
-TEST_F(ProactorTest, AsyncEvent) {
-  Done done;
-
-  auto cb = [done](IoResult, uint32_t, int64_t payload) mutable {
-    done.Notify();
-    LOG(INFO) << "notify";
-  };
-
-  proactor_th_->proactor->DispatchBrief([&] {
-    SubmitEntry se = proactor_th_->proactor->GetSubmitEntry(std::move(cb), 1);
-    se.sqe()->opcode = IORING_OP_NOP;
-    LOG(INFO) << "submit";
-  });
-  LOG(INFO) << "DispatchBrief";
-  done.Wait();
-}
-
-TEST_F(ProactorTest, DispatchTest) {
+TEST_P(ProactorTest, DispatchTest) {
   CondVarAny cnd1, cnd2;
   Mutex mu;
   int state = 0;
@@ -306,7 +348,7 @@ TEST_F(ProactorTest, DispatchTest) {
   fb.Join();
 }
 
-TEST_F(ProactorTest, Sleep) {
+TEST_P(ProactorTest, Sleep) {
   proactor_th_->proactor->Await([] {
     LOG(INFO) << "Before Sleep";
     ThisFiber::SleepFor(20ms);
@@ -314,7 +356,7 @@ TEST_F(ProactorTest, Sleep) {
   });
 }
 
-TEST_F(ProactorTest, MultiParking) {
+TEST_P(ProactorTest, MultiParking) {
   constexpr unsigned kNumFibers = 64;
   constexpr unsigned kNumThreads = 32;
 
@@ -324,7 +366,7 @@ TEST_F(ProactorTest, MultiParking) {
   Fiber fbs[kNumThreads][kNumFibers];
 
   for (unsigned i = 0; i < kNumThreads; ++i) {
-    ths[i] = make_unique<ProactorThread>(i + 1);
+    ths[i] = CreateProactorThread();
   }
 
   for (unsigned i = 0; i < kNumThreads; ++i) {

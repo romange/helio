@@ -56,6 +56,7 @@ std::once_flag module_init;
 // in cc file that does not define it.
 __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
+
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
@@ -74,6 +75,16 @@ ProactorBase::~ProactorBase() {
       ss->signal_map[i].cb = nullptr;
     }
   }
+}
+
+void ProactorBase::Run() {
+  VLOG(1) << "ProactorBase::Run";
+  CHECK(tl_info_.owner) << "Init was not called";
+
+  SetCustomDispatcher(new ProactorDispatcher(this));
+
+  is_stopped_ = false;
+  detail::FiberActive()->Suspend();
 }
 
 void ProactorBase::Stop() {
@@ -261,6 +272,14 @@ void ProactorBase::ModuleInit() {
       break;
     pause_amplifier -= (pause_amplifier + 7) / 8;
   };
+}
+
+void ProactorDispatcher::Run(detail::Scheduler* sched) {
+  proactor_->MainLoop(sched);
+}
+
+void ProactorDispatcher::Notify() {
+  proactor_->WakeupIfNeeded();
 }
 
 }  // namespace fb2

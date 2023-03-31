@@ -66,18 +66,6 @@ constexpr uint64_t kUserDataCbIndex = 1024;
 
 }  // namespace
 
-class UringDispatcher : public DispatchPolicy {
- public:
-  UringDispatcher(UringProactor* uring_proactor) : uring_proactor_(uring_proactor) {
-  }
-
-  void Run(detail::Scheduler* sched) final;
-  void Notify() final;
-
- private:
-  UringProactor* uring_proactor_;
-};
-
 UringProactor::UringProactor() : ProactorBase() {
 }
 
@@ -87,19 +75,6 @@ UringProactor::~UringProactor() {
     io_uring_queue_exit(&ring_);
   }
   VLOG(1) << "Closing wake_fd " << wake_fd_ << " ring fd: " << ring_.ring_fd;
-}
-
-void UringProactor::Run() {
-  VLOG(1) << "UringProactor::Run";
-  CHECK(tl_info_.owner) << "Init was not called";
-
-  SetCustomDispatcher(new UringDispatcher(this));
-
-  is_stopped_ = false;
-  detail::FiberActive()->Suspend();
-
-  VPRO(1) << "centries size: " << centries_.size();
-  centries_.clear();
 }
 
 void UringProactor::Init(size_t ring_size, int wq_fd) {
@@ -468,7 +443,7 @@ LinuxSocketBase* UringProactor::CreateSocket(int fd) {
   return new UringSocket{fd, this};
 }
 
-void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
+void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   constexpr size_t kBatchSize = 128;
   struct io_uring_cqe cqes[kBatchSize];
   static_assert(sizeof(cqes) == 2048);
@@ -674,6 +649,9 @@ void UringProactor::DispatchLoop(detail::Scheduler* scheduler) {
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
           << get_entry_await_ << "/" << pending_cb_cnt_;
+
+  VPRO(1) << "centries size: " << centries_.size();
+  centries_.clear();
 }
 
 const static uint64_t wake_val = 1;
@@ -724,13 +702,6 @@ FiberCall::~FiberCall() {
   CHECK(!me_) << "Get was not called!";
 }
 
-void UringDispatcher::Run(detail::Scheduler* sched) {
-  uring_proactor_->DispatchLoop(sched);
-}
-
-void UringDispatcher::Notify() {
-  uring_proactor_->WakeupIfNeeded();
-}
 
 }  // namespace fb2
 }  // namespace util

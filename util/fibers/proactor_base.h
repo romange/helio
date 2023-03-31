@@ -25,14 +25,18 @@ class LinuxSocketBase;
 
 namespace fb2 {
 
-class ProactorBase {
+// A proxy class that binds ProactorBase to fibers scheduler.
+class ProactorDispatcher;
+
+class ProactorBase  {
   ProactorBase(const ProactorBase&) = delete;
   void operator=(const ProactorBase&) = delete;
+  friend class ProactorDispatcher;
 
  public:
   enum { kTaskQueueLen = 256 };
 
-  enum ProactorKind { EPOLL = 1, IOURING = 2 };
+  enum Kind { EPOLL = 1, IOURING = 2 };
 
   // Corresponds to level 0.
   // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.
@@ -46,7 +50,7 @@ class ProactorBase {
   virtual ~ProactorBase();
 
   // Runs the poll-loop. Stalls the calling thread which will become the "Proactor" thread.
-  virtual void Run() = 0;
+  void Run();
 
   //! Signals proactor to stop. Does not wait for it.
   void Stop();
@@ -186,7 +190,7 @@ class ProactorBase {
     return tq_seq_.fetch_or(1, std::memory_order_relaxed);
   }
 
-  virtual ProactorKind GetKind() const = 0;
+  virtual Kind GetKind() const = 0;
 
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
@@ -206,6 +210,7 @@ class ProactorBase {
 
   // Called only from external threads.
   virtual void WakeRing();
+  virtual void MainLoop(detail::Scheduler* sched) = 0;
 
   void WakeupIfNeeded();
 
@@ -290,6 +295,19 @@ class FiberAtomicGuard {
     ProactorBase::LeaveFiberAtomicSection();
   }
 };
+
+class ProactorDispatcher : public DispatchPolicy {
+public:
+  explicit ProactorDispatcher(ProactorBase* proactor) : proactor_(proactor) {
+  }
+
+private:
+  void Run(detail::Scheduler* sched);
+  void Notify() final;
+
+  ProactorBase* proactor_;
+};
+
 
 // Implementation
 // **********************************************************************

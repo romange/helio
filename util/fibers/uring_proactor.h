@@ -21,22 +21,15 @@ namespace detail {
   class Scheduler;
 }
 
-class UringDispatcher;
-
 class UringProactor : public ProactorBase {
   UringProactor(const UringProactor&) = delete;
   void operator=(const UringProactor&) = delete;
-
-  friend class UringDispatcher;
 
  public:
   UringProactor();
   ~UringProactor();
 
   void Init(size_t ring_size, int wq_fd = -1);
-
-  // Runs the poll-loop. Stalls the calling thread which will become the "Proactor" thread.
-  void Run() final;
 
   using IoResult = int;
 
@@ -98,7 +91,7 @@ class UringProactor : public ProactorBase {
   void UnregisterFd(unsigned fixed_fd);
   LinuxSocketBase* CreateSocket(int fd = -1) final;
 
-  ProactorKind GetKind() const final {
+  Kind GetKind() const final {
     return IOURING;
   }
 
@@ -115,7 +108,6 @@ class UringProactor : public ProactorBase {
   void ReturnRegisteredBuffer(uint8_t* addr);
 
  private:
-  void DispatchLoop(detail::Scheduler* sched);
 
   // void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
   void DispatchCqe(const io_uring_cqe& cqe);
@@ -127,6 +119,7 @@ class UringProactor : public ProactorBase {
 
   void PeriodicCb(IoResult res, uint32_t task_id, PeriodicItem* item);
 
+  void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
 
   io_uring ring_;

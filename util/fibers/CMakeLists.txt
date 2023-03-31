@@ -1,5 +1,5 @@
 add_library(fibers2 fiber2.cc proactor_base.cc synchronization.cc uring_proactor.cc uring_pool.cc
-            fiber_file.cc
+            fiber_file.cc epoll_proactor.cc
             detail/scheduler.cc detail/fiber_interface.cc ../accept_server.cc  ../dns_resolve.cc
             ../fiber_socket_base.cc ../listener_interface.cc
             ../prebuilt_asio.cc ../proactor_pool.cc ../uring/uring_socket.cc ../uring/uring_file.cc
