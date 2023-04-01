@@ -9,11 +9,12 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/eventfd.h>
+// #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 
 #include "base/logging.h"
 #include "base/proc_util.h"
+#include "util/fibers/epoll_socket.h"
 
 #define EV_CHECK(x)                                                           \
   do {                                                                        \
@@ -282,7 +283,10 @@ void EpollProactor::Disarm(int fd, unsigned arm_index) {
 }
 
 LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
-  return nullptr;
+  EpollSocket* res = new EpollSocket(fd);
+  res->SetProactor(this);
+
+  return res;
 }
 
 void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {

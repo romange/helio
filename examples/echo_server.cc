@@ -22,35 +22,36 @@
 using namespace util;
 
 #ifdef USE_FB2
-#include "util/fibers/uring_proactor.h"
-#include "util/fibers/uring_pool.h"
-using Proactor = fb2::UringProactor;
-using UringPool = fb2::UringPool;
+// #include "util/fibers/uring_proactor.h"
+#include "util/fibers/pool.h"
+#include "util/fibers/synchronization.h"
+// using Proactor = fb2::UringProactor;
 using fb2::Fiber;
+using fb2::Mutex;
+
 #else
 #include <boost/fiber/operations.hpp>
+
 #include "util/epoll/epoll_pool.h"
+#include "util/fibers/fiber.h"
 #include "util/uring/uring_fiber_algo.h"
 #include "util/uring/uring_file.h"
 #include "util/uring/uring_pool.h"
 #include "util/uring/uring_socket.h"
-#include "util/fibers/fiber.h"
 
+using fibers_ext::Fiber;
+using fibers_ext::Mutex;
 using uring::Proactor;
 using uring::SubmitEntry;
 using uring::UringPool;
 using uring::UringSocket;
-using fibers_ext::Fiber;
-using fibers_ext::Mutex;
 
 #endif
-
 
 using namespace std;
 
 using tcp = ::boost::asio::ip::tcp;
 
-using IoResult = Proactor::IoResult;
 using absl::GetFlag;
 
 ABSL_FLAG(bool, epoll, false, "If true use epoll for server");
@@ -576,13 +577,15 @@ int main(int argc, char* argv[]) {
   CHECK_GT(absl::GetFlag(FLAGS_port), 0);
 
   std::unique_ptr<ProactorPool> pp;
+#ifdef USE_FB2
   if (absl::GetFlag(FLAGS_epoll)) {
-#ifndef USE_FB2
-    pp.reset(new epoll::EpollPool);
-#endif
+    pp.reset(fb2::Pool::Epoll());
   } else {
-    pp.reset(new UringPool);
+    pp.reset(fb2::Pool::IOUring(256));
   }
+#else
+
+#endif
   pp->Run();
 
   if (absl::GetFlag(FLAGS_connect).empty()) {
