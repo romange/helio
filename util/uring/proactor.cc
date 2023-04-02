@@ -370,7 +370,7 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
 #endif
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
-  if (kver.kernel >5 || kver.minor >= 19) {
+  if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
     params.flags |= IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN;
   }
 
