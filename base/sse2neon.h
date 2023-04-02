@@ -4522,9 +4522,12 @@ FORCE_INLINE __m128d _mm_loadu_pd(const double *p)
 
 // Loads 128-bit value. :
 // https://msdn.microsoft.com/zh-cn/library/f4k12ae8(v=vs.90).aspx
-FORCE_INLINE __m128i _mm_loadu_si128(const __m128i *p)
+FORCE_INLINE __m128i _mm_loadu_si128(const __m128i *ptr)
 {
-    return vreinterpretq_m128i_s32(vld1q_s32((const int32_t *) p));
+    __m128i res;
+    memcpy(&res, ptr, sizeof(res));
+    return res;
+    //return vreinterpretq_m128i_s32(vld1q_s32((const int32_t *) p));
 }
 
 // Load unaligned 32-bit integer from memory into the first element of dst.
