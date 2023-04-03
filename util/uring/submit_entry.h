@@ -53,6 +53,13 @@ class SubmitEntry {
     sqe_->addr = uid;
   }
 
+  void PrepRecv(int fd, void *buf, size_t len, unsigned flags) {
+    PrepFd(IORING_OP_RECV, fd);
+    sqe_->addr = (unsigned long)buf;
+    sqe_->len = len;
+    sqe_->msg_flags = flags;
+  }
+
   void PrepRecvMsg(int fd, const struct msghdr* msg, unsigned flags) {
     PrepFd(IORING_OP_RECVMSG, fd);
     sqe_->addr = (unsigned long)msg;
@@ -122,7 +129,7 @@ class SubmitEntry {
     sqe_->off = offset;
   }
 
-  void PrepSend(int fd, const void* buf, size_t len, int flags) {
+  void PrepSend(int fd, const void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_SEND, fd);
     sqe_->addr = (unsigned long)buf;
     sqe_->len = len;

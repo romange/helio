@@ -497,7 +497,6 @@ ctx::fiber_context Scheduler::Preempt() {
   FiberInterface* fi = &ready_queue_.front();
   ready_queue_.pop_front();
 
-  __builtin_prefetch(fi);
   return fi->SwitchTo();
 }
 

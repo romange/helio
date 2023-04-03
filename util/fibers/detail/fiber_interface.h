@@ -251,3 +251,7 @@ FiberInterface* FiberActive() noexcept;
 }  // namespace detail
 }  // namespace fb2
 }  // namespace util
+
+#ifndef __FIBERS_SCHEDULER_H__
+#include "util/fibers/detail/fiber_interface_impl.h"
+#endif

@@ -22,10 +22,10 @@
 using namespace util;
 
 #ifdef USE_FB2
-// #include "util/fibers/uring_proactor.h"
 #include "util/fibers/pool.h"
 #include "util/fibers/synchronization.h"
-// using Proactor = fb2::UringProactor;
+// #include "util/fibers/uring_proactor.h"
+
 using fb2::Fiber;
 using fb2::Mutex;
 
@@ -193,8 +193,17 @@ class EchoConnection : public Connection {
 
 std::error_code EchoConnection::ReadMsg(size_t* sz) {
   io::MutableBytes mb(work_buf_.get(), req_len_);
-  auto res = socket_->Read(mb);
 
+  /*LinuxSocketBase* sock = (LinuxSocketBase*)socket_.get();
+  fb2::UringProactor* p = (fb2::UringProactor*)sock->proactor();
+  fb2::FiberCall fc(p);
+  // io_uring_prep_recv(sqe, fd, buf + offs, len, 0);
+
+  fc->PrepRecv(sock->native_handle(), mb.data(), mb.size(), 0);
+  fc.Get();
+  *sz = req_len_;*/
+  auto res = socket_->Recv(mb, 0);
+#if 1
   if (res) {
     *sz = *res;
     CHECK_EQ(*sz, req_len_);
@@ -202,6 +211,8 @@ std::error_code EchoConnection::ReadMsg(size_t* sz) {
   }
 
   return res.error();
+#endif
+  return error_code{};
 }
 
 static thread_local base::Histogram send_hist;
@@ -234,7 +245,7 @@ void EchoConnection::HandleRequests() {
     req_len_ = GetFlag(FLAGS_size);
   } else {
     VLOG(1) << "Waiting for size header from " << ep;
-    auto es = socket_->Recv(buf);
+    auto es = socket_->Recv(buf, 0);
     if (!es.has_value()) {
       if (es.error().value() == ECONNABORTED)
         return;
@@ -276,7 +287,9 @@ void EchoConnection::HandleRequests() {
 #endif
     if (is_raw) {
       auto prev = absl::GetCurrentTimeNanos();
+      // send(sock->native_handle(), work_buf_.get(), sz, 0);
       ec = socket_->Write(vec + 1, 1);
+      // socket_->Send(io::Bytes{work_buf_.get(), sz}, 0);
       auto now = absl::GetCurrentTimeNanos();
       send_hist.Add((now - prev) / 1000);
     } else {
@@ -410,7 +423,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     LOG_IF(ERROR, delta_msec > 2000) << "Slow connect2 " << index << " " << delta_msec << " ms";
 
     // wait for ack.
-    es = socket_->Recv(io::MutableBytes(buf_, 1));
+    es = socket_->Recv(io::MutableBytes(buf_, 1), 0);
     delta_msec = (absl::GetCurrentTimeNanos() - start2) / 1000000;
     LOG_IF(ERROR, delta_msec > 2000) << "Slow connect3 " << index << " " << delta_msec << " ms";
 
@@ -584,7 +597,11 @@ int main(int argc, char* argv[]) {
     pp.reset(fb2::Pool::IOUring(256));
   }
 #else
-
+  if (absl::GetFlag(FLAGS_epoll)) {
+    pp.reset(new epoll::EpollPool);
+  } else {
+    pp.reset(new uring::UringPool(256));
+  }
 #endif
   pp->Run();
 

@@ -8,17 +8,15 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-// #include <boost/context/fiber.hpp>
-#include <boost/intrusive/list.hpp>
 #include <queue>
 #include <thread>
 
 #include "base/histogram.h"
 #include "base/init.h"
+#include "base/function2.hpp"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
-#include "util/fibers/detail/scheduler.h"
 #include "util/fibers/fiber2.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
@@ -96,14 +94,17 @@ struct CqeResult {
   uint32_t flags;
 };
 
-struct ResumeablePoint {
-  FiberInterface* cntx = nullptr;
-  union {
-    CqeResult* cqe_res;
-    uint32_t next;
-  };
+// using CbNotify = std::function<void(fb2::detail::FiberInterface* current, CqeResult)>;
 
-  ResumeablePoint() : cqe_res(nullptr) {
+using CbNotify =
+      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
+                         false /* non-throwing*/, false /* strong exceptions guarantees*/,
+                         void(fb2::detail::FiberInterface*, CqeResult)>;
+struct ResumeablePoint {
+  CbNotify cb;
+  uint32_t next;
+
+  ResumeablePoint() : next(0) {
   }
 };
 
@@ -134,17 +135,18 @@ uint32_t NextRp() {
 CqeResult SuspendMyself(io_uring_sqe* sqe) {
   DVLOG(1) << "SuspendMyself";
 
-  CqeResult cqe_result;
   uint32_t myindex = NextRp();
   sqe->user_data = myindex;
+  CqeResult cqe_result;
 
   auto& rp = suspended_list[myindex];
-  rp.cqe_res = &cqe_result;
+  auto* fi = fb2::detail::FiberActive();
+  rp.cb = [&cqe_result, fi](fb2::detail::FiberInterface* current, CqeResult res) {
+    cqe_result = res;
+    current->ActivateOther(fi);
+  };
 
-  FiberInterface* fi = fb2::detail::FiberActive();
-  rp.cntx = fi;
-
-  fi->scheduler()->Preempt();
+  fi->Suspend();
 
   return cqe_result;
 }
@@ -155,8 +157,17 @@ int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring) {
 
   CqeResult cqe_result;
   size_t offs = 0;
+  msghdr msg;
+  iovec vec[1];
+  memset(&msg, 0, sizeof(msg));
+
+  msg.msg_iov = const_cast<iovec*>(vec);
+  msg.msg_iovlen = 1;
+
   while (len > 0) {
     io_uring_sqe* sqe = io_uring_get_sqe(ring);
+    vec->iov_base = buf + offs;
+    vec->iov_len = len;
     io_uring_prep_recv(sqe, fd, buf + offs, len, 0);
     cqe_result = SuspendMyself(sqe);
 
@@ -181,7 +192,7 @@ int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring) {
   return 0;
 }
 
-static base::Histogram send_hist, cqe_hist;
+static base::Histogram send_hist;
 
 int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
   CqeResult cqe_result;
@@ -270,6 +281,19 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   }
 };
 
+void DispatchCqe(FiberInterface* current, const io_uring_cqe& cqe) {
+  uint32_t index = cqe.user_data;
+  CHECK_LT(index, suspended_list.size());
+
+  CqeResult res;
+  res.res = cqe.res;
+  res.flags = cqe.flags;
+  suspended_list[index].next = next_rp_id;
+  next_rp_id = index;
+  auto func = move(suspended_list[index].cb);
+  func(current, res);
+}
+
 void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) {
   VLOG(1) << "RunEventLoop ";
   DCHECK(!sched->HasReady());
@@ -278,6 +302,7 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
   unsigned spins = 0;
   size_t total = 0, submitted = 0, stalled = 0;
   FiberInterface* dispatcher = fb2::detail::FiberActive();
+  base::Histogram cqe_hist;
   do {
     ++total;
     if (worker_id >= 0) {
@@ -294,20 +319,11 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     unsigned i = 0;
     submitted += (num_submitted > 0);
     io_uring_for_each_cqe(ring, head, cqe) {
-      uint32_t index = cqe->user_data;
-      CHECK_LT(index, suspended_list.size());
-
-      auto* cqe_res = suspended_list[index].cqe_res;
-      cqe_res->res = cqe->res;
-      cqe_res->flags = cqe->flags;
-      suspended_list[index].next = next_rp_id;
-      next_rp_id = index;
-
-      sched->AddReady(suspended_list[index].cntx);
+      DispatchCqe(dispatcher, *cqe);
       ++i;
     }
     io_uring_cq_advance(ring, i);
-    if (false && i) {
+    if (i) {
       cqe_hist.Add(i);
     }
     if (sched->HasSleepingFibers()) {
@@ -343,6 +359,7 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
 
   VLOG(1) << "Exit RunEventLoop total/submitted/stalled " << total << "/" << submitted << "/"
           << stalled;
+  VLOG(1) << "CQE histogram " << cqe_hist.ToString();
 }
 
 void SetupIORing(io_uring* ring) {
@@ -408,6 +425,7 @@ class MyPolicy : public fb2::DispatchPolicy {
 };
 
 void WorkerThread(unsigned index) {
+  unshare(CLONE_FS);
   MyPolicy* policy = new MyPolicy(index);
   fb2::SetCustomDispatcher(policy);
   if (index == 0) {
@@ -476,7 +494,6 @@ int main(int argc, char* argv[]) {
   }
 
   LOG(INFO) << "Send histogram " << send_hist.ToString();
-  LOG(INFO) << "CQE histogram " << cqe_hist.ToString();
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;

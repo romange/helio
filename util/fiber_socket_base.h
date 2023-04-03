@@ -56,13 +56,11 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
   // to satisfy io::Source concept.
   ::io::Result<size_t> ReadSome(const iovec* v, uint32_t len) final {
-    return Recv(v, len);
+    return len > 1 ? Recv(v, len)
+                   : Recv(io::MutableBytes{reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len}, 0);
   }
 
-  ::io::Result<size_t> Recv(const io::MutableBytes& mb) {
-    iovec v{mb.data(), mb.size()};
-    return Recv(&v, 1);
-  }
+  virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags) = 0;
 
   static bool IsConnClosed(const error_code& ec) {
     return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset);
@@ -175,6 +173,7 @@ class LinuxSocketBase : public FiberSocketBase {
   int32_t fd_;
 };
 
+#if 0
 class SocketSource : public io::Source {
  public:
   SocketSource(FiberSocketBase* sock) : sock_(sock) {
@@ -187,5 +186,6 @@ class SocketSource : public io::Source {
  private:
   FiberSocketBase* sock_;
 };
+#endif
 
 }  // namespace util

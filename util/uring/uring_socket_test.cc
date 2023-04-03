@@ -119,7 +119,7 @@ TEST_F(UringSocketTest, Timeout) {
   // sock[0] was accepted and then its peer was deleted.
   // therefore, we read from sock[1] that was opportunistically accepted with the ack from peer.
   uint8_t buf[16];
-  io::Result<size_t> read_res = proactor_->Await([&] { return sock[1]->Recv(buf); });
+  io::Result<size_t> read_res = proactor_->Await([&] { return sock[1]->Recv(buf, 0); });
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
