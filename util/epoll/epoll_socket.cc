@@ -58,6 +58,7 @@ auto EpollSocket::Close() -> error_code {
     GetProactor()->Disarm(fd, arm_index_);
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
+    arm_index_ = -1;
   }
   return ec;
 }

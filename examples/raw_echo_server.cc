@@ -181,7 +181,7 @@ int Recv(int fd, uint8_t* buf, size_t len, io_uring* ring) {
   return 0;
 }
 
-static base::Histogram send_hist;
+static base::Histogram send_hist, cqe_hist;
 
 int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
   CqeResult cqe_result;
@@ -206,7 +206,7 @@ int Send(int fd, const uint8_t* buf, size_t len, io_uring* ring) {
 }
 
 void HandleSocket(io_uring* ring, int fd) {
-  VLOG(1) << "Handle socket " << fd;
+  VLOG(2) << "Handle socket " << fd;
   uint32_t size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> buf(new uint8_t[size]);
 
@@ -240,7 +240,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
   while (true) {
     int res = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
-      VLOG(1) << "Accepted fd " << res;
+      VLOG(2) << "Accepted fd " << res;
       if (!workers.empty()) {
         CHECK(workers[next_worker].queue->try_enqueue(res));
         next_worker = (next_worker + 1) % workers.size();
@@ -271,7 +271,7 @@ void AcceptFiber(io_uring* ring, int listen_fd) {
 };
 
 void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) {
-  VLOG(1) << "RunEventLoop";
+  VLOG(1) << "RunEventLoop ";
   DCHECK(!sched->HasReady());
 
   io_uring_cqe* cqe = nullptr;
@@ -307,7 +307,9 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
       ++i;
     }
     io_uring_cq_advance(ring, i);
-
+    if (false && i) {
+      cqe_hist.Add(i);
+    }
     if (sched->HasSleepingFibers()) {
       sched->ProcessSleep();
     }
@@ -327,10 +329,14 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
       continue;
 
     // to ensure we exit upon signal.
-    struct __kernel_timespec ts {
-      .tv_sec = 0, .tv_nsec = 1000000
+    /*struct __kernel_timespec ts {
+      .tv_sec = 0, .tv_nsec = 10000000
     };
-    io_uring_wait_cqe_timeout(ring, &cqe, &ts);
+    sigset_t ss;
+    sigemptyset(&ss);
+    sigaddset(&ss, SIGINT);
+    sigaddset(&ss, SIGTERM);*/
+    io_uring_wait_cqes(ring, &cqe, 1, NULL, NULL);
     spins = 0;
     ++stalled;
   } while (!loop_exit);
@@ -451,7 +457,7 @@ int main(int argc, char* argv[]) {
     pthread_t tid = base::StartThread(nm.c_str(), [i] { WorkerThread(i); });
 
     CPU_SET(i, &cps);
-    pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
+    // pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
     CPU_CLR(i, &cps);
 
     workers[i].pid = tid;
@@ -470,6 +476,7 @@ int main(int argc, char* argv[]) {
   }
 
   LOG(INFO) << "Send histogram " << send_hist.ToString();
+  LOG(INFO) << "CQE histogram " << cqe_hist.ToString();
   // terminated_queue.clear();  // TODO: there is a resource leak here.
 
   return 0;
