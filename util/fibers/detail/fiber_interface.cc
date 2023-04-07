@@ -231,10 +231,6 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
   }
 }
 
-void FiberInterface::Suspend() {
-  scheduler_->Preempt();
-}
-
 ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = this;
 

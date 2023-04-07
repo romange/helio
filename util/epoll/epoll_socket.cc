@@ -272,6 +272,18 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
+io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  iovec vec[1];
+
+  msg.msg_iov = vec;
+  msg.msg_iovlen = 1;
+  vec[0].iov_base = mb.data();
+  vec[0].iov_len = mb.size();
+  return RecvMsg(msg, flags);
+}
+
 uint32_t EpollSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
   return 0;
 }

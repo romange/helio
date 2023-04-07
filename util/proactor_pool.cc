@@ -8,11 +8,18 @@
 #include "base/logging.h"
 #include "base/pthread_utils.h"
 
-ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
-
 using namespace std;
 
+ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
+ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
+
 namespace util {
+
+enum class AffinityMode {
+  ON,
+  OFF,
+  AUTO,
+};
 
 constexpr int kTotalCpus = CPU_SETSIZE;
 
@@ -128,13 +135,24 @@ std::string_view ProactorPool::GetString(std::string_view source) {
 
 void ProactorPool::SetupProactors() {
   CHECK_EQ(STOPPED, state_);
+  string affinity_flag = absl::GetFlag(FLAGS_proactor_affinity_mode);
+  AffinityMode mode = AffinityMode::AUTO;
+  if (affinity_flag == "on") {
+    mode = AffinityMode::ON;
+  } else if (affinity_flag == "off") {
+    mode = AffinityMode::OFF;
+  } else if (affinity_flag == "auto") {
+    mode = AffinityMode::AUTO;
+  } else {
+    LOG(FATAL) << "Invalid proactor_affinity_mode flag value: " << affinity_flag;
+  }
 
   char buf[32];
 
   cpu_set_t online_cpus = OnlineCpus();
-  int num_online_cpus = CPU_COUNT(&online_cpus);
-  int rel_to_abs_cpu[num_online_cpus];
-  int rel_cpu_index = 0, abs_cpu_index = 0;
+  unsigned num_online_cpus = CPU_COUNT(&online_cpus);
+  unsigned rel_to_abs_cpu[num_online_cpus];
+  unsigned rel_cpu_index = 0, abs_cpu_index = 0;
 
   for (; abs_cpu_index < kTotalCpus; abs_cpu_index++) {
     if (CPU_ISSET(abs_cpu_index, &online_cpus)) {
@@ -151,6 +169,9 @@ void ProactorPool::SetupProactors() {
   cpu_set_t cps;
   CPU_ZERO(&cps);
 
+  bool set_affinity = (mode == AffinityMode::ON) ||
+                      (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2);
+
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
 
@@ -161,22 +182,23 @@ void ProactorPool::SetupProactors() {
     };
 
     pthread_t tid = base::StartThread(buf, std::move(cb));
+    if (set_affinity) {
+      // Spread proactor threads across online CPUs.
+      int rel_indx = i % num_online_cpus;
+      unsigned abs_cpu = rel_to_abs_cpu[rel_indx];
+      CHECK_LT(abs_cpu, cpu_threads_.size());
+      CPU_SET(abs_cpu, &cps);
 
-    // Spread proactor threads across online CPUs.
-    int rel_indx = i % num_online_cpus;
-    unsigned abs_cpu = rel_to_abs_cpu[rel_indx];
-    CHECK_LT(abs_cpu, cpu_threads_.size());
-    CPU_SET(abs_cpu, &cps);
+      int rc = pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
+      if (rc == 0) {
+        VLOG(1) << "Setting affinity of thread " << i << " on cpu " << abs_cpu;
+        cpu_threads_[abs_cpu].push_back(i);
+      } else {
+        LOG(WARNING) << "Error calling pthread_setaffinity_np: " << strerror(rc) << "\n";
+      }
 
-    int rc = pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
-    if (rc == 0) {
-      VLOG(1) << "Setting affinity of thread " << i << " on cpu " << abs_cpu;
-      cpu_threads_[abs_cpu].push_back(i);
-    } else {
-      LOG(WARNING) << "Error calling pthread_setaffinity_np: " << strerror(rc) << "\n";
+      CPU_CLR(abs_cpu, &cps);
     }
-
-    CPU_CLR(abs_cpu, &cps);
   }
 
   state_ = RUN;

@@ -20,24 +20,19 @@
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
 
-#define URING_CHECK(x)                                                                \
-  do {                                                                                \
-    int __res_val = (x);                                                              \
-    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                          \
-      LOG(FATAL) << "Error " << (-__res_val)                                          \
+#define URING_CHECK(x)                                                        \
+  do {                                                                        \
+    int __res_val = (x);                                                      \
+    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                  \
+      LOG(FATAL) << "Error " << (-__res_val)                                  \
                  << " evaluating '" #x "': " << SafeErrorMessage(-__res_val); \
-    }                                                                                 \
+    }                                                                         \
   } while (false)
 
-#ifndef __NR_io_uring_enter
-#define __NR_io_uring_enter 426
-#endif
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
 
-using namespace boost;
 using namespace std;
-namespace ctx = boost::context;
 
 namespace util {
 
@@ -104,6 +99,11 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
   }
 #endif
 
+  // If we setup flags that kernel does not recognize, it fails the setup call.
+  if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
+    params.flags |= IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN;
+  }
+
   // it seems that SQPOLL requires registering each fd, including sockets fds.
   // need to check if its worth pursuing.
   // For sure not in short-term.
@@ -125,6 +125,17 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
                << SafeErrorMessage(init_res);
   }
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
+
+  io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
+
+  // TODO: fix msgring
+  // for some reason we loose wakeups when using msgring is set
+  // (reproduces on 5.19 with epoch_server that deadlocks and does not exit)
+  // I verified that a Proactor thread during Dispatch, calls WakeRing that should
+  // wake up another thread but it never returns from io_uring_wait_cqes.
+  msgring_f_ = 0; // io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  io_uring_free_probe(uring_probe);
+  VLOG_IF(1, msgring_f_) << "msgring supported!";
 
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
   CHECK_EQ(req_feats, params.features & req_feats)
@@ -156,29 +167,27 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
   centries_.resize(params.sq_entries);  // .val = -1
   next_free_ce_ = 0;
   for (size_t i = 0; i < centries_.size() - 1; ++i) {
-    centries_[i].val = i + 1;
+    centries_[i].index = i + 1;
   }
 
   thread_id_ = pthread_self();
   tl_info_.owner = this;
 }
 
-void UringProactor::DispatchCqe(const io_uring_cqe& cqe) {
+void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe) {
   if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
     size_t index = cqe.user_data - kUserDataCbIndex;
     DCHECK_LT(index, centries_.size());
     auto& e = centries_[index];
     DCHECK(e.cb) << index;
 
-    CbType func;
-    auto payload = e.val;
-    func.swap(e.cb);
+    CbType func = move(e.cb);
 
     // Set e to be the head of free-list.
-    e.val = next_free_ce_;
+    e.index = next_free_ce_;
     next_free_ce_ = index;
     --pending_cb_cnt_;
-    func(cqe.res, cqe.flags, payload);
+    func(current, cqe.res, cqe.flags);
     return;
   }
 
@@ -196,48 +205,6 @@ void UringProactor::DispatchCqe(const io_uring_cqe& cqe) {
   }
   LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
 }
-
-#if 0
-void UringProactor::DispatchCompletions(io_uring_cqe* cqes, unsigned count) {
-  for (unsigned i = 0; i < count; ++i) {
-    auto& cqe = cqes[i];
-
-    // I allocate range of 1024 reserved values for the internal Proactor use.
-
-    if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
-      size_t index = cqe.user_data - kUserDataCbIndex;
-      DCHECK_LT(index, centries_.size());
-      auto& e = centries_[index];
-      DCHECK(e.cb) << index;
-
-      CbType func;
-      auto payload = e.val;
-      func.swap(e.cb);
-
-      // Set e to be the head of free-list.
-      e.val = next_free_ce_;
-      next_free_ce_ = index;
-      --pending_cb_cnt_;
-      func(cqe.res, cqe.flags, payload);
-      continue;
-    }
-
-    if (cqe.user_data == kIgnoreIndex)
-      continue;
-
-    if (cqe.user_data == kWakeIndex) {
-      // We were woken up. Need to rearm wakeup poller.
-      DCHECK_EQ(cqe.res, 8);
-      DVLOG(2) << "PRO[" << tl_info_.proactor_index << "] Wakeup " << cqe.res << "/" << cqe.flags;
-
-      // TODO: to move io_uring_get_sqe call from here to before we stall.
-      ArmWakeupEvent();
-      continue;
-    }
-    LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
-  }
-}
-#endif
 
 SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
@@ -260,13 +227,12 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
     }
   }
 
-  memset(res, 0, sizeof(io_uring_sqe));
-
   if (cb) {
     if (next_free_ce_ < 0) {
       RegrowCentries();
       DCHECK_GT(next_free_ce_, 0);
     }
+    memset(res, 0, sizeof(io_uring_sqe));
 
     res->user_data = next_free_ce_ + kUserDataCbIndex;
     DCHECK_LT(unsigned(next_free_ce_), centries_.size());
@@ -275,9 +241,8 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
     DCHECK(!e.cb);  // cb is undefined.
     DVLOG(3) << "GetSubmitEntry: index: " << next_free_ce_ << ", payload: " << payload;
 
-    next_free_ce_ = e.val;
+    next_free_ce_ = e.index;
     e.cb = std::move(cb);
-    e.val = payload;
     ++pending_cb_cnt_;
   } else {
     res->user_data = kIgnoreIndex;
@@ -334,7 +299,7 @@ void UringProactor::RegrowCentries() {
   centries_.resize(prev * 2);  // grow by 2.
   next_free_ce_ = prev;
   for (; prev < centries_.size() - 1; ++prev)
-    centries_[prev].val = prev + 1;
+    centries_[prev].index = prev + 1;
 }
 
 void UringProactor::ArmWakeupEvent() {
@@ -358,9 +323,8 @@ void UringProactor::ArmWakeupEvent() {
 
 void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   SubmitEntry se = GetSubmitEntry(
-      [this, item](IoResult res, uint32_t flags, int64_t task_id) {
-        DCHECK_GE(task_id, 0);
-        this->PeriodicCb(res, task_id, std::move(item));
+      [this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags) {
+        this->PeriodicCb(res, id, std::move(item));
       },
       id);
 
@@ -387,10 +351,10 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
 
 void UringProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   auto* me = detail::FiberActive();
-  auto cb = [me](IoResult res, uint32_t flags, int64_t task_id) {
-    detail::FiberActive()->ActivateOther(me);
+  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags) {
+    current->ActivateOther(me);
   };
-  SubmitEntry se = GetSubmitEntry(std::move(cb), 0);
+  SubmitEntry se = GetSubmitEntry(std::move(cb));
 
   DVLOG(1) << "Cancel timer " << val1 << ", cb userdata: " << se.sqe()->user_data;
   se.PrepTimeoutRemove(val1);  // cancel using userdata id sent to io-uring.
@@ -520,27 +484,13 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     struct io_uring_cqe* cqe;
     io_uring_for_each_cqe(&ring_, ring_head, cqe) {
       ++cqe_count;
-      DispatchCqe(*cqe);
+      DispatchCqe(dispatcher, *cqe);
     }
 
     if (cqe_count) {
       ++cqe_fetches;
       io_uring_cq_advance(&ring_, cqe_count);
 
-#if 0
-      tl_info_.monotonic_time = GetClockNanos();
-      while (true) {
-        // Once we copied the data we can mark the cqe consumed.
-        io_uring_cq_advance(&ring_, cqe_count);
-        VPRO(2) << "Fetched " << cqe_count << " cqes";
-        DispatchCompletions(cqes, cqe_count);
-
-        if (cqe_count < kBatchSize) {
-          break;
-        }
-        cqe_count = IoRingPeek(ring_, cqes, kBatchSize);
-      };
-#endif
       // In case some of the timer completions filled schedule_periodic_list_.
       for (auto& task_pair : schedule_periodic_list_) {
         SchedulePeriodic(task_pair.first, task_pair.second);
@@ -561,15 +511,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     while (scheduler->HasReady()) {
+      cqe_count = 1;
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
       scheduler->AddReady(dispatcher);
 
       DVLOG(2) << "Switching to " << fi->name();
+
       fi->SwitchTo();
       DCHECK(!dispatcher->wait_hook.is_linked());
-      cqe_count = 1;
     }
 
     if (cqe_count) {
@@ -595,7 +546,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       scheduler->DestroyTerminated();
       scheduler->RunDeferred();
 
-      Pause(spin_loops);
+      // Pause(spin_loops);
       continue;
     }
 
@@ -609,8 +560,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      * (see WakeRing()) but only one will actually call the syscall.
      */
     if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
-      if (is_stopped_)
+      if (is_stopped_) {
+        tq_seq_.store(0, std::memory_order_release);  // clear WAIT section
         break;
+      }
+
       DCHECK(!scheduler->HasReady());
 
       if (task_queue_.empty()) {
@@ -663,11 +617,11 @@ void UringProactor::WakeRing() {
 
   UringProactor* caller = static_cast<UringProactor*>(ProactorBase::me());
 
-  // Disabled because it deadlocks in github actions.
-  // It could be kernel issue or a bug in my code - needs investigation.
-  if (false && caller) {
-    SubmitEntry se = caller->GetSubmitEntry(nullptr, 0);
-    se.PrepWrite(wake_fd_, &wake_val, sizeof(wake_val), 0);
+  DCHECK(caller != this);
+
+  if (caller && caller->msgring_f_) {
+    SubmitEntry se = caller->GetSubmitEntry(nullptr);
+    se.PrepMsgRing(ring_.ring_fd, 0, kIgnoreIndex);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
@@ -675,21 +629,22 @@ void UringProactor::WakeRing() {
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
-  auto waker = [this](UringProactor::IoResult res, uint32_t flags, int64_t) {
+  auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res,
+                      uint32_t flags) {
     io_res_ = res;
     res_flags_ = flags;
-    detail::FiberActive()->ActivateOther(me_);
+    current->ActivateOther(me_);
   };
 
   if (timeout_msec != UINT32_MAX) {
     proactor->WaitTillAvailable(2);
   }
-  se_ = proactor->GetSubmitEntry(std::move(waker), 0);
+  se_ = proactor->GetSubmitEntry(std::move(waker));
 
   if (timeout_msec != UINT32_MAX) {
     se_.sqe()->flags |= IOSQE_IO_LINK;
 
-    tm_ = proactor->GetSubmitEntry(nullptr, 0);
+    tm_ = proactor->GetSubmitEntry(nullptr);
 
     // We must keep ts_ as member function so it could be accessed after this function scope.
     ts_.tv_sec = (timeout_msec / 1000);
@@ -701,7 +656,6 @@ FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detai
 FiberCall::~FiberCall() {
   CHECK(!me_) << "Get was not called!";
 }
-
 
 }  // namespace fb2
 }  // namespace util

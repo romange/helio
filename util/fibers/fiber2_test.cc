@@ -271,7 +271,7 @@ TEST_F(FiberTest, Future) {
 TEST_F(FiberTest, AsyncEvent) {
   Done done;
 
-  auto cb = [done](UringProactor::IoResult, uint32_t, int64_t payload) mutable {
+  auto cb = [done](auto*, UringProactor::IoResult, uint32_t) mutable {
     done.Notify();
     LOG(INFO) << "notify";
   };
@@ -279,7 +279,7 @@ TEST_F(FiberTest, AsyncEvent) {
   ProactorThread pth(0, ProactorBase::IOURING);
   pth.get()->DispatchBrief(
       [up = reinterpret_cast<UringProactor*>(pth.proactor.get()), cb = move(cb)] {
-        SubmitEntry se = up->GetSubmitEntry(std::move(cb), 1);
+        SubmitEntry se = up->GetSubmitEntry(std::move(cb));
         se.sqe()->opcode = IORING_OP_NOP;
         LOG(INFO) << "submit";
       });

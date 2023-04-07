@@ -18,7 +18,7 @@ using uring::SubmitEntry;
 #endif
 
 namespace detail {
-  class Scheduler;
+class Scheduler;
 }
 
 class UringProactor : public ProactorBase {
@@ -33,20 +33,19 @@ class UringProactor : public ProactorBase {
 
   using IoResult = int;
 
+  // detail::FiberInterface* is the current fiber.
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
-  // using CbType = std::function<void(IoResult, uint32_t, int64_t)>;
+  // using CbType = std::function<void(IoResult, uint32_t)>;
   using CbType =
       fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/,
-                         void(IoResult, uint32_t, int64_t)>;
+                         void(detail::FiberInterface*, IoResult, uint32_t)>;
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
    * @param cb - completion callback.
-   * @param payload - an argument to the completion callback that is further passed as the second
-   *                  argument to CbType(). Can be nullptr if no notification is required.
    * @return SubmitEntry with initialized userdata.
    *
    * This method might block the calling fiber therefore it should not be called within proactor
@@ -57,7 +56,7 @@ class UringProactor : public ProactorBase {
    *       In that case we will need RegisterCallback function that takes an unregistered SQE
    *       and assigns a callback to it. GetSubmitEntry will be implemented using those functions.
    */
-  SubmitEntry GetSubmitEntry(CbType cb, int64_t payload);
+  SubmitEntry GetSubmitEntry(CbType cb, int64_t unused = 0);
 
   // Returns number of entries available for submitting to io_uring.
   uint32_t GetSubmitRingAvailability() const {
@@ -108,9 +107,7 @@ class UringProactor : public ProactorBase {
   void ReturnRegisteredBuffer(uint8_t* addr);
 
  private:
-
-  // void DispatchCompletions(io_uring_cqe* cqes, unsigned count);
-  void DispatchCqe(const io_uring_cqe& cqe);
+  void DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe);
 
   void RegrowCentries();
   void ArmWakeupEvent();
@@ -128,16 +125,16 @@ class UringProactor : public ProactorBase {
 
   uint8_t sqpoll_f_ : 1;
   uint8_t register_fd_ : 1;
-  uint8_t reserved_f_ : 6;
+  uint8_t msgring_f_ : 1;
+  uint8_t reserved_f_ : 5;
 
   EventCount sqe_avail_;
 
   struct CompletionEntry {
     CbType cb;
 
-    // serves for linked list management when unused. Also can store an additional payload
-    // field when in flight.
-    int64_t val = -1;
+    // serves for linked list management.
+    int64_t index = -1;
   };
   static_assert(sizeof(CompletionEntry) == 40, "");
 

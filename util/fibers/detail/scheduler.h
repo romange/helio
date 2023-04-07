@@ -4,7 +4,11 @@
 
 #pragma once
 
+#define __FIBERS_SCHEDULER_H__
+
 #include "util/fibers/detail/fiber_interface.h"
+
+#undef __FIBERS_SCHEDULER_H__
 
 namespace util {
 namespace fb2 {
@@ -116,16 +120,6 @@ class Scheduler {
   uint32_t num_worker_fibers_ = 0;
 };
 
-
-inline void FiberInterface::Yield() {
-  scheduler_->AddReady(this);
-  scheduler_->Preempt();
-}
-
-inline void FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) {
-  scheduler_->WaitUntil(tp, this);
-}
-
 }  // namespace detail
 
 class DispatchPolicy {
@@ -140,3 +134,5 @@ void SetCustomDispatcher(DispatchPolicy* policy);
 
 }  // namespace fb2
 }  // namespace util
+
+#include "util/fibers/detail/fiber_interface_impl.h"

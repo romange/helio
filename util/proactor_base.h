@@ -36,6 +36,7 @@ class ProactorBase {
 
  public:
   enum ProactorKind { EPOLL = 1, IOURING = 2 };
+  using Kind = ProactorKind;
 
   // Corresponds to level 0.
   // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.

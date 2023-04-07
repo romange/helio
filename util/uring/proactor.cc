@@ -397,7 +397,9 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
-  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+
+  // Disabled due to a bug.
+  msgring_f_ = 0; // io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
   io_uring_free_probe(uring_probe);
   VLOG_IF(1, msgring_f_) << "msgring supported!";
 

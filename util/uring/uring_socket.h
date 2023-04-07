@@ -45,6 +45,7 @@ class UringSocket : public LinuxSocketBase {
   void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
+  Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
   using FiberSocketBase::IsConnClosed;
 

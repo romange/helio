@@ -171,7 +171,11 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       memcpy(next, ptr[i].iov_base, ptr[i].iov_len);
       next += ptr[i].iov_len;
     }
-    auto cb = [p, reg_buf](Proactor::IoResult res, uint32_t flags, int64_t) {
+    #ifdef USE_FB2
+    auto cb = [p, reg_buf](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags) {
+    #else
+    auto cb = [p, reg_buf](Proactor::IoResult res, uint32_t flags, uint64_t) {
+    #endif
       p->ReturnRegisteredBuffer(reg_buf);
       CHECK_GT(res, 0);  // TODO - handle errors.
     };
@@ -186,7 +190,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   if (len == 1) {
     while (true) {
       FiberCall fc(p, timeout());
-      fc->PrepSend(fd, ptr->iov_base, ptr->iov_len, 0);
+      fc->PrepSend(fd, ptr->iov_base, ptr->iov_len, MSG_NOSIGNAL);
       fc->sqe()->flags |= register_flag();
 
       res = fc.Get();  // Interrupt point
@@ -253,8 +257,12 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) 
 
   int fd = native_handle();
   Proactor* proactor = GetProactor();
-
-  auto mycb = [msg, cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, int64_t) {
+  #ifdef USE_FB2
+  auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
+                                        uint32_t flags) {
+  #else
+  auto mycb = [msg, cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, uint64_t) {
+  #endif
     delete msg;
 
     if (res >= 0) {
@@ -313,12 +321,50 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return make_unexpected(std::move(ec));
 }
 
+io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
+  int fd = native_handle();
+  Proactor* p = GetProactor();
+  DCHECK(ProactorBase::me() == p);
+
+  ssize_t res;
+  while (true) {
+    FiberCall fc(p, timeout());
+    fc->PrepRecv(fd, mb.data(), mb.size(), flags);
+    fc->sqe()->flags |= register_flag();
+    res = fc.Get();
+
+    if (res > 0) {
+      return res;
+    }
+    DVSOCK(2) << "Got " << res;
+
+    res = -res;
+    // EAGAIN can happen in case of CQ overflow.
+    if (res == EAGAIN && (flags & MSG_DONTWAIT) == 0) {
+      continue;
+    }
+
+    if (res == 0)
+      res = ECONNABORTED;
+    break;
+  }
+
+  error_code ec(res, system_category());
+  VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
+
+  return make_unexpected(std::move(ec));
+}
+
 uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
   int fd = native_handle();
   Proactor* p = GetProactor();
 
-  auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, int64_t) { cb(res); };
-
+  #ifdef USE_FB2
+  auto se_cb = [cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
+                                    uint32_t flags) { cb(res); };
+  #else
+  auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, uint64_t) { cb(res); };
+  #endif
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb), 0);
   se.PrepPollAdd(fd, event_mask);
   se.sqe()->flags |= register_flag();

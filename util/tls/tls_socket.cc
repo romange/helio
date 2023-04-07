@@ -187,6 +187,18 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   return read_total;
 }
 
+io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  iovec vec[1];
+
+  msg.msg_iov = vec;
+  msg.msg_iovlen = 1;
+  vec[0].iov_base = mb.data();
+  vec[0].iov_len = mb.size();
+  return RecvMsg(msg, flags);
+}
+
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   DCHECK(engine_);
   DCHECK_GT(len, 0u);
@@ -274,7 +286,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 auto TlsSocket::HandleRead() -> error_code {
   auto mut_buf = engine_->PeekInputBuf();
-  io::Result<size_t> esz = next_sock_->Recv(mut_buf);
+  io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
   if (!esz) {
     return esz.error();
   }
