@@ -12,11 +12,6 @@
 namespace util {
 namespace fb2 {
 
-namespace detail {
-template <typename X, typename Y>
-using disable_overload = boost::context::detail::disable_overload<X, Y>;
-}
-
 class Fiber {
  public:
   using ID = uint64_t;
@@ -31,8 +26,8 @@ class Fiber {
   }
 
   template <typename Fn>
-  Fiber(Launch policy, std::string_view name, Fn&& fn)
-      : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
+  Fiber(Launch policy, Fn&& fn)
+      : impl_{util::fb2::detail::MakeWorkerFiberImpl({}, boost::context::fixedsize_stack(),
                                                      std::forward<Fn>(fn))} {
     Start(policy);
   }
