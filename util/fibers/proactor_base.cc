@@ -4,11 +4,11 @@
 
 #include "util/fibers/proactor_base.h"
 
-#include <mutex>  // once_flag
-
 #include <absl/base/attributes.h>
 #include <signal.h>
 #include <sys/eventfd.h>
+
+#include <mutex>  // once_flag
 
 #include "base/logging.h"
 
@@ -56,7 +56,6 @@ std::once_flag module_init;
 // in cc file that does not define it.
 __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
-
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
@@ -91,7 +90,6 @@ void ProactorBase::Stop() {
   DispatchBrief([this] { is_stopped_ = true; });
   VLOG(1) << "Proactor::StopFinish";
 }
-
 
 uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f) {
   DCHECK(InMyThread());
@@ -186,7 +184,14 @@ void ProactorBase::CancelPeriodic(uint32_t id) {
 
 void ProactorBase::Migrate(ProactorBase* dest) {
   CHECK(dest != this);
-  LOG(FATAL) << "TBD";
+  detail::FiberInterface* me = detail::FiberActive();
+  Fiber tmp = LaunchFiber([me, dest] {
+    me->DetachThread();
+    VLOG(1) << "After me detach";
+    dest->AwaitBrief([me] { me->AttachThread(); });
+    VLOG(1) << "After Migrate/AwaitBrief";
+  });
+  tmp.Join();
 }
 
 void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> cb) {
@@ -249,11 +254,11 @@ void ProactorBase::Pause(unsigned count) {
 #if defined(__i386__) || defined(__amd64__)
     __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
-      /* Use an isb here as we've found it's much closer in duration to
-      * the x86 pause instruction vs. yield which is a nop and thus the
-      * loop count is lower and the interconnect gets a lot more traffic
-      * from loading the ticket above. */
-    __asm__ __volatile__ ("isb");
+    /* Use an isb here as we've found it's much closer in duration to
+     * the x86 pause instruction vs. yield which is a nop and thus the
+     * loop count is lower and the interconnect gets a lot more traffic
+     * from loading the ticket above. */
+    __asm__ __volatile__("isb");
 #endif
   }
 }

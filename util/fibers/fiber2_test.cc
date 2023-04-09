@@ -398,5 +398,23 @@ TEST_P(ProactorTest, MultiParking) {
     th.reset();
 }
 
+TEST_P(ProactorTest, Migrate) {
+  ProactorThread pth(0, proactor_th_->get()->GetKind());
+
+  pid_t dest_tid = pth.get()->AwaitBrief([&] { return gettid(); });
+
+  Fiber fb = proactor_th_->get()->LaunchFiber([&] {
+    // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
+    // thus it allows compiler to eliminate subsequent calls to this function.
+    // Therefore I use syscall variant to get fresh values.
+    pid_t tid1 = gettid();
+    LOG(INFO) << "Source pid " << tid1 << ", dest pid " << dest_tid;
+    proactor_th_->get()->Migrate(pth.get());
+    LOG(INFO) << "After migrate";
+    ASSERT_EQ(dest_tid, gettid());
+  });
+  fb.Join();
+}
+
 }  // namespace fb2
 }  // namespace util

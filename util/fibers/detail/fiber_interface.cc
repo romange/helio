@@ -231,6 +231,16 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
   }
 }
 
+void FiberInterface::DetachThread() {
+  scheduler_->DetachWorker();
+  scheduler_ = nullptr;
+}
+
+void FiberInterface::AttachThread() {
+  scheduler_ = detail::FbInitializer().sched;
+  scheduler_->Attach(this);
+}
+
 ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = this;
 

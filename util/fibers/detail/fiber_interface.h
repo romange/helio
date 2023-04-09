@@ -80,9 +80,17 @@ class FiberInterface {
 
   void Suspend();
 
+  // Detaches itself from the thread scheduler.
+  void DetachThread();
+
+  // Attaches itself to a thread scheduler.
+  // Must be detached first.
+  void AttachThread();
+
   bool IsDefined() const {
     return bool(entry_);
   }
+
 
 #if 0
   void StartParking() {
