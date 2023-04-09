@@ -87,7 +87,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   struct addrinfo hints, *servinfo;
 
   memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;
+  hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags = AI_PASSIVE; /* Tuned for binding, see man getaddrinfo. */
 
@@ -108,7 +108,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   error_code ec;
   bool success = false;
   for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-    ec = fs->Create();
+    ec = fs->Create(p->ai_family);
     if (ec)
       break;
     ec = listener->ConfigureServerSocket(fs->native_handle());
