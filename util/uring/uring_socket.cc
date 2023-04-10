@@ -133,6 +133,17 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   fc->sqe()->flags |= register_flag();
   io_res = fc.Get();
 
+  if (io_res == -EINPROGRESS) {
+    DVSOCK(1) << "In progress, polling";
+    uint32_t poll_res;
+    PollEvent(POLLOUT | POLLHUP | POLLERR, [&poll_res](uint32_t res) { poll_res = res; });
+
+    int err_code;
+    socklen_t err_code_len = sizeof(err_code);
+    DCHECK(0 == getsockopt(fd, SOL_SOCKET, SO_ERROR, &err_code, &err_code_len));
+    io_res = -err_code;
+  }
+
   if (io_res < 0) {  // In that case connect returns -errno.
     ec = error_code(-io_res, system_category());
   }
