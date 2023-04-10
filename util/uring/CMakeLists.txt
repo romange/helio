@@ -4,4 +4,9 @@ add_library(uring_fiber_lib uring_socket.cc uring_file.cc
 cxx_link(uring_fiber_lib proactor_lib io TRDP::uring)
 
 cxx_test(proactor_test uring_fiber_lib LABELS CI)
+
+if (USE_FB2)
+cxx_test(uring_socket_test fibers2 LABELS CI)
+else() 
 cxx_test(uring_socket_test uring_fiber_lib LABELS CI)
+endif()

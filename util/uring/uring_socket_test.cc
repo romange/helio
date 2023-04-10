@@ -6,14 +6,28 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+
+#ifdef USE_FB2
+#include "util/fibers/fiber2.h"
+#else
 #include "util/fibers/fiber.h"
+#endif
 
 namespace util {
 namespace uring {
 
+#ifdef USE_FB2
+using Proactor = fb2::UringProactor;
+using fb2::Fiber;
+using fb2::Done;
+using fb2::UringSocket;
+#else
+using fibers_ext::Fiber;
+using fibers_ext::Done;
+#endif
+
 constexpr uint32_t kRingDepth = 8;
 using namespace std;
-namespace fibers = boost::fibers;
 
 class UringSocketTest : public testing::Test {
  protected:
@@ -33,7 +47,7 @@ class UringSocketTest : public testing::Test {
   unique_ptr<LinuxSocketBase> conn_socket_;
 
   uint16_t listen_port_ = 0;
-  fibers_ext::Fiber accept_fb_;
+  Fiber accept_fb_;
   std::error_code accept_ec_;
   FiberSocketBase::endpoint_type listen_ep_;
 };
@@ -160,7 +174,7 @@ TEST_F(UringSocketTest, Poll) {
 
 TEST_F(UringSocketTest, AsyncWrite) {
   unique_ptr<LinuxSocketBase> sock;
-  fibers_ext::Done done;
+  Done done;
   proactor_->Dispatch([&] {
     sock.reset(proactor_->CreateSocket());
     error_code ec = sock->Connect(listen_ep_);
