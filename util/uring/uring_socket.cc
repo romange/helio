@@ -109,7 +109,7 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   error_code ec;
 
-  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  int fd = socket(ep.protocol().family(), SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
