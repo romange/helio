@@ -121,7 +121,7 @@ TEST_F(ProactorTest, SqeOverflow) {
 
   constexpr size_t kMaxPending = kRingDepth * 100;
   fibers_ext::BlockingCounter bc(kMaxPending);
-  auto cb = [&bc](IoResult, uint32_t, int64_t payload) { bc.Dec(); };
+  auto cb = [bc](IoResult, uint32_t, int64_t payload) mutable { bc.Dec(); };
 
   proactor_->Dispatch([&]() mutable {
     for (unsigned i = 0; i < kMaxPending; ++i) {
