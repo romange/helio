@@ -48,6 +48,7 @@ class EpollSocket : public LinuxSocketBase {
  private:
   EpollProactor* GetProactor() { return static_cast<EpollProactor*>(proactor()); }
   void OnSetProactor() final;
+  void OnResetProactor() final;
 
   void Wakey(uint32_t mask, EpollProactor* cntr);
 

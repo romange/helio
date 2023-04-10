@@ -73,6 +73,15 @@ void EpollSocket::OnSetProactor() {
   }
 }
 
+// A bit hacky code. I assume here that OnResetProactor is called in a differrent thread
+// than of Proactor.
+void EpollSocket::OnResetProactor() {
+  if (arm_index_ >= 0) {
+    GetProactor()->AwaitBrief([this] { GetProactor()->Disarm(native_handle(), arm_index_); });
+    arm_index_ = -1;
+  }
+}
+
 auto EpollSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
