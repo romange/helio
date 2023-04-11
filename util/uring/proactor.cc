@@ -399,7 +399,7 @@ void Proactor::Init(size_t ring_size, int wq_fd) {
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
   // Disabled due to a bug.
-  msgring_f_ = 0; // io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
   io_uring_free_probe(uring_probe);
   VLOG_IF(1, msgring_f_) << "msgring supported!";
 
@@ -688,8 +688,6 @@ void Proactor::UnregisterFd(unsigned fixed_fd) {
 const static uint64_t wake_val = 1;
 
 void Proactor::WakeRing() {
-  DVLOG(2) << "WakeRing " << tq_seq_.load(std::memory_order_relaxed);
-
   tq_wakeup_ev_.fetch_add(1, std::memory_order_relaxed);
 
   Proactor* caller = static_cast<Proactor*>(ProactorBase::me());

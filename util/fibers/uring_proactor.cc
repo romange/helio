@@ -128,12 +128,7 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
-  // TODO: fix msgring
-  // for some reason we loose wakeups when using msgring is set
-  // (reproduces on 5.19 with epoch_server that deadlocks and does not exit)
-  // I verified that a Proactor thread during Dispatch, calls WakeRing that should
-  // wake up another thread but it never returns from io_uring_wait_cqes.
-  msgring_f_ = 0; // io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
   io_uring_free_probe(uring_probe);
   VLOG_IF(1, msgring_f_) << "msgring supported!";
 
@@ -191,6 +186,10 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
     return;
   }
 
+  if (cqe.res < 0) {
+    LOG(WARNING) << "CQE error: " << -cqe.res << " cqe.flags=" << cqe.flags;
+  }
+
   if (cqe.user_data == kIgnoreIndex)
     return;
 
@@ -227,13 +226,13 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
     }
   }
 
+  memset(res, 0, sizeof(io_uring_sqe));
+
   if (cb) {
     if (next_free_ce_ < 0) {
       RegrowCentries();
       DCHECK_GT(next_free_ce_, 0);
     }
-    memset(res, 0, sizeof(io_uring_sqe));
-
     res->user_data = next_free_ce_ + kUserDataCbIndex;
     DCHECK_LT(unsigned(next_free_ce_), centries_.size());
 
@@ -611,8 +610,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 const static uint64_t wake_val = 1;
 
 void UringProactor::WakeRing() {
-  DVLOG(2) << "WakeRing " << tq_seq_.load(std::memory_order_relaxed);
-
   tq_wakeup_ev_.fetch_add(1, std::memory_order_relaxed);
 
   UringProactor* caller = static_cast<UringProactor*>(ProactorBase::me());
@@ -621,7 +618,7 @@ void UringProactor::WakeRing() {
 
   if (caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr);
-    se.PrepMsgRing(ring_.ring_fd, 0, kIgnoreIndex);
+    se.PrepMsgRing(ring_.ring_fd, 0, 0);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
