@@ -107,10 +107,10 @@ class IoBuf {
   void Swap(IoBuf& other);
 
   uint8_t* buf_ = nullptr;
-  uint32_t offs_ = 0;
-  uint32_t size_ = 0;
-  uint32_t alignment_ = 8;
-  uint32_t capacity_ = 0;
+  size_t offs_ = 0;
+  size_t size_ = 0;
+  size_t alignment_ = 8;
+  size_t capacity_ = 0;
 };
 
 }  // namespace base
