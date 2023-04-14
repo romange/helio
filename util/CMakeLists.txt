@@ -2,7 +2,7 @@
 add_library(proactor_lib accept_server.cc dns_resolve.cc fiber_sched_algo.cc fiber_socket_base.cc
             listener_interface.cc prebuilt_asio.cc proactor_base.cc proactor_pool.cc
             sliding_counter.cc varz.cc)
-cxx_link(proactor_lib base absl::flat_hash_map Boost::fiber Boost::headers TRDP::cares)
+cxx_link(proactor_lib base absl::flat_hash_map Boost::fiber Boost::headers)
 
 if (USE_FB2)
   cxx_test(accept_server_test fibers2 http_beast_prebuilt LABELS CI)

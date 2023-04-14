@@ -501,6 +501,7 @@ ctx::fiber_context Scheduler::Preempt() {
 }
 
 void Scheduler::AddReady(FiberInterface* fibi) {
+  DCHECK(!fibi->list_hook.is_linked());
   ready_queue_.push_back(*fibi);
 
   // Case of notifications coming to a sleeping fiber.
@@ -510,6 +511,8 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
+  DVLOG(1) << "ScheduleFromRemote " << cntx->name();
+
   remote_ready_queue_.Push(cntx);
 
   if (custom_policy_) {
@@ -560,6 +563,14 @@ void Scheduler::ProcessRemoteReady() {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
       break;
+
+    // It could be that we pulled a fiber from remote_ready_queue_ and added it to ready_queue_,
+    // but meanwhile a remote thread adds the same fiber again to the remote_ready_queue_,
+    // even before ready_queue_ has even been processed. We should not push the already added fiber
+    // to ready_queue.
+    if (fi->list_hook.is_linked())
+      continue;
+
     DVLOG(2) << "set ready " << fi->name();
     AddReady(fi);
   }

@@ -16,23 +16,24 @@
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
-#include "util/dns_resolve.h"
 #include "util/http/http_handler.h"
 #include "util/varz.h"
 
 using namespace util;
 
 #ifdef USE_FB2
+#include "util/fibers/dns_resolve.h"
 #include "util/fibers/pool.h"
 #include "util/fibers/synchronization.h"
-// #include "util/fibers/uring_proactor.h"
 
+using fb2::DnsResolve;
 using fb2::Fiber;
 using fb2::Mutex;
 
 #else
 #include <boost/fiber/operations.hpp>
 
+#include "util/dns_resolve.h"
 #include "util/epoll/epoll_pool.h"
 #include "util/fibers/fiber.h"
 #include "util/uring/uring_fiber_algo.h"
@@ -579,8 +580,15 @@ int main(int argc, char* argv[]) {
     CHECK_GT(absl::GetFlag(FLAGS_size), 0U);
 
     char ip_addr[INET6_ADDRSTRLEN];
+#ifdef USE_FB2
+    auto* proactor = pp->GetNextProactor();
 
-    error_code ec = util::DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr);
+    error_code ec = proactor->Await(
+        [&] { return DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr, proactor); });
+#else
+    error_code ec = DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr);
+#endif
+
     CHECK_EQ(0, ec.value()) << "Could not resolve " << absl::GetFlag(FLAGS_connect) << " " << ec;
     thread_local std::unique_ptr<TLocalClient> client;
     auto address = ::boost::asio::ip::make_address(ip_addr);
