@@ -9,6 +9,7 @@
 #include "base/logging.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/proactor_base.h"
+#include "util/fibers/uring_proactor.h"
 
 namespace util {
 namespace fb2 {
@@ -37,8 +38,7 @@ struct AresChannelState {
 void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int writable) {
   VLOG(1) << "sfd: " << socket_fd << " " << readable << "/" << writable;
   AresChannelState* state = (AresChannelState*)arg;
-  CHECK_EQ(state->proactor->GetKind(), ProactorBase::EPOLL);
-  EpollProactor* epoll = (EpollProactor*)state->proactor;
+
   uint32_t mask = 0;
   if (readable)
     mask |= EPOLLIN;
@@ -47,18 +47,41 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 
   if (state->channel_sock == ARES_SOCKET_BAD) {
     state->channel_sock = socket_fd;
-    auto cb = [state](uint32_t event_mask, EpollProactor* me) {
-      state->has_writes = event_mask & EPOLLOUT;
-      state->has_reads = event_mask & EPOLLIN;
-      if (state->fiber_ctx) {
-        detail::FiberActive()->ActivateOther(state->fiber_ctx);
-      }
-    };
-    state->arm_index = epoll->Arm(socket_fd, move(cb), mask);
+
+    // TODO: to unify epoll management under a unified interface in ProactorBase.
+    if (state->proactor->GetKind() == ProactorBase::EPOLL) {
+      EpollProactor* epoll = (EpollProactor*)state->proactor;
+      auto cb = [state](uint32_t event_mask, EpollProactor* me) {
+        state->has_writes = event_mask & EPOLLOUT;
+        state->has_reads = event_mask & EPOLLIN;
+        if (state->fiber_ctx) {
+          detail::FiberActive()->ActivateOther(state->fiber_ctx);
+        }
+      };
+      state->arm_index = epoll->Arm(socket_fd, move(cb), mask);
+    } else {
+      CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+      UringProactor* uring = (UringProactor*)state->proactor;
+      auto cb = [state](uint32_t event_mask) {
+        state->has_writes = event_mask & EPOLLOUT;
+        state->has_reads = event_mask & EPOLLIN;
+        if (state->fiber_ctx) {
+          detail::FiberActive()->ActivateOther(state->fiber_ctx);
+        }
+      };
+      state->arm_index = uring->EpollAdd(socket_fd, move(cb), mask);
+    }
   } else {
     CHECK_EQ(state->channel_sock, socket_fd);
     CHECK_EQ(mask, 0u);
-    epoll->Disarm(socket_fd, state->arm_index);
+    if (state->proactor->GetKind() == ProactorBase::EPOLL) {
+      EpollProactor* epoll = (EpollProactor*)state->proactor;
+      epoll->Disarm(socket_fd, state->arm_index);
+    } else {
+      CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+      UringProactor* uring = (UringProactor*)state->proactor;
+      uring->EpollDel(state->arm_index);
+    }
   }
 }
 
@@ -92,7 +115,6 @@ void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hoste
 }
 
 void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCallbackArgs* args) {
-  CHECK_EQ(state->proactor->GetKind(), ProactorBase::EPOLL) << "tbd iouring";
   auto* myself = detail::FiberActive();
   state->fiber_ctx = myself;
 
@@ -121,7 +143,6 @@ error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBas
   options.sock_state_cb_data = &state;
 
   ares_channel channel;
-  state.proactor = proactor;
   CHECK_EQ(ares_init_options(&channel, &options, ARES_OPT_SOCK_STATE_CB), ARES_SUCCESS);
 
   DnsResolveCallbackArgs cb_args;

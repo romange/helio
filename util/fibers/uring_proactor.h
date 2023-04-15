@@ -106,6 +106,11 @@ class UringProactor : public ProactorBase {
   uint8_t* ProvideRegisteredBuffer();
   void ReturnRegisteredBuffer(uint8_t* addr);
 
+  using EpollCB = std::function<void(uint32_t)>;
+  using EpollIndex = unsigned;
+  EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
+  void EpollDel(EpollIndex id);
+
  private:
   void DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe);
 
@@ -118,6 +123,8 @@ class UringProactor : public ProactorBase {
 
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
+  void EpollAddInternal(EpollIndex id);
+  void EpollDelInternal(EpollIndex id);
 
   io_uring ring_;
 
@@ -152,6 +159,15 @@ class UringProactor : public ProactorBase {
 
   int32_t free_req_buf_id_ = -1;
   std::unique_ptr<uint8_t[]> registered_buf_;
+
+  struct EpollEntry {
+    EpollCB cb;
+    int fd = -1;
+    uint32_t event_mask = 0;
+    int64_t index = -1;
+  };
+  std::vector<EpollEntry> epoll_entries_;
+  int32_t next_epoll_free_ = -1;
 };
 
 class FiberCall {

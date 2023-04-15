@@ -29,7 +29,6 @@ ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file des
     }                                                                         \
   } while (false)
 
-
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
 
 using namespace std;
@@ -214,15 +213,7 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
       res = io_uring_get_sqe(&ring_);
     } else {
       ++get_entry_submit_fail_;
-      LOG_FIRST_N(INFO, 50) << "io_uring_submit err " << submitted;
-    }
-
-    if (res == NULL) {
-      // TODO: we should call io_uring_submit() from here and busy poll on errors like
-      // EBUSY, EAGAIN etc.
-      WaitTillAvailable(1);
-      res = io_uring_get_sqe(&ring_);  // now we should have the space.
-      CHECK(res);
+      LOG(FATAL) << "Fatal error submitting to iouring: " << -submitted;
     }
   }
 
@@ -288,6 +279,47 @@ void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
   unsigned buf_id = offs / 64;
   absl::little_endian::Store16(&registered_buf_[buf_id * 64], free_req_buf_id_);
   free_req_buf_id_ = buf_id;
+}
+
+UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask) {
+  CHECK_GT(event_mask, 0U);
+
+  if (next_epoll_free_ == -1) {
+    size_t prev = epoll_entries_.size();
+    if (prev == 0) {
+      epoll_entries_.resize(8);
+    } else {
+      epoll_entries_.resize(prev * 2);
+    }
+    next_epoll_free_ = prev;
+    for (; prev < epoll_entries_.size() - 1; ++prev)
+      epoll_entries_[prev].index = prev + 1;
+  }
+
+  auto& epoll = epoll_entries_[next_epoll_free_];
+  unsigned id = next_epoll_free_;
+  next_epoll_free_ = epoll.index;
+
+  epoll.cb = std::move(cb);
+  epoll.fd = fd;
+  epoll.event_mask = event_mask;
+  EpollAddInternal(id);
+
+  return id;
+}
+
+void UringProactor::EpollDel(EpollIndex id) {
+  CHECK_LT(id, epoll_entries_.size());
+  auto& epoll = epoll_entries_[id];
+  epoll.event_mask = 0;
+  unsigned uid = epoll.index;
+
+  FiberCall fc(this);
+  fc->PrepPollRemove(uid);
+  IoResult res = fc.Get();
+  if (res == 0) {  // removed from iouring.
+    EpollDelInternal(id);
+  }
 }
 
 void UringProactor::RegrowCentries() {
@@ -623,6 +655,38 @@ void UringProactor::WakeRing() {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
   }
+}
+
+void UringProactor::EpollAddInternal(EpollIndex id) {
+  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags) {
+    auto& epoll = epoll_entries_[id];
+    if (res >= 0) {
+      epoll.cb(res);
+
+      if (epoll.event_mask)
+        EpollAddInternal(id);
+      else
+        EpollDelInternal(id);
+    } else {
+      res = -res;
+      LOG_IF(ERROR, res != ECANCELED) << "EpollAddInternal: unexpected error " << res;
+    }
+  };
+
+  SubmitEntry se = GetSubmitEntry(move(uring_cb));
+  auto& epoll = epoll_entries_[id];
+  se.PrepPollAdd(epoll.fd, epoll.event_mask);
+  epoll.index = se.sqe()->user_data;
+}
+
+void UringProactor::EpollDelInternal(EpollIndex id) {
+  DVLOG(1) << "EpollDelInternal " << id;
+
+  auto& epoll = epoll_entries_[id];
+  epoll.index = next_epoll_free_;
+  epoll.cb = nullptr;
+
+  next_epoll_free_ = id;
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {

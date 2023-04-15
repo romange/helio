@@ -266,10 +266,10 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
   return ret;
 }
 
-void EpollProactor::UpdateCb(unsigned arm_index, CbType cb) {
+/*void EpollProactor::UpdateCb(unsigned arm_index, CbType cb) {
   CHECK_LT(arm_index, centries_.size());
   centries_[arm_index].cb = cb;
-}
+}*/
 
 void EpollProactor::Disarm(int fd, unsigned arm_index) {
   DVLOG(1) << "Disarming " << fd << " on " << arm_index;
