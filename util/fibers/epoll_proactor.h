@@ -33,7 +33,7 @@ class EpollProactor : public ProactorBase {
 
   // Returns the handler id for the armed event.
   unsigned Arm(int fd, CbType cb, uint32_t event_mask);
-  void UpdateCb(unsigned arm_index, CbType cb);
+  // void UpdateCb(unsigned arm_index, CbType cb);
   void Disarm(int fd, unsigned arm_index);
 
   int ev_loop_fd() const {
