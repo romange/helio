@@ -176,7 +176,7 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20230125.0.tar.gz
+  URL https://github.com/abseil/abseil-cpp/archive/20230125.2.tar.gz
 )
 
 FetchContent_GetProperties(abseil_cpp)
@@ -192,6 +192,8 @@ if(NOT abseil_cpp_POPULATED)
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
+
+set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
 
 FetchContent_Declare(
   glog
@@ -245,7 +247,7 @@ endif()
 
 add_third_party(
   gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.9.1.tar.gz
+  URL https://github.com/gperftools/gperftools/archive/gperftools-2.10.tar.gz
 
   GIT_SHALLOW TRUE
   PATCH_COMMAND autoreconf -i   # update runs every time for some reason
@@ -294,7 +296,10 @@ add_third_party(jemalloc
 
 add_third_party(
   xxhash
-  URL https://github.com/Cyan4973/xxHash/archive/v0.8.0.tar.gz
+  URL https://github.com/Cyan4973/xxHash/archive/v0.8.1.tar.gz
+
+  # A bug in xxhash 0.8.1 that searches for a file that doesn't exist
+  PATCH_COMMAND touch <SOURCE_DIR>/xxhsum.1
   SOURCE_SUBDIR cmake_unofficial
   CMAKE_PASS_FLAGS "-DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF"
 )
