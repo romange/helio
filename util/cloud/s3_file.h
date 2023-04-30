@@ -11,7 +11,7 @@
 namespace util {
 namespace cloud {
 
-io::Result<io::ReadonlyFile*> OpenS3ReadFile(
+io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region,
     std::string_view path, AWS* aws, http::Client* client,
     const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
 

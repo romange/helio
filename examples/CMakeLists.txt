@@ -16,7 +16,11 @@ endif()
 # cxx_link(proactor_stress base uring_fiber_lib http_server_lib)
 
 add_executable(s3_demo s3_demo.cc)
-cxx_link(s3_demo uring_fiber_lib http_client_lib aws_lib)
+if (USE_FB2)
+cxx_link(s3_demo aws_lib)
+else()
+cxx_link(s3_demo aws_lib)
+endif()
 
 add_executable(https_client_cli https_client_cli.cc)
 cxx_link(https_client_cli base uring_fiber_lib http_client_lib tls_lib)

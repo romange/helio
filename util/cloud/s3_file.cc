@@ -9,7 +9,6 @@
 #include <boost/beast/http/dynamic_body.hpp>
 
 #include "base/logging.h"
-#include "util/cloud/cloud_utils.h"
 
 using namespace std;
 
@@ -56,7 +55,7 @@ class S3ReadFile : public io::ReadonlyFile {
   // returns Status::OK.
   io::Result<size_t> Read(size_t offset, const iovec* v, uint32_t len) final;
 
-  std::error_code Open();
+  std::error_code Open(std::string_view region);
 
   // releases the system handle for this file.
   std::error_code Close() final;
@@ -70,7 +69,7 @@ class S3ReadFile : public io::ReadonlyFile {
   }
 
  private:
-  HttpParser* parser() {
+  AWS::HttpParser* parser() {
     return &parser_;
   }
 
@@ -79,15 +78,16 @@ class S3ReadFile : public io::ReadonlyFile {
 
   const string read_obj_url_;
 
-  HttpParser parser_;
+  AWS::HttpParser parser_;
   size_t size_ = 0, offs_ = 0;
+  AwsSignKey sign_key_;
 };
 
 S3ReadFile::~S3ReadFile() {
   Close();
 }
 
-std::error_code S3ReadFile::Open() {
+std::error_code S3ReadFile::Open(string_view region) {
   string url = absl::StrCat("/", read_obj_url_);
   h2::request<h2::empty_body> req{h2::verb::get, url, 11};
   req.set(h2::field::host, client_->host());
@@ -96,14 +96,14 @@ std::error_code S3ReadFile::Open() {
     SetRange(offs_, kuint64max, &req);
 
   VLOG(1) << "Unsigned request: " << req;
-
-  error_code ec = SendRequest(&aws_, client_, &req, &parser_);
+  sign_key_ = aws_.GetSignKey(region);
+  error_code ec = aws_.SendRequest(client_, &sign_key_, &req, &parser_);
   if (ec) {
     return ec;
   }
 
   const auto& msg = parser_.get();
-  VLOG(1) << "HeaderResp" << msg;
+  VLOG(1) << "HeaderResp: " << msg;
 
   if (msg.result() == h2::status::moved_permanently) {
     // TODO: to support redirect errors.
@@ -191,7 +191,6 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
       break;
     }
 
-
     LOG(ERROR) << "ec: " << ec << "/" << ec.message() << " at " << offset << "/" << size_;
     return nonstd::make_unexpected(ec);
   }
@@ -201,16 +200,18 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
 
 }  // namespace
 
-io::Result<io::ReadonlyFile*> OpenS3ReadFile(string_view path, AWS* aws, http::Client* client,
+io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_view path, AWS* aws,
+                                             http::Client* client,
                                              const io::ReadonlyFile::Options& opts) {
   CHECK(opts.sequential && client);
+  VLOG(1) << "OpenS3ReadFile: " << path;
 
   string_view bucket, obj_path;
 
   string read_obj_url{path};
   unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, client, std::move(read_obj_url)));
 
-  auto ec = fl->Open();
+  auto ec = fl->Open(region);
   if (ec)
     return nonstd::make_unexpected(ec);
 

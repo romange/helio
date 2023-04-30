@@ -20,7 +20,12 @@
 #include "base/logging.h"
 #include "io/file.h"
 #include "io/line_reader.h"
+
+#ifdef USE_FB2
+#include "util/fibers/proactor_base.h"
+#else
 #include "util/proactor_base.h"
+#endif
 
 namespace util {
 namespace cloud {
@@ -85,7 +90,7 @@ void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
   CHECK_EQ(1, HMAC_Final(hmac, ptr, &len));
   HMAC_CTX_free(hmac);
 #else
-  const uint8_t *data = reinterpret_cast<const uint8_t*>(msg.data());
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(msg.data());
   ::HMAC(EVP_sha256(), key.data(), key.size(), data, msg.size(), dest, &len);
 #endif
   CHECK_EQ(len, 32u);
@@ -334,56 +339,19 @@ void PopulateAwsConnectionData(const AwsConnectionData& src, AwsConnectionData* 
     dest->region = region;
 }
 
+const char* kExpiredTokenSentinel = "<Error><Code>ExpiredToken</Code>";
+
+// Return true if the response indicates an expired token.
+bool IsExpiredBody(string_view body) {
+  return body.find(kExpiredTokenSentinel) != std::string::npos;
+}
+
 }  // namespace
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const char AWS::kUnsignedPayloadSig[] = "UNSIGNED-PAYLOAD";
 
-string AWS::AuthHeader(string_view method, string_view headers, string_view target,
-                       string_view content_sha256, string_view amz_date) const {
-  CHECK(!connection_data_.access_key.empty());
-
-  size_t pos = target.find('?');
-  string_view url = target.substr(0, pos);
-  string_view query_string;
-  string canonical_querystring;
-
-  if (pos != string::npos) {
-    query_string = target.substr(pos + 1);
-
-    // We must sign query string with params in alphabetical order
-    vector<string_view> params = absl::StrSplit(query_string, "&", absl::SkipWhitespace{});
-    sort(params.begin(), params.end());
-    canonical_querystring = absl::StrJoin(params, "&");
-  }
-
-  string canonical_request = absl::StrCat(method, "\n", url, "\n", canonical_querystring, "\n");
-  string signed_headers = "host;x-amz-content-sha256;x-amz-date";
-  if (!connection_data_.session_token.empty()) {
-    signed_headers += ";x-amz-security-token";
-  }
-
-  absl::StrAppend(&canonical_request, headers, "\n", signed_headers, "\n", content_sha256);
-  VLOG(1) << "CanonicalRequest:\n" << canonical_request << "\n-------------------\n";
-
-  char hexdigest[65];
-  Sha256String(canonical_request, hexdigest);
-
-  string string_to_sign =
-      absl::StrCat(kAlgo, "\n", amz_date, "\n", credential_scope_, "\n", hexdigest);
-
-  uint8_t signature[32];
-  HMAC(sign_key_, string_to_sign, signature);
-  Hexify(signature, sizeof(signature), hexdigest);
-
-  string authorization_header =
-      absl::StrCat(kAlgo, " Credential=", connection_data_.access_key, "/", credential_scope_,
-                   ",SignedHeaders=", signed_headers, ",Signature=", hexdigest);
-
-  return authorization_header;
-}
-
-void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
+void AwsSignKey::Sign(string_view payload_sig, HttpHeader* header) const {
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
 
   // We show consider to pass it via argument to make the function test-friendly.
@@ -420,14 +388,65 @@ void AWS::Sign(std::string_view payload_sig, HttpHeader* header) const {
     absl::StrAppend(&canonical_headers, "x-amz-security-token", ":", session_token, "\n");
   }
 
-  string auth_header = AuthHeader(std_sv(header->method_string()), canonical_headers,
-                                  std_sv(header->target()), payload_sig, amz_date);
+  SignHeaders sheaders;
+  sheaders.method = std_sv(header->method_string());
+  sheaders.target = std_sv(header->target());
+  sheaders.content_sha256 = payload_sig;
+  sheaders.amz_date = amz_date;
+  sheaders.headers = canonical_headers;
+
+  string auth_header = AuthHeader(sheaders);
 
   header->set(h2::field::authorization, auth_header);
 }
 
+string AwsSignKey::AuthHeader(const SignHeaders& headers) const {
+  CHECK(!connection_data_.access_key.empty());
+
+  size_t pos = headers.target.find('?');
+  string_view url = headers.target.substr(0, pos);
+  string_view query_string;
+  string canonical_querystring;
+
+  if (pos != string::npos) {
+    query_string = headers.target.substr(pos + 1);
+
+    // We must sign query string with params in alphabetical order
+    vector<string_view> params = absl::StrSplit(query_string, "&", absl::SkipWhitespace{});
+    sort(params.begin(), params.end());
+    canonical_querystring = absl::StrJoin(params, "&");
+  }
+
+  string canonical_request =
+      absl::StrCat(headers.method, "\n", url, "\n", canonical_querystring, "\n");
+  string signed_headers = "host;x-amz-content-sha256;x-amz-date";
+  if (!connection_data_.session_token.empty()) {
+    signed_headers += ";x-amz-security-token";
+  }
+
+  absl::StrAppend(&canonical_request, headers.headers, "\n", signed_headers, "\n",
+                  headers.content_sha256);
+  VLOG(1) << "CanonicalRequest:\n" << canonical_request << "\n-------------------\n";
+
+  char hexdigest[65];
+  Sha256String(canonical_request, hexdigest);
+
+  string string_to_sign =
+      absl::StrCat(kAlgo, "\n", headers.amz_date, "\n", credential_scope_, "\n", hexdigest);
+
+  uint8_t signature[32];
+  HMAC(sign_key_, string_to_sign, signature);
+  Hexify(signature, sizeof(signature), hexdigest);
+
+  string authorization_header =
+      absl::StrCat(kAlgo, " Credential=", connection_data_.access_key, "/", credential_scope_,
+                   ",SignedHeaders=", signed_headers, ",Signature=", hexdigest);
+
+  return authorization_header;
+}
+
 bool AWS::RefreshToken() {
-  if (!connection_data_.role_name.empty() ) {
+  if (!connection_data_.role_name.empty()) {
     VLOG(1) << "Trying to update expired session token";
 
     auto updated_data = GetConnectionDataFromMetadata(connection_data_.role_name);
@@ -435,7 +454,6 @@ bool AWS::RefreshToken() {
       return false;
 
     PopulateAwsConnectionData(std::move(*updated_data), &connection_data_);
-    SetScopeAndSignKey();
     return true;
   }
 
@@ -462,21 +480,108 @@ error_code AWS::Init() {
   string amz_date = absl::FormatTime("%Y%m%d", tn, utc_tz);
   strcpy(date_str_, amz_date.c_str());
 
-  SetScopeAndSignKey();
-
   return error_code{};
 }
 
-void AWS::UpdateRegion(std::string_view region) {
-  connection_data_.region = region;
-  SetScopeAndSignKey();
+AwsSignKey AWS::GetSignKey(string_view region) const {
+  auto cd = connection_data_;
+  cd.region = region;
+
+  AwsSignKey res(DeriveSigKey(connection_data_.secret_key, date_str_, region, service_),
+                 absl::StrCat(date_str_, "/", region, "/", service_, "/", "aws4_request"),
+                 move(cd));
+  return res;
 }
 
-void AWS::SetScopeAndSignKey() {
-  sign_key_ =
-      DeriveSigKey(connection_data_.secret_key, date_str_, connection_data_.region, service_);
-  credential_scope_ =
-      absl::StrCat(date_str_, "/", connection_data_.region, "/", service_, "/", "aws4_request");
+error_code AWS::RetryExpired(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+                             h2::response_header<>* header) {
+  if (!RefreshToken()) {
+    LOG(ERROR) << "Could not refresh token";
+    return make_error_code(errc::io_error);
+  }
+
+  error_code ec;
+
+  // Re-connect client if needed.
+  if ((*header)[h2::field::connection] == "close") {
+    ec = client->Reconnect();
+    if (ec)
+      return ec;
+  }
+
+  string region = cached_key->connection_data().region;
+  *cached_key = GetSignKey(region);
+  cached_key->Sign(AWS::kEmptySig, req);
+  ec = client->Send(*req);
+  return ec;
+}
+
+error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
+                            h2::request<h2::empty_body>* req, h2::response<h2::string_body>* resp) {
+  cached_key->Sign(AWS::kEmptySig, req);
+  DVLOG(1) << "Signed request: " << *req;
+
+  error_code ec = client->Send(*req);
+  if (ec)
+    return ec;
+
+  ec = client->Recv(resp);
+  if (ec)
+    return ec;
+
+  if (resp->result() == h2::status::bad_request && IsExpiredBody(resp->body())) {
+    ec = RetryExpired(client, cached_key, req, &resp->base());
+    if (ec)
+      return ec;
+
+    resp->clear();
+    ec = client->Recv(resp);
+    if (ec)
+      return ec;
+  }
+  return ec;
+}
+
+error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
+                            h2::request<h2::empty_body>* req, HttpParser* parser) {
+  cached_key->Sign(AWS::kEmptySig, req);
+  VLOG(1) << "Sending request: " << *req;
+
+  error_code ec = client->Send(*req);
+  if (ec)
+    return ec;
+
+  parser->body_limit(UINT64_MAX);
+
+  ec = client->ReadHeader(parser);
+  if (ec)
+    return ec;
+
+  auto& msg = parser->get();
+
+  if (msg.result() == h2::status::bad_request) {
+    string str(512, '\0');
+    msg.body().data = str.data();
+    msg.body().size = str.size();
+    ec = client->Recv(parser);
+    if (ec)
+      return ec;
+
+    if (IsExpiredBody(str)) {
+      ec = RetryExpired(client, cached_key, req, &msg.base());
+      if (ec)
+        return ec;
+
+      // TODO: seems we can not reuse the parser here.
+      // (*parser) = std::move(HttpParser{});
+      parser->body_limit(UINT64_MAX);
+      ec = client->ReadHeader(parser);
+      if (ec)
+        return ec;
+    }
+  }
+
+  return ec;
 }
 
 }  // namespace cloud

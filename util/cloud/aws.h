@@ -3,6 +3,7 @@
 //
 #pragma once
 
+#include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/fields.hpp>
 #include <boost/beast/http/string_body.hpp>
@@ -20,24 +21,16 @@ struct AwsConnectionData {
   std::string region, role_name;
 };
 
-class AWS {
+class AwsSignKey {
  public:
-  static const char kEmptySig[];
-  static const char kUnsignedPayloadSig[];
-
-  AWS(const std::string& service, const std::string& region = "") : service_(service) {
-    connection_data_.region = region;
-  }
-
-  std::error_code Init();
-
   using HttpHeader = ::boost::beast::http::header<true, ::boost::beast::http::fields>;
 
-  const std::string& region() const {
-    return connection_data_.region;
-  }
+  AwsSignKey() = default;
 
-  void UpdateRegion(std::string_view region);
+  AwsSignKey(std::string sign_key, std::string credential_scope, AwsConnectionData connection_data)
+      : sign_key_(std::move(sign_key)), credential_scope_(std::move(credential_scope)),
+        connection_data_(std::move(connection_data)) {
+  }
 
   // TODO: we should remove domain argument in favor to subdomain (bucket).
   // and build the whole domain it from service and region
@@ -46,19 +39,58 @@ class AWS {
   //
   void Sign(std::string_view payload_sig, HttpHeader* header) const;
 
+  const AwsConnectionData& connection_data() const {
+    return connection_data_;
+  }
+
+ private:
+  struct SignHeaders {
+    std::string_view method, headers, target;
+    std::string_view content_sha256, amz_date;
+  };
+
+  std::string AuthHeader(const SignHeaders& headers) const;
+
+  std::string sign_key_, credential_scope_;
+  AwsConnectionData connection_data_;
+};
+
+class AWS {
+ public:
+  static const char kEmptySig[];
+  static const char kUnsignedPayloadSig[];
+  using HttpParser = ::boost::beast::http::response_parser<::boost::beast::http::buffer_body>;
+  using EmptyBodyReq = ::boost::beast::http::request<::boost::beast::http::empty_body>;
+
+  AWS(const std::string& service, const std::string& region = "") : service_(service) {
+    connection_data_.region = region;
+  }
+
+  std::error_code Init();
+
+  const AwsConnectionData& connection_data() const {
+    return connection_data_;
+  }
+
   // Returns true if succeeded to refresh the metadata.
   bool RefreshToken();
 
+  AwsSignKey GetSignKey(std::string_view region) const;
+
+  std::error_code SendRequest(
+      http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+      ::boost::beast::http::response<::boost::beast::http::string_body>* resp);
+
+  std::error_code SendRequest(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+                              HttpParser* resp);
+
  private:
-  std::string AuthHeader(std::string_view method, std::string_view headers, std::string_view target,
-                         std::string_view payload_sig, std::string_view amz_date) const;
-  void SetScopeAndSignKey();
+  std::error_code RetryExpired(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+                               ::boost::beast::http::response_header<>* header);
 
   std::string service_;
   AwsConnectionData connection_data_;
 
-  std::string sign_key_;
-  std::string credential_scope_;
   char date_str_[32];
 };
 

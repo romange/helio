@@ -11,7 +11,7 @@
 #include "util/cloud/s3.h"
 #include "util/cloud/s3_file.h"
 #include "util/http/http_client.h"
-#include "util/uring/uring_pool.h"
+#include "util/fibers/pool.h"
 
 using namespace std;
 using namespace util;
@@ -71,8 +71,11 @@ int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
   unique_ptr<ProactorPool> pp;
+#ifdef USE_FB2
+  pp.reset(fb2::Pool::IOUring(256));
+#else
   pp.reset(new uring::UringPool);
-
+#endif
   pp->Run();
 
   AWS aws{"s3", absl::GetFlag(FLAGS_region)};
@@ -94,7 +97,7 @@ int main(int argc, char* argv[]) {
     if (pos != string_view::npos) {
       obj_path = clean.substr(pos + 1);
     }
-    cloud::S3Bucket bucket(aws, endpoint, bucket_name);
+    cloud::S3Bucket bucket = cloud::S3Bucket::FromEndpoint(aws, endpoint, bucket_name);
 
     if (cmd == "ls") {
       cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) { CONSOLE_INFO << name; };
@@ -115,7 +118,13 @@ int main(int argc, char* argv[]) {
         if (res) {
           io::ReadonlyFile* file = *res;
           std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
-          file->Read(0, io::MutableBytes(buf.get(), 1024));
+          io::SizeOrError sz_res = file->Read(0, io::MutableBytes(buf.get(), 1024));
+          if (sz_res) {
+            CONSOLE_INFO << "File contents(first 1024) of " << obj_path << ":";
+            CONSOLE_INFO << string_view(reinterpret_cast<char*>(buf.get()), *sz_res);
+          } else {
+            LOG(ERROR) << "Error: " << sz_res.error();
+          }
         } else {
           LOG(ERROR) << "Error: " << res.error();
         }

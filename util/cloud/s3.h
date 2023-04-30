@@ -25,9 +25,11 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client);
 class S3Bucket {
  public:
   S3Bucket(const S3Bucket&) = delete;
+  S3Bucket(S3Bucket&&) = default;
 
-  S3Bucket(const AWS& aws, std::string_view bucket);
-  S3Bucket(const AWS& aws, std::string_view endpoint, std::string_view bucket);
+  S3Bucket(const AWS& aws, std::string_view bucket, std::string_view region = std::string_view{});
+
+  static S3Bucket FromEndpoint(const AWS& aws, std::string_view endpoint, std::string_view bucket);
 
   std::error_code Connect(uint32_t ms);
 
@@ -51,8 +53,11 @@ class S3Bucket {
   std::error_code ConnectInternal();
 
   AWS aws_;
+
   std::string endpoint_;
   std::string bucket_;
+  std::string region_;
+  AwsSignKey skey_;
   std::unique_ptr<http::Client> http_client_;
 };
 

@@ -14,10 +14,15 @@
 
 #include "base/logging.h"
 #include "util/cloud/aws.h"
-#include "util/cloud/cloud_utils.h"
+// #include "util/cloud/cloud_utils.h"
 #include "util/cloud/s3_file.h"
 #include "util/http/encoding.h"
+
+#ifdef USE_FB2
+#include "util/fibers/proactor_base.h"
+#else
 #include "util/proactor_base.h"
+#endif
 
 namespace util {
 namespace cloud {
@@ -142,7 +147,8 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
   req.set(h2::field::host, http_client->host());
   h2::response<h2::string_body> resp;
 
-  auto ec = SendRequest(aws, http_client, &req, &resp);
+  AwsSignKey skey = aws->GetSignKey(aws->connection_data().region);
+  auto ec = aws->SendRequest(http_client, &skey, &req, &resp);
   if (ec) {
     return make_unexpected(ec);
   }
@@ -157,12 +163,18 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
   return xml::ParseXmlListBuckets(resp.body());
 }
 
-S3Bucket::S3Bucket(const AWS& aws, string_view bucket) : aws_(aws), bucket_(bucket) {
+S3Bucket::S3Bucket(const AWS& aws, string_view bucket, string_view region)
+    : aws_(aws), bucket_(bucket), region_(region) {
+  if (region_.empty()) {
+    region_ = aws_.connection_data().region;
+  }
+  skey_ = aws.GetSignKey(region_);
 }
 
-S3Bucket::S3Bucket(const AWS& aws, string_view endpoint, string_view bucket)
-    : S3Bucket(aws, bucket) {
-  endpoint_ = endpoint;
+S3Bucket S3Bucket::FromEndpoint(const AWS& aws, string_view endpoint, string_view bucket) {
+  S3Bucket res(aws, bucket);
+  res.endpoint_ = endpoint;
+  return res;
 }
 
 std::error_code S3Bucket::Connect(uint32_t ms) {
@@ -177,7 +189,7 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
 
 ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb,
                                         std::string_view marker, unsigned max_keys) {
-  CHECK(max_keys <= kAwsMaxKeys);
+  CHECK_LE(max_keys, kAwsMaxKeys);
 
   string host = http_client_->host();
   std::string path;
@@ -207,7 +219,7 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
 
   h2::response<h2::string_body> resp;
 
-  error_code ec = SendRequest(&aws_, http_client_.get(), &req, &resp);
+  error_code ec = aws_.SendRequest(http_client_.get(), &skey_, &req, &resp);
   if (ec)
     return make_unexpected(ec);
 
@@ -216,15 +228,17 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
     if (new_region.empty()) {
       return make_unexpected(make_error_code(errc::network_unreachable));
     }
-    aws_.UpdateRegion(std_sv(new_region));
+    region_ = std::string(new_region);
+    skey_ = aws_.GetSignKey(region_);
+
     ec = ConnectInternal();
     host = http_client_->host();
 
-    VLOG(1) << "Redirecting to " << host;
+    LOG(INFO) << "Redirecting to " << host;
 
     req.set(h2::field::host, host);
 
-    ec = SendRequest(&aws_, http_client_.get(), &req, &resp);
+    ec = aws_.SendRequest(http_client_.get(), &skey_, &req, &resp);
     if (ec)
       return make_unexpected(ec);
   }
@@ -265,14 +279,21 @@ error_code S3Bucket::ListAllObjects(string_view bucket_path, ListObjectCb cb) {
 
 io::Result<io::ReadonlyFile*> S3Bucket::OpenReadFile(string_view path,
                                                      const io::ReadonlyFile::Options& opts) {
-  return OpenS3ReadFile(path, &aws_, http_client_.get(), opts);
+  string host = http_client_->host();
+  string full_path{path};
+  if (IsAwsEndpoint(host)) {
+  } else {
+    full_path = absl::StrCat(bucket_, "/", path);
+  }
+  return OpenS3ReadFile(region_, full_path, &aws_, http_client_.get(), opts);
 }
 
 string S3Bucket::GetHost() const {
   if (!endpoint_.empty())
     return endpoint_;
 
-  return absl::StrCat("s3.", aws_.region(), ".amazonaws.com");
+  // fallback to default aws endpoint.
+  return absl::StrCat("s3.", region_, ".amazonaws.com");
 }
 
 error_code S3Bucket::ConnectInternal() {
