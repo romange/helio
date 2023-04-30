@@ -2,9 +2,8 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #pragma once
-#include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/file_body.hpp>
-
+#include <boost/beast/http/string_body.hpp>
 #include <string_view>
 
 namespace util {
@@ -17,15 +16,14 @@ namespace http {
 using QueryParam = std::pair<std::string_view, std::string_view>;
 typedef std::vector<QueryParam> QueryArgs;
 
-typedef ::boost::beast::http::response<::boost::beast::http::string_body>
-    StringResponse;
+typedef ::boost::beast::http::response<::boost::beast::http::string_body> StringResponse;
 
 inline StringResponse MakeStringResponse(
     ::boost::beast::http::status st = ::boost::beast::http::status::ok) {
   return StringResponse(st, 11);
 }
 
-template<typename Fields> inline void SetMime(const char* mime, Fields* dest) {
+template <typename Fields> inline void SetMime(const char* mime, Fields* dest) {
   dest->set(::boost::beast::http::field::content_type, mime);
 }
 
@@ -39,6 +37,7 @@ extern const char kSvgMime[];
 extern const char kTextMime[];
 extern const char kXmlMime[];
 extern const char kBinMime[];
+extern const char kProfilesFolder[];
 
 QueryParam ParseQuery(std::string_view str);
 QueryArgs SplitQuery(std::string_view query);

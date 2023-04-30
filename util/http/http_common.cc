@@ -43,7 +43,7 @@ const char kSvgMime[] = "image/svg+xml";
 const char kTextMime[] = "text/plain";
 const char kXmlMime[] = "application/xml";
 const char kBinMime[] = "application/octet-stream";
-;
+const char kProfilesFolder[] = "/tmp/profile/";
 
 QueryParam ParseQuery(std::string_view str) {
   std::pair<std::string_view, std::string_view> res;
