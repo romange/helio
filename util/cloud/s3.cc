@@ -14,7 +14,6 @@
 
 #include "base/logging.h"
 #include "util/cloud/aws.h"
-// #include "util/cloud/cloud_utils.h"
 #include "util/cloud/s3_file.h"
 #include "util/http/encoding.h"
 
@@ -286,6 +285,17 @@ io::Result<io::ReadonlyFile*> S3Bucket::OpenReadFile(string_view path,
     full_path = absl::StrCat(bucket_, "/", path);
   }
   return OpenS3ReadFile(region_, full_path, &aws_, http_client_.get(), opts);
+}
+
+io::Result<io::WriteFile*> S3Bucket::OpenWriteFile(std::string_view path) {
+  string host = http_client_->host();
+  string full_path{path};
+  if (IsAwsEndpoint(host)) {
+  } else {
+    full_path = absl::StrCat(bucket_, "/", path);
+  }
+
+  return OpenS3WriteFile(region_, full_path, &aws_, http_client_.get());
 }
 
 string S3Bucket::GetHost() const {

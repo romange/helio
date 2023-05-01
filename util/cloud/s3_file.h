@@ -11,9 +11,12 @@
 namespace util {
 namespace cloud {
 
-io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region,
-    std::string_view path, AWS* aws, http::Client* client,
+io::Result<io::ReadonlyFile*> OpenS3ReadFile(
+    std::string_view region, std::string_view path, AWS* aws, http::Client* client,
     const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
+
+io::Result<io::WriteFile*> OpenS3WriteFile(std::string_view region, std::string_view key_path,
+                                           AWS* aws, http::Client* client);
 
 }  // namespace cloud
 }  // namespace util

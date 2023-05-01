@@ -48,6 +48,8 @@ class S3Bucket {
   io::Result<io::ReadonlyFile*> OpenReadFile(std::string_view path,
       const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
 
+  io::Result<io::WriteFile*> OpenWriteFile(std::string_view path);
+
  private:
   std::string GetHost() const;
   std::error_code ConnectInternal();

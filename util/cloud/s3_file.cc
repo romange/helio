@@ -9,6 +9,7 @@
 #include <boost/beast/http/dynamic_body.hpp>
 
 #include "base/logging.h"
+#include "util/http/encoding.h"
 
 using namespace std;
 
@@ -216,6 +217,37 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
     return nonstd::make_unexpected(ec);
 
   return fl.release();
+}
+
+io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, AWS* aws,
+                                           http::Client* client) {
+  string url("/");
+  url.append(http::UrlEncode(key_path)).append("?uploads=");
+
+  // Signed params must look like key/value pairs. Instead of handling key-only params
+  // in the signing code we just pass empty value here.
+
+  h2::request<h2::empty_body> req{h2::verb::post, url, 11};
+  h2::response<h2::string_body> resp;
+
+  auto sign_key = aws->GetSignKey(region);
+  auto ec = aws->SendRequest(client, &sign_key, &req, &resp);
+  if (ec) {
+    return nonstd::make_unexpected(ec);
+  }
+
+  if (resp.result() != h2::status::ok) {
+    LOG(ERROR) << "OpenS3WriteFile Error: " << resp;
+
+    return nonstd::make_unexpected(make_error_code(errc::io_error));
+  }
+
+  string upload_id;
+  // ParseXmlStartUpload(resp.body(), &upload_id);
+
+  VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "UploadId: " << upload_id;
+
+  return nullptr;
 }
 
 }  // namespace cloud

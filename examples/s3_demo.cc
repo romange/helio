@@ -10,8 +10,8 @@
 #include "util/cloud/aws.h"
 #include "util/cloud/s3.h"
 #include "util/cloud/s3_file.h"
-#include "util/http/http_client.h"
 #include "util/fibers/pool.h"
+#include "util/http/http_client.h"
 
 using namespace std;
 using namespace util;
@@ -125,6 +125,20 @@ int main(int argc, char* argv[]) {
           } else {
             LOG(ERROR) << "Error: " << sz_res.error();
           }
+        } else {
+          LOG(ERROR) << "Error: " << res.error();
+        }
+      });
+    } else if (cmd == "write") {
+      pp->GetNextProactor()->Await([&] {
+        auto ec = bucket.Connect(300);
+        CHECK(!ec);
+
+        io::Result<io::WriteFile*> res = bucket.OpenWriteFile(obj_path);
+        if (res) {
+          io::WriteFile* file = *res;
+          std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
+          memset(buf.get(), 'R', 1024);
         } else {
           LOG(ERROR) << "Error: " << res.error();
         }
