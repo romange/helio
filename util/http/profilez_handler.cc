@@ -6,6 +6,7 @@
 #include <absl/time/time.h>
 #include <gperftools/profiler.h>
 
+#include <filesystem>
 #include <thread>
 #include <unordered_map>
 
@@ -34,7 +35,8 @@ namespace h2 = beast::http;
 typedef h2::response<h2::string_body> StringResponse;
 
 static void HandleCpuProfile(bool enable, StringResponse* response) {
-  string profile_name = "/tmp/" + base::ProgramBaseName();
+  std::filesystem::create_directory(kProfilesFolder);
+  string profile_name = kProfilesFolder + base::ProgramBaseName();
   response->set(h2::field::cache_control, "no-cache, no-store, must-revalidate");
   response->set(h2::field::pragma, "no-cache");
   response->set(field::content_type, kHtmlMime);

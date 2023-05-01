@@ -4,6 +4,7 @@
 #include "util/http/http_handler.h"
 
 #include <boost/beast/http.hpp>
+#include <filesystem>
 
 #include "base/logging.h"
 #include "util/metrics/family.h"
@@ -13,6 +14,7 @@ using namespace http;
 using namespace std;
 namespace h2 = boost::beast::http;
 using metrics::MetricType;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -23,6 +25,13 @@ void FilezHandler(const QueryArgs& args, HttpContext* send) {
       file_name = k_v.second;
     }
   }
+
+  fs::path canonical_file_name = fs::weakly_canonical(file_name);
+  auto relative = fs::relative(canonical_file_name, kProfilesFolder);
+  if (relative.empty() || (kProfilesFolder / relative) != canonical_file_name) {
+    return send->Invoke(MakeStringResponse(h2::status::unauthorized));
+  }
+
   if (file_name.empty()) {
     http::StringResponse resp = MakeStringResponse(h2::status::unauthorized);
     return send->Invoke(std::move(resp));
