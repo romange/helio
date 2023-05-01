@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef HUMAN_READABLE_NUMBERS_H_
 #define HUMAN_READABLE_NUMBERS_H_
 
+#include <cstdint>
 #include <string_view>
 
 namespace strings {
