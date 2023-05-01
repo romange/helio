@@ -5,6 +5,7 @@
 #include "base/init.h"
 
 #include <atomic>
+#include <exception>
 
 #include "absl/debugging/failure_signal_handler.h"
 #include "absl/debugging/symbolize.h"
@@ -57,7 +58,20 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
 #else
   LOG(INFO) << (*argv)[0] << " running in debug mode.";
 #endif
-  std::set_terminate([] { LOG(FATAL) << "Terminate handler called"; });
+  std::set_terminate([] {
+    std::exception_ptr e_ptr = std::current_exception();
+    if (!e_ptr) {
+      LOG(FATAL) << "Terminate handler called without exception";
+    }
+
+    try {
+      std::rethrow_exception(e_ptr);
+    } catch (std::exception& e) {
+      LOG(FATAL) << "Uncaught exception: " << e.what();
+    } catch (...) {
+      LOG(FATAL) << "Uncaught exception";
+    }
+  });
 
   __internal__::ModuleInitializer::RunFtors(true);
 }
