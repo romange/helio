@@ -72,7 +72,7 @@ class Client {
     headers_.emplace_back(std::move(name), std::move(value));
   }
 
-  const std::string host() const {
+  const std::string& host() const {
     return host_;
   }
 

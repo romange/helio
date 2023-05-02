@@ -126,7 +126,7 @@ int main(int argc, char* argv[]) {
             LOG(ERROR) << "Error: " << sz_res.error();
           }
         } else {
-          LOG(ERROR) << "Error: " << res.error();
+          LOG(ERROR) << "Read Error: " << res.error().message();
         }
       });
     } else if (cmd == "write") {

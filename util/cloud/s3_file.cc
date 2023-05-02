@@ -3,7 +3,9 @@
 //
 #include "util/cloud/s3_file.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
+#include <libxml/xpath.h>
 
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/dynamic_body.hpp>
@@ -40,6 +42,58 @@ std::ostream& operator<<(std::ostream& os, const h2::response<h2::buffer_body>& 
   os << "-------------------------";
 
   return os;
+}
+
+error_code DrainResponse(http::Client* client, h2::response_parser<h2::buffer_body>* parser) {
+  char resp[512];
+  auto& body = parser->get().body();
+  while (!parser->is_done()) {
+    body.data = resp;
+    body.size = sizeof(resp);
+
+    http::Client::BoostError ec = client->Recv(parser);
+    if (ec && ec != h2::error::need_buffer) {
+      return ec;
+    }
+  }
+  return error_code{};
+}
+
+inline xmlDocPtr XmlRead(string_view xml) {
+  return xmlReadMemory(xml.data(), xml.size(), NULL, NULL, XML_PARSE_COMPACT | XML_PARSE_NOBLANKS);
+}
+
+inline const char* as_char(const xmlChar* var) {
+  return reinterpret_cast<const char*>(var);
+}
+
+error_code ParseXmlStartUpload(std::string_view xml_resp, string* upload_id) {
+  xmlDocPtr doc = XmlRead(xml_resp);
+  if (!doc)
+    return make_error_code(errc::bad_message);
+
+  absl::Cleanup xml_free{[doc]() { xmlFreeDoc(doc); }};
+
+  xmlNodePtr root = xmlDocGetRootElement(doc);
+
+  string_view rname = as_char(root->name);
+  if (rname != "InitiateMultipartUploadResult"sv) {
+    return make_error_code(errc::bad_message);
+  }
+
+  for (xmlNodePtr child = root->children; child; child = child->next) {
+    if (child->type == XML_ELEMENT_NODE) {
+      xmlNodePtr grand = child->children;
+      if (!strcmp(as_char(child->name), "UploadId")) {
+        if (!grand || grand->type != XML_TEXT_NODE)
+          return make_error_code(errc::bad_message);
+        upload_id->assign(as_char(grand->content));
+        break;
+      }
+    }
+  }
+
+  return error_code{};
 }
 
 class S3ReadFile : public io::ReadonlyFile {
@@ -84,11 +138,34 @@ class S3ReadFile : public io::ReadonlyFile {
   AwsSignKey sign_key_;
 };
 
+class S3WriteFile : public io::WriteFile {
+ public:
+  /**
+   * @brief Construct a new S3 Write File object.
+   *
+   * @param name - aka "s3://somebucket/path_to_obj"
+   * @param aws - initialized AWS object.
+   * @param pool - https connection pool connected to google api server.
+   */
+  S3WriteFile(std::string_view name, AWS* aws, string upload_id, http::Client* client);
+
+  error_code Close() final;
+
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
+
+ private:
+  AWS* aws_;
+
+  string upload_id_;
+  size_t uploaded_ = 0;
+  http::Client* client_;
+};
+
 S3ReadFile::~S3ReadFile() {
   Close();
 }
 
-std::error_code S3ReadFile::Open(string_view region) {
+error_code S3ReadFile::Open(string_view region) {
   string url = absl::StrCat("/", read_obj_url_);
   h2::request<h2::empty_body> req{h2::verb::get, url, 11};
   req.set(h2::field::host, client_->host());
@@ -98,25 +175,19 @@ std::error_code S3ReadFile::Open(string_view region) {
 
   VLOG(1) << "Unsigned request: " << req;
   sign_key_ = aws_.GetSignKey(region);
-  error_code ec = aws_.SendRequest(client_, &sign_key_, &req, &parser_);
+  error_code ec = aws_.Handshake(client_, &sign_key_, &req, &parser_);
   if (ec) {
     return ec;
   }
 
   const auto& msg = parser_.get();
-  VLOG(1) << "HeaderResp: " << msg;
+  VLOG(1) << "HeaderResp: " << msg.result_int() << " " << msg;
 
-  if (msg.result() == h2::status::moved_permanently) {
-    // TODO: to support redirect errors.
-    char resp[1024];
-    auto& body = parser()->get().body();
-    body.data = resp;
-    body.size = sizeof(resp);
-    client_->Recv(&parser_);
-    string_view resp_sv(resp, sizeof(resp) - body.size);
-    LOG(ERROR) << "Bad region: " << resp_sv;
-
-    return make_error_code(errc::destination_address_required);
+  if (msg.result() == h2::status::not_found) {
+    ec = DrainResponse(client_, &parser_);
+    if (ec)
+      return ec;
+    return make_error_code(errc::no_such_file_or_directory);
   }
 
   if (msg.result() == h2::status::bad_request) {
@@ -199,6 +270,18 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
   return read_sofar;
 }
 
+S3WriteFile::S3WriteFile(string_view name, AWS* aws, string upload_id, http::Client* client)
+    : WriteFile(name), aws_(aws), upload_id_(move(upload_id_)), client_(client) {
+}
+
+error_code S3WriteFile::Close() {
+  return error_code{};
+}
+
+io::Result<size_t> S3WriteFile::WriteSome(const iovec* v, uint32_t len) {
+  return 0;
+}
+
 }  // namespace
 
 io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_view path, AWS* aws,
@@ -222,7 +305,7 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
 io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, AWS* aws,
                                            http::Client* client) {
   string url("/");
-  url.append(http::UrlEncode(key_path)).append("?uploads=");
+  url.append(key_path).append("?uploads=");
 
   // Signed params must look like key/value pairs. Instead of handling key-only params
   // in the signing code we just pass empty value here.
@@ -230,11 +313,11 @@ io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_p
   h2::request<h2::empty_body> req{h2::verb::post, url, 11};
   h2::response<h2::string_body> resp;
 
+  req.set(h2::field::host, client->host());
   auto sign_key = aws->GetSignKey(region);
   auto ec = aws->SendRequest(client, &sign_key, &req, &resp);
-  if (ec) {
+  if (ec)
     return nonstd::make_unexpected(ec);
-  }
 
   if (resp.result() != h2::status::ok) {
     LOG(ERROR) << "OpenS3WriteFile Error: " << resp;
@@ -243,11 +326,13 @@ io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_p
   }
 
   string upload_id;
-  // ParseXmlStartUpload(resp.body(), &upload_id);
+  ec = ParseXmlStartUpload(resp.body(), &upload_id);
+  if (ec)
+    return nonstd::make_unexpected(ec);
 
   VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "UploadId: " << upload_id;
 
-  return nullptr;
+  return new S3WriteFile{key_path, aws, move(upload_id), client};
 }
 
 }  // namespace cloud

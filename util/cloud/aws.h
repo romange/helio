@@ -81,8 +81,10 @@ class AWS {
       http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
       ::boost::beast::http::response<::boost::beast::http::string_body>* resp);
 
-  std::error_code SendRequest(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
-                              HttpParser* resp);
+  // Sends a request and reads back header response. Handles the response according to the header.
+  // The caller is responsible to read the rest of the response via parser.
+  std::error_code Handshake(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+                            HttpParser* resp);
 
  private:
   std::error_code RetryExpired(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,

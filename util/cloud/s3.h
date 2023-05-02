@@ -53,6 +53,7 @@ class S3Bucket {
  private:
   std::string GetHost() const;
   std::error_code ConnectInternal();
+  std::error_code DeriveRegion();
 
   AWS aws_;
 

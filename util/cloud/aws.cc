@@ -526,6 +526,8 @@ error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
     return ec;
 
   ec = client->Recv(resp);
+  DVLOG(1) << "Received response: " << *resp;
+
   if (ec)
     return ec;
 
@@ -542,8 +544,8 @@ error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
   return ec;
 }
 
-error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
-                            h2::request<h2::empty_body>* req, HttpParser* parser) {
+error_code AWS::Handshake(http::Client* client, AwsSignKey* cached_key,
+                          EmptyBodyReq* req, HttpParser* parser) {
   cached_key->Sign(AWS::kEmptySig, req);
   VLOG(1) << "Sending request: " << *req;
 

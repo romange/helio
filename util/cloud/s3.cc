@@ -164,10 +164,13 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
 
 S3Bucket::S3Bucket(const AWS& aws, string_view bucket, string_view region)
     : aws_(aws), bucket_(bucket), region_(region) {
-  if (region_.empty()) {
-    region_ = aws_.connection_data().region;
+  if (region.empty()) {
+    region = aws_.connection_data().region;
+    if (region.empty()) {
+      region = "us-east-1";
+    }
   }
-  skey_ = aws.GetSignKey(region_);
+  skey_ = aws.GetSignKey(region);
 }
 
 S3Bucket S3Bucket::FromEndpoint(const AWS& aws, string_view endpoint, string_view bucket) {
@@ -222,29 +225,9 @@ ListObjectsResult S3Bucket::ListObjects(string_view bucket_path, ListObjectCb cb
   if (ec)
     return make_unexpected(ec);
 
-  if (resp.result() == h2::status::moved_permanently) {
-    boost::beast::string_view new_region = resp["x-amz-bucket-region"];
-    if (new_region.empty()) {
-      return make_unexpected(make_error_code(errc::network_unreachable));
-    }
-    region_ = std::string(new_region);
-    skey_ = aws_.GetSignKey(region_);
-
-    ec = ConnectInternal();
-    host = http_client_->host();
-
-    LOG(INFO) << "Redirecting to " << host;
-
-    req.set(h2::field::host, host);
-
-    ec = aws_.SendRequest(http_client_.get(), &skey_, &req, &resp);
-    if (ec)
-      return make_unexpected(ec);
-  }
-
   if (resp.result() != h2::status::ok) {
     LOG(ERROR) << "http error: " << resp;
-    return make_unexpected(make_error_code(errc::inappropriate_io_control_operation));
+    return make_unexpected(make_error_code(errc::connection_refused));
   }
 
   if (!absl::StartsWith(resp.body(), "<?xml"))
@@ -303,6 +286,8 @@ string S3Bucket::GetHost() const {
     return endpoint_;
 
   // fallback to default aws endpoint.
+  if (region_.empty())
+    return "s3.amazonaws.com";
   return absl::StrCat("s3.", region_, ".amazonaws.com");
 }
 
@@ -318,11 +303,71 @@ error_code S3Bucket::ConnectInternal() {
     port = "80";
   }
 
-  if (IsAwsEndpoint(host))
+  bool is_aws = IsAwsEndpoint(host);
+  if (is_aws)
     host = absl::StrCat(bucket_, ".", host);
 
   VLOG(1) << "Connecting to " << host << ":" << port;
-  return http_client_->Connect(host, port);
+  auto ec = http_client_->Connect(host, port);
+  if (ec)
+    return ec;
+
+  if (region_.empty()) {
+    ec = DeriveRegion();
+  }
+
+  return ec;
+}
+
+error_code S3Bucket::DeriveRegion() {
+  h2::request<h2::empty_body> req(h2::verb::head, "/", 11);
+  req.set(h2::field::host, http_client_->host());
+  bool is_aws = IsAwsEndpoint(http_client_->host());
+
+  h2::response_parser<h2::string_body> parser;
+
+  if (is_aws) {
+    parser.skip(true);  // for HEAD requests we do not get the body.
+  } else {
+    string url = absl::StrCat("/", bucket_, "?location=");
+    req.target(url);
+
+    // TODO: can we keep HEAD for other providers?
+    req.method(h2::verb::get);
+  }
+
+  skey_.Sign(AWS::kEmptySig, &req);
+  error_code ec = http_client_->Send(req);
+  if (ec)
+    return ec;
+
+  ec = http_client_->ReadHeader(&parser);
+  if (ec)
+    return ec;
+
+  h2::header<false, h2::fields>& header = parser.get();
+
+  // I deliberately do not check for http status. AWS can return 400 or 403 and it still reports
+  // the region.
+  VLOG(1) << "LocationResp: " << header;
+  auto src = header["x-amz-bucket-region"];
+  if (src.empty()) {
+    LOG(ERROR) << "x-amz-bucket-region is absent in response: " << header;
+    return make_error_code(errc::bad_message);
+  }
+
+  region_ = std::string(src);
+  skey_ = aws_.GetSignKey(region_);
+  if (header[h2::field::connection] == "close") {
+    ec = http_client_->Reconnect();
+    if (ec)
+      return ec;
+  } else if (!parser.is_done()) {
+    // Drain http response.
+    ec = http_client_->Recv(&parser);
+  }
+
+  return ec;
 }
 
 }  // namespace cloud
