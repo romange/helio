@@ -12,7 +12,7 @@
 
 #include "util/asio_stream_adapter.h"
 #include "util/connection.h"
-#include "util/http/http_common.h"
+#include "util/http/http_server_utils.h"
 #include "util/listener_interface.h"
 
 namespace util {
@@ -42,7 +42,7 @@ class HttpContext {
     h2::write(asa_, sr, ec);
   }
 
-  template<typename Serializer> ::boost::system::error_code Write(const Serializer& ser) {
+  template <typename Serializer>::boost::system::error_code Write(const Serializer& ser) {
     namespace h2 = ::boost::beast::http;
 
     ::boost::system::error_code ec;
@@ -111,7 +111,6 @@ class HttpConnection : public Connection {
   void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
 
  private:
-
   const HttpListenerBase* owner_;
   ::boost::beast::flat_buffer req_buffer_;
 };

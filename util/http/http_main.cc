@@ -1,22 +1,29 @@
-// Copyright 2022, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
-#include <mimalloc-new-delete.h>
 
 #include <absl/flags/usage.h>
 #include <absl/flags/usage_config.h>
 #include <absl/strings/match.h>
 #include <absl/strings/str_join.h>
+#include <mimalloc-new-delete.h>
 
 #include <boost/beast/http/span_body.hpp>
 
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/html/sorted_table.h"
+#include "util/http/http_common.h"
 #include "util/http/http_handler.h"
 #include "util/metrics/metrics.h"
-#include "util/uring/uring_pool.h"
+
 #include "util/varz.h"
+
+#ifdef USE_FB2
+#include "util/fibers/pool.h"
+#else
+#include "util/uring/uring_pool.h"
+#endif
 
 ABSL_FLAG(uint32_t, port, 8080, "Port number.");
 ABSL_FLAG(bool, use_incoming_cpu, false,
@@ -72,7 +79,7 @@ void ServerRun(ProactorPool* pool) {
 
   listener->RegisterCb("/foo", cb);
 
-  static const char kBody[]= R"({"message":"Hello, World!"})";
+  static const char kBody[] = R"({"message":"Hello, World!"})";
   using SB = h2::span_body<const char>;
   static h2::response<SB> sb_resp(h2::status::ok, 11);
   sb_resp.body() = boost::beast::span<const char>(kBody, strlen(kBody));
@@ -139,7 +146,6 @@ bool HelpshortFlags(std::string_view f) {
   return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
 }
 
-
 int main(int argc, char** argv) {
   absl::SetProgramUsageMessage("http example server");
   absl::FlagsUsageConfig config;
@@ -149,14 +155,20 @@ int main(int argc, char** argv) {
 
   MainInitGuard guard(&argc, &argv);
 
-  uring::UringPool pool;
-  pool.Run();
-  http_qps.Init(&pool);
-  ServerRun(&pool);
+  std::unique_ptr<ProactorPool> pool;
+#ifdef USE_FB2
+  pool.reset(fb2::Pool::IOUring(256));
+#else
+  pool = std::make_unique<uring::UringPool>();
+#endif
+
+  pool->Run();
+  http_qps.Init(pool.get());
+  ServerRun(pool.get());
 
   metrics::Iterate(PrintObservation);
   http_qps.Shutdown();
-  pool.Stop();
+  pool->Stop();
 
   LOG(INFO) << "Exiting server...";
   return 0;

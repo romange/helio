@@ -136,9 +136,16 @@ int main(int argc, char* argv[]) {
 
         io::Result<io::WriteFile*> res = bucket.OpenWriteFile(obj_path);
         if (res) {
-          io::WriteFile* file = *res;
+          unique_ptr<io::WriteFile> file{*res};
+          CHECK(file);
           std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
           memset(buf.get(), 'R', 1024);
+          for (size_t i = 0; i < 10240; ++i) {
+            ec = file->Write(io::Bytes(buf.get(), 1024));
+            CHECK(!ec);
+          }
+          ec = file->Close();
+          CHECK(!ec);
         } else {
           LOG(ERROR) << "Error: " << res.error();
         }

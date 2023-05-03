@@ -32,11 +32,6 @@ class AwsSignKey {
         connection_data_(std::move(connection_data)) {
   }
 
-  // TODO: we should remove domain argument in favor to subdomain (bucket).
-  // and build the whole domain it from service and region
-  // for example, "<bucket>.s3.eu-west-1.amazonaws.com"
-  // See: https://docs.aws.amazon.com/general/latest/gr/s3.html
-  //
   void Sign(std::string_view payload_sig, HttpHeader* header) const;
 
   const AwsConnectionData& connection_data() const {

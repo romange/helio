@@ -11,6 +11,7 @@
 
 #include "base/proc_util.h"
 #include "base/varz_node.h"
+#include "util/http/http_server_utils.h"
 
 namespace util {
 namespace http {

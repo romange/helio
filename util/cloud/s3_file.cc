@@ -11,7 +11,7 @@
 #include <boost/beast/http/dynamic_body.hpp>
 
 #include "base/logging.h"
-#include "util/http/encoding.h"
+#include "util/http/http_common.h"
 
 using namespace std;
 
@@ -21,6 +21,9 @@ namespace util {
 namespace cloud {
 
 namespace {
+
+// AWS requires at least 5MB part size. We use 8MB.
+constexpr size_t kMaxPartSize = 1ULL << 23;
 
 inline void SetRange(size_t from, size_t to, h2::fields* flds) {
   string tmp = absl::StrCat("bytes=", from, "-");
@@ -147,18 +150,25 @@ class S3WriteFile : public io::WriteFile {
    * @param aws - initialized AWS object.
    * @param pool - https connection pool connected to google api server.
    */
-  S3WriteFile(std::string_view name, AWS* aws, string upload_id, http::Client* client);
+  S3WriteFile(std::string_view name, string upload_id, AwsSignKey skey, AWS* aws,
+              http::Client* client);
 
   error_code Close() final;
 
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
 
  private:
+  size_t FillBody(const uint8* buffer, size_t length);
+  error_code Upload();
+
+  AwsSignKey skey_;
   AWS* aws_;
 
   string upload_id_;
   size_t uploaded_ = 0;
   http::Client* client_;
+  boost::beast::multi_buffer body_mb_;
+  std::vector<string> parts_;
 };
 
 S3ReadFile::~S3ReadFile() {
@@ -270,16 +280,142 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
   return read_sofar;
 }
 
-S3WriteFile::S3WriteFile(string_view name, AWS* aws, string upload_id, http::Client* client)
-    : WriteFile(name), aws_(aws), upload_id_(move(upload_id_)), client_(client) {
+S3WriteFile::S3WriteFile(string_view name, string upload_id, AwsSignKey skey, AWS* aws,
+                         http::Client* client)
+    : WriteFile(name), skey_(std::move(skey)), aws_(aws), upload_id_(move(upload_id)),
+      client_(client), body_mb_(kMaxPartSize) {
 }
 
 error_code S3WriteFile::Close() {
-  return error_code{};
+  error_code ec = Upload();
+  if (ec) {
+    return ec;
+  }
+
+  if (parts_.empty())
+    return ec;
+
+  string url("/");
+  url.append(create_file_name_);
+
+  // Signed params must look like key/value pairs. Instead of handling key-only params
+  // in the signing code we just pass empty value here.
+  absl::StrAppend(&url, "?uploadId=", upload_id_);
+
+  h2::request<h2::string_body> req{h2::verb::post, url, 11};
+  h2::response<h2::string_body> resp;
+
+  req.set(h2::field::content_type, http::kXmlMime);
+  req.set(h2::field::host, client_->host());
+
+  auto& body = req.body();
+  body = R"(<?xml version="1.0" encoding="UTF-8"?>
+<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">)";
+  body.append("\n");
+
+  for (size_t i = 0; i < parts_.size(); ++i) {
+    absl::StrAppend(&body, "<Part><ETag>\"", parts_[i], "\"</ETag><PartNumber>", i + 1);
+    absl::StrAppend(&body, "</PartNumber></Part>\n");
+  }
+  body.append("</CompleteMultipartUpload>");
+
+  req.prepare_payload();
+
+  skey_.Sign(string_view{AWS::kUnsignedPayloadSig}, &req);
+
+  ec = client_->Send(req, &resp);
+
+  if (ec) {
+    return ec;
+  }
+
+  if (resp.result() != h2::status::ok) {
+    LOG(ERROR) << "S3WriteFile::Close: " << req << "/ " << resp;
+
+    return make_error_code(errc::io_error);
+  }
+  parts_.clear();
+
+  return ec;
 }
 
 io::Result<size_t> S3WriteFile::WriteSome(const iovec* v, uint32_t len) {
-  return 0;
+  size_t total = 0;
+  for (size_t i = 0; i < len; ++i) {
+    size_t len = v[i].iov_len;
+    const uint8_t* buffer = reinterpret_cast<const uint8_t*>(v[i].iov_base);
+
+    while (len) {
+      size_t written = FillBody(buffer, len);
+      total += written;
+      len -= written;
+      buffer += written;
+      if (body_mb_.size() == body_mb_.max_size()) {
+        error_code ec = Upload();
+        if (ec)
+          return nonstd::make_unexpected(ec);
+      }
+    }
+  }
+
+  return total;
+}
+
+size_t S3WriteFile::FillBody(const uint8* buffer, size_t length) {
+  size_t prepare_size = std::min(length, body_mb_.max_size() - body_mb_.size());
+  auto mbs = body_mb_.prepare(prepare_size);
+  size_t offs = 0;
+  for (auto mb : mbs) {
+    memcpy(mb.data(), buffer + offs, mb.size());
+    offs += mb.size();
+  }
+  CHECK_EQ(offs, prepare_size);
+  body_mb_.commit(prepare_size);
+
+  return offs;
+}
+
+error_code S3WriteFile::Upload() {
+  size_t body_size = body_mb_.size();
+  if (body_size == 0)
+    return error_code{};
+
+  string url("/");
+
+  // TODO: To figure out why SHA256 is so slow.
+  // detail::Sha256String(body_mb_, sha256);
+  absl::StrAppend(&url, create_file_name_);
+
+  absl::StrAppend(&url, "?uploadId=", upload_id_);
+  absl::StrAppend(&url, "&partNumber=", parts_.size() + 1);
+
+  h2::request<h2::dynamic_body> req{h2::verb::put, url, 11};
+  h2::response<h2::string_body> resp;
+
+  req.set(h2::field::content_type, http::kBinMime);
+  req.set(h2::field::host, client_->host());
+  req.body() = std::move(body_mb_);
+  req.prepare_payload();
+
+  skey_.Sign(string_view{AWS::kUnsignedPayloadSig}, &req);
+  VLOG(1) << "UploadReq: " << req.base();
+  error_code ec = client_->Send(req, &resp);
+  if (ec)
+    return ec;
+
+  VLOG(1) << "UploadResp: " << resp;
+  auto it = resp.find(h2::field::etag);
+  CHECK(it != resp.end());
+  VLOG(1) << "Etag: " << it->value();
+  auto sv = it->value();
+  if (sv.size() <= 2) {
+    return make_error_code(errc::io_error);
+  }
+  sv.remove_prefix(1);
+  sv.remove_suffix(1);
+  parts_.emplace_back(sv.to_string());
+
+  return ec;
 }
 
 }  // namespace
@@ -330,9 +466,9 @@ io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_p
   if (ec)
     return nonstd::make_unexpected(ec);
 
-  VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "UploadId: " << upload_id;
+  VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "\nUploadId: " << upload_id;
 
-  return new S3WriteFile{key_path, aws, move(upload_id), client};
+  return new S3WriteFile{key_path, move(upload_id), move(sign_key), aws, client};
 }
 
 }  // namespace cloud

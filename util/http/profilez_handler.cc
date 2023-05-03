@@ -6,6 +6,8 @@
 #include <absl/time/time.h>
 #include <gperftools/profiler.h>
 
+#include <boost/beast/http/message.hpp>
+
 #include <filesystem>
 #include <thread>
 #include <unordered_map>
@@ -13,6 +15,7 @@
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/http/http_common.h"
+#include "util/http/http_server_utils.h"
 
 #ifdef USE_FB2
 #include "util/fibers/synchronization.h"
@@ -33,6 +36,8 @@ using namespace boost;
 using beast::http::field;
 namespace h2 = beast::http;
 typedef h2::response<h2::string_body> StringResponse;
+
+const char kProfilesFolder[] = "/tmp/profile/";
 
 static void HandleCpuProfile(bool enable, StringResponse* response) {
   std::filesystem::create_directory(kProfilesFolder);
