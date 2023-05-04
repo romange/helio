@@ -541,7 +541,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    while (scheduler->HasReady()) {
+    // must be if and not while (or at most k iterations for while) because
+    // otherwise fibers that yield won't allow dispatcher to grab i/o events since it will be
+    // stuck here.
+    if (scheduler->HasReady()) {
       cqe_count = 1;
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());

@@ -212,7 +212,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    while (scheduler->HasReady()) {
+    // must be if and not while - see uring_proactor.cc for more details.
+    if (scheduler->HasReady()) {
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());

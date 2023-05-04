@@ -490,6 +490,7 @@ Scheduler::~Scheduler() {
 
 ctx::fiber_context Scheduler::Preempt() {
   if (ready_queue_.empty()) {
+    // All user fibers are inactive, we should switch back to the dispatcher.
     return dispatch_cntx_->SwitchTo();
   }
 
