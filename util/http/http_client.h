@@ -38,10 +38,10 @@ class Client {
   std::error_code Connect(std::string_view host, std::string_view service);
   std::error_code Reconnect();
 
-  BoostError Send(Verb verb, std::string_view url, std::string_view body, Response* response);
+  /*BoostError Send(Verb verb, std::string_view url, std::string_view body, Response* response);
   BoostError Send(Verb verb, std::string_view url, Response* response) {
     return Send(verb, url, std::string_view{}, response);
-  }
+  }*/
 
   /*! @brief Sends http request but does not read response back.
    *
@@ -67,13 +67,12 @@ class Client {
     connect_timeout_ms_ = ms;
   }
 
-  // Adds header to all future requests.
-  void AddHeader(std::string name, std::string value) {
-    headers_.emplace_back(std::move(name), std::move(value));
-  }
-
   const std::string& host() const {
     return host_;
+  }
+
+  void AssignOnConnect(std::function<void(int)> cb) {
+    on_connect_cb_ = std::move(cb);
   }
 
  protected:
@@ -93,11 +92,9 @@ class Client {
   uint32_t retry_cnt_ = 1;
   ::boost::beast::flat_buffer tmp_buffer_;
 
-  using HeaderPair = std::pair<std::string, std::string>;
-
-  std::vector<HeaderPair> headers_;
   std::string host_;
   uint16_t port_ = 0;
+  std::function<void(int)> on_connect_cb_;
 };
 
 template <typename Req, typename Resp> auto Client::Send(const Req& req, Resp* resp) -> BoostError {

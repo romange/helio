@@ -242,10 +242,17 @@ std::optional<std::string> MakeGetRequest(boost::string_view path, http::Client*
   h2::response<h2::string_body> resp;
   req.set(h2::field::host, http_client->host());
 
+
   std::error_code ec = http_client->Send(req, &resp);
   if (ec || resp.result() != h2::status::ok)
     return std::nullopt;
 
+  VLOG(1) << "Received response: " << resp;
+  if (resp[h2::field::connection] == "close") {
+    ec = http_client->Reconnect();
+    if (ec)
+      return std::nullopt;
+  }
   return resp.body();
 }
 
@@ -292,6 +299,7 @@ std::optional<AwsConnectionData> GetConnectionDataFromMetadata(
   auto resp = MakeGetRequest(path, &http_client);
   if (!resp)
     return std::nullopt;
+  VLOG(1) << "Received response: " << *resp;
 
   rapidjson::Document doc;
   doc.Parse(resp->c_str());
@@ -426,7 +434,7 @@ string AwsSignKey::AuthHeader(const SignHeaders& headers) const {
 
   absl::StrAppend(&canonical_request, headers.headers, "\n", signed_headers, "\n",
                   headers.content_sha256);
-  VLOG(1) << "CanonicalRequest:\n" << canonical_request << "\n-------------------\n";
+  VLOG(2) << "CanonicalRequest:\n" << canonical_request << "\n-------------------\n";
 
   char hexdigest[65];
   Sha256String(canonical_request, hexdigest);
@@ -500,36 +508,33 @@ error_code AWS::RetryExpired(http::Client* client, AwsSignKey* cached_key, Empty
     return make_error_code(errc::io_error);
   }
 
-  error_code ec;
-
-  // Re-connect client if needed.
-  if ((*header)[h2::field::connection] == "close") {
-    ec = client->Reconnect();
-    if (ec)
-      return ec;
-  }
-
   string region = cached_key->connection_data().region;
   *cached_key = GetSignKey(region);
   cached_key->Sign(AWS::kEmptySig, req);
-  ec = client->Send(*req);
-  return ec;
+  return client->Send(*req);
 }
 
 error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
                             h2::request<h2::empty_body>* req, h2::response<h2::string_body>* resp) {
   cached_key->Sign(AWS::kEmptySig, req);
-  DVLOG(1) << "Signed request: " << *req;
+  DVLOG(2) << "Signed request: " << *req;
 
   error_code ec = client->Send(*req);
   if (ec)
     return ec;
 
   ec = client->Recv(resp);
-  DVLOG(1) << "Received response: " << *resp;
+  DVLOG(2) << "Received response: " << *resp;
 
   if (ec)
     return ec;
+
+  auto& headers = resp->base();
+  if (headers[h2::field::connection] == "close") {
+    ec = client->Reconnect();
+    if (ec)
+      return ec;
+  }
 
   if (resp->result() == h2::status::bad_request && IsExpiredBody(resp->body())) {
     ec = RetryExpired(client, cached_key, req, &resp->base());

@@ -21,6 +21,8 @@ ABSL_FLAG(string, cmd, "ls", "");
 ABSL_FLAG(string, region, "us-east-1", "");
 ABSL_FLAG(string, path, "", "s3://bucket/path");
 ABSL_FLAG(string, endpoint, "", "s3 endpoint");
+ABSL_FLAG(uint32_t, num_iters, 1, "Number of iterations");
+ABSL_FLAG(uint32_t, delay, 5, "Delay in seconds between each iteration");
 
 namespace h2 = boost::beast::http;
 
@@ -104,8 +106,18 @@ int main(int argc, char* argv[]) {
 
       error_code ec = pp->GetNextProactor()->Await([&] {
         auto ec = bucket.Connect(300);
-        CHECK(!ec);
-        return bucket.ListAllObjects(obj_path, cb);
+        if (ec)
+          return ec;
+        unsigned num_iters = absl::GetFlag(FLAGS_num_iters);
+        for (unsigned i = 0; i < num_iters; ++i) {
+          ec = bucket.ListAllObjects(obj_path, cb);
+          if (ec)
+            return ec;
+
+          if (i + 1 < num_iters)
+            ThisFiber::SleepFor(chrono::seconds(absl::GetFlag(FLAGS_delay)));
+        }
+        return ec;
       });
 
       CHECK(!ec) << ec;

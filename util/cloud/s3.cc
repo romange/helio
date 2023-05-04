@@ -184,6 +184,23 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
   CHECK(pb);
 
   http_client_.reset(new http::Client{pb});
+  http_client_->AssignOnConnect([](int fd) {
+    int val = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) < 0)
+      return;
+
+    val = 20;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0)
+      return;
+    val = 60;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0)
+      return;
+
+    val = 3;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0)
+      return;
+  });
+
   http_client_->set_connect_timeout_ms(ms);
 
   return ConnectInternal();

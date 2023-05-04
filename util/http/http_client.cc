@@ -77,20 +77,20 @@ std::error_code Client::Reconnect() {
   if (berr)
     return berr;
 
-  socket_.reset(proactor_->CreateSocket());
+  LinuxSocketBase* lsb = proactor_->CreateSocket();
+  if (on_connect_cb_) {
+    on_connect_cb_(lsb->native_handle());
+  }
+  socket_.reset(lsb);
   FiberSocketBase::endpoint_type ep{address, port_};
-
   return socket_->Connect(ep);
 }
 
+#if 0
 auto Client::Send(Verb verb, string_view url, string_view body, Response* response) -> BoostError {
   // Set the URL
   h2::request<h2::string_body> req{verb, boost::string_view(url.data(), url.size()), 11};
 
-  // Optional headers
-  for (const auto& k_v : headers_) {
-    req.set(k_v.first, k_v.second);
-  }
   req.body().assign(body.begin(), body.end());
   req.prepare_payload();
 
@@ -113,6 +113,7 @@ auto Client::Send(Verb verb, string_view url, string_view body, Response* respon
 
   return ec;
 }
+#endif
 
 void Client::Shutdown() {
   if (socket_) {
