@@ -55,7 +55,6 @@ void Mutex::unlock() {
 
   detail::FiberInterface* fi = &wait_queue_.front();
   wait_queue_.pop_front();
-  lk.unlock();
   active->ActivateOther(fi);
 }
 
@@ -65,20 +64,19 @@ void CondVarAny::notify_one() noexcept {
     return;
   }
 
+  detail::FiberInterface* active = detail::FiberActive();
   detail::FiberInterface* fi = &wait_queue_.front();
   wait_queue_.pop_front();
-  lk.unlock();
-  detail::FiberInterface* active = detail::FiberActive();
   active->ActivateOther(fi);
 }
 
 void CondVarAny::notify_all() noexcept {
   decltype(wait_queue_) tmp_queue;
-  wait_queue_splk_.lock();
-  tmp_queue.swap(wait_queue_);
-  wait_queue_splk_.unlock();
-
   detail::FiberInterface* active = detail::FiberActive();
+
+  unique_lock lk(wait_queue_splk_);
+  tmp_queue.swap(wait_queue_);
+
   while (!tmp_queue.empty()) {
     detail::FiberInterface* fi = &tmp_queue.front();
     tmp_queue.pop_front();

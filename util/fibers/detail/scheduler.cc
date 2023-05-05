@@ -514,6 +514,8 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   DVLOG(1) << "ScheduleFromRemote " << cntx->name();
 
+  // to make sure that the fiber is not destroyed before it's been pulled from the queue.
+  intrusive_ptr_add_ref(cntx);
   remote_ready_queue_.Push(cntx);
 
   if (custom_policy_) {
@@ -569,11 +571,13 @@ void Scheduler::ProcessRemoteReady() {
     // but meanwhile a remote thread adds the same fiber again to the remote_ready_queue_,
     // even before ready_queue_ has even been processed. We should not push the already added fiber
     // to ready_queue.
-    if (fi->list_hook.is_linked())
-      continue;
+    if (!fi->list_hook.is_linked()) {
+      DVLOG(2) << "set ready " << fi->name();
+      AddReady(fi);
+    }
 
-    DVLOG(2) << "set ready " << fi->name();
-    AddReady(fi);
+    // Each time we push fi to remote_ready_queue_ we increase the reference count.
+    intrusive_ptr_release(fi);
   }
 }
 

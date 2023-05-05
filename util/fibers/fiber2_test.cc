@@ -288,6 +288,28 @@ TEST_F(FiberTest, AsyncEvent) {
   done.Wait();
 }
 
+TEST_F(FiberTest, Notify) {
+  EventCount ec;
+  Fiber fb1([&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      ec.await_until([] { return false;}, chrono::steady_clock::now() + 10us);
+    }
+  });
+
+  bool done{false};
+  Fiber fb2([&] {
+    while (!done) {
+      ec.notify();
+      ThisFiber::SleepFor(10us);
+    }
+  });
+
+  fb1.Join();
+  LOG(INFO) << "fb1 joined";
+  done = true;
+  fb2.Join();
+}
+
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(UringProactor::IsProactorThread());
   ASSERT_EQ(-1, UringProactor::GetIndex());
@@ -414,6 +436,29 @@ TEST_P(ProactorTest, Migrate) {
     ASSERT_EQ(dest_tid, gettid());
   });
   fb.Join();
+}
+
+TEST_P(ProactorTest, NotifyRemote) {
+  EventCount ec;
+  Done done;
+  proactor_th_->get()->Await([&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      ec.await_until([] { return false;}, chrono::steady_clock::now() + 10us);
+    }
+    done.Notify();
+  });
+
+  bool keep_run{true};
+  Fiber fb2([&] {
+    while (keep_run) {
+      ec.notify();
+      ThisFiber::SleepFor(1us);
+    }
+  });
+
+  done.Wait();
+  keep_run = false;
+  fb2.Join();
 }
 
 }  // namespace fb2
