@@ -4,10 +4,9 @@
 
 #pragma once
 
-#include "base/spinlock.h"
-
 #include <condition_variable>  // for cv_status
 
+#include "base/spinlock.h"
 #include "util/fibers/detail/scheduler.h"
 
 namespace util {
@@ -494,9 +493,12 @@ inline bool EventCount::notify() noexcept {
     if (!wait_queue_.empty()) {
       detail::FiberInterface* fi = &wait_queue_.front();
       wait_queue_.pop_front();
+      // At this point we know that fi exists still exists.
+      // but if fi is remote and we cross unlock, it can timeout and destroy itself.
+      // Therefore, we call ActivateOther under lock.
+      active->ActivateOther(fi);
       lk.unlock();
 
-      active->ActivateOther(fi);
       return true;
     }
 
@@ -515,21 +517,23 @@ inline bool EventCount::notifyAll() noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
 
   if (prev & kWaiterMask) {
+    detail::FiberInterface* active = detail::FiberActive();
 #if 1
     decltype(wait_queue_) tmp_queue;
     {
       std::unique_lock holder(lock_);
       tmp_queue.swap(wait_queue_);
-    }
-    detail::FiberInterface* active = detail::FiberActive();
 
-    while (!tmp_queue.empty()) {
-      detail::FiberInterface* fi = &tmp_queue.front();
-      tmp_queue.pop_front();
-      active->ActivateOther(fi);
+      // fi may be remote and when we cross unlock, it can timeout and destroy itself.
+      // therefore we call ActivateOther under lock.
+      while (!tmp_queue.empty()) {
+        detail::FiberInterface* fi = &tmp_queue.front();
+        tmp_queue.pop_front();
+        active->ActivateOther(fi);
+      }
     }
+
 #else
-    detail::FiberInterface* active = detail::FiberActive();
     active->NotifyAllParked(uintptr_t(this));
     return true;
 #endif
@@ -562,6 +566,7 @@ inline std::cv_status EventCount::wait_until(
     uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
   cv_status status = cv_status::no_timeout;
+
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     wait_queue_.push_back(*active);
@@ -571,6 +576,7 @@ inline std::cv_status EventCount::wait_until(
 
     lk.lock();
     if (active->wait_hook.is_linked()) {
+      // We were woken up by timeout, lets remove ourselves from the queue.
       auto it = detail::WaitQueue::s_iterator_to(*active);
       wait_queue_.erase(it);
       status = cv_status::timeout;

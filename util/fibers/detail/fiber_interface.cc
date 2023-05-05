@@ -224,8 +224,10 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
-    DCHECK(!other->list_hook.is_linked());
-    scheduler_->AddReady(other);
+    // In case `other` timed out on wait, it could be added to the ready queue already by
+    // ProcessSleep.
+    if (!other->list_hook.is_linked())
+      scheduler_->AddReady(other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
   }
