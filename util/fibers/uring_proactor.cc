@@ -171,6 +171,11 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
 void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe) {
   if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
     size_t index = cqe.user_data - kUserDataCbIndex;
+    if (index >= centries_.size()) {
+      LOG(FATAL) << "Invalid CQE: " << " user_data="
+                 << cqe.user_data << " cqe.res=" << cqe.res << " cqe.flags=" << cqe.flags
+                 << " centries_.size()=" << centries_.size();
+    }
     DCHECK_LT(index, centries_.size());
     auto& e = centries_[index];
     DCHECK(e.cb) << index;

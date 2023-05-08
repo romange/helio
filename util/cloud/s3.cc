@@ -284,7 +284,7 @@ io::Result<io::ReadonlyFile*> S3Bucket::OpenReadFile(string_view path,
   } else {
     full_path = absl::StrCat(bucket_, "/", path);
   }
-  return OpenS3ReadFile(region_, full_path, &aws_, http_client_.get(), opts);
+  return OpenS3ReadFile(region_, full_path, aws_, http_client_.get(), opts);
 }
 
 io::Result<io::WriteFile*> S3Bucket::OpenWriteFile(std::string_view path) {
@@ -294,8 +294,11 @@ io::Result<io::WriteFile*> S3Bucket::OpenWriteFile(std::string_view path) {
   } else {
     full_path = absl::StrCat(bucket_, "/", path);
   }
-
-  return OpenS3WriteFile(region_, full_path, &aws_, http_client_.get());
+  unique_ptr http_client = move(http_client_);
+  error_code ec = Connect(http_client->connect_timeout_ms());
+  if (ec)
+    return make_unexpected(ec);
+  return OpenS3WriteFile(region_, full_path, aws_, http_client.release());
 }
 
 string S3Bucket::GetHost() const {

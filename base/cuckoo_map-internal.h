@@ -23,7 +23,7 @@ class CuckooMapTable {
   friend class CuckooMapTableWrapperBase;
  public:
   typedef size_t dense_id;
-  typedef size_t key_type;
+  typedef uint64_t key_type;
 
   static constexpr dense_id npos = dense_id(-1);
 
@@ -117,8 +117,8 @@ class CuckooMapTable {
 
  private:
   struct Bucket {
-    uint64 key[kBucketLength];
-    uint8 data[];
+    uint64_t key[kBucketLength];
+    uint8_t data[];
   } __attribute__((aligned(4)));
 
   struct BucketIdPair {

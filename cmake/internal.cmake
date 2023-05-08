@@ -11,8 +11,8 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Async requires a 64bit target architecture.")
 endif()
 
-if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
-  message(FATAL_ERROR "Requires running on linux, found ${CMAKE_SYSTEM_NAME} instead")
+if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Linux" AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+  message(FATAL_ERROR "Unsupported ${CMAKE_SYSTEM_NAME}")
 endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -101,6 +101,8 @@ if (NOT MARCH_OPT)
     # We will make it friendly towards older architectures so that will run on developers laptops.
     # However, we will tune it towards intel skylakes that are common in public clouds.
     set(MARCH_OPT "-march=sandybridge -mtune=skylake")
+  elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
+    # MacOS on arm64 - TBD.
   else()
     MESSAGE(FATAL_ERROR "Unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
   endif()

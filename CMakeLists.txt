@@ -6,10 +6,6 @@ set(PROJECT_CONTACT romange@gmail.com)
 project(${PACKAGE_NAME} C CXX)
 enable_testing()
 
-if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
-  message(FATAL_ERROR "Requires running on linux, found ${CMAKE_SYSTEM_NAME} instead")
-endif()
-
 get_directory_property(PARENT_PROJ_NAME PARENT_DIRECTORY)
 
 Message(STATUS "PROJECT_BINARY_DIR ${PROJECT_BINARY_DIR} GENERATOR ${CMAKE_GENERATOR}")

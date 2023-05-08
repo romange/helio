@@ -18,6 +18,9 @@
 #include "base/integral_types.h"
 #include "base/logging.h"
 
+// for MacOS we declare explicitly.
+extern "C" char **environ;
+
 namespace base {
 
 static size_t find_nth(std::string_view str, char c, uint32_t index) {

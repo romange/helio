@@ -102,8 +102,8 @@ error_code ParseXmlStartUpload(std::string_view xml_resp, string* upload_id) {
 class S3ReadFile : public io::ReadonlyFile {
  public:
   // does not own pool object, only wraps it with ReadonlyFile interface.
-  S3ReadFile(AWS* aws, http::Client* client, string read_obj_url)
-      : aws_(*aws), client_(client), read_obj_url_(std::move(read_obj_url)) {
+  S3ReadFile(const AWS& aws, string read_obj_url, http::Client* client)
+      : aws_(aws), client_(client), read_obj_url_(std::move(read_obj_url)) {
   }
 
   virtual ~S3ReadFile() final;
@@ -131,7 +131,7 @@ class S3ReadFile : public io::ReadonlyFile {
     return &parser_;
   }
 
-  AWS& aws_;
+  const AWS& aws_;
   http::Client* client_;
 
   const string read_obj_url_;
@@ -150,7 +150,7 @@ class S3WriteFile : public io::WriteFile {
    * @param aws - initialized AWS object.
    * @param pool - https connection pool connected to google api server.
    */
-  S3WriteFile(std::string_view name, string upload_id, AwsSignKey skey, AWS* aws,
+  S3WriteFile(std::string_view name, string upload_id, AwsSignKey skey, const AWS& aws,
               http::Client* client);
 
   error_code Close() final;
@@ -162,11 +162,11 @@ class S3WriteFile : public io::WriteFile {
   error_code Upload();
 
   AwsSignKey skey_;
-  AWS* aws_;
+  const AWS& aws_;
 
   string upload_id_;
   size_t uploaded_ = 0;
-  http::Client* client_;
+  unique_ptr<http::Client> client_;
   boost::beast::multi_buffer body_mb_;
   std::vector<string> parts_;
 };
@@ -280,7 +280,7 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
   return read_sofar;
 }
 
-S3WriteFile::S3WriteFile(string_view name, string upload_id, AwsSignKey skey, AWS* aws,
+S3WriteFile::S3WriteFile(string_view name, string upload_id, AwsSignKey skey, const AWS& aws,
                          http::Client* client)
     : WriteFile(name), skey_(std::move(skey)), aws_(aws), upload_id_(move(upload_id)),
       client_(client), body_mb_(kMaxPartSize) {
@@ -420,8 +420,8 @@ error_code S3WriteFile::Upload() {
 
 }  // namespace
 
-io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_view path, AWS* aws,
-                                             http::Client* client,
+io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_view path,
+                                             const AWS& aws, http::Client* client,
                                              const io::ReadonlyFile::Options& opts) {
   CHECK(opts.sequential && client);
   VLOG(1) << "OpenS3ReadFile: " << path;
@@ -429,7 +429,7 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
   string_view bucket, obj_path;
 
   string read_obj_url{path};
-  unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, client, std::move(read_obj_url)));
+  unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, std::move(read_obj_url), client));
 
   auto ec = fl->Open(region);
   if (ec)
@@ -438,7 +438,7 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
   return fl.release();
 }
 
-io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, AWS* aws,
+io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, const AWS& aws,
                                            http::Client* client) {
   string url("/");
   url.append(key_path).append("?uploads=");
@@ -450,8 +450,10 @@ io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_p
   h2::response<h2::string_body> resp;
 
   req.set(h2::field::host, client->host());
-  auto sign_key = aws->GetSignKey(region);
-  auto ec = aws->SendRequest(client, &sign_key, &req, &resp);
+  auto sign_key = aws.GetSignKey(region);
+  unique_ptr<http::Client> bucket_client{client};
+
+  auto ec = aws.SendRequest(client, &sign_key, &req, &resp);
   if (ec)
     return nonstd::make_unexpected(ec);
 
@@ -468,7 +470,7 @@ io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_p
 
   VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "\nUploadId: " << upload_id;
 
-  return new S3WriteFile{key_path, move(upload_id), move(sign_key), aws, client};
+  return new S3WriteFile{key_path, move(upload_id), move(sign_key), aws, bucket_client.release()};
 }
 
 }  // namespace cloud

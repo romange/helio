@@ -10,7 +10,13 @@
 #include "util/cloud/aws.h"
 #include "util/cloud/s3.h"
 #include "util/cloud/s3_file.h"
+
+#ifdef USE_FB2
 #include "util/fibers/pool.h"
+#else
+#include "util/uring/uring_pool.h"
+#endif
+
 #include "util/http/http_client.h"
 
 using namespace std;

@@ -19,7 +19,7 @@ add_executable(s3_demo s3_demo.cc)
 if (USE_FB2)
 cxx_link(s3_demo aws_lib)
 else()
-cxx_link(s3_demo aws_lib)
+cxx_link(s3_demo uring_fiber_lib aws_lib)
 endif()
 
 add_executable(https_client_cli https_client_cli.cc)

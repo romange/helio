@@ -58,7 +58,7 @@ class S3Bucket {
   std::error_code ConnectInternal();
   std::error_code DeriveRegion();
 
-  AWS aws_;
+  const AWS& aws_;
 
   std::string endpoint_;
   std::string bucket_;

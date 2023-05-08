@@ -67,6 +67,10 @@ class Client {
     connect_timeout_ms_ = ms;
   }
 
+  uint32_t connect_timeout_ms() const {
+    return connect_timeout_ms_;
+  }
+
   const std::string& host() const {
     return host_;
   }

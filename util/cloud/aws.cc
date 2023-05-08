@@ -27,6 +27,15 @@
 #include "util/proactor_base.h"
 #endif
 
+#define RETURN_ON_ERR(x)                                       \
+  do {                                                         \
+    auto __ec = (x);                                           \
+    if (__ec) {                                                \
+      DLOG(ERROR) << "Error " << __ec << " while calling " #x; \
+      return __ec;                                             \
+    }                                                          \
+  } while (0)
+
 namespace util {
 namespace cloud {
 
@@ -242,7 +251,6 @@ std::optional<std::string> MakeGetRequest(boost::string_view path, http::Client*
   h2::response<h2::string_body> resp;
   req.set(h2::field::host, http_client->host());
 
-
   std::error_code ec = http_client->Send(req, &resp);
   if (ec || resp.result() != h2::status::ok)
     return std::nullopt;
@@ -359,8 +367,15 @@ bool IsExpiredBody(string_view body) {
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const char AWS::kUnsignedPayloadSig[] = "UNSIGNED-PAYLOAD";
 
+AwsSignKey::AwsSignKey(std::string_view service, AwsConnectionData connection_data)
+    : service_(service), now_(0), connection_data_(std::move(connection_data)) {
+  RefreshIfNeeded();
+}
+
 void AwsSignKey::Sign(string_view payload_sig, HttpHeader* header) const {
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
+
+  RefreshIfNeeded();
 
   // We show consider to pass it via argument to make the function test-friendly.
   // Must be recent (upto 900sec skew is allowed vs amazon servers).
@@ -408,6 +423,30 @@ void AwsSignKey::Sign(string_view payload_sig, HttpHeader* header) const {
   header->set(h2::field::authorization, auth_header);
 }
 
+void AwsSignKey::RefreshIfNeeded() const {
+  const absl::TimeZone utc_tz = absl::UTCTimeZone();
+
+  absl::CivilDay date_before(utc_tz.At(absl::FromTimeT(now_)).cs);
+
+  // Must be recent (upto 900sec skew is allowed vs amazon servers).
+  time_t now = time(NULL);
+  absl::Time tn = absl::FromTimeT(now);
+  absl::CivilDay date_now(utc_tz.At(tn).cs);
+
+  if (date_now == date_before)
+    return;
+
+  now_ = now;
+  string amz_date = absl::FormatTime("%Y%m%d", tn, utc_tz);
+  DVLOG(1) << "Refreshing sign key to date " << amz_date;
+
+  sign_key_ =
+      DeriveSigKey(connection_data_.secret_key, amz_date, connection_data_.region, service_);
+
+  credential_scope_ =
+      absl::StrCat(amz_date, "/", connection_data_.region, "/", service_, "/", "aws4_request");
+}
+
 string AwsSignKey::AuthHeader(const SignHeaders& headers) const {
   CHECK(!connection_data_.access_key.empty());
 
@@ -453,7 +492,9 @@ string AwsSignKey::AuthHeader(const SignHeaders& headers) const {
   return authorization_header;
 }
 
-bool AWS::RefreshToken() {
+bool AWS::RefreshToken() const {
+  unique_lock lk(mu_);
+
   if (!connection_data_.role_name.empty()) {
     VLOG(1) << "Trying to update expired session token";
 
@@ -481,28 +522,22 @@ error_code AWS::Init() {
     return make_error_code(errc::operation_not_permitted);
   }
 
-  const absl::TimeZone utc_tz = absl::UTCTimeZone();
-
-  // Must be recent (upto 900sec skew is allowed vs amazon servers).
-  absl::Time tn = absl::Now();
-  string amz_date = absl::FormatTime("%Y%m%d", tn, utc_tz);
-  strcpy(date_str_, amz_date.c_str());
-
   return error_code{};
 }
 
 AwsSignKey AWS::GetSignKey(string_view region) const {
+  unique_lock lk(mu_);
+
+  DCHECK(!connection_data_.access_key.empty()) << "Init() was not called";
+
   auto cd = connection_data_;
   cd.region = region;
 
-  AwsSignKey res(DeriveSigKey(connection_data_.secret_key, date_str_, region, service_),
-                 absl::StrCat(date_str_, "/", region, "/", service_, "/", "aws4_request"),
-                 move(cd));
-  return res;
+  return AwsSignKey(service_, std::move(cd));
 }
 
 error_code AWS::RetryExpired(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
-                             h2::response_header<>* header) {
+                             h2::response_header<>* header) const {
   if (!RefreshToken()) {
     LOG(ERROR) << "Could not refresh token";
     return make_error_code(errc::io_error);
@@ -515,54 +550,50 @@ error_code AWS::RetryExpired(http::Client* client, AwsSignKey* cached_key, Empty
 }
 
 error_code AWS::SendRequest(http::Client* client, AwsSignKey* cached_key,
-                            h2::request<h2::empty_body>* req, h2::response<h2::string_body>* resp) {
+                            h2::request<h2::empty_body>* req,
+                            h2::response<h2::string_body>* resp) const {
   cached_key->Sign(AWS::kEmptySig, req);
   DVLOG(2) << "Signed request: " << *req;
 
-  error_code ec = client->Send(*req);
-  if (ec)
-    return ec;
+  // We may experience connection disconnects. We catch the ECONNABORTED error during Recv step.
+  // TCP_KEEPALIVE settings do not seem to help.
+  for (unsigned i = 0; i < 2; ++i) {
+    RETURN_ON_ERR(client->Send(*req));
 
-  ec = client->Recv(resp);
+    auto bec = client->Recv(resp);
+    if (!bec)  // success
+      break;
+    if (bec.value() != boost::system::errc::connection_aborted)
+      return bec;
+
+    RETURN_ON_ERR(client->Reconnect());
+  }
+
   DVLOG(2) << "Received response: " << *resp;
-
-  if (ec)
-    return ec;
-
   auto& headers = resp->base();
   if (headers[h2::field::connection] == "close") {
-    ec = client->Reconnect();
-    if (ec)
-      return ec;
+    RETURN_ON_ERR(client->Reconnect());
   }
 
   if (resp->result() == h2::status::bad_request && IsExpiredBody(resp->body())) {
-    ec = RetryExpired(client, cached_key, req, &resp->base());
-    if (ec)
-      return ec;
+    RETURN_ON_ERR(RetryExpired(client, cached_key, req, &resp->base()));
 
     resp->clear();
-    ec = client->Recv(resp);
-    if (ec)
-      return ec;
+    RETURN_ON_ERR(client->Recv(resp));
   }
-  return ec;
+  return error_code{};
 }
 
-error_code AWS::Handshake(http::Client* client, AwsSignKey* cached_key,
-                          EmptyBodyReq* req, HttpParser* parser) {
+error_code AWS::Handshake(http::Client* client, AwsSignKey* cached_key, EmptyBodyReq* req,
+                          HttpParser* parser) const {
   cached_key->Sign(AWS::kEmptySig, req);
   VLOG(1) << "Sending request: " << *req;
 
-  error_code ec = client->Send(*req);
-  if (ec)
-    return ec;
+  RETURN_ON_ERR(client->Send(*req));
 
   parser->body_limit(UINT64_MAX);
 
-  ec = client->ReadHeader(parser);
-  if (ec)
-    return ec;
+  RETURN_ON_ERR(client->ReadHeader(parser));
 
   auto& msg = parser->get();
 
@@ -570,25 +601,19 @@ error_code AWS::Handshake(http::Client* client, AwsSignKey* cached_key,
     string str(512, '\0');
     msg.body().data = str.data();
     msg.body().size = str.size();
-    ec = client->Recv(parser);
-    if (ec)
-      return ec;
+    RETURN_ON_ERR(client->Recv(parser));
 
     if (IsExpiredBody(str)) {
-      ec = RetryExpired(client, cached_key, req, &msg.base());
-      if (ec)
-        return ec;
+      RETURN_ON_ERR(RetryExpired(client, cached_key, req, &msg.base()));
 
       // TODO: seems we can not reuse the parser here.
       // (*parser) = std::move(HttpParser{});
       parser->body_limit(UINT64_MAX);
-      ec = client->ReadHeader(parser);
-      if (ec)
-        return ec;
+      RETURN_ON_ERR(client->ReadHeader(parser));
     }
   }
 
-  return ec;
+  return error_code{};
 }
 
 }  // namespace cloud
