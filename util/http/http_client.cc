@@ -61,6 +61,8 @@ std::error_code Client::Connect(string_view host, string_view service) {
 }
 
 std::error_code Client::Reconnect() {
+  VLOG(1) << "Reconnecting to " << host_ << ":" << port_;
+
   if (socket_) {
     socket_->Close();
     socket_.reset();
@@ -159,6 +161,8 @@ std::error_code TlsClient::Connect(string_view host, string_view service, SSL_CT
   // 2. Setting SSL level verification for the remote host
   // 3. Using the connected TCP for SSL (handshake).
   // 4. Setting the base class to use the "new" TLS socket from here on end
+
+  VLOG(1) << "Connecting to " << host << ":" << service;
 
   std::error_code ec = Client::Connect(host, service);
   if (!ec) {

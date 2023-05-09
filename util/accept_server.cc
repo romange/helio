@@ -36,6 +36,8 @@ AcceptServer::~AcceptServer() {
 }
 
 void AcceptServer::Run() {
+  VLOG(1) << "AcceptServer::Run";
+
   if (!list_interface_.empty()) {
     ref_bc_.Add(list_interface_.size());
 
@@ -111,12 +113,15 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
     ec = fs->Create(p->ai_family);
     if (ec)
       break;
+
     ec = listener->ConfigureServerSocket(fs->native_handle());
     if (ec)
       break;
 
     ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_);
     if (!ec) {
+      const char* safe_bind = bind_addr ? bind_addr : "";
+      VLOG(1) << "AddListener [" << fs->native_handle() << "] " << safe_bind << ":" << port;
       success = true;
       break;
     }

@@ -7,8 +7,6 @@
 #include <netinet/in.h>
 #include <poll.h>
 
-// #include <boost/fiber/context.hpp>
-
 #include "base/logging.h"
 #include "base/stl_util.h"
 
@@ -74,6 +72,8 @@ auto UringSocket::Accept() -> AcceptResult {
 
   int fd = native_handle();
   int real_fd = (fd_ & REGISTER_FD) ? GetProactor()->TranslateFixedFd(fd) : fd;
+  VSOCK(2) << "Accept [" << real_fd << "]";
+
   while (true) {
     int res = accept4(real_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
@@ -112,6 +112,8 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   int fd = socket(ep.protocol().family(), SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
+
+  VSOCK(1) << "Connect [" << fd << "] " << ep.address().to_string() << ":" << ep.port();
 
   Proactor* p = GetProactor();
   CHECK(!p->HasSqPoll()) << "Not supported with SQPOLL, TBD";
@@ -153,6 +155,8 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   ssize_t res = 0;
   size_t short_len = 0;
   uint8_t* reg_buf = nullptr;
+
+  VSOCK(2) << "WriteSome [" << fd << "] " << len;
 
   // WARNING: raw, experimental code.
   if (p->HasRegisteredBuffers() && len < 16) {
@@ -293,6 +297,8 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   DCHECK(ProactorBase::me() == p);
 
   ssize_t res;
+  VSOCK(2) << "RecvMsg [" << fd << "]";
+
   while (true) {
     FiberCall fc(p, timeout());
     fc->PrepRecvMsg(fd, &msg, flags);
@@ -326,6 +332,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
 
+  VSOCK(2) << "Recv [" << fd << "] " << flags;
   ssize_t res;
   while (true) {
     FiberCall fc(p, timeout());

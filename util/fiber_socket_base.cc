@@ -94,6 +94,8 @@ error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
 }
 
 error_code LinuxSocketBase::ListenUDS(const char* path, unsigned backlog) {
+  VSOCK(1) << "ListenUDS " << path;
+
   DCHECK(fd_ & IS_UDS);
 
   struct sockaddr_un addr;
@@ -127,7 +129,7 @@ error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned ad
     return ec;
   }
 
-  VSOCK(1) << "Listening";
+  VSOCK(1) << "Listening " << fd;
 
   res = posix_err_wrap(listen(fd, backlog), &ec);
   if (posix_err_wrap(res, &ec) < 0) {

@@ -358,6 +358,8 @@ void UringProactor::ArmWakeupEvent() {
 }
 
 void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
+  VPRO(2) << "SchedulePeriodic " << id;
+
   SubmitEntry se = GetSubmitEntry(
       [this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags) {
         this->PeriodicCb(res, id, std::move(item));
