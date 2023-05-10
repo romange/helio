@@ -170,12 +170,21 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
 
 void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe) {
   if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
-    size_t index = cqe.user_data - kUserDataCbIndex;
-    if (index >= centries_.size()) {
-      LOG(FATAL) << "Invalid CQE: " << " user_data="
-                 << cqe.user_data << " cqe.res=" << cqe.res << " cqe.flags=" << cqe.flags
-                 << " centries_.size()=" << centries_.size();
+    if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
+      base::sys::KernelVersion kver;
+      base::sys::GetKernelVersion(&kver);
+
+      LOG(ERROR) << "Fatal error that is most likely caused by a bug in kernel.";
+
+      LOG(ERROR) << "Kernel version: " << kver.kernel << "." << kver.major << "." << kver.minor;
+      LOG(ERROR) << "If you are running on WSL2 or using Docker Desktop, try upgrading it "
+                    "to kernel 5.15 or later.";
+      LOG(ERROR) << "If you are running dragonfly - you can workaround the bug "
+                    "with `--force_epoll` flag. Exiting...";
+      exit(1);
     }
+
+    size_t index = cqe.user_data - kUserDataCbIndex;
     DCHECK_LT(index, centries_.size());
     auto& e = centries_[index];
     DCHECK(e.cb) << index;
