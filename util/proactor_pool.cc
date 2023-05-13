@@ -15,6 +15,8 @@ ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
 
 namespace util {
 
+using fb2::ProactorBase;
+
 enum class AffinityMode {
   ON,
   OFF,

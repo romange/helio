@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
@@ -8,8 +8,7 @@
 #include <vector>
 
 #include "util/connection.h"
-#include "util/fibers/fibers_ext.h"
-
+#include "util/fibers/synchronization.h"
 namespace util {
 
 class ListenerInterface;
@@ -60,7 +59,7 @@ class AcceptServer {
   std::function<void()> on_break_hook_;
 
   std::vector<std::unique_ptr<ListenerInterface>> list_interface_;
-  BlockingCounter ref_bc_;  // to synchronize listener threads during the shutdown.
+  fb2::BlockingCounter ref_bc_;  // to synchronize listener threads during the shutdown.
 
   bool was_run_ = false;
 

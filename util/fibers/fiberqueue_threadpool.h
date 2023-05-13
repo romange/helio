@@ -4,19 +4,13 @@
 #pragma once
 
 #include "base/mpmc_bounded_queue.h"
-#ifdef USE_FB2
+
 #include "util/fibers/synchronization.h"
-#else
-#include "util/fibers/fibers_ext.h"
-#endif
+
 #include "util/fibers/detail/result_mover.h"
 
 namespace util {
-#ifdef USE_FB2
 namespace fb2 {
-#else
-namespace fibers_ext {
-#endif
 class FiberQueueThreadPool;
 
 
@@ -194,5 +188,5 @@ class FiberQueueThreadPool {
   std::atomic_ulong next_index_{0};
 };
 
-}  // namespace fibers_ext
+}  // namespace fb2
 }  // namespace util

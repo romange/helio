@@ -5,17 +5,16 @@
 #include "util/varz.h"
 #include "base/logging.h"
 
+#include "util/fibers/synchronization.h"
+
 using base::VarzValue;
 using namespace std;
 
-#ifdef USE_FB2
-#include "util/fibers/synchronization.h"
-using util::fb2::Mutex;
-#else
-#include <boost/fiber/mutex.hpp>
-using Mutex = boost::fibers::mutex;
-#endif
 namespace util {
+
+using fb2::Mutex;
+using fb2::ProactorBase;
+
 
 VarzValue VarzQps::GetData() const {
   uint32_t qps = val_.SumTail() / (Counter::WIN_SIZE - 1);  // Average over kWinSize values.

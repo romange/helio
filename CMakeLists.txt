@@ -28,9 +28,8 @@ else()
   include(internal)
 endif()
 
-if (USE_FB2)
-  add_definitions(-DUSE_FB2)
-endif()
+
+add_definitions(-DUSE_FB2)
 
 add_subdirectory(base)
 add_subdirectory(io)

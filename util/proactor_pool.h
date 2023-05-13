@@ -12,17 +12,9 @@
 #include "base/RWSpinLock.h"
 #include "base/type_traits.h"
 
-#ifdef USE_FB2
 #include "util/fibers/proactor_base.h"
-#else
-#include "util/proactor_base.h"
-#endif
 
 namespace util {
-
-#ifdef USE_FB2
-using fb2::ProactorBase;
-#endif
 
 class ProactorPool {
   template <typename Func, typename... Args>
@@ -32,6 +24,8 @@ class ProactorPool {
   void operator=(const ProactorPool&) = delete;
 
  public:
+  using ProactorBase = fb2::ProactorBase;
+
   //! Constructs io_context pool with number of threads equal to 'pool_size'.
   //! pool_size = 0 chooses automatically pool size equal to number of cores in
   //! the system.

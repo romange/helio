@@ -20,25 +20,26 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <iostream>
+#include <thread>
 #include <memory>
 
 #include "base/flags.h"
 #include "base/init.h"
-#include "util/fibers/event_count.h"
+#include "util/fibers/pool.h"
+#include "util/fibers/proactor_base.h"
+#include "util/fibers/synchronization.h"
 #include "util/http/http_client.h"
-#include "util/proactor_base.h"
-#include "util/proactor_pool.h"
+#include "util/fibers/pool.h"
 #include "util/tls/tls_engine.h"
 #include "util/tls/tls_socket.h"
-#include "util/uring/uring_pool.h"
 
-using util::ProactorBase;
-using util::ProactorPool;
-using util::http::Client;
-using util::http::TlsClient;
+using namespace util;
+using http::Client;
+using http::TlsClient;
 namespace h2 = boost::beast::http;
 using ResponseType = h2::response<h2::string_body>;
 using absl::GetFlag;
+using namespace std;
 
 ABSL_FLAG(short, http_port, 443, "HTTPS remote server port.");
 ABSL_FLAG(std::string, host, "", "Remote host domain name");
@@ -110,9 +111,8 @@ OpResult ConnectAndRead(ProactorBase* proactor, std::string_view host, std::stri
 
 using namespace std::chrono_literals;
 
-util::fibers_ext::Fiber ReadFromRemoteHost(ProactorPool* pool, SSL_CTX* ssl_context,
-                                           std::string_view task_name,
-                                           util::fibers_ext::Done* done_condition) {
+fb2::Fiber ReadFromRemoteHost(ProactorPool* pool, SSL_CTX* ssl_context, std::string_view task_name,
+                              fb2::Done* done_condition) {
   std::string service = std::to_string(GetFlag(FLAGS_http_port));
   std::string host = GetFlag(FLAGS_host);
   std::string resource = GetFlag(FLAGS_resource);
@@ -139,8 +139,7 @@ util::fibers_ext::Fiber ReadFromRemoteHost(ProactorPool* pool, SSL_CTX* ssl_cont
   });
 }
 
-util::fibers_ext::Fiber IdleFiberRun(ProactorPool* pool, std::string_view task_name,
-                                     util::fibers_ext::Done* done_condition) {
+fb2::Fiber IdleFiberRun(ProactorPool* pool, std::string_view task_name, fb2::Done* done_condition) {
   return pool->GetNextProactor()->LaunchFiber([=]() {
     while (true) {
       LOG(INFO) << task_name << ": just burning CPU";
@@ -163,19 +162,21 @@ int main(int argc, char** argv) {
 
   SSL_library_init();
   SSL_load_error_strings();
-  util::uring::UringPool pp;
+  unique_ptr<util::ProactorPool> pp(fb2::Pool::IOUring(128));
 
-  pp.Run();
+  pp->Run();
+
   SSL_CTX* ssl_context = TlsClient::CreateSslContext();
   CHECK(ssl_context) << " failed to create SSL context";
   VLOG(1) << "starting the fibers that test the connection";
-  util::fibers_ext::Done done_condition;
-  auto fiber = ReadFromRemoteHost(&pp, ssl_context, "task 1", &done_condition);
-  auto fiber2 = ReadFromRemoteHost(&pp, ssl_context, "task 2", &done_condition);
-  auto idle_fiber = IdleFiberRun(&pp, "task 3", &done_condition);
+  fb2::Done done_condition;
+  auto fiber = ReadFromRemoteHost(pp.get(), ssl_context, "task 1", &done_condition);
+  auto fiber2 = ReadFromRemoteHost(pp.get(), ssl_context, "task 2", &done_condition);
+  auto idle_fiber = IdleFiberRun(pp.get(), "task 3", &done_condition);
+
   // Let the background tasks run for a while
   for (int i = 0; i < 3; i++) {
-    util::fibers_ext::SleepFor(1s);
+    this_thread::sleep_for(1s);
   }
   done_condition.Notify();
   fiber.Join();

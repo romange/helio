@@ -14,16 +14,13 @@
 #include <boost/beast/http/write.hpp>
 
 #include "base/logging.h"
-#include "util/dns_resolve.h"
+
 #include "util/fiber_socket_base.h"
 #include "util/tls/tls_engine.h"
 #include "util/tls/tls_socket.h"
 
-#ifdef USE_FB2
 #include "util/fibers/proactor_base.h"
-#else
-#include "util/proactor_base.h"
-#endif
+#include "util/fibers/dns_resolve.h"
 
 namespace util {
 namespace http {
@@ -69,7 +66,7 @@ std::error_code Client::Reconnect() {
   }
 
   char ip[INET_ADDRSTRLEN];
-  error_code ec = DnsResolve(host_.data(), 2000, ip);
+  error_code ec = fb2::DnsResolve(host_.data(), 2000, ip, proactor_);
   if (ec) {
     return ec;
   }

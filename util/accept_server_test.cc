@@ -12,22 +12,13 @@
 #include "util/asio_stream_adapter.h"
 #include "util/listener_interface.h"
 
-#ifdef USE_FB2
-#include "util/fibers/uring_pool.h"
-#else
-#include "util/uring/uring_pool.h"
-#endif
+#include "util/fibers/pool.h"
 
 namespace util {
 
 using namespace std;
 namespace h2 = boost::beast::http;
-
-#ifdef USE_FB2
-using fb2::UringPool;
-#else
-using uring::UringPool;
-#endif
+using fb2::Pool;
 
 #define USE_URING 1
 
@@ -86,7 +77,7 @@ class AcceptServerTest : public testing::Test {
 void AcceptServerTest::SetUp() {
   const uint16_t kPort = 1234;
 #ifdef USE_URING
-  ProactorPool* up = new UringPool(16, 2);
+  ProactorPool* up = Pool::IOUring(16, 2);
 #else
   ProactorPool* up = new epoll::EvPool(2);
 #endif

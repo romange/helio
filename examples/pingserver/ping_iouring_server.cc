@@ -12,17 +12,15 @@
 #include "util/http/http_handler.h"
 #include "util/tls/tls_socket.h"
 #include "util/fiber_socket_base.h"
-#include "util/uring/uring_fiber_algo.h"
-#include "util/uring/uring_pool.h"
-#include "util/uring/proactor.h"
+#include "util/fibers/pool.h"
 #include "util/varz.h"
 
 using namespace boost;
 using namespace std;
 using namespace util;
 using redis::RespParser;
-using uring::Proactor;
-using uring::UringPool;
+using fb2::ProactorBase;
+using fb2::Pool;
 using absl::GetFlag;
 
 ABSL_FLAG(int32_t, http_port, 8080, "Http port.");
@@ -54,9 +52,7 @@ class PingConnection : public Connection {
   PingConnection(SSL_CTX* ctx) : ctx_(ctx) {
   }
 
-  void Handle(Proactor::IoResult res, int32_t payload, Proactor* mgr);
-
-  void StartPolling(int fd, Proactor* mgr);
+  void Handle(int res, int32_t payload, ProactorBase* mgr);
 
  private:
   void HandleRequests() final;
@@ -67,8 +63,7 @@ class PingConnection : public Connection {
 atomic_int conn_id{1};
 
 void PingConnection::HandleRequests() {
-  FiberProps::SetName(absl::StrCat("ping/", conn_id.fetch_add(1, memory_order_relaxed)));
-  auto& props = this_fiber::properties<FiberProps>();
+  ThisFiber::SetName(absl::StrCat("ping/", conn_id.fetch_add(1, memory_order_relaxed)));
 
   system::error_code ec;
   unique_ptr<tls::TlsSocket> tls_sock;
@@ -99,11 +94,6 @@ void PingConnection::HandleRequests() {
     if (FiberSocketBase::IsConnClosed(ec))
       break;
 
-    uint64_t now = peer->proactor()->GetMonotonicTimeNs();
-    uint64_t delta_usec = (now - props.resume_ts()) / 1000;
-    if (delta_usec > 1000) {
-      LOG(INFO) << "Running too long " << props.name() << " " << delta_usec;
-    }
 
     CHECK(!ec) << ec << "/" << ec.message();
     VLOG(1) << "Read " << res << " bytes";
@@ -125,9 +115,6 @@ void PingConnection::HandleRequests() {
         if (ec) {
           break;
         }
-        now = peer->proactor()->GetMonotonicTimeNs();
-        delta_usec = (now - props.resume_ts()) / 1000;
-        LOG_IF(INFO, delta_usec > 1000) << "Running too long " << props.name() << " " << delta_usec;
       } else {
         const char kReply[] = "+OK\r\n";
         auto b = boost::asio::buffer(kReply, sizeof(kReply) - 1);
@@ -241,11 +228,12 @@ int main(int argc, char* argv[]) {
     ctx = CreateSslCntx();
   }
 
-  UringPool pp{GetFlag(FLAGS_iouring_depth)};
-  pp.Run();
-  ping_qps.Init(&pp);
+  unique_ptr<util::ProactorPool> pp(fb2::Pool::IOUring(GetFlag(FLAGS_iouring_depth)));
 
-  AcceptServer uring_acceptor(&pp);
+  pp->Run();
+  ping_qps.Init(pp.get());
+
+  AcceptServer uring_acceptor(pp.get());
   PingListener* listener = new PingListener(ctx);
 
   if (uds.empty()) {
@@ -265,7 +253,7 @@ int main(int argc, char* argv[]) {
   uring_acceptor.Run();
   uring_acceptor.Wait();
 
-  pp.Stop();
+  pp->Stop();
 
   return 0;
 }

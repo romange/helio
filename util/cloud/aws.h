@@ -11,13 +11,7 @@
 
 #include "util/http/http_client.h"
 
-#ifdef USE_FB2
 #include "util/fibers/synchronization.h"
-using util::fb2::Mutex;
-#else
-#include "util/fibers/fiber.h"
-using util::fibers_ext::Mutex;
-#endif
 
 namespace util {
 namespace cloud {
@@ -104,7 +98,7 @@ class AWS {
   std::string service_;
   mutable AwsConnectionData connection_data_;
 
-  mutable Mutex mu_;
+  mutable fb2::Mutex mu_;
 };
 
 }  // namespace cloud
