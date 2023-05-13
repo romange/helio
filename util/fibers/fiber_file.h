@@ -7,11 +7,7 @@
 
 namespace util {
 
-#ifdef USE_FB2
 namespace fb_namesp = fb2;
-#else
-namespace fb_namesp = fibers_ext;
-#endif
 
 // Fiber-friendly file handler. Returns ReadonlyFile* instance that does not block the current
 // thread unlike the regular posix implementation. All the read opearations will run

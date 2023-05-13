@@ -12,13 +12,9 @@ add_executable(http_main http_main.cc)
 
 add_library(http_client_lib http_client.cc)
 
-if (USE_FB2)
 cxx_link(http_client_lib fibers2 http_beast_prebuilt http_utils tls_lib)
 cxx_link(http_main fibers2 html_lib http_server_lib TRDP::mimalloc)
-else()
-cxx_link(http_client_lib proactor_lib http_beast_prebuilt http_utils tls_lib)
-cxx_link(http_main uring_fiber_lib html_lib http_server_lib TRDP::mimalloc)
-endif()
+
 
 #add_library(https_client_lib https_client.cc https_client_pool.cc ssl_stream.cc)
 #cxx_link(https_client_lib proactor_lib absl_variant http_beast_prebuilt)

@@ -7,21 +7,18 @@
 #include <string_view>
 #include <openssl/err.h>
 
-#include <boost/fiber/fiber.hpp>
-#include <boost/fiber/operations.hpp>
-
 #include "base/gtest.h"
 #include "base/logging.h"
 
-#include "util/fibers/fiber.h"
 #include "util/tls/tls_socket.h"
+#include "util/fibers/fiber2.h"
 
 namespace util {
 namespace tls {
 
 using namespace std;
 using namespace boost;
-using fibers_ext::Fiber;
+using fb2::Fiber;
 
 string SSLError(unsigned long e) {
   char buf[256];
@@ -159,7 +156,7 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
 
       return ERR_PACK(ERR_LIB_USER, 0, ERR_R_OPERATION_FAIL);
     }
-    fibers_ext::Yield();
+    ThisFiber::Yield();
 
     input_pending = src->InputPending();
     VLOG(1) << "Input size: " << input_pending;
@@ -243,19 +240,19 @@ TEST_F(SslStreamTest, Handshake) {
 TEST_F(SslStreamTest, HandshakeErrServer) {
   unsigned long cl_err = 0, srv_err = 0;
 
-  auto client_fb = fibers::fiber([&] {
+  auto client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, client_handshake_, client_engine_.get(), server_engine_.get());
   });
 
   srv_opts_.mutate_indx = 100;
   srv_opts_.mutate_val = 'R';
 
-  auto server_fb = fibers::fiber([&] {
+  auto server_fb = Fiber([&] {
     srv_err = RunPeer(srv_opts_, srv_handshake_, server_engine_.get(), client_engine_.get());
   });
 
-  client_fb.join();
-  server_fb.join();
+  client_fb.Join();
+  server_fb.Join();
 
   LOG(INFO) << SSLError(cl_err);
   LOG(INFO) << SSLError(srv_err);
@@ -266,29 +263,29 @@ TEST_F(SslStreamTest, HandshakeErrServer) {
 TEST_F(SslStreamTest, ReadShutdown) {
   unsigned long cl_err = 0, srv_err = 0;
 
-  auto client_fb = fibers::fiber([&] {
+  auto client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, client_handshake_, client_engine_.get(), server_engine_.get());
   });
 
-  auto server_fb = fibers::fiber([&] {
+  auto server_fb = Fiber([&] {
     srv_err = RunPeer(srv_opts_, srv_handshake_, server_engine_.get(), client_engine_.get());
   });
 
-  client_fb.join();
-  server_fb.join();
+  client_fb.Join();
+  server_fb.Join();
 
   ASSERT_EQ(0, cl_err);
   ASSERT_EQ(0, srv_err);
 
-  client_fb = fibers::fiber([&] {
+  client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, shutdown_op_, client_engine_.get(), server_engine_.get());
   });
 
-  server_fb = fibers::fiber(
+  server_fb = Fiber(
       [&] { srv_err = RunPeer(srv_opts_, read_op_, server_engine_.get(), client_engine_.get()); });
 
-  server_fb.join();
-  client_fb.join();
+  server_fb.Join();
+  client_fb.Join();
   ASSERT_EQ(0, cl_err);
   ASSERT_EQ(0, srv_err);
 
@@ -297,15 +294,15 @@ TEST_F(SslStreamTest, ReadShutdown) {
   ASSERT_EQ(SSL_RECEIVED_SHUTDOWN, shutdown_srv);
   ASSERT_EQ(SSL_SENT_SHUTDOWN, shutdown_client);
 
-  client_fb = fibers::fiber([&] {
+  client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, shutdown_op_, client_engine_.get(), server_engine_.get());
   });
 
-  server_fb = fibers::fiber([&] {
+  server_fb = Fiber([&] {
     srv_err = RunPeer(srv_opts_, shutdown_op_, server_engine_.get(), client_engine_.get());
   });
-  server_fb.join();
-  client_fb.join();
+  server_fb.Join();
+  client_fb.Join();
 
   ASSERT_EQ(0, cl_err) << SSLError(cl_err);
   ASSERT_EQ(0, srv_err);
@@ -319,16 +316,16 @@ TEST_F(SslStreamTest, ReadShutdown) {
 TEST_F(SslStreamTest, Write) {
   unsigned long cl_err = 0, srv_err = 0;
 
-  auto client_fb = fibers::fiber([&] {
+  auto client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, client_handshake_, client_engine_.get(), server_engine_.get());
   });
 
-  auto server_fb = fibers::fiber([&] {
+  auto server_fb = Fiber([&] {
     srv_err = RunPeer(srv_opts_, srv_handshake_, server_engine_.get(), client_engine_.get());
   });
 
-  client_fb.join();
-  server_fb.join();
+  client_fb.Join();
+  server_fb.Join();
   client_opts_.drain_output = true;
   for (size_t i = 0; i < 10; ++i) {
     cl_err = RunPeer(client_opts_, write_op_, client_engine_.get(), server_engine_.get());
@@ -354,14 +351,14 @@ void BM_TlsWrite(benchmark::State& state) {
   SSL* ssl = server_engine->native_handle();
   CHECK_EQ(1, SSL_set_dh_auto(ssl, 1));
 
-  auto client_fb = fibers::fiber(
+  auto client_fb = Fiber(
       [&] { RunPeer(copts, cl_handshake, client_engine.get(), server_engine.get()); });
 
-  auto server_fb = fibers::fiber(
+  auto server_fb = Fiber(
       [&] { RunPeer(sopts, srv_handshake, server_engine.get(), client_engine.get()); });
 
-  client_fb.join();
-  server_fb.join();
+  client_fb.Join();
+  server_fb.Join();
 
   copts.drain_output = true;
 

@@ -1,6 +1,7 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
+
 #include "util/metrics/metrics.h"
 
 #include "base/hash.h"
@@ -8,6 +9,9 @@
 #include "util/proactor_pool.h"
 
 namespace util {
+
+using fb2::ProactorBase;
+
 namespace metrics {
 using namespace std;
 

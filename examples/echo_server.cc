@@ -21,7 +21,6 @@
 
 using namespace util;
 
-#ifdef USE_FB2
 #include "util/fibers/dns_resolve.h"
 #include "util/fibers/pool.h"
 #include "util/fibers/synchronization.h"
@@ -30,25 +29,6 @@ using fb2::DnsResolve;
 using fb2::Fiber;
 using fb2::Mutex;
 
-#else
-#include <boost/fiber/operations.hpp>
-
-#include "util/dns_resolve.h"
-#include "util/epoll/epoll_pool.h"
-#include "util/fibers/fiber.h"
-#include "util/uring/uring_fiber_algo.h"
-#include "util/uring/uring_file.h"
-#include "util/uring/uring_pool.h"
-#include "util/uring/uring_socket.h"
-
-using fibers_ext::Fiber;
-using fibers_ext::Mutex;
-using uring::Proactor;
-using uring::SubmitEntry;
-using uring::UringPool;
-using uring::UringSocket;
-
-#endif
 
 using namespace std;
 
@@ -559,19 +539,13 @@ int main(int argc, char* argv[]) {
   CHECK_GT(absl::GetFlag(FLAGS_port), 0);
 
   std::unique_ptr<ProactorPool> pp;
-#ifdef USE_FB2
+
   if (absl::GetFlag(FLAGS_epoll)) {
     pp.reset(fb2::Pool::Epoll());
   } else {
     pp.reset(fb2::Pool::IOUring(256));
   }
-#else
-  if (absl::GetFlag(FLAGS_epoll)) {
-    pp.reset(new epoll::EpollPool);
-  } else {
-    pp.reset(new uring::UringPool(256));
-  }
-#endif
+
   pp->Run();
 
   if (absl::GetFlag(FLAGS_connect).empty()) {
@@ -580,14 +554,10 @@ int main(int argc, char* argv[]) {
     CHECK_GT(absl::GetFlag(FLAGS_size), 0U);
 
     char ip_addr[INET6_ADDRSTRLEN];
-#ifdef USE_FB2
     auto* proactor = pp->GetNextProactor();
 
     error_code ec = proactor->Await(
         [&] { return DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr, proactor); });
-#else
-    error_code ec = DnsResolve(absl::GetFlag(FLAGS_connect).c_str(), 0, ip_addr);
-#endif
 
     CHECK_EQ(0, ec.value()) << "Could not resolve " << absl::GetFlag(FLAGS_connect) << " " << ec;
     thread_local std::unique_ptr<TLocalClient> client;

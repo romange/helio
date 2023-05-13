@@ -1,6 +1,3 @@
 add_library(metrics family.cc metrics.cc)
-if (USE_FB2)
+
 cxx_link(metrics fibers2)
-else()
-cxx_link(metrics proactor_lib)
-endif()

@@ -8,8 +8,7 @@
 #include <absl/types/span.h>
 
 #include <string_view>
-
-#include "util/fibers/fibers_ext.h"
+#include <util/fibers/synchronization.h>
 
 namespace util {
 class ProactorPool;
@@ -130,7 +129,7 @@ class Family {
   std::vector<LabelValues> label_values_;  // Guarded by mu_
   LabelMap label_map_;                     // Guarded by mu_
 
-  SharedMutex mu_;
+  fb2::SharedMutex mu_;
 
   ProactorPool* pp_;
   Family* next_ = nullptr;

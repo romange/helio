@@ -8,20 +8,10 @@
 
 #include "base/ProducerConsumerQueue.h"
 #include "base/mpmc_bounded_queue.h"
-
-#ifdef USE_FB2
 #include "util/fibers/synchronization.h"
-#else
-#include "util/fibers/event_count.h"
-#include "util/fibers/fibers_ext.h"
-#endif
 
 namespace util {
-#ifdef USE_FB2
 namespace fb2 {
-#else
-namespace fibers_ext {
-#endif
 
 namespace detail {
 template <typename Q> class QueueTraits;
@@ -166,5 +156,5 @@ template <typename T> class QueueTraits<base::mpmc_bounded_queue<T>> {
 
 }  // namespace detail
 
-}  // namespace fibers_ext
+}  // namespace fb2
 }  // namespace util
