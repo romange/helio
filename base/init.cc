@@ -12,6 +12,18 @@
 #include "absl/flags/parse.h"
 #include "base/logging.h"
 
+// This overrides glibc's default assert handler in debug builds so
+// we can get a stack trace.
+#ifndef NDEBUG
+#ifdef __GLIBC__
+extern "C" void __assert_fail(const char* assertion, const char* file, unsigned int line,
+                              const char* function) {
+  LOG(FATAL) << "[" << file << ":" << line << "]: "
+             << "assert(" << assertion << ") failed!";
+}
+#endif
+#endif
+
 namespace __internal__ {
 
 ModuleInitializer::ModuleInitializer(VoidFunction ftor, bool is_ctor)
