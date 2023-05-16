@@ -404,8 +404,11 @@ error_code S3WriteFile::Upload() {
     return ec;
 
   VLOG(1) << "UploadResp: " << resp;
+
   auto it = resp.find(h2::field::etag);
-  CHECK(it != resp.end());
+  if (it != resp.end())
+    return make_error_code(errc::io_error);
+
   VLOG(1) << "Etag: " << it->value();
   auto sv = it->value();
   if (sv.size() <= 2) {
@@ -415,6 +418,11 @@ error_code S3WriteFile::Upload() {
   sv.remove_suffix(1);
   parts_.emplace_back(sv.to_string());
 
+  if (resp[h2::field::connection] == "close") {
+    ec = client_->Reconnect();
+    if (ec)
+      return ec;
+  }
   return ec;
 }
 
