@@ -21,11 +21,20 @@ jobs:
       matrix:
         # Test of these containers
         container: ["ubuntu-dev:20", "alpine-dev:latest"]
+        compiler: [{cxx: g++, c: gcc}]
+        include:
+          - container: "alpine-dev:latest"
+            compiler: {cxx: clang++, c: clang}
     timeout-minutes: 90
     container:
       image: ghcr.io/romange/${{ matrix.container }}
     steps:
     - uses: actions/checkout@v3
+    - name: Choose toolchain
+      run: |
+        if [ "${{matrix.compiler.c}}" = "clang" ]; then
+          apk update && apk add clang
+        fi
     - name: Cache build deps
       id: cache-deps
       uses: actions/cache@v3
@@ -40,8 +49,12 @@ jobs:
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
       run: |
-          cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -GNinja \
-             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake -B ${{github.workspace}}/build \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -GNinja \
+            -DCMAKE_C_COMPILER="${{matrix.compiler.c}}" \
+            -DCMAKE_CXX_COMPILER="${{matrix.compiler.cxx}}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     - name: Build & Test
       run: |
           cd ${{github.workspace}}/build
