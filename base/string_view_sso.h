@@ -7,6 +7,7 @@
 #include <absl/base/optimization.h>
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
