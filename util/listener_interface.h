@@ -6,15 +6,14 @@
 
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 
 #include "util/fiber_socket_base.h"
-#include <unordered_map>
 
 namespace util {
 
 class ProactorPool;
 class Connection;
-class ProactorBase;
 class AcceptServer;
 
 /**

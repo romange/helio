@@ -17,7 +17,6 @@
 
 namespace util {
 
-class ProactorBase;
 class FiberSocketBase;
 
 namespace http {
