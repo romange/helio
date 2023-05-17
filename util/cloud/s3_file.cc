@@ -295,6 +295,8 @@ error_code S3WriteFile::Close() {
   if (parts_.empty())
     return ec;
 
+  VLOG(1) << "Finalizing " << upload_id_ << " with " << parts_.size() << " parts";
+
   string url("/");
   url.append(create_file_name_);
 
@@ -326,6 +328,7 @@ error_code S3WriteFile::Close() {
   ec = client_->Send(req, &resp);
 
   if (ec) {
+    LOG(WARNING) << "S3WriteFile::Close: " << req << "/ " << resp << " ec: " << ec;
     return ec;
   }
 
@@ -398,25 +401,33 @@ error_code S3WriteFile::Upload() {
   req.prepare_payload();
 
   skey_.Sign(string_view{AWS::kUnsignedPayloadSig}, &req);
-  VLOG(1) << "UploadReq: " << req.base();
+  VLOG(2) << "UploadReq: " << req.base();
   error_code ec = client_->Send(req, &resp);
   if (ec)
     return ec;
 
-  VLOG(1) << "UploadResp: " << resp;
+  VLOG(2) << "UploadResp: " << resp;
 
-  auto it = resp.find(h2::field::etag);
-  if (it != resp.end())
-    return make_error_code(errc::io_error);
+  // TODO: small files do not need to be uploaded via multi-part and could be uploaded
+  // via Put object API: https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
+  // For now to just use multi-part for all files.
+  // This creates a minor complexity that we need to check if the file is small
+  // and in that case we do not need to fetch etag.
+  if (!parts_.empty() || body_size == body_mb_.max_size()) {
+    auto it = resp.find(h2::field::etag);
+    if (it == resp.end()) {
+      LOG(WARNING) << "No Etag in response: " << resp;
+      return make_error_code(errc::io_error);
+    }
 
-  VLOG(1) << "Etag: " << it->value();
-  auto sv = it->value();
-  if (sv.size() <= 2) {
-    return make_error_code(errc::io_error);
+    auto sv = it->value();
+    if (sv.size() <= 2) {
+      return make_error_code(errc::io_error);
+    }
+    sv.remove_prefix(1);
+    sv.remove_suffix(1);
+    parts_.emplace_back(sv.to_string());
   }
-  sv.remove_prefix(1);
-  sv.remove_suffix(1);
-  parts_.emplace_back(sv.to_string());
 
   if (resp[h2::field::connection] == "close") {
     ec = client_->Reconnect();

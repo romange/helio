@@ -398,6 +398,7 @@ template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
 
 // TODO:
 using fb2::FiberAtomicGuard;
+using fb2::ProactorBase;
 
 namespace detail {
 

@@ -164,6 +164,8 @@ ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client) {
 
 S3Bucket::S3Bucket(const AWS& aws, string_view bucket, string_view region)
     : aws_(aws), bucket_(bucket), region_(region) {
+  CHECK(!bucket.empty());
+
   if (region.empty()) {
     region = aws_.connection_data().region;
     if (region.empty()) {
