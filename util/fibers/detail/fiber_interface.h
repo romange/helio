@@ -255,6 +255,9 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, S
 }
 
 FiberInterface* FiberActive() noexcept;
+void EnterFiberAtomicSection() noexcept;
+void LeaveFiberAtomicSection() noexcept;
+bool IsFiberAtomicSection() noexcept;
 
 }  // namespace detail
 }  // namespace fb2

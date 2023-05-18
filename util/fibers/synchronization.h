@@ -181,7 +181,6 @@ class CondVarAny {
   std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
     detail::FiberInterface* active = detail::FiberActive();
     std::cv_status status = std::cv_status::no_timeout;
-    std::chrono::steady_clock::time_point timeout_time = tp;
 
     // atomically call lt.unlock() and block on *this
     // store this fiber in waiting-queue

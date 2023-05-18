@@ -98,6 +98,10 @@ class ProactorTest : public testing::TestWithParam<string_view> {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
   }
 
+  ProactorBase* proactor() {
+    return proactor_th_->get();
+  }
+
   using IoResult = UringProactor::IoResult;
 
   std::unique_ptr<ProactorThread> proactor_th_;
@@ -310,21 +314,28 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
+TEST_F(FiberTest, AtomicGuard) {
+  FiberAtomicGuard guard;
+#ifndef NDEBUG
+  EXPECT_DEATH(ThisFiber::Yield(), "Preempting inside");
+#endif
+}
+
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(UringProactor::IsProactorThread());
   ASSERT_EQ(-1, UringProactor::GetIndex());
 
   for (unsigned i = 0; i < ProactorBase::kTaskQueueLen * 2; ++i) {
     VLOG(1) << "Dispatch: " << i;
-    proactor_th_->proactor->DispatchBrief([i] { VLOG(1) << "I: " << i; });
+    proactor()->DispatchBrief([i] { VLOG(1) << "I: " << i; });
   }
   LOG(INFO) << "DispatchBrief done";
-  proactor_th_->proactor->AwaitBrief([] {});
+  proactor()->AwaitBrief([] {});
 
   usleep(2000);
   EventCount ec;
   bool signal = false;
-  proactor_th_->proactor->DispatchBrief([&] {
+  proactor()->DispatchBrief([&] {
     signal = true;
     ec.notify();
   });
@@ -336,10 +347,10 @@ TEST_P(ProactorTest, AsyncCall) {
 TEST_P(ProactorTest, Await) {
   thread_local int val = 5;
 
-  proactor_th_->proactor->AwaitBrief([] { val = 15; });
+  proactor()->AwaitBrief([] { val = 15; });
   EXPECT_EQ(5, val);
 
-  int j = proactor_th_->proactor->AwaitBrief([] { return val; });
+  int j = proactor()->AwaitBrief([] { return val; });
   EXPECT_EQ(15, j);
 }
 
@@ -349,7 +360,7 @@ TEST_P(ProactorTest, DispatchTest) {
   int state = 0;
 
   LOG(INFO) << "LaunchFiber";
-  auto fb = proactor_th_->proactor->LaunchFiber("jessie", [&] {
+  auto fb = proactor()->LaunchFiber("jessie", [&] {
     unique_lock g(mu);
     state = 1;
     LOG(INFO) << "state 1";
@@ -371,7 +382,7 @@ TEST_P(ProactorTest, DispatchTest) {
 }
 
 TEST_P(ProactorTest, Sleep) {
-  proactor_th_->proactor->Await([] {
+  proactor()->Await([] {
     LOG(INFO) << "Before Sleep";
     ThisFiber::SleepFor(20ms);
     LOG(INFO) << "After Sleep";
@@ -421,17 +432,17 @@ TEST_P(ProactorTest, MultiParking) {
 }
 
 TEST_P(ProactorTest, Migrate) {
-  ProactorThread pth(0, proactor_th_->get()->GetKind());
+  ProactorThread pth(0, proactor()->GetKind());
 
   pid_t dest_tid = pth.get()->AwaitBrief([&] { return gettid(); });
 
-  Fiber fb = proactor_th_->get()->LaunchFiber([&] {
+  Fiber fb = proactor()->LaunchFiber([&] {
     // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
     // thus it allows compiler to eliminate subsequent calls to this function.
     // Therefore I use syscall variant to get fresh values.
     pid_t tid1 = gettid();
     LOG(INFO) << "Source pid " << tid1 << ", dest pid " << dest_tid;
-    proactor_th_->get()->Migrate(pth.get());
+    proactor()->Migrate(pth.get());
     LOG(INFO) << "After migrate";
     ASSERT_EQ(dest_tid, gettid());
   });
@@ -441,7 +452,7 @@ TEST_P(ProactorTest, Migrate) {
 TEST_P(ProactorTest, NotifyRemote) {
   EventCount ec;
   Done done;
-  proactor_th_->get()->Await([&] {
+  proactor()->Await([&] {
     for (unsigned i = 0; i < 1000; ++i) {
       ec.await_until([] { return false;}, chrono::steady_clock::now() + 10us);
     }
@@ -459,6 +470,17 @@ TEST_P(ProactorTest, NotifyRemote) {
   done.Wait();
   keep_run = false;
   fb2.Join();
+}
+
+TEST_P(ProactorTest, BriefDontBlock) {
+  Done done;
+
+
+  proactor()->AwaitBrief([&] {
+#ifndef NDEBUG
+  EXPECT_DEATH(done.WaitFor(1ms), "Should not preempt");
+#endif
+  });
 }
 
 }  // namespace fb2

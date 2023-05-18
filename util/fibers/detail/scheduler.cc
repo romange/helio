@@ -489,6 +489,9 @@ Scheduler::~Scheduler() {
 }
 
 ctx::fiber_context Scheduler::Preempt() {
+  DCHECK(FiberActive() != dispatch_cntx_.get()) << "Should not preempt dispatcher";
+  DCHECK(!IsFiberAtomicSection()) << "Preempting inside of atomic section";
+
   if (ready_queue_.empty()) {
     // All user fibers are inactive, we should switch back to the dispatcher.
     return dispatch_cntx_->SwitchTo();
