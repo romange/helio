@@ -117,4 +117,17 @@ inline std::string_view GetName() {
 
 };  // namespace ThisFiber
 
+class FiberAtomicGuard {
+  FiberAtomicGuard(const FiberAtomicGuard&) = delete;
+
+ public:
+  FiberAtomicGuard() {
+    fb2::detail::EnterFiberAtomicSection();
+  }
+
+  ~FiberAtomicGuard() {
+    fb2::detail::LeaveFiberAtomicSection();
+  }
+};
+
 }  // namespace util

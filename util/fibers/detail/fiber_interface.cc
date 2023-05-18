@@ -64,6 +64,7 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
+  uint32_t atomic_section = 0;
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
 
@@ -255,6 +256,18 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
+}
+
+void EnterFiberAtomicSection() noexcept {
+  ++FbInitializer().atomic_section;
+}
+
+void LeaveFiberAtomicSection() noexcept {
+  --FbInitializer().atomic_section;
+}
+
+bool IsFiberAtomicSection() noexcept {
+  return FbInitializer().atomic_section > 0;
 }
 
 }  // namespace detail
