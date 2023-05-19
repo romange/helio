@@ -11,6 +11,10 @@
 #include "base/logging.h"
 #include "io/file.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define _MAC_OS_ 1
+#endif
+
 namespace io {
 using namespace std;
 
@@ -21,8 +25,15 @@ static int glob_errfunc(const char* epath, int eerrno) {
 
 Result<vector<StatShort>> StatFiles(std::string_view path) {
   glob_t glob_result;
+
   vector<StatShort> res;
-  int rv = glob(path.data(), GLOB_TILDE_CHECK, glob_errfunc, &glob_result);
+#ifdef _MAC_OS_
+  constexpr int kTilde = GLOB_TILDE;
+#else
+  constexpr int kTilde = GLOB_TILDE_CHECK;
+#endif
+
+  int rv = glob(path.data(), kTilde, glob_errfunc, &glob_result);
   if (rv) {
     switch (rv) {
       case GLOB_NOSPACE:
@@ -35,11 +46,20 @@ Result<vector<StatShort>> StatFiles(std::string_view path) {
   }
 
   struct stat sbuf;
+
   // statx is not implemented in musl-dev
   for (size_t i = 0; i < glob_result.gl_pathc; i++) {
-    if (fstatat(AT_FDCWD, glob_result.gl_pathv[i], &sbuf, 0) == 0) {
-      time_t ns = sbuf.st_mtim.tv_sec * 1000000000ULL + sbuf.st_mtim.tv_nsec;
-      StatShort sshort{glob_result.gl_pathv[i], ns, uint64_t(sbuf.st_size), sbuf.st_mode};
+    char* path = glob_result.gl_pathv[i];
+    if (fstatat(AT_FDCWD, path, &sbuf, 0) == 0) {
+#ifdef _MAC_OS_
+      const auto& st_mt = sbuf.st_mtimespec;
+#else
+      const auto& st_mt = sbuf.st_mtim;
+#endif
+
+      time_t ns = st_mt.tv_sec * 1000000000ULL + st_mt.tv_nsec;
+
+      StatShort sshort{path, ns, uint64_t(sbuf.st_size), sbuf.st_mode};
       res.emplace_back(std::move(sshort));
     } else {
       LOG(WARNING) << "Bad stat for " << glob_result.gl_pathv[i] << " " << strerror(errno);
@@ -76,7 +96,8 @@ Result<string> ReadFileToString(string_view path) {
   while (true) {
     auto status = fl->Read(offset, mb);
     if (!status) {
-      fl->Close();
+      error_code ec = fl->Close();
+      (void)ec;
       return nonstd::make_unexpected(status.error());
     }
     if (*status < mb.size()) {
@@ -88,7 +109,8 @@ Result<string> ReadFileToString(string_view path) {
     mb = MutableBytes(reinterpret_cast<uint8_t*>(value.data() + offset), value.size() - offset);
   }
 
-  fl->Close();
+  error_code ec = fl->Close();
+  (void)ec;
 
   return value;
 }

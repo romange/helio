@@ -127,7 +127,11 @@ std::string_view ProactorPool::GetString(std::string_view source) {
     return *it;
   }
 
+#if defined(__linux__)
   void* new_block = str_arena_.allocate(source.size(), 1);
+#else
+  void* new_block = new char[source.size()];
+#endif
   memcpy(new_block, source.data(), source.size());
   std::string_view res(reinterpret_cast<char*>(new_block), source.size());
   str_set_.insert(res);

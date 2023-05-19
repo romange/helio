@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "util/asio_stream_adapter.h"
+#include "util/fibers/proactor_base.h"
 
 namespace util {
 
@@ -31,7 +32,7 @@ class Client {
   using Verb = boost::beast::http::verb;
   using BoostError = boost::system::error_code;
 
-  explicit Client(ProactorBase* proactor);
+  explicit Client(fb2::ProactorBase* proactor);
   ~Client();
 
   std::error_code Connect(std::string_view host, std::string_view service);
@@ -90,7 +91,7 @@ class Client {
     return ec;  // TODO: a hook to print warning errors, change state etc.
   }
 
-  ProactorBase* proactor_;
+  fb2::ProactorBase* proactor_;
   uint32_t connect_timeout_ms_ = 2000;
   uint32_t retry_cnt_ = 1;
   ::boost::beast::flat_buffer tmp_buffer_;
@@ -169,7 +170,7 @@ class TlsClient : public Client {
   // ref count when freeing resources.
   static void FreeContext(SSL_CTX* ctx);
 
-  explicit TlsClient(ProactorBase* proactor) : Client(proactor) {
+  explicit TlsClient(fb2::ProactorBase* proactor) : Client(proactor) {
   }
 
   /*! @brief Connect to remote server and preform TLS handshake.

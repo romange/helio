@@ -13,16 +13,10 @@
 
 namespace util {
 
-#ifdef USE_FB2
 namespace fb2 {
 class ProactorBase;
 }  // namespace fb2
 
-using fb2::ProactorBase;
-
-#else
-class ProactorBase;
-#endif
 
 class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source {
   FiberSocketBase(const FiberSocketBase&) = delete;
@@ -30,8 +24,10 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   FiberSocketBase(FiberSocketBase&& other) = delete;
   FiberSocketBase& operator=(FiberSocketBase&& other) = delete;
 
+
  protected:
-  explicit FiberSocketBase(ProactorBase* pb) : proactor_(pb) {
+
+  explicit FiberSocketBase(fb2::ProactorBase* pb) : proactor_(pb) {
   }
 
  public:
@@ -39,6 +35,7 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   using error_code = std::error_code;
   using AcceptResult = ::io::Result<FiberSocketBase*>;
   using io::AsyncSink::AsyncWriteCb;
+  using ProactorBase = fb2::ProactorBase;
 
   ABSL_MUST_USE_RESULT virtual error_code Shutdown(int how) = 0;
 

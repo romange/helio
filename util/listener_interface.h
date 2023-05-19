@@ -22,6 +22,8 @@ class AcceptServer;
  */
 class ListenerInterface {
  public:
+  using ProactorBase = fb2::ProactorBase;
+
   virtual ~ListenerInterface();
 
   void RegisterPool(ProactorPool* pool);

@@ -18,6 +18,10 @@ namespace io {
 using nonstd::expected;
 using nonstd::make_unexpected;
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define _MAC_OS_ 1
+#endif
+
 namespace {
 
 ssize_t ReadAll(int fd, size_t offset, uint8_t* next, size_t len) {
@@ -79,7 +83,9 @@ class PosixReadFile final : public ReadonlyFile {
  public:
   PosixReadFile(int fd, size_t sz, int advice, bool drop)
       : fd_(fd), file_size_(sz), drop_cache_(drop) {
+#ifndef _MAC_OS_
     posix_fadvise(fd_, 0, 0, advice);
+#endif
   }
 
   virtual ~PosixReadFile() {
@@ -89,7 +95,9 @@ class PosixReadFile final : public ReadonlyFile {
   error_code Close() override {
     if (fd_) {
       if (drop_cache_)
+#ifndef _MAC_OS_
         posix_fadvise(fd_, 0, 0, POSIX_FADV_DONTNEED);
+#endif
       close(fd_);
       fd_ = 0;
     }
@@ -198,7 +206,10 @@ expected<ReadonlyFile*, ::error_code> OpenRead(std::string_view name,
     return make_unexpected(StatusFileError());
   }
 
-  int advice = opts.sequential ? POSIX_FADV_SEQUENTIAL : POSIX_FADV_NORMAL;
+  int advice = 0;
+#ifndef _MAC_OS_
+  advice = opts.sequential ? POSIX_FADV_SEQUENTIAL : POSIX_FADV_NORMAL;
+#endif
   return new PosixReadFile(fd, sb.st_size, advice, opts.drop_cache_on_close);
 }
 

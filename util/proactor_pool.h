@@ -6,7 +6,9 @@
 
 #include <absl/container/flat_hash_set.h>
 
+#if defined(__linux__)
 #include <memory_resource>
+#endif
 #include <string_view>
 
 #include "base/RWSpinLock.h"
@@ -224,7 +226,11 @@ class ProactorPool {
 
   folly::RWSpinLock str_lock_;
   absl::flat_hash_set<std::string_view> str_set_;
+
+#if defined(__linux__)
+  // clang on my mac (13.0) does not have monotonic_buffer_resource yet.
   std::pmr::monotonic_buffer_resource str_arena_;
+#endif
 
   enum State { STOPPED, RUN } state_ = STOPPED;
 
