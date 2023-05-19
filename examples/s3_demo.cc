@@ -29,8 +29,10 @@ ABSL_FLAG(string, path, "", "s3://bucket/path");
 ABSL_FLAG(string, endpoint, "", "s3 endpoint");
 ABSL_FLAG(uint32_t, num_iters, 1, "Number of iterations");
 ABSL_FLAG(uint32_t, delay, 5, "Delay in seconds between each iteration");
+ABSL_FLAG(uint32_t, write_factor, 10000, "Number of 1K blocks to write");
 
 namespace h2 = boost::beast::http;
+using absl::GetFlag;
 
 #define CHECK_EC(x)                                                                 \
   do {                                                                              \
@@ -49,7 +51,7 @@ template <typename Body> std::ostream& operator<<(std::ostream& os, const h2::re
 }
 
 void ListBuckets(AWS* aws, ProactorBase* proactor) {
-  string endpoint = absl::GetFlag(FLAGS_endpoint);
+  string endpoint = GetFlag(FLAGS_endpoint);
   if (endpoint.empty()) {
     endpoint = "s3.amazonaws.com:80";
   }
@@ -86,13 +88,13 @@ int main(int argc, char* argv[]) {
 #endif
   pp->Run();
 
-  AWS aws{"s3", absl::GetFlag(FLAGS_region)};
+  AWS aws{"s3", GetFlag(FLAGS_region)};
 
   pp->GetNextProactor()->Await([&] { CHECK_EC(aws.Init()); });
 
-  string cmd = absl::GetFlag(FLAGS_cmd);
-  string path = absl::GetFlag(FLAGS_path);
-  string endpoint = absl::GetFlag(FLAGS_endpoint);
+  string cmd = GetFlag(FLAGS_cmd);
+  string path = GetFlag(FLAGS_path);
+  string endpoint = GetFlag(FLAGS_endpoint);
 
   if (path.empty()) {
     CHECK(cmd == "ls");
@@ -114,14 +116,14 @@ int main(int argc, char* argv[]) {
         auto ec = bucket.Connect(300);
         if (ec)
           return ec;
-        unsigned num_iters = absl::GetFlag(FLAGS_num_iters);
+        unsigned num_iters = GetFlag(FLAGS_num_iters);
         for (unsigned i = 0; i < num_iters; ++i) {
           ec = bucket.ListAllObjects(obj_path, cb);
           if (ec)
             return ec;
 
           if (i + 1 < num_iters)
-            ThisFiber::SleepFor(chrono::seconds(absl::GetFlag(FLAGS_delay)));
+            ThisFiber::SleepFor(chrono::seconds(GetFlag(FLAGS_delay)));
         }
         return ec;
       });
@@ -158,7 +160,7 @@ int main(int argc, char* argv[]) {
           CHECK(file);
           std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
           memset(buf.get(), 'R', 1024);
-          for (size_t i = 0; i < 10240; ++i) {
+          for (size_t i = 0; i < GetFlag(FLAGS_write_factor); ++i) {
             ec = file->Write(io::Bytes(buf.get(), 1024));
             CHECK(!ec);
           }

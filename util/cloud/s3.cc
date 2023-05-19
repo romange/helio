@@ -17,11 +17,7 @@
 #include "util/cloud/s3_file.h"
 #include "util/http/encoding.h"
 
-#ifdef USE_FB2
 #include "util/fibers/proactor_base.h"
-#else
-#include "util/proactor_base.h"
-#endif
 
 namespace util {
 namespace cloud {
@@ -300,6 +296,7 @@ io::Result<io::WriteFile*> S3Bucket::OpenWriteFile(std::string_view path) {
   error_code ec = Connect(http_client->connect_timeout_ms());
   if (ec)
     return make_unexpected(ec);
+
   return OpenS3WriteFile(region_, full_path, aws_, http_client.release());
 }
 

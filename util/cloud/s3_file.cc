@@ -22,6 +22,24 @@ namespace cloud {
 
 namespace {
 
+#define RETURN_ON_ERR(x)                                   \
+  do {                                                     \
+    auto __ec = (x);                                       \
+    if (__ec) {                                            \
+      VLOG(1) << "Error " << __ec << " while calling " #x; \
+      return __ec;                                         \
+    }                                                      \
+  } while (0)
+
+#define RETURN_UNEXPECTED(x)                                    \
+  do {                                                          \
+    auto __ec = (x);                                            \
+    if (__ec) {                                                 \
+      LOG(WARNING) << "Error " << __ec << " while calling " #x; \
+      return nonstd::make_unexpected(__ec);                     \
+    }                                                           \
+  } while (0)
+
 // AWS requires at least 5MB part size. We use 8MB.
 constexpr size_t kMaxPartSize = 1ULL << 23;
 
@@ -99,6 +117,35 @@ error_code ParseXmlStartUpload(std::string_view xml_resp, string* upload_id) {
   return error_code{};
 }
 
+io::Result<string> InitiateMultiPart(string_view key_path, const AWS& aws, AwsSignKey* skey,
+                                     http::Client* client) {
+  string url("/");
+  url.append(key_path).append("?uploads=");
+
+  // Signed params must look like key/value pairs. Instead of handling key-only params
+  // in the signing code we just pass empty value here.
+
+  h2::request<h2::empty_body> req{h2::verb::post, url, 11};
+  h2::response<h2::string_body> resp;
+
+  req.set(h2::field::host, client->host());
+
+  RETURN_UNEXPECTED(aws.SendRequest(client, skey, &req, &resp));
+
+  if (resp.result() != h2::status::ok) {
+    LOG(ERROR) << "InitiateMultiPart Error: " << resp;
+
+    return nonstd::make_unexpected(make_error_code(errc::io_error));
+  }
+
+  string upload_id;
+
+  RETURN_UNEXPECTED(ParseXmlStartUpload(resp.body(), &upload_id));
+
+  VLOG(1) << "InitiateMultiPart: " << req << "/" << resp << "\nUploadId: " << upload_id;
+  return upload_id;
+}
+
 class S3ReadFile : public io::ReadonlyFile {
  public:
   // does not own pool object, only wraps it with ReadonlyFile interface.
@@ -150,8 +197,7 @@ class S3WriteFile : public io::WriteFile {
    * @param aws - initialized AWS object.
    * @param pool - https connection pool connected to google api server.
    */
-  S3WriteFile(std::string_view name, string upload_id, AwsSignKey skey, const AWS& aws,
-              http::Client* client);
+  S3WriteFile(string_view key_name, string_view region, const AWS& aws, http::Client* client);
 
   error_code Close() final;
 
@@ -168,7 +214,7 @@ class S3WriteFile : public io::WriteFile {
   size_t uploaded_ = 0;
   unique_ptr<http::Client> client_;
   boost::beast::multi_buffer body_mb_;
-  std::vector<string> parts_;
+  vector<string> parts_;
 };
 
 S3ReadFile::~S3ReadFile() {
@@ -185,18 +231,14 @@ error_code S3ReadFile::Open(string_view region) {
 
   VLOG(1) << "Unsigned request: " << req;
   sign_key_ = aws_.GetSignKey(region);
-  error_code ec = aws_.Handshake(client_, &sign_key_, &req, &parser_);
-  if (ec) {
-    return ec;
-  }
+  RETURN_ON_ERR(aws_.Handshake(client_, &sign_key_, &req, &parser_));
 
   const auto& msg = parser_.get();
   VLOG(1) << "HeaderResp: " << msg.result_int() << " " << msg;
 
   if (msg.result() == h2::status::not_found) {
-    ec = DrainResponse(client_, &parser_);
-    if (ec)
-      return ec;
+    RETURN_ON_ERR(DrainResponse(client_, &parser_));
+
     return make_error_code(errc::no_such_file_or_directory);
   }
 
@@ -218,7 +260,7 @@ error_code S3ReadFile::Open(string_view region) {
     }
   }
 
-  return ec;
+  return error_code{};
 }
 
 error_code S3ReadFile::Close() {
@@ -280,21 +322,22 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
   return read_sofar;
 }
 
-S3WriteFile::S3WriteFile(string_view name, string upload_id, AwsSignKey skey, const AWS& aws,
-                         http::Client* client)
-    : WriteFile(name), skey_(std::move(skey)), aws_(aws), upload_id_(move(upload_id)),
-      client_(client), body_mb_(kMaxPartSize) {
+S3WriteFile::S3WriteFile(string_view name, string_view region, const AWS& aws, http::Client* client)
+    : WriteFile(name), aws_(aws), client_(client), body_mb_(kMaxPartSize) {
+  skey_ = aws_.GetSignKey(region);
 }
 
 error_code S3WriteFile::Close() {
   error_code ec = Upload();
   if (ec) {
+    LOG(WARNING) << "S3WriteFile::Close: " << ec.message();
     return ec;
   }
 
   if (parts_.empty())
     return ec;
 
+  DCHECK(!upload_id_.empty());
   VLOG(1) << "Finalizing " << upload_id_ << " with " << parts_.size() << " parts";
 
   string url("/");
@@ -354,9 +397,7 @@ io::Result<size_t> S3WriteFile::WriteSome(const iovec* v, uint32_t len) {
       len -= written;
       buffer += written;
       if (body_mb_.size() == body_mb_.max_size()) {
-        error_code ec = Upload();
-        if (ec)
-          return nonstd::make_unexpected(ec);
+        RETURN_UNEXPECTED(Upload());
       }
     }
   }
@@ -383,58 +424,88 @@ error_code S3WriteFile::Upload() {
   if (body_size == 0)
     return error_code{};
 
+  h2::request<h2::dynamic_body> req{h2::verb::put, "", 11};
+  req.set(h2::field::content_type, http::kBinMime);
+  req.set(h2::field::host, client_->host());
+
+  h2::response<h2::string_body> resp;
   string url("/");
 
   // TODO: To figure out why SHA256 is so slow.
   // detail::Sha256String(body_mb_, sha256);
   absl::StrAppend(&url, create_file_name_);
 
-  absl::StrAppend(&url, "?uploadId=", upload_id_);
-  absl::StrAppend(&url, "&partNumber=", parts_.size() + 1);
+  if (upload_id_.empty()) {
+    if (body_size == body_mb_.max_size()) {
+      auto res = InitiateMultiPart(create_file_name_, aws_, &skey_, client_.get());
+      if (!res) {
+        return res.error();
+      }
+      upload_id_ = std::move(*res);
+    }
+  }
 
-  h2::request<h2::dynamic_body> req{h2::verb::put, url, 11};
-  h2::response<h2::string_body> resp;
+  if (!upload_id_.empty()) {
+    absl::StrAppend(&url, "?uploadId=", upload_id_);
+    absl::StrAppend(&url, "&partNumber=", parts_.size() + 1);
+  }
 
-  req.set(h2::field::content_type, http::kBinMime);
-  req.set(h2::field::host, client_->host());
+  req.target(url);
   req.body() = std::move(body_mb_);
   req.prepare_payload();
 
   skey_.Sign(string_view{AWS::kUnsignedPayloadSig}, &req);
   VLOG(2) << "UploadReq: " << req.base();
-  error_code ec = client_->Send(req, &resp);
-  if (ec)
-    return ec;
 
-  VLOG(2) << "UploadResp: " << resp;
+  bool etag_found = false;
+  http::Client::BoostError bec;
 
-  // TODO: small files do not need to be uploaded via multi-part and could be uploaded
-  // via Put object API: https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
-  // For now to just use multi-part for all files.
-  // This creates a minor complexity that we need to check if the file is small
-  // and in that case we do not need to fetch etag.
-  if (!parts_.empty() || body_size == body_mb_.max_size()) {
+  // Retry several times. During I/O intensive operations we can get ECONNABORTED
+  // or other weird artifacts.
+  for (unsigned j = 0; j < 3; ++j) {
+    bec = client_->Send(req, &resp);
+    if (bec) {
+      VLOG(1) << "Upload error: " << bec << " " << bec.message();
+      RETURN_ON_ERR(client_->Reconnect());
+
+      continue;
+    }
+
+    if (resp.result() != h2::status::ok) {
+      LOG(ERROR) << "Upload error: " << resp.base();
+      return make_error_code(errc::io_error);
+    }
+
+    VLOG(2) << "UploadResp: " << resp;
+
+    if (resp[h2::field::connection] == "close") {
+      RETURN_ON_ERR(client_->Reconnect());
+    }
+
+    if (upload_id_.empty())
+      return error_code{};
+
+    // sometimes s3 returns empty 200 response without any headers.
     auto it = resp.find(h2::field::etag);
-    if (it == resp.end()) {
-      LOG(WARNING) << "No Etag in response: " << resp;
-      return make_error_code(errc::io_error);
+    if (it != resp.end()) {
+      auto sv = it->value();
+      if (sv.size() <= 2) {
+        return make_error_code(errc::io_error);
+      }
+      sv.remove_prefix(1);
+      sv.remove_suffix(1);
+
+      // sv.to_string()  is missing on older versions of boost.beast.
+      parts_.emplace_back(string(sv));
+      etag_found = true;
+      break;
     }
 
-    auto sv = it->value();
-    if (sv.size() <= 2) {
-      return make_error_code(errc::io_error);
-    }
-    sv.remove_prefix(1);
-    sv.remove_suffix(1);
-    parts_.emplace_back(sv.to_string());
+    VLOG(1) << "No Etag in response: " << req.base() << " " << create_file_name_ << " "
+            << parts_.size();
   }
 
-  if (resp[h2::field::connection] == "close") {
-    ec = client_->Reconnect();
-    if (ec)
-      return ec;
-  }
-  return ec;
+  return etag_found ? error_code{} : make_error_code(errc::io_error);
 }
 
 }  // namespace
@@ -459,37 +530,7 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
 
 io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, const AWS& aws,
                                            http::Client* client) {
-  string url("/");
-  url.append(key_path).append("?uploads=");
-
-  // Signed params must look like key/value pairs. Instead of handling key-only params
-  // in the signing code we just pass empty value here.
-
-  h2::request<h2::empty_body> req{h2::verb::post, url, 11};
-  h2::response<h2::string_body> resp;
-
-  req.set(h2::field::host, client->host());
-  auto sign_key = aws.GetSignKey(region);
-  unique_ptr<http::Client> bucket_client{client};
-
-  auto ec = aws.SendRequest(client, &sign_key, &req, &resp);
-  if (ec)
-    return nonstd::make_unexpected(ec);
-
-  if (resp.result() != h2::status::ok) {
-    LOG(ERROR) << "OpenS3WriteFile Error: " << resp;
-
-    return nonstd::make_unexpected(make_error_code(errc::io_error));
-  }
-
-  string upload_id;
-  ec = ParseXmlStartUpload(resp.body(), &upload_id);
-  if (ec)
-    return nonstd::make_unexpected(ec);
-
-  VLOG(1) << "OpenS3WriteFile: " << req << "/" << resp << "\nUploadId: " << upload_id;
-
-  return new S3WriteFile{key_path, move(upload_id), move(sign_key), aws, bucket_client.release()};
+  return new S3WriteFile{key_path, region, aws, client};
 }
 
 }  // namespace cloud

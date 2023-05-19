@@ -77,7 +77,7 @@ void AsyncWriteState::OnCb(Result<size_t> res) {
 Result<size_t> ReadSomeBytes(const iovec* dest, uint32_t len, Bytes source, off_t* offs) {
   ssize_t read_total = 0;
   while (size_t(*offs) < source.size() && len > 0) {
-    size_t read_sz = min(source.size() - *offs, dest->iov_len);
+    size_t read_sz = min<size_t>(source.size() - *offs, dest->iov_len);
     memcpy(dest->iov_base, source.data() + *offs, read_sz);
     read_total += read_sz;
     *offs += read_sz;
