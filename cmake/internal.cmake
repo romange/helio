@@ -166,8 +166,9 @@ SET_PROPERTY(GLOBAL PROPERTY "test_list_property" "")
 
 add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})
 
-function(cxx_test name)
-  add_executable(${name} ${name}.cc)
+function(cxx_test path)
+  get_filename_component(name ${path} NAME)
+  add_executable(${name} ${path}.cc)
   CMAKE_PARSE_ARGUMENTS(parsed "" "" "LABELS" ${ARGN})
 
   if (NOT parsed_LABELS)
