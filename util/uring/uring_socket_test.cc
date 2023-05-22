@@ -85,9 +85,7 @@ void UringSocketTest::TearDown() {
 
   listen_socket_.reset();
   conn_socket_.reset();
-  if (accept_fb_.IsJoinable()) {
-    accept_fb_.Join();
-  }
+  accept_fb_.PermJoin();
   proactor_->Stop();
   proactor_thread_.join();
   proactor_.reset();
