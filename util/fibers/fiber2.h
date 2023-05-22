@@ -70,6 +70,9 @@ class Fiber {
 
   void Join();
 
+  // Join fiber if it's running, else do nothing.
+  void JoinIfNeeded();
+
   void Detach();
 
  private:

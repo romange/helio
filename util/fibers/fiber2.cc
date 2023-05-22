@@ -36,5 +36,10 @@ void Fiber::Join() {
   impl_.reset();
 }
 
+void Fiber::JoinIfNeeded() {
+  if (IsJoinable())
+    Join();
+}
+
 }  // namespace fb2
 }  // namespace util
