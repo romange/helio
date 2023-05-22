@@ -36,7 +36,7 @@ void Fiber::Join() {
   impl_.reset();
 }
 
-void Fiber::PermJoin() {
+void Fiber::JoinIfNeeded() {
   if (IsJoinable())
     Join();
 }
