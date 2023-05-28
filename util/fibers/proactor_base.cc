@@ -6,7 +6,13 @@
 
 #include <absl/base/attributes.h>
 #include <signal.h>
+
+#if __linux__
 #include <sys/eventfd.h>
+constexpr int kNumSig = _NSIG;
+#else
+constexpr int kNumSig = NSIG;
+#endif
 
 #include <mutex>  // once_flag
 
@@ -24,7 +30,7 @@ struct signal_state {
     std::function<void(int)> cb;
   };
 
-  Item signal_map[_NSIG];
+  Item signal_map[kNumSig];
 };
 
 signal_state* get_signal_state() {
@@ -35,7 +41,7 @@ signal_state* get_signal_state() {
 
 void SigAction(int signal, siginfo_t*, void*) {
   signal_state* state = get_signal_state();
-  DCHECK_LT(signal, _NSIG);
+  DCHECK_LT(signal, kNumSig);
 
   auto& item = state->signal_map[signal];
   auto cb = [signal, &item] { item.cb(signal); };
@@ -59,13 +65,17 @@ __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
+#ifdef __linux__
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   CHECK_GE(wake_fd_, 0);
   VLOG(1) << "Created wake_fd is " << wake_fd_;
+#endif
 }
 
 ProactorBase::~ProactorBase() {
+#ifdef __linux__
   close(wake_fd_);
+#endif
 
   signal_state* ss = get_signal_state();
   for (size_t i = 0; i < ABSL_ARRAYSIZE(ss->signal_map); ++i) {

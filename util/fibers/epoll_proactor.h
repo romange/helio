@@ -15,10 +15,7 @@ namespace detail {
   class Scheduler;
 }
 
-class EpollDispatcher;
-
 class EpollProactor : public ProactorBase {
-  friend class EpollDispatcher;
  public:
   EpollProactor();
   ~EpollProactor();
@@ -67,7 +64,6 @@ class EpollProactor : public ProactorBase {
     int32_t index = -1;
     int32_t unused = -1;
   };
-  static_assert(sizeof(CompletionEntry) == 40, "");
 
   std::vector<CompletionEntry> centries_;
   int32_t next_free_ce_ = -1;

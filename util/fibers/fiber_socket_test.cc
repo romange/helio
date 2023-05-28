@@ -2,34 +2,26 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
-#include "util/uring/uring_socket.h"
+#include <thread>
 
 #include "base/gtest.h"
 #include "base/logging.h"
-
-#ifdef USE_FB2
+#include "util/fiber_socket_base.h"
 #include "util/fibers/fiber2.h"
-#else
-#include "util/fibers/fiber.h"
+#include "util/fibers/synchronization.h"
+
+#ifdef __linux__
+#include "util/fibers/uring_proactor.h"
 #endif
+#include "util/fibers/epoll_proactor.h"
 
 namespace util {
-namespace uring {
-
-#ifdef USE_FB2
-using Proactor = fb2::UringProactor;
-using fb2::Fiber;
-using fb2::Done;
-using fb2::UringSocket;
-#else
-using fibers_ext::Fiber;
-using fibers_ext::Done;
-#endif
+namespace fb2 {
 
 constexpr uint32_t kRingDepth = 8;
 using namespace std;
 
-class UringSocketTest : public testing::Test {
+class FiberSocketTest : public testing::Test {
  protected:
   void SetUp() final;
 
@@ -39,9 +31,9 @@ class UringSocketTest : public testing::Test {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
   }
 
-  using IoResult = Proactor::IoResult;
+  using IoResult = int;
 
-  unique_ptr<Proactor> proactor_;
+  unique_ptr<ProactorBase> proactor_;
   thread proactor_thread_;
   unique_ptr<LinuxSocketBase> listen_socket_;
   unique_ptr<LinuxSocketBase> conn_socket_;
@@ -52,12 +44,30 @@ class UringSocketTest : public testing::Test {
   FiberSocketBase::endpoint_type listen_ep_;
 };
 
-void UringSocketTest::SetUp() {
-  proactor_ = std::make_unique<Proactor>();
-  proactor_thread_ = thread{[this] {
-    proactor_->Init(kRingDepth);
-    proactor_->Run();
+void FiberSocketTest::SetUp() {
+#ifdef __linux__
+  UringProactor* proactor = new UringProactor;
+#else
+  EpollProactor* proactor = new EpollProactor;
+#endif
+
+  atomic_bool init_done{false};
+
+  proactor_thread_ = thread{[proactor, &init_done] {
+#ifdef __linux__
+    proactor->Init(kRingDepth);
+#else
+    proactor->Init();
+#endif
+    init_done.store(true, memory_order_release);
+    proactor->Run();
   }};
+  // hack to wait until proactor thread crosses init.
+  while (!init_done.load()) {
+    usleep(1000);
+  }
+  proactor_.reset(proactor);
+
   listen_socket_.reset(proactor_->CreateSocket());
   auto ec = listen_socket_->Listen(0, 0);
   CHECK(!ec);
@@ -66,7 +76,7 @@ void UringSocketTest::SetUp() {
   auto address = boost::asio::ip::make_address("127.0.0.1");
   listen_ep_ = FiberSocketBase::endpoint_type{address, listen_port_};
 
-  accept_fb_ = proactor_->LaunchFiber([this] {
+  accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
     auto accept_res = listen_socket_->Accept();
     if (accept_res) {
       FiberSocketBase* sock = *accept_res;
@@ -78,10 +88,8 @@ void UringSocketTest::SetUp() {
   });
 }
 
-void UringSocketTest::TearDown() {
-  proactor_->Await([&] {
-    listen_socket_->Shutdown(SHUT_RDWR);
-  });
+void FiberSocketTest::TearDown() {
+  proactor_->Await([&] { listen_socket_->Shutdown(SHUT_RDWR); });
 
   listen_socket_.reset();
   conn_socket_.reset();
@@ -91,10 +99,12 @@ void UringSocketTest::TearDown() {
   proactor_.reset();
 }
 
-TEST_F(UringSocketTest, Basic) {
+TEST_F(FiberSocketTest, Basic) {
   unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
 
+  LOG(INFO) << "before wait ";
   proactor_->Await([&] {
+    LOG(INFO) << "Connecting to " << listen_ep_;
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
     accept_fb_.Join();
@@ -106,7 +116,7 @@ TEST_F(UringSocketTest, Basic) {
   });
 }
 
-TEST_F(UringSocketTest, Timeout) {
+TEST_F(FiberSocketTest, Timeout) {
   unique_ptr<LinuxSocketBase> sock[2];
   for (size_t i = 0; i < 2; ++i) {
     sock[i].reset(proactor_->CreateSocket());
@@ -135,7 +145,7 @@ TEST_F(UringSocketTest, Timeout) {
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
-TEST_F(UringSocketTest, Poll) {
+TEST_F(FiberSocketTest, Poll) {
   unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
   struct linger ling;
   ling.l_onoff = 1;
@@ -158,10 +168,7 @@ TEST_F(UringSocketTest, Poll) {
     EXPECT_TRUE(POLLERR & mask);
   };
 
-  proactor_->Await([&] {
-    UringSocket* us = static_cast<UringSocket*>(this->conn_socket_.get());
-    us->PollEvent(POLLHUP | POLLERR, poll_cb);
-  });
+  proactor_->Await([&] { conn_socket_->PollEvent(POLLHUP | POLLERR, poll_cb); });
 
   proactor_->Await([&] {
     auto ec = sock->Close();
@@ -170,7 +177,7 @@ TEST_F(UringSocketTest, Poll) {
   usleep(100);
 }
 
-TEST_F(UringSocketTest, AsyncWrite) {
+TEST_F(FiberSocketTest, AsyncWrite) {
   unique_ptr<LinuxSocketBase> sock;
   Done done;
   proactor_->Dispatch([&] {
@@ -187,7 +194,7 @@ TEST_F(UringSocketTest, AsyncWrite) {
   done.Wait();
 }
 
-TEST_F(UringSocketTest, UDS) {
+TEST_F(FiberSocketTest, UDS) {
   string path = base::GetTestTempPath("sock.uds");
 
   unique_ptr<LinuxSocketBase> sock;
@@ -200,5 +207,5 @@ TEST_F(UringSocketTest, UDS) {
   });
 }
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

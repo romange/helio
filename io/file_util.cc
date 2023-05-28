@@ -11,7 +11,7 @@
 #include "base/logging.h"
 #include "io/file.h"
 
-#if defined(__APPLE__) && defined(__MACH__)
+#if (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__)
 #define _MAC_OS_ 1
 #endif
 

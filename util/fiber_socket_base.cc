@@ -71,11 +71,20 @@ error_code LinuxSocketBase::Create(unsigned short pfamily) {
   DCHECK_EQ(fd_, -1);
 
   error_code ec;
+#ifdef __linux__
+  constexpr auto kMask = SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
+#else
+  constexpr auto kMask = SOCK_STREAM;
+#endif
 
-  int fd = socket(pfamily, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  int fd = socket(pfamily, kMask, 0);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
+#ifndef __linux__
+  int prev = fcntl(fd, F_GETFL, 0);
+  CHECK_EQ(0, fcntl(fd, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK));
+#endif
   fd_ = fd << 3;
   if (pfamily == AF_UNIX) {
     fd_ |= IS_UDS;

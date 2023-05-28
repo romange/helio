@@ -152,6 +152,11 @@ class FiberInterface {
   }
 
   // For MPSCIntrusiveQueue queue.
+#if defined(__clang__)
+   // clang ubsan checks that dest is a proper object but it breaks with MPSCIntrusiveQueue
+   // setting a stub.next field since the stub is not properly initialized.
+  __attribute__((no_sanitize("undefined")))
+#endif
   friend void MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
     dest->next_.store(next_node, std::memory_order_relaxed);
   }

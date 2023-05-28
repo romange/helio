@@ -37,6 +37,7 @@ class ProactorBase  {
   enum { kTaskQueueLen = 256 };
 
   enum Kind { EPOLL = 1, IOURING = 2 };
+  enum EpollFlags { EPOLL_IN = 1, EPOLL_OUT = 4, EPOLL_ERROR = 8 };
 
   // Corresponds to level 0.
   // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.
@@ -222,7 +223,7 @@ class ProactorBase  {
   }
 
   pthread_t thread_id_ = 0U;
-  int wake_fd_;
+  int wake_fd_ = -1;
   bool is_stopped_ = true;
 
   std::atomic_uint32_t tq_seq_{0}, tq_full_ev_{0};

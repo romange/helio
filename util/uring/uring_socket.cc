@@ -184,7 +184,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       CHECK_GT(res, 0);  // TODO - handle errors.
     };
 
-    SubmitEntry se = p->GetSubmitEntry(move(cb), 0);
+    SubmitEntry se = p->GetSubmitEntry(move(cb));
     se.PrepWriteFixed(fd, reg_buf, short_len, 0, 0);
     se.sqe()->flags |= register_flag();
 
@@ -280,7 +280,7 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) 
     cb(make_unexpected(error_code{-res, generic_category()}));
   };
 
-  SubmitEntry se = proactor->GetSubmitEntry(std::move(mycb), 0);
+  SubmitEntry se = proactor->GetSubmitEntry(std::move(mycb));
   se.PrepSendMsg(fd, msg, MSG_NOSIGNAL);
   se.sqe()->flags |= register_flag();
 }
@@ -372,7 +372,7 @@ uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t
   #else
   auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, uint64_t) { cb(res); };
   #endif
-  SubmitEntry se = p->GetSubmitEntry(std::move(se_cb), 0);
+  SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
   se.PrepPollAdd(fd, event_mask);
   se.sqe()->flags |= register_flag();
 

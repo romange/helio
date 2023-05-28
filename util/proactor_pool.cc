@@ -65,10 +65,12 @@ void ProactorPool::Run() {
   SetupProactors();
 
   Await([](unsigned index, auto*) {
-    // It seems to simplify things in kernel for io_uring.
-    // https://github.com/axboe/liburing/issues/218
-    // I am not sure what's how it impacts higher application levels.
+  // It seems to simplify things in kernel for io_uring.
+  // https://github.com/axboe/liburing/issues/218
+  // I am not sure what's how it impacts higher application levels.
+#ifdef __linux__
     unshare(CLONE_FS);
+#endif
     ProactorBase::SetIndex(index);
   });
 
@@ -188,6 +190,7 @@ void ProactorPool::SetupProactors() {
     };
 
     pthread_t tid = base::StartThread(buf, std::move(cb));
+#if defined(__linux__) || defined(__FreeBSD__)
     if (set_affinity) {
       // Spread proactor threads across online CPUs.
       int rel_indx = i % num_online_cpus;
@@ -205,6 +208,10 @@ void ProactorPool::SetupProactors() {
 
       CPU_CLR(abs_cpu, &cps);
     }
+#else
+    (void)tid;
+    (void)set_affinity;
+#endif
   }
 
   state_ = RUN;

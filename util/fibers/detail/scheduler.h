@@ -4,10 +4,10 @@
 
 #pragma once
 
+#include <vector>
+
 #define __FIBERS_SCHEDULER_H__
-
 #include "util/fibers/detail/fiber_interface.h"
-
 #undef __FIBERS_SCHEDULER_H__
 
 namespace util {

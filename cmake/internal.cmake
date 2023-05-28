@@ -11,7 +11,8 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "Async requires a 64bit target architecture.")
 endif()
 
-if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Linux" AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin")
+if(NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Linux" AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "Darwin"
+   AND NOT "${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
   message(FATAL_ERROR "Unsupported ${CMAKE_SYSTEM_NAME}")
 endif()
 
@@ -96,7 +97,8 @@ set(COMPILE_OPTS "${COMPILE_OPTS} -fno-omit-frame-pointer -Wno-unused-parameter"
 if (NOT MARCH_OPT)
   if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     set(MARCH_OPT "-march=armv8.2-a+fp16+rcpc+dotprod+crypto")
-  elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "amd64")
+    # FreeBSD uses amd64.
     # Github actions use DSv2 that may use haswell cpus.
     # We will make it friendly towards older architectures so that will run on developers laptops.
     # However, we will tune it towards intel skylakes that are common in public clouds.

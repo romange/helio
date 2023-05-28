@@ -15,13 +15,26 @@
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
-#include "util/fibers/uring_proactor.h"
+
+#ifdef __linux__
+ #include "util/fibers/uring_proactor.h"
+#else
+  #include <pthread_np.h>
+#endif
 
 using namespace std;
 using absl::StrCat;
 
 namespace util {
 namespace fb2 {
+
+#ifndef __linux__
+
+int gettid() {
+  return pthread_getthreadid_np();
+}
+
+#endif
 
 constexpr uint32_t kRingDepth = 16;
 
@@ -53,8 +66,13 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
       proactor.reset(new EpollProactor);
       break;
     case ProactorBase::Kind::IOURING:
+#ifdef __linux__
       proactor.reset(new UringProactor);
+#else
+      LOG(FATAL) << "IOUring is not supported on this platform";
+#endif
       break;
+
   }
 
   proactor_thread = thread{[=] {
@@ -64,9 +82,12 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
         static_cast<EpollProactor*>(proactor.get())->Init();
         break;
       case ProactorBase::Kind::IOURING:
+#ifdef __linux__
         static_cast<UringProactor*>(proactor.get())->Init(kRingDepth);
+#endif
         break;
     }
+
     proactor->Run();
   }};
 }
@@ -84,6 +105,7 @@ class ProactorTest : public testing::TestWithParam<string_view> {
     }
 
     LOG(FATAL) << "Unknown param: " << param;
+    return nullptr;
   }
 
   void SetUp() final {
@@ -102,13 +124,18 @@ class ProactorTest : public testing::TestWithParam<string_view> {
     return proactor_th_->get();
   }
 
-  using IoResult = UringProactor::IoResult;
+  using IoResult = int;
 
   std::unique_ptr<ProactorThread> proactor_th_;
 };
 
 INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
-                         testing::Values("epoll", "uring"));
+                         testing::Values("epoll"
+#ifdef __linux__
+                         ,"uring"
+#endif
+                         ));
+
 struct SlistMember {
   detail::FI_ListHook hook;
 };
@@ -272,6 +299,7 @@ TEST_F(FiberTest, Future) {
   fb.Join();
 }
 
+#ifdef __linux__
 TEST_F(FiberTest, AsyncEvent) {
   Done done;
 
@@ -291,6 +319,7 @@ TEST_F(FiberTest, AsyncEvent) {
   LOG(INFO) << "DispatchBrief";
   done.Wait();
 }
+#endif
 
 TEST_F(FiberTest, Notify) {
   EventCount ec;
@@ -322,8 +351,8 @@ TEST_F(FiberTest, AtomicGuard) {
 }
 
 TEST_P(ProactorTest, AsyncCall) {
-  ASSERT_FALSE(UringProactor::IsProactorThread());
-  ASSERT_EQ(-1, UringProactor::GetIndex());
+  ASSERT_FALSE(ProactorBase::IsProactorThread());
+  ASSERT_EQ(-1, ProactorBase::GetIndex());
 
   for (unsigned i = 0; i < ProactorBase::kTaskQueueLen * 2; ++i) {
     VLOG(1) << "Dispatch: " << i;

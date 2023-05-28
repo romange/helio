@@ -46,17 +46,13 @@ class UringProactor : public ProactorBase {
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
    * @param cb - completion callback.
+   * @param submit_type - user tag to be supplied to the completion callback. This is useful to
+   *                      distinguish between different CQEs when debugging problems.
+   *                      tags 0-255 are reserved for internal use.
    * @return SubmitEntry with initialized userdata.
    *
-   * This method might block the calling fiber therefore it should not be called within proactor
-   * context. In other words it can not be called from  *Brief([]...) calls to Proactor.
-   * In addition, this method can not be used for introducing IOSQE_IO_LINK chains since they
-   * require atomic SQE allocation.
-   * @todo We should add GetSubmitEntries that can allocate multiple SQEs atomically.
-   *       In that case we will need RegisterCallback function that takes an unregistered SQE
-   *       and assigns a callback to it. GetSubmitEntry will be implemented using those functions.
    */
-  SubmitEntry GetSubmitEntry(CbType cb, int64_t unused = 0);
+  SubmitEntry GetSubmitEntry(CbType cb, uint16_t submit_tag = 0);
 
   // Returns number of entries available for submitting to io_uring.
   uint32_t GetSubmitRingAvailability() const {

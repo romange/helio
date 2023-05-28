@@ -118,7 +118,7 @@ void ListenerInterface::RunAcceptLoop() {
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
     // Most probably next is in another thread.
-    ProactorBase* next = PickConnectionProactor(peer.get());
+    fb2::ProactorBase* next = PickConnectionProactor(peer.get());
 
     peer->SetProactor(next);
     Connection* conn = NewConnection(next);
@@ -219,7 +219,7 @@ error_code ListenerInterface::ConfigureServerSocket(int fd) {
   return ec;
 }
 
-ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
+fb2::ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
   return pool_->GetNextProactor();
 }
 
@@ -234,8 +234,8 @@ void ListenerInterface::TraverseConnections(TraverseCB cb) {
   });
 }
 
-void ListenerInterface::Migrate(Connection* conn, ProactorBase* dest) {
-  ProactorBase* src_proactor = conn->socket()->proactor();
+void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
+  fb2::ProactorBase* src_proactor = conn->socket()->proactor();
   CHECK(src_proactor->InMyThread());
 
   if (src_proactor == dest)
