@@ -8,9 +8,11 @@
 #include <absl/time/clock.h>
 #include <signal.h>
 #include <string.h>
+
+#ifdef  __linux__
 #include <sys/epoll.h>
-// #include <sys/eventfd.h>
 #include <sys/timerfd.h>
+#endif
 
 #include "base/logging.h"
 #include "base/proc_util.h"

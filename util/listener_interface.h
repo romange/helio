@@ -30,11 +30,11 @@ class ListenerInterface {
 
   //! Creates a dedicated handler for a new connection.
   //! Called per new accepted connection
-  virtual Connection* NewConnection(ProactorBase* pb) = 0;
+  virtual Connection* NewConnection(fb2::ProactorBase* pb) = 0;
 
   //! Hook to be notified when listener interface start listening and accepting sockets.
   //! Called once.
-  virtual void PreAcceptLoop(ProactorBase* pb) {
+  virtual void PreAcceptLoop(fb2::ProactorBase* pb) {
   }
 
   // Called by AcceptServer when shutting down start and before all connections are closed.
@@ -49,7 +49,7 @@ class ListenerInterface {
   // bind is called.
   virtual std::error_code ConfigureServerSocket(int fd);
 
-  virtual ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
+  virtual fb2::ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
 
   // This callback should not preempt because we traverse the list of connections
   // without locking it.
@@ -64,7 +64,7 @@ class ListenerInterface {
   // Must be called from the connection fiber (that runs HandleRequests() function).
   // Moves the calling fiber from its thread to to dest proactor thread.
   // Updates socket_ and listener interface bookeepings.
-  void Migrate(Connection* conn, ProactorBase* dest);
+  void Migrate(Connection* conn, fb2::ProactorBase* dest);
 
   LinuxSocketBase* socket() {
     return sock_.get();

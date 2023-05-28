@@ -8,3 +8,4 @@ target_compile_definitions(fibers2 PRIVATE USE_FB2)
 cxx_link(fibers2 base io TRDP::uring Boost::context Boost::headers TRDP::cares)
 
 cxx_test(fiber2_test fibers2 LABELS CI)
+cxx_test(fiber_socket_test fibers2 LABELS CI)

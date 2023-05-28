@@ -245,6 +245,12 @@ else()
   set(PERF_TOOLS_OPTS --disable-libunwind)
 endif()
 
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  set(PERF_TOOLS_MAKE "gmake")
+else()
+  set(PERF_TOOLS_MAKE "make")
+endif()
+
 add_third_party(
   gperf
   URL https://github.com/gperftools/gperftools/archive/gperftools-2.10.tar.gz
@@ -259,7 +265,10 @@ add_third_party(
                       --disable-heap-checker --disable-debugalloc --disable-heap-profiler
                       --disable-deprecated-pprof --enable-aggressive-decommit-by-default
                       --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
-  INSTALL_COMMAND make install-exec install-data
+                      MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
+  # skip build step
+  BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
+  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
   LIB libprofiler.a
 )
 

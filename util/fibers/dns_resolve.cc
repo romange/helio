@@ -4,12 +4,14 @@
 
 #include <ares.h>
 #include <netdb.h>
-#include <sys/epoll.h>
 
 #include "base/logging.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/proactor_base.h"
+
+#ifdef __linux__
 #include "util/fibers/uring_proactor.h"
+#endif
 
 namespace util {
 namespace fb2 {
@@ -35,15 +37,24 @@ struct AresChannelState {
   unsigned arm_index;
 };
 
+inline bool HasReads(uint32_t mask) {
+  return mask & ProactorBase::EPOLL_IN;
+}
+
+inline bool HasWrites(uint32_t mask) {
+  return mask & ProactorBase::EPOLL_OUT;
+}
+
 void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int writable) {
   VLOG(1) << "sfd: " << socket_fd << " " << readable << "/" << writable;
   AresChannelState* state = (AresChannelState*)arg;
 
   uint32_t mask = 0;
+
   if (readable)
-    mask |= EPOLLIN;
+    mask |= ProactorBase::EPOLL_IN;
   if (writable)
-    mask |= EPOLLOUT;
+    mask |= ProactorBase::EPOLL_OUT;
 
   if (state->channel_sock == ARES_SOCKET_BAD) {
     state->channel_sock = socket_fd;
@@ -52,8 +63,8 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
     if (state->proactor->GetKind() == ProactorBase::EPOLL) {
       EpollProactor* epoll = (EpollProactor*)state->proactor;
       auto cb = [state](uint32_t event_mask, EpollProactor* me) {
-        state->has_writes = event_mask & EPOLLOUT;
-        state->has_reads = event_mask & EPOLLIN;
+        state->has_writes = HasWrites(event_mask);
+        state->has_reads = HasReads(event_mask);
         if (state->fiber_ctx) {
           detail::FiberActive()->ActivateOther(state->fiber_ctx);
         }
@@ -61,15 +72,17 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
       state->arm_index = epoll->Arm(socket_fd, move(cb), mask);
     } else {
       CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+#ifdef __linux__
       UringProactor* uring = (UringProactor*)state->proactor;
       auto cb = [state](uint32_t event_mask) {
-        state->has_writes = event_mask & EPOLLOUT;
-        state->has_reads = event_mask & EPOLLIN;
+        state->has_writes = HasWrites(event_mask);
+        state->has_reads = HasReads(event_mask);
         if (state->fiber_ctx) {
           detail::FiberActive()->ActivateOther(state->fiber_ctx);
         }
       };
       state->arm_index = uring->EpollAdd(socket_fd, move(cb), mask);
+#endif
     }
   } else {
     CHECK_EQ(state->channel_sock, socket_fd);
@@ -79,8 +92,10 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
       epoll->Disarm(socket_fd, state->arm_index);
     } else {
       CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+#ifdef __linux__
       UringProactor* uring = (UringProactor*)state->proactor;
       uring->EpollDel(state->arm_index);
+#endif
     }
   }
 }

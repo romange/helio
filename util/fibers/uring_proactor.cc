@@ -57,6 +57,8 @@ constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kWakeIndex = 1;
 
 constexpr uint64_t kUserDataCbIndex = 1024;
+constexpr uint16_t kMsgRingSubmitTag = 1;
+constexpr uint16_t kTimeoutSubmitTag = 2;
 
 }  // namespace
 
@@ -169,7 +171,8 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
 }
 
 void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe) {
-  if (cqe.user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
+  uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
+  if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
     if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
       base::sys::KernelVersion kver;
       base::sys::GetKernelVersion(&kver);
@@ -184,7 +187,7 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
       exit(1);
     }
 
-    size_t index = cqe.user_data - kUserDataCbIndex;
+    size_t index = user_data - kUserDataCbIndex;
     DCHECK_LT(index, centries_.size());
     auto& e = centries_[index];
     DCHECK(e.cb) << index;
@@ -199,14 +202,16 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
     return;
   }
 
-  if (cqe.res < 0) {
-    LOG(WARNING) << "CQE error: " << -cqe.res << " cqe.flags=" << cqe.flags;
+  // We ignore ECANCELED because submissions with link_timeout that finish successfully generate
+  // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
+  if (cqe.res < 0 && cqe.res != -ECANCELED) {
+    LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
   }
 
-  if (cqe.user_data == kIgnoreIndex)
+  if (user_data == kIgnoreIndex)
     return;
 
-  if (cqe.user_data == kWakeIndex) {
+  if (user_data == kWakeIndex) {
     // We were woken up. Need to rearm wakeup poller.
     DCHECK_EQ(cqe.res, 8);
     DVLOG(2) << "PRO[" << tl_info_.proactor_index << "] Wakeup " << cqe.res << "/" << cqe.flags;
@@ -218,7 +223,7 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
   LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
 }
 
-SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
+SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
   if (res == NULL) {
     ++get_entry_sq_full_;
@@ -238,18 +243,18 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, int64_t payload) {
       RegrowCentries();
       DCHECK_GT(next_free_ce_, 0);
     }
-    res->user_data = next_free_ce_ + kUserDataCbIndex;
+    res->user_data = (next_free_ce_ + kUserDataCbIndex) | (uint64_t(submit_tag) << 32);
     DCHECK_LT(unsigned(next_free_ce_), centries_.size());
 
     auto& e = centries_[next_free_ce_];
     DCHECK(!e.cb);  // cb is undefined.
-    DVLOG(3) << "GetSubmitEntry: index: " << next_free_ce_ << ", payload: " << payload;
+    DVLOG(3) << "GetSubmitEntry: index: " << next_free_ce_;
 
     next_free_ce_ = e.index;
     e.cb = std::move(cb);
     ++pending_cb_cnt_;
   } else {
-    res->user_data = kIgnoreIndex;
+    res->user_data = kIgnoreIndex | (uint64_t(submit_tag) << 32);
   }
 
   return SubmitEntry{res};
@@ -372,8 +377,7 @@ void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   SubmitEntry se = GetSubmitEntry(
       [this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags) {
         this->PeriodicCb(res, id, std::move(item));
-      },
-      id);
+      });
 
   se.PrepTimeout(&item->period, false);
   DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
@@ -668,7 +672,7 @@ void UringProactor::WakeRing() {
   DCHECK(caller != this);
 
   if (caller && caller->msgring_f_) {
-    SubmitEntry se = caller->GetSubmitEntry(nullptr);
+    SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
@@ -724,7 +728,7 @@ FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detai
   if (timeout_msec != UINT32_MAX) {
     se_.sqe()->flags |= IOSQE_IO_LINK;
 
-    tm_ = proactor->GetSubmitEntry(nullptr);
+    tm_ = proactor->GetSubmitEntry(nullptr, kTimeoutSubmitTag);
 
     // We must keep ts_ as member function so it could be accessed after this function scope.
     ts_.tv_sec = (timeout_msec / 1000);

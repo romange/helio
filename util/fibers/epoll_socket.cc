@@ -5,7 +5,12 @@
 #include "util/fibers/epoll_socket.h"
 
 #include <netinet/in.h>
+
+#ifdef __linux__
 #include <sys/epoll.h>
+#else
+#include <sys/event.h>
+#endif
 
 #include "base/logging.h"
 #include "base/stl_util.h"

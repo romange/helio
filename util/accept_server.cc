@@ -6,8 +6,6 @@
 
 #include <signal.h>
 
-#include <boost/fiber/operations.hpp>
-
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
 #include "util/listener_interface.h"

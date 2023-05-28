@@ -103,9 +103,9 @@ enum Ownership {
 };
 
 namespace base {
-static constexpr int CACHE_LINE_SIZE  = 64;
+constexpr unsigned _CACHE_LINE_SIZE  = 64;
 }  // namespace base
 
-#define CACHE_LINE_PAD(x) (::base::CACHE_LINE_SIZE - (x) % ::base::CACHE_LINE_SIZE)
+#define CACHE_LINE_PAD(x) (::base::_CACHE_LINE_SIZE - (x) % ::base::_CACHE_LINE_SIZE)
 
 #endif  // BASE_INTEGRAL_TYPES_H_
