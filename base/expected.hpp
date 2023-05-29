@@ -1,6 +1,6 @@
 // This version targets C++11 and later.
 //
-// Copyright (C) 2016-2018 Martin Moene.
+// Copyright (C) 2016-2020 Martin Moene.
 //
 // Distributed under the Boost Software License, Version 1.0.
 // (See accompanying file LICENSE.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
@@ -13,8 +13,8 @@
 #define NONSTD_EXPECTED_LITE_HPP
 
 #define expected_lite_MAJOR  0
-#define expected_lite_MINOR  3
-#define expected_lite_PATCH  0
+#define expected_lite_MINOR  6
+#define expected_lite_PATCH  3
 
 #define expected_lite_VERSION  expected_STRINGIFY(expected_lite_MAJOR) "." expected_STRINGIFY(expected_lite_MINOR) "." expected_STRINGIFY(expected_lite_PATCH)
 
@@ -26,6 +26,20 @@
 #define nsel_EXPECTED_DEFAULT  0
 #define nsel_EXPECTED_NONSTD   1
 #define nsel_EXPECTED_STD      2
+
+// tweak header support:
+
+#ifdef __has_include
+# if __has_include(<nonstd/expected.tweak.hpp>)
+#  include <nonstd/expected.tweak.hpp>
+# endif
+#define expected_HAVE_TWEAK_HEADER  1
+#else
+#define expected_HAVE_TWEAK_HEADER  0
+//# pragma message("expected.hpp: Note: Tweak header not supported.")
+#endif
+
+// expected selection and configuration:
 
 #if !defined( nsel_CONFIG_SELECT_EXPECTED )
 # define nsel_CONFIG_SELECT_EXPECTED  ( nsel_HAVE_STD_EXPECTED ? nsel_EXPECTED_STD : nsel_EXPECTED_NONSTD )
@@ -52,17 +66,26 @@
 # define nsel_P0323R  7
 #endif
 
-// Control presence of exception handling (try and auto discover):
+// Control presence of C++ exception handling (try and auto discover):
 
 #ifndef nsel_CONFIG_NO_EXCEPTIONS
-# if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+# if defined(_MSC_VER)
+#  include <cstddef>    // for _HAS_EXCEPTIONS
+# endif
+# if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || (_HAS_EXCEPTIONS)
 #  define nsel_CONFIG_NO_EXCEPTIONS  0
 # else
 #  define nsel_CONFIG_NO_EXCEPTIONS  1
 # endif
 #endif
 
-// C++ language version detection (C++20 is speculative):
+// at default use SEH with MSVC for no C++ exceptions
+
+#ifndef  nsel_CONFIG_NO_EXCEPTIONS_SEH
+# define nsel_CONFIG_NO_EXCEPTIONS_SEH  ( nsel_CONFIG_NO_EXCEPTIONS && _MSC_VER )
+#endif
+
+// C++ language version detection (C++23 is speculative):
 // Note: VC14.0/1900 (VS2015) lacks too much from C++14.
 
 #ifndef   nsel_CPLUSPLUS
@@ -77,11 +100,12 @@
 #define nsel_CPP11_OR_GREATER  ( nsel_CPLUSPLUS >= 201103L )
 #define nsel_CPP14_OR_GREATER  ( nsel_CPLUSPLUS >= 201402L )
 #define nsel_CPP17_OR_GREATER  ( nsel_CPLUSPLUS >= 201703L )
-#define nsel_CPP20_OR_GREATER  ( nsel_CPLUSPLUS >= 202000L )
+#define nsel_CPP20_OR_GREATER  ( nsel_CPLUSPLUS >= 202002L )
+#define nsel_CPP23_OR_GREATER  ( nsel_CPLUSPLUS >= 202300L )
 
-// Use C++20 std::expected if available and requested:
+// Use C++23 std::expected if available and requested:
 
-#if nsel_CPP20_OR_GREATER && defined(__has_include )
+#if nsel_CPP23_OR_GREATER && defined(__has_include )
 # if __has_include( <expected> )
 #  define nsel_HAVE_STD_EXPECTED  1
 # else
@@ -94,7 +118,7 @@
 #define  nsel_USES_STD_EXPECTED  ( (nsel_CONFIG_SELECT_EXPECTED == nsel_EXPECTED_STD) || ((nsel_CONFIG_SELECT_EXPECTED == nsel_EXPECTED_DEFAULT) && nsel_HAVE_STD_EXPECTED) )
 
 //
-// in_place: code duplicated in any-lite, expected-lite, optional-lite, value-ptr-lite, variant-lite:
+// in_place: code duplicated in any-lite, expected-lite, expected-lite, value-ptr-lite, variant-lite:
 //
 
 #ifndef nonstd_lite_HAVE_IN_PLACE_TYPES
@@ -210,7 +234,11 @@ namespace nonstd {
 // additional includes:
 
 #if nsel_CONFIG_NO_EXCEPTIONS
+# if nsel_CONFIG_NO_EXCEPTIONS_SEH
+#  include <windows.h>   // for ExceptionCodes
+# else
 // already included: <cassert>
+# endif
 #else
 # include <stdexcept>
 #endif
@@ -377,7 +405,7 @@ struct is_nothrow_swappable
 };
 } // namespace detail
 
-// is [nothow] swappable:
+// is [nothrow] swappable:
 
 template< typename T >
 struct is_swappable : decltype( detail::is_swappable::test<T>(0) ){};
@@ -401,7 +429,7 @@ struct conjunction<B1, Bn...> : std::conditional<bool(B1::value), conjunction<Bn
 
 namespace std20 {
 
-#if nsel_CPP20_OR_GREATER
+#if defined(__cpp_lib_remove_cvref)
 
 using std::remove_cvref;
 
@@ -974,11 +1002,12 @@ public:
 
     // x.x.5.2.4 Swap
 
+    template< typename U=E >
     nsel_REQUIRES_R( void,
-        std17::is_swappable<E>::value
+        std17::is_swappable<U>::value
     )
     swap( unexpected_type & other ) noexcept (
-        std17::is_nothrow_swappable<E>::value
+        std17::is_nothrow_swappable<U>::value
     )
     {
         using std::swap;
@@ -1238,14 +1267,19 @@ nsel_inline17 constexpr unexpect_t in_place_unexpected{};
 #if nsel_CONFIG_NO_EXCEPTIONS
 
 namespace detail {
-    bool text( char const * /*text*/ ) { return true; }
+    inline bool text( char const * /*text*/ ) { return true; }
 }
+
 template< typename Error >
 struct error_traits
 {
     static void rethrow( Error const & /*e*/ )
     {
+#if nsel_CONFIG_NO_EXCEPTIONS_SEH
+        RaiseException( EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, NULL );
+#else
         assert( false && detail::text("throw bad_expected_access<Error>{ e };") );
+#endif
     }
 };
 
@@ -1254,7 +1288,11 @@ struct error_traits< std::exception_ptr >
 {
     static void rethrow( std::exception_ptr const & /*e*/ )
     {
+#if nsel_CONFIG_NO_EXCEPTIONS_SEH
+        RaiseException( EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, NULL );
+#else
         assert( false && detail::text("throw bad_expected_access<std::exception_ptr>{ e };") );
+#endif
     }
 };
 
@@ -1263,7 +1301,11 @@ struct error_traits< std::error_code >
 {
     static void rethrow( std::error_code const & /*e*/ )
     {
+#if nsel_CONFIG_NO_EXCEPTIONS_SEH
+        RaiseException( EXCEPTION_ACCESS_VIOLATION, EXCEPTION_NONCONTINUABLE, 0, NULL );
+#else
         assert( false && detail::text("throw std::system_error( e );") );
+#endif
     }
 };
 
@@ -1624,10 +1666,11 @@ public:
         return *this;
     }
 
-    template< typename G
+    template< typename G = E
         nsel_REQUIRES_T(
-            std::is_copy_constructible<E>::value    // TODO: std::is_nothrow_copy_constructible<E>
-            && std::is_copy_assignable<E>::value
+            std::is_constructible<E, G const&>::value &&
+            std::is_copy_constructible<G>::value    // TODO: std::is_nothrow_copy_constructible<G>
+            && std::is_copy_assignable<G>::value
         )
     >
     expected & operator=( nonstd::unexpected_type<G> const & error )
@@ -1636,10 +1679,11 @@ public:
         return *this;
     }
 
-    template< typename G
+    template< typename G = E
         nsel_REQUIRES_T(
-            std::is_move_constructible<E>::value    // TODO: std::is_nothrow_move_constructible<E>
-            && std::is_move_assignable<E>::value
+            std::is_constructible<E, G&&>::value &&
+            std::is_move_constructible<G>::value    // TODO: std::is_nothrow_move_constructible<G>
+            && std::is_move_assignable<G>::value
         )
     >
     expected & operator=( nonstd::unexpected_type<G> && error )
@@ -1727,12 +1771,12 @@ public:
 
     constexpr value_type const && operator *() const &&
     {
-        return assert( has_value() ), std::move( contained.value() );
+        return std::move( ( assert( has_value() ), contained.value() ) );
     }
 
     nsel_constexpr14 value_type && operator *() &&
     {
-        return assert( has_value() ), std::move( contained.value() );
+        return std::move( ( assert( has_value() ), contained.value() ) );
     }
 
 #endif
@@ -1793,12 +1837,12 @@ public:
 
     constexpr error_type const && error() const &&
     {
-        return assert( ! has_value() ), std::move( contained.error() );
+        return std::move( ( assert( ! has_value() ), contained.error() ) );
     }
 
     error_type && error() &&
     {
-        return assert( ! has_value() ), std::move( contained.error() );
+        return std::move( ( assert( ! has_value() ), contained.error() ) );
     }
 
 #endif
@@ -2065,12 +2109,12 @@ public:
 
     constexpr error_type const && error() const &&
     {
-        return assert( ! has_value() ), std::move( contained.error() );
+        return std::move( ( assert( ! has_value() ), contained.error() ) );
     }
 
     error_type && error() &&
     {
-        return assert( ! has_value() ), std::move( contained.error() );
+        return std::move( ( assert( ! has_value() ), contained.error() ) );
     }
 
 #endif
@@ -2121,22 +2165,30 @@ private:
 
 // x.x.4.6 expected<>: comparison operators
 
-template< typename T1, typename E1, typename T2, typename E2 >
+template< typename T1, typename E1, typename T2, typename E2
+    nsel_REQUIRES_T(
+        !std::is_void<T1>::value && !std::is_void<T2>::value
+    )
+>
 constexpr bool operator==( expected<T1,E1> const & x, expected<T2,E2> const & y )
 {
-    return bool(x) != bool(y) ? false : bool(x) == false ? x.error() == y.error() : *x == *y;
+    return bool(x) != bool(y) ? false : bool(x) ? *x == *y : x.error() == y.error();
+}
+
+template< typename T1, typename E1, typename T2, typename E2
+    nsel_REQUIRES_T(
+        std::is_void<T1>::value && std::is_void<T2>::value
+    )
+>
+constexpr bool operator==( expected<T1,E1> const & x, expected<T2,E2> const & y )
+{
+    return bool(x) != bool(y) ? false : bool(x) || static_cast<bool>( x.error() == y.error() );
 }
 
 template< typename T1, typename E1, typename T2, typename E2 >
 constexpr bool operator!=( expected<T1,E1> const & x, expected<T2,E2> const & y )
 {
     return !(x == y);
-}
-
-template< typename E1, typename E2 >
-constexpr bool operator==( expected<void,E1> const & x, expected<void,E1> const & y )
-{
-    return bool(x) != bool(y) ? false : bool(x) == false ? x.error() == y.error() : true;
 }
 
 #if nsel_P0323R <= 2
@@ -2169,13 +2221,21 @@ constexpr bool operator>=( expected<T,E> const & x, expected<T,E> const & y )
 
 // x.x.4.7 expected: comparison with T
 
-template< typename T1, typename E1, typename T2 >
+template< typename T1, typename E1, typename T2
+    nsel_REQUIRES_T(
+        !std::is_void<T1>::value
+    )
+>
 constexpr bool operator==( expected<T1,E1> const & x, T2 const & v )
 {
     return bool(x) ? *x == v : false;
 }
 
-template< typename T1, typename E1, typename T2 >
+template< typename T1, typename E1, typename T2
+    nsel_REQUIRES_T(
+        !std::is_void<T1>::value
+    )
+>
 constexpr bool operator==(T2 const & v, expected<T1,E1> const & x )
 {
     return bool(x) ? v == *x : false;
@@ -2475,3 +2535,4 @@ nsel_RESTORE_WARNINGS()
 #endif // nsel_USES_STD_EXPECTED
 
 #endif // NONSTD_EXPECTED_LITE_HPP
+
