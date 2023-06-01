@@ -78,7 +78,7 @@ auto UringSocket::Accept() -> AcceptResult {
     int res = accept4(real_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       UringSocket* fs = new UringSocket{nullptr};
-      fs->fd_ = res << 3;
+      fs->fd_ = res << kFdShift;
       return fs;
     }
 
@@ -122,9 +122,9 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   if (p->HasRegisterFd()) {
     dense_id = p->RegisterFd(fd);
-    fd_ = (dense_id << 3) | REGISTER_FD;
+    fd_ = (dense_id << kFdShift) | REGISTER_FD;
   } else {
-    fd_ = (dense_id << 3);
+    fd_ = (dense_id << kFdShift);
   }
 
   IoResult io_res;

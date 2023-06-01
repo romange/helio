@@ -37,7 +37,7 @@ class ProactorBase  {
   enum { kTaskQueueLen = 256 };
 
   enum Kind { EPOLL = 1, IOURING = 2 };
-  enum EpollFlags { EPOLL_IN = 1, EPOLL_OUT = 4, EPOLL_ERROR = 8 };
+  enum EpollFlags { EPOLL_IN = 1, EPOLL_OUT = 4 };
 
   // Corresponds to level 0.
   // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.
@@ -202,7 +202,7 @@ class ProactorBase  {
   };
 
   // Called only from external threads.
-  virtual void WakeRing();
+  virtual void WakeRing() = 0;
   virtual void MainLoop(detail::Scheduler* sched) = 0;
 
   void WakeupIfNeeded();

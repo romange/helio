@@ -17,16 +17,13 @@ namespace fb2 {
 class ProactorBase;
 }  // namespace fb2
 
-
 class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source {
   FiberSocketBase(const FiberSocketBase&) = delete;
   void operator=(const FiberSocketBase&) = delete;
   FiberSocketBase(FiberSocketBase&& other) = delete;
   FiberSocketBase& operator=(FiberSocketBase&& other) = delete;
 
-
  protected:
-
   explicit FiberSocketBase(fb2::ProactorBase* pb) : proactor_(pb) {
   }
 
@@ -97,13 +94,14 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 class LinuxSocketBase : public FiberSocketBase {
  public:
   using native_handle_type = int;
+  constexpr static unsigned kFdShift = 4;
 
   virtual ~LinuxSocketBase();
 
   native_handle_type native_handle() const {
-    static_assert(int32_t(-1) >> 3 == -1);
+    static_assert(int32_t(-1) >> kFdShift == -1);
 
-    return fd_ >> 3;
+    return fd_ >> kFdShift;
   }
 
   /// Creates a socket. By default with AF_INET family (2).
@@ -156,7 +154,8 @@ class LinuxSocketBase : public FiberSocketBase {
   }
 
  protected:
-  LinuxSocketBase(int fd, ProactorBase* pb) : FiberSocketBase(pb), fd_(fd > 0 ? fd << 3 : fd) {
+  LinuxSocketBase(int fd, ProactorBase* pb)
+      : FiberSocketBase(pb), fd_(fd > 0 ? fd << kFdShift : fd) {
   }
 
   enum {
@@ -165,8 +164,8 @@ class LinuxSocketBase : public FiberSocketBase {
     REGISTER_FD = 0x4,
   };
 
-  // 3 low bits are used for masking the state of fd.
-  // gives me 512M descriptors.
+  // kFdShift low bits are used for masking the state of fd.
+  // gives me 256M descriptors.
   int32_t fd_;
 };
 

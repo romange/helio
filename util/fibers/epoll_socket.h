@@ -52,12 +52,19 @@ class EpollSocket : public LinuxSocketBase {
   void OnSetProactor() final;
   void OnResetProactor() final;
 
+  // returns true if the operation has completed.
+  bool SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec);
+
   void Wakey(uint32_t mask, EpollProactor* cntr);
 
   detail::FiberInterface* write_context_ = nullptr;
   detail::FiberInterface* read_context_ = nullptr;
-  int arm_index_ = -1;
+  int32_t arm_index_ = -1;
+  uint32_t epoll_mask_ = 0;
 };
+
+constexpr size_t kSizeofEpollSocket = sizeof(EpollSocket);
+
 
 }  // namespace fb2
 }  // namespace util

@@ -6,8 +6,6 @@
 
 #include "util/fibers/proactor_base.h"
 
-struct epoll_event;
-
 namespace util {
 namespace fb2 {
 
@@ -42,12 +40,13 @@ class EpollProactor : public ProactorBase {
   }
 
  private:
-  void DispatchCompletions(struct epoll_event* cevents, unsigned count);
+  void DispatchCompletions(const void* cevents, unsigned count);
 
   void MainLoop(detail::Scheduler* sched) final;
   LinuxSocketBase* CreateSocket(int fd = -1) final;
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
   void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
+  void WakeRing() final;
   void PeriodicCb(PeriodicItem* item);
 
   void RegrowCentries();
