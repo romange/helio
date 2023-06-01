@@ -42,6 +42,67 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
+#ifdef __linux__
+constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET;
+
+int AcceptSock(int fd) {
+  sockaddr_in client_addr;
+  socklen_t addr_len = sizeof(client_addr);
+  int res = accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  return res;
+}
+
+int CreateSock() {
+  return socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+}
+
+/*void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
+  epoll_event ev;
+  ev.events = kEventMask;
+  ev.data.u32 = user_data;
+
+  CHECK_EQ(0, epoll_ctl(poll_fd, EPOLL_CTL_MOD, sock_fd, &ev));
+}*/
+
+#elif defined(__FreeBSD__) || defined(__APPLE__)
+
+constexpr int kEventMask = POLLIN | POLLOUT;
+
+int AcceptSock(int fd) {
+  sockaddr_in client_addr;
+  socklen_t addr_len = sizeof(client_addr);
+  int res = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
+  if (res >= 0) {
+    int prev = fcntl(res, F_GETFL, 0);
+    fcntl(res, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK);
+  }
+
+  return res;
+}
+
+int CreateSock() {
+  int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (fd >= 0) {
+    int prev = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK);
+  }
+  return fd;
+}
+
+/*
+void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
+  struct kevent kev[2];
+  uint64_t ud = user_data;
+  EV_SET(&kev[0], sock_fd, EVFILT_WRITE, EV_ADD, 0, 0, (void*)ud);
+  EV_SET(&kev[1], sock_fd, EVFILT_READ, EV_ADD, 0, 0, (void*)ud);
+  CHECK_EQ(0, kevent(poll_fd, kev, 2, NULL, 0, NULL));
+}
+*/
+
+#else
+#error "Unsupported platform"
+#endif
+
 }  // namespace
 
 EpollSocket::EpollSocket(int fd) : LinuxSocketBase(fd, nullptr) {
@@ -56,9 +117,9 @@ EpollSocket::~EpollSocket() {
 auto EpollSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
+    int fd = native_handle();
     DVSOCK(1) << "Closing socket";
 
-    int fd = native_handle();
     GetProactor()->Disarm(fd, arm_index_);
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
@@ -73,7 +134,8 @@ void EpollSocket::OnSetProactor() {
 
     auto cb = [this](uint32 mask, EpollProactor* cntr) { Wakey(mask, cntr); };
 
-    arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), EPOLLIN | EPOLLOUT | EPOLLET);
+    arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), kEventMask);
+    DVSOCK(2) << "OnSetProactor " << arm_index_;
   }
 }
 
@@ -89,25 +151,23 @@ void EpollSocket::OnResetProactor() {
 auto EpollSocket::Accept() -> AcceptResult {
   CHECK(proactor());
 
-  sockaddr_in client_addr;
-  socklen_t addr_len = sizeof(client_addr);
   error_code ec;
 
   int real_fd = native_handle();
   CHECK(read_context_ == NULL);
 
   read_context_ = detail::FiberActive();
+  DVSOCK(2) << "Accepting from " << read_context_->name();
 
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
       return MakeUnexpected(errc::connection_aborted);
     }
 
-    int res =
-        accept4(real_fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    int res = AcceptSock(real_fd);
     if (res >= 0) {
       EpollSocket* fs = new EpollSocket;
-      fs->fd_ = res << 3;  // we keep some flags in the first 3 bits of fd_.
+      fs->fd_ = res << kFdShift;  // we keep some flags in the first 3 bits of fd_.
       read_context_ = nullptr;
       return fs;
     }
@@ -131,22 +191,21 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
 
   error_code ec;
 
-  int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+  int fd = CreateSock();
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
   CHECK(read_context_ == NULL);
   CHECK(write_context_ == NULL);
 
-  fd_ = (fd << 3);
+  fd_ = (fd << kFdShift);
   OnSetProactor();
   write_context_ = detail::FiberActive();
 
-  epoll_event ev;
-  ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
-  ev.data.u32 = arm_index_ + 1024;  // TODO: to fix it.
+  // RegisterEvents(GetProactor()->ev_loop_fd(), fd, arm_index_ + 1024);
 
-  CHECK_EQ(0, epoll_ctl(GetProactor()->ev_loop_fd(), EPOLL_CTL_MOD, fd, &ev));
+  DVSOCK(2) << "Connecting";
+
   while (true) {
     int res = connect(fd, (const sockaddr*)ep.data(), ep.size());
     if (res == 0) {
@@ -158,10 +217,11 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
       break;
     }
 
-    DVLOG(2) << "Suspending " << fd << "/" << write_context_->name();
-    write_context_->Suspend();
-    DVLOG(2) << "Resuming " << write_context_->name();
+    if (SuspendMyself(write_context_, &ec)) {
+      break;
+    }
   }
+
   write_context_ = nullptr;
 
   if (ec) {
@@ -245,6 +305,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   read_context_ = detail::FiberActive();
 
   ssize_t res;
+  error_code ec;
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
       res = ECONNABORTED;
@@ -260,8 +321,10 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
     if (res == 0 || errno != EAGAIN) {
       break;
     }
-    DVLOG(1) << "Suspending " << fd << "/" << read_context_->name();
-    read_context_->Suspend();
+
+    if (SuspendMyself(read_context_, &ec) && ec) {
+      return nonstd::make_unexpected(std::move(ec));
+    }
   }
 
   read_context_ = nullptr;
@@ -279,7 +342,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
     LOG(FATAL) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res);
   }
 
-  std::error_code ec(res, std::system_category());
+  ec = std::error_code(res, std::system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
 
   return nonstd::make_unexpected(std::move(ec));
@@ -305,25 +368,47 @@ uint32_t EpollSocket::CancelPoll(uint32_t id) {
   return 0;
 }
 
+bool EpollSocket::SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec) {
+  epoll_mask_ = 0;
+  DVSOCK(2) << "Suspending " << cntx->name();
+  if (timeout() == UINT32_MAX) {
+    cntx->Suspend();
+  } else {
+    cntx->WaitUntil(chrono::steady_clock::now() + chrono::milliseconds(timeout()));
+  }
+  DVSOCK(2) << "Resuming " << cntx->name();
+  if (epoll_mask_ & POLLERR)
+    return false;
+
+  if (epoll_mask_ == 0) {  // timeout
+    *ec = make_error_code(errc::operation_canceled);
+  }
+  return true;
+}
+
 void EpollSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
-  DVLOG(2) << "Wakey " << native_handle() << "/" << ev_mask;
-
+  DVSOCK(2) << "Wakey " << ev_mask;
+#ifdef __linux__
   constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP;
+#else
+  constexpr uint32_t kErrMask = POLLERR | POLLHUP;
+#endif
 
-  if (ev_mask & (EPOLLIN | kErrMask)) {
+  epoll_mask_ = ev_mask;
+  if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
     // It could be that we scheduled current_context_ already, but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (read_context_ && !read_context_->list_hook.is_linked()) {
-      DVLOG(2) << "Wakey: Schedule read " << native_handle();
+      DVSOCK(2) << "Wakey: Schedule read ";
       detail::FiberActive()->ActivateOther(read_context_);
     }
   }
 
-  if (ev_mask & (EPOLLOUT | kErrMask)) {
+  if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
     // It could be that we scheduled current_context_ already but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (write_context_ && !write_context_->list_hook.is_linked()) {
-      DVLOG(2) << "Wakey: Schedule write " << native_handle();
+      DVSOCK(2) << "Wakey: Schedule write ";
       detail::FiberActive()->ActivateOther(write_context_);
     }
   }

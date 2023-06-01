@@ -85,7 +85,7 @@ error_code LinuxSocketBase::Create(unsigned short pfamily) {
   int prev = fcntl(fd, F_GETFL, 0);
   CHECK_EQ(0, fcntl(fd, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK));
 #endif
-  fd_ = fd << 3;
+  fd_ = fd << kFdShift;
   if (pfamily == AF_UNIX) {
     fd_ |= IS_UDS;
   }

@@ -19,9 +19,24 @@ namespace util {
 namespace fb2 {
 
 constexpr uint32_t kRingDepth = 8;
+
+#ifdef __linux__
+void InitProactor(ProactorBase* p) {
+  if (p->GetKind() == ProactorBase::IOURING) {
+    static_cast<UringProactor*>(p)->Init(kRingDepth);
+  } else {
+    static_cast<EpollProactor*>(p)->Init();
+  }
+}
+#else
+void InitProactor(ProactorBase* p) {
+  static_cast<EpollProactor*>(p)->Init();
+}
+#endif
+
 using namespace std;
 
-class FiberSocketTest : public testing::Test {
+class FiberSocketTest : public testing::TestWithParam<string_view> {
  protected:
   void SetUp() final;
 
@@ -44,24 +59,33 @@ class FiberSocketTest : public testing::Test {
   FiberSocketBase::endpoint_type listen_ep_;
 };
 
-void FiberSocketTest::SetUp() {
+INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
+                         testing::Values("epoll"
 #ifdef __linux__
-  UringProactor* proactor = new UringProactor;
+                         ,"uring"
+#endif
+                         ));
+
+void FiberSocketTest::SetUp() {
+#if __linux__
+  bool use_uring = GetParam() == "uring";
+  ProactorBase* proactor = nullptr;
+  if (use_uring)
+    proactor = new UringProactor;
+  else
+    proactor = new EpollProactor;
 #else
-  EpollProactor* proactor = new EpollProactor;
+  ProactorBase* proactor = new EpollProactor;
 #endif
 
   atomic_bool init_done{false};
 
   proactor_thread_ = thread{[proactor, &init_done] {
-#ifdef __linux__
-    proactor->Init(kRingDepth);
-#else
-    proactor->Init();
-#endif
+    InitProactor(proactor);
     init_done.store(true, memory_order_release);
     proactor->Run();
   }};
+
   // hack to wait until proactor thread crosses init.
   while (!init_done.load()) {
     usleep(1000);
@@ -78,7 +102,10 @@ void FiberSocketTest::SetUp() {
 
   accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
     auto accept_res = listen_socket_->Accept();
+    VLOG_IF(1, !accept_res) << "Accept res: " << accept_res.error();
+
     if (accept_res) {
+      VLOG(1) << "Accepted connection " << *accept_res;
       FiberSocketBase* sock = *accept_res;
       conn_socket_.reset(static_cast<LinuxSocketBase*>(sock));
       conn_socket_->SetProactor(proactor_.get());
@@ -89,34 +116,46 @@ void FiberSocketTest::SetUp() {
 }
 
 void FiberSocketTest::TearDown() {
-  proactor_->Await([&] { listen_socket_->Shutdown(SHUT_RDWR); });
+  VLOG(1) << "TearDown";
 
-  listen_socket_.reset();
-  conn_socket_.reset();
+  proactor_->Await([&] {
+    listen_socket_->Shutdown(SHUT_RDWR);
+    if (conn_socket_)
+      conn_socket_->Close();
+  });
+
   accept_fb_.JoinIfNeeded();
+
+  // We close here because we need to wake up listening socket.
+  listen_socket_->Close();
   proactor_->Stop();
   proactor_thread_.join();
   proactor_.reset();
 }
 
-TEST_F(FiberSocketTest, Basic) {
+TEST_P(FiberSocketTest, Basic) {
   unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
 
   LOG(INFO) << "before wait ";
   proactor_->Await([&] {
+    ThisFiber::SetName("ConnectFb");
+
     LOG(INFO) << "Connecting to " << listen_ep_;
     error_code ec = sock->Connect(listen_ep_);
-    EXPECT_FALSE(ec);
     accept_fb_.Join();
-
+    VLOG(1) << "After join";
+    ASSERT_FALSE(ec) << ec.message();
     ASSERT_FALSE(accept_ec_);
     uint8_t buf[16];
+    VLOG(1) << "Before writesome";
     auto res = sock->WriteSome(io::Bytes(buf));
     EXPECT_EQ(16, res.value_or(0));
+    VLOG(1) << "closing client sock " << sock->native_handle();
+    sock->Close();
   });
 }
 
-TEST_F(FiberSocketTest, Timeout) {
+TEST_P(FiberSocketTest, Timeout) {
   unique_ptr<LinuxSocketBase> sock[2];
   for (size_t i = 0; i < 2; ++i) {
     sock[i].reset(proactor_->CreateSocket());
@@ -127,16 +166,18 @@ TEST_F(FiberSocketTest, Timeout) {
     for (size_t i = 0; i < 2; ++i) {
       error_code ec = sock[i]->Connect(listen_ep_);
       EXPECT_FALSE(ec);
+      ThisFiber::SleepFor(5ms);
     }
   });
   accept_fb_.Join();
   ASSERT_FALSE(accept_ec_);
 
+  LOG(INFO) << "creating timedout socket";
   unique_ptr<LinuxSocketBase> tm_sock(proactor_->CreateSocket());
   tm_sock->set_timeout(5);
 
   error_code tm_ec = proactor_->Await([&] { return tm_sock->Connect(listen_ep_); });
-  EXPECT_EQ(tm_ec, errc::operation_canceled);
+  ASSERT_EQ(tm_ec, errc::operation_canceled);
 
   // sock[0] was accepted and then its peer was deleted.
   // therefore, we read from sock[1] that was opportunistically accepted with the ack from peer.
@@ -145,7 +186,7 @@ TEST_F(FiberSocketTest, Timeout) {
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
-TEST_F(FiberSocketTest, Poll) {
+TEST_P(FiberSocketTest, Poll) {
   unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
   struct linger ling;
   ling.l_onoff = 1;
@@ -177,7 +218,7 @@ TEST_F(FiberSocketTest, Poll) {
   usleep(100);
 }
 
-TEST_F(FiberSocketTest, AsyncWrite) {
+TEST_P(FiberSocketTest, AsyncWrite) {
   unique_ptr<LinuxSocketBase> sock;
   Done done;
   proactor_->Dispatch([&] {
@@ -194,7 +235,7 @@ TEST_F(FiberSocketTest, AsyncWrite) {
   done.Wait();
 }
 
-TEST_F(FiberSocketTest, UDS) {
+TEST_P(FiberSocketTest, UDS) {
   string path = base::GetTestTempPath("sock.uds");
 
   unique_ptr<LinuxSocketBase> sock;
@@ -202,9 +243,14 @@ TEST_F(FiberSocketTest, UDS) {
     sock.reset(proactor_->CreateSocket());
     error_code ec = sock->Create(AF_UNIX);
     EXPECT_FALSE(ec);
+    LOG(INFO) << "Socket created " << sock->native_handle();
     ec = sock->ListenUDS(path.c_str(), 1);
-    EXPECT_FALSE(ec);
+    EXPECT_FALSE(ec) << ec.message();
+    LOG(INFO) << "Socket Listening";
+    unlink(path.c_str());
   });
+
+  LOG(INFO) << "Finished";
 }
 
 }  // namespace fb2

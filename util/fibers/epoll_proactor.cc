@@ -41,12 +41,89 @@ namespace {
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kNopIndex = 2;
 constexpr uint64_t kUserDataCbIndex = 1024;
+constexpr size_t kEvBatchSize = 128;
 
+#ifdef __linux__
+  struct EventsBatch {
+    struct epoll_event cqe[kEvBatchSize];
+  };
+
+  int EpollCreate() {
+    int res = epoll_create1(EPOLL_CLOEXEC);
+    CHECK_GE(res, 0);
+    return res;
+  }
+
+  int EpollWait(int epoll_fd, EventsBatch* batch, int timeout) {
+    return epoll_wait(epoll_fd, batch->cqe, kEvBatchSize, timeout);
+  }
+
+  void EpollDel(int epoll_fd, int fd) {
+    CHECK_EQ(0, epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL));
+  }
+
+#define USER_DATA(cqe) (cqe).data.u32
+#define EV_MASK(cqe)   (cqe).events
+
+#else
+  struct EventsBatch {
+    struct kevent cqe[kEvBatchSize];
+  };
+
+  int EpollCreate() {
+    int res = kqueue();
+    CHECK_GE(res, 0);
+
+    // Register an event to wake up the event loop.
+    struct kevent kev;
+
+    EV_SET(&kev, 0 /* ident*/, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, (void*)kIgnoreIndex);
+    CHECK_EQ(0, kevent(res, &kev, 1, NULL, 0, NULL));
+
+    return res;
+  }
+
+  int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
+    struct timespec ts{.tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000};
+
+    int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
+    return epoll_res;
+  }
+
+  void EpollDel(int epoll_fd, int fd) {
+    struct kevent kev[2];
+
+    EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    CHECK_EQ(0, kevent(epoll_fd, kev, 2, NULL, 0, NULL));
+  }
+
+  uint32_t KevMask(const struct kevent& kev) {
+    uint32_t ev_mask = 0;
+
+    switch (kev.filter) {
+      case EVFILT_READ:
+        ev_mask = EpollProactor::EPOLL_IN;
+        break;
+      case EVFILT_WRITE:
+        ev_mask = EpollProactor::EPOLL_OUT;
+        break;
+
+      default:
+        LOG(FATAL) << "unsupported" << kev.filter;
+    }
+    return ev_mask;
+  }
+
+#define USER_DATA(cqe) ((uint64_t)(cqe).udata)
+#define EV_MASK(cqe)  KevMask(cqe)
+
+#endif
 }  // namespace
 
 EpollProactor::EpollProactor() : ProactorBase() {
-  epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
-  CHECK_GE(epoll_fd_, 0);
+  epoll_fd_ = EpollCreate();
+
   VLOG(1) << "Created epoll_fd_ " << epoll_fd_;
 }
 
@@ -58,7 +135,9 @@ EpollProactor::~EpollProactor() {
 }
 
 void EpollProactor::Init() {
-  CHECK_EQ(0U, thread_id_) << "Init was already called";
+  if (thread_id_ != 0) {
+    LOG(FATAL) << "Init was already called";
+  }
 
   centries_.resize(512);  // .index = -1
   next_free_ce_ = 0;
@@ -69,12 +148,14 @@ void EpollProactor::Init() {
   thread_id_ = pthread_self();
   tl_info_.owner = this;
 
+#ifdef __linux__
   auto cb = [ev_fd = wake_fd_](uint32_t mask, auto*) {
     DVLOG(1) << "EventFdCb called " << mask;
     uint64_t val;
     CHECK_EQ(8, read(ev_fd, &val, sizeof(val)));
   };
   Arm(wake_fd_, std::move(cb), EPOLLIN);
+#endif
 }
 
 void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
@@ -82,9 +163,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
   detail::FiberInterface* dispatcher = detail::FiberActive();
 
-  constexpr size_t kBatchSize = 128;
-  struct epoll_event cevents[kBatchSize];
-
+  EventsBatch ev_batch;
   uint32_t tq_seq = 0;
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
@@ -170,7 +249,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    int epoll_res = epoll_wait(epoll_fd_, cevents, kBatchSize, timeout);
+    int epoll_res = EpollWait(epoll_fd_, &ev_batch, timeout);
     if (epoll_res < 0) {
       epoll_res = errno;
       if (epoll_res == EINTR)
@@ -190,12 +269,12 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
       while (true) {
         VPRO(2) << "Fetched " << cqe_count << " cqes";
-        DispatchCompletions(cevents, cqe_count);
+        DispatchCompletions(&ev_batch, cqe_count);
 
-        if (cqe_count < kBatchSize) {
+        if (cqe_count < kEvBatchSize) {
           break;
         }
-        epoll_res = epoll_wait(epoll_fd_, cevents, kBatchSize, 0);
+        epoll_res = EpollWait(epoll_fd_, &ev_batch, 0);
         if (epoll_res < 0) {
           break;
         }
@@ -246,26 +325,39 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 }
 
 unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
-  epoll_event ev;
-  ev.events = event_mask;
   if (next_free_ce_ < 0) {
     RegrowCentries();
     CHECK_GT(next_free_ce_, 0);
   }
-
-  ev.data.u32 = next_free_ce_ + kUserDataCbIndex;
-  DCHECK_LT(unsigned(next_free_ce_), centries_.size());
+  unsigned ret = next_free_ce_;
 
   auto& e = centries_[next_free_ce_];
   DCHECK(!e.cb);  // cb is undefined.
   DVLOG(1) << "Arm: " << fd << ", index: " << next_free_ce_;
 
-  unsigned ret = next_free_ce_;
   next_free_ce_ = e.index;
   e.cb = std::move(cb);
   e.index = -1;
 
+#ifdef __linux__
+  epoll_event ev;
+  ev.events = event_mask;
+  ev.data.u32 = ret + kUserDataCbIndex;
+  DCHECK_LT(ret, centries_.size());
+
   CHECK_EQ(0, epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev));
+#else
+  struct kevent kev[2];
+  unsigned index = 0;
+  uint64_t ud = ret + kUserDataCbIndex;
+  if (event_mask & EPOLL_IN)
+    EV_SET(&kev[index++], fd /* ident*/, EVFILT_READ, EV_ADD, 0, 0, (void*)ud);
+  if (event_mask & EPOLL_OUT)
+    EV_SET(&kev[index++], fd /* ident*/, EVFILT_WRITE, EV_ADD, 0, 0, (void*)ud);
+
+  CHECK_EQ(0, kevent(epoll_fd_, kev, index, NULL, 0, NULL));
+#endif
+
   return ret;
 }
 
@@ -282,7 +374,7 @@ void EpollProactor::Disarm(int fd, unsigned arm_index) {
   centries_[arm_index].index = next_free_ce_;
 
   next_free_ce_ = arm_index;
-  CHECK_EQ(0, epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, NULL));
+  EpollDel(epoll_fd_, fd);
 }
 
 LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
@@ -293,6 +385,7 @@ LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
 }
 
 void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
+#ifdef __linux__
   int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
   CHECK_GE(tfd, 0);
   itimerspec ts;
@@ -306,6 +399,9 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   item->val2 = arm_id;
 
   CHECK_EQ(0, timerfd_settime(tfd, 0, &ts, NULL));
+#else
+  CHECK(false);
+#endif
 }
 
 void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
@@ -322,6 +418,35 @@ void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
   }
 }
 
+void EpollProactor::WakeRing() {
+  // Remember, WakeRing is called from external threads.
+  DVLOG(2) << "Wake ring " << tq_seq_.load(memory_order_relaxed);
+
+  tq_wakeup_ev_.fetch_add(1, memory_order_relaxed);
+
+#ifdef __linux__
+  /**
+   * It's tempting to use io_uring_prep_nop() here in order to resume wait_cqe() call.
+   * However, it's not that staightforward. io_uring_get_sqe and io_uring_submit
+   * are not thread-safe and this function is called from another thread.
+   * Even though tq_seq_ == WAIT_SECTION_STATE ensured that Proactor thread
+   * is going to stall we can not guarantee that it will not wake up before we reach the next line.
+   * In that case, Proactor loop will continue and both threads could call
+   * io_uring_get_sqe and io_uring_submit at the same time. This will cause data-races.
+   * It's possible to fix this by guarding with spinlock the section below as well as
+   * the section after the wait_cqe() call but I think it's overcomplicated and not worth it.
+   * Therefore we gonna stick with event_fd descriptor to wake up Proactor thread.
+   */
+
+  uint64_t val = 1;
+  CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
+#else
+  struct kevent kev;
+  EV_SET(&kev, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, 0);
+  CHECK_EQ(0, kevent(epoll_fd_, &kev, 1, NULL, 0, NULL));
+#endif
+}
+
 void EpollProactor::PeriodicCb(PeriodicItem* item) {
   if (!item->in_map) {
     delete item;
@@ -335,21 +460,25 @@ void EpollProactor::PeriodicCb(PeriodicItem* item) {
   }
 }
 
-void EpollProactor::DispatchCompletions(epoll_event* cevents, unsigned count) {
+void EpollProactor::DispatchCompletions(const void* cevents, unsigned count) {
   DVLOG(2) << "DispatchCompletions " << count << " cqes";
+  const EventsBatch& ev_batch = *reinterpret_cast<const EventsBatch*>(cevents);
+
   for (unsigned i = 0; i < count; ++i) {
-    const auto& cqe = cevents[i];
+    const auto& cqe = ev_batch.cqe[i];
 
     // I allocate range of 1024 reserved values for the internal EpollProactor use.
-    uint32_t user_data = cqe.data.u32;
+    uint32_t user_data = USER_DATA(cqe);
 
-    if (cqe.data.u32 >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
+    if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
       size_t index = user_data - kUserDataCbIndex;
       DCHECK_LT(index, centries_.size());
       const auto& item = centries_[index];
+      uint32_t ev_mask = EV_MASK(cqe);
 
+      // we do not move and reset cb, because epoll events are multishot.
       if (item.cb) {  // We could disarm an event and get this completion afterwards.
-        item.cb(cqe.events, this);
+        item.cb(ev_mask, this);
       }
       continue;
     }

@@ -8,6 +8,14 @@
 #include "base/logging.h"
 #include "base/pthread_utils.h"
 
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
+
+#ifdef __FreeBSD__
+#include <pthread_np.h>
+#endif
+
 using namespace std;
 
 ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
@@ -17,11 +25,14 @@ namespace util {
 
 using fb2::ProactorBase;
 
+namespace {
 enum class AffinityMode {
   ON,
   OFF,
   AUTO,
 };
+
+#if defined(__linux__) || defined(__FreeBSD__)
 
 constexpr int kTotalCpus = CPU_SETSIZE;
 
@@ -32,10 +43,69 @@ static cpu_set_t OnlineCpus() {
   return online_cpus;
 }
 
+#elif defined(__APPLE__)
+
+#define SYSCTL_CORE_COUNT "machdep.cpu.core_count"
+
+constexpr unsigned kTotalCpus = 128;
+
+typedef struct {
+  uint64_t __bits[2];
+} cpu_set_t;
+
+void CPU_ZERO(cpu_set_t* cs) {
+  cs->__bits[0] = 0;
+  cs->__bits[1] = 0;
+}
+
+inline void CPU_SET(unsigned num, cpu_set_t* cs) {
+  unsigned index = num / 64;
+  unsigned rem = num & 63;
+  cs->__bits[index] |= (1 << rem);
+}
+
+inline unsigned CPU_COUNT(const cpu_set_t* cs) {
+  unsigned res = 0;
+  for (auto v : cs->__bits) {
+    res += __builtin_popcount(v);
+  }
+  return res;
+}
+
+static inline int CPU_ISSET(unsigned num, const cpu_set_t* cs) {
+  unsigned index = num / 64;
+  unsigned rem = num & 63;
+
+  return cs->__bits[index] & (1 << rem);
+}
+
+static cpu_set_t OnlineCpus() {
+  cpu_set_t online_cpus;
+  CPU_ZERO(&online_cpus);
+
+  int32_t core_count = 0;
+  size_t len = sizeof(core_count);
+
+  int ret = sysctlbyname(SYSCTL_CORE_COUNT, &core_count, &len, 0, 0);
+  CHECK_EQ(0, ret);
+
+  for (int i = 0; i < core_count; ++i) {
+    CPU_SET(i, &online_cpus);
+  }
+
+  return online_cpus;
+}
+
+#else
+#error "unsupported architecture "
+#endif
+
 static unsigned NumOnlineCpus() {
   cpu_set_t cpus = OnlineCpus();
   return CPU_COUNT(&cpus);
 }
+
+}  // namespace
 
 ProactorPool::ProactorPool(std::size_t pool_size) {
   if (pool_size == 0) {
