@@ -65,6 +65,7 @@ void AcceptServer::Wait() {
   if (was_run_) {
     ref_bc_.Wait();
     VLOG(1) << "AcceptServer::Wait completed";
+    was_run_ = false;
   } else {
     CHECK(list_interface_.empty()) << "Must Call AcceptServer::Run() after adding listeners";
   }
@@ -107,21 +108,30 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
 
   error_code ec;
   bool success = false;
-  for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-    ec = fs->Create(p->ai_family);
-    if (ec)
-      break;
+  int family_pref[2] = {AF_INET, AF_INET6};
 
-    ec = listener->ConfigureServerSocket(fs->native_handle());
-    if (ec)
-      break;
+  // Try ip4 first
+  for (unsigned j = 0; j < 2 && !success; ++j) {
+    for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
+      if (p->ai_family != family_pref[j])
+        continue;
 
-    ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_);
-    if (!ec) {
-      const char* safe_bind = bind_addr ? bind_addr : "";
-      VLOG(1) << "AddListener [" << fs->native_handle() << "] " << safe_bind << ":" << port;
-      success = true;
-      break;
+      ec = fs->Create(p->ai_family);
+      if (ec)
+        continue;
+
+      ec = listener->ConfigureServerSocket(fs->native_handle());
+      if (ec)
+        break;
+
+      ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_);
+      if (!ec) {
+        const char* safe_bind = bind_addr ? bind_addr : "";
+        VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << p->ai_family << " "
+                << safe_bind << ":" << port;
+        success = true;
+        break;
+      }
     }
   }
 
@@ -166,7 +176,10 @@ error_code AcceptServer::AddUDSListener(const char* path, ListenerInterface* lis
 void AcceptServer::BreakListeners() {
   for (auto& lw : list_interface_) {
     ProactorBase* proactor = lw->socket()->proactor();
-    proactor->Dispatch([sock = lw->socket()] { sock->Shutdown(SHUT_RDWR); });
+    proactor->Dispatch([sock = lw->socket()] {
+      if (sock->IsOpen())
+        sock->Shutdown(SHUT_RDWR);
+    });
   }
   VLOG(1) << "AcceptServer::BreakListeners finished";
 }

@@ -368,6 +368,8 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
 }*/
 
 void EpollProactor::Disarm(int fd, unsigned arm_index) {
+  DCHECK(pthread_self() == thread_id_);
+
   DVLOG(2) << "Disarming " << fd << " on " << arm_index;
   CHECK_LT(arm_index, centries_.size());
 

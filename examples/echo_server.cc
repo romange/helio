@@ -6,8 +6,6 @@
 #include <sys/time.h>
 #include <sys/mman.h>
 
-#include <linux/errqueue.h>
-#include <linux/net_tstamp.h>
 // clang-format on
 
 #include <boost/asio/read.hpp>
@@ -540,11 +538,15 @@ int main(int argc, char* argv[]) {
 
   std::unique_ptr<ProactorPool> pp;
 
+#ifdef __linux__
   if (absl::GetFlag(FLAGS_epoll)) {
     pp.reset(fb2::Pool::Epoll());
   } else {
     pp.reset(fb2::Pool::IOUring(256));
   }
+#else
+  pp.reset(fb2::Pool::Epoll());
+#endif
 
   pp->Run();
 

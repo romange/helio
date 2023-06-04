@@ -129,6 +129,7 @@ void ListenerInterface::RunAcceptLoop() {
       RunSingleConnection(conn); });
   }
 
+  sock_->Shutdown(SHUT_RDWR);
   PreShutdown();
 
 #ifdef USE_FB2
@@ -170,7 +171,7 @@ void ListenerInterface::RunAcceptLoop() {
   VLOG(1) << "Listener - " <<  ep.port() << " connections closed";
 
   PostShutdown();
-
+  sock_->Close();
   LOG(INFO) << "Listener stopped for port " << ep.port();
 }
 

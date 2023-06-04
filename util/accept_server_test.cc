@@ -85,7 +85,8 @@ void AcceptServerTest::SetUp() {
   pp_->Run();
 
   as_.reset(new AcceptServer{up});
-  as_->AddListener("localhost", kPort, new TestListener);
+  auto ec = as_->AddListener("localhost", kPort, new TestListener);
+  CHECK(!ec) << ec;
   as_->Run();
 
   ProactorBase* pb = pp_->GetNextProactor();
@@ -119,7 +120,13 @@ TEST_F(AcceptServerTest, Basic) {
 
 TEST_F(AcceptServerTest, Break) {
   usleep(1000);
-  as_->Stop(true);
+}
+
+TEST_F(AcceptServerTest, UDS) {
+  const char kSockPath[] = "/tmp/uds.sock";
+  unlink(kSockPath);
+  auto ec = as_->AddUDSListener(kSockPath, new TestListener);
+  ASSERT_FALSE(ec) << ec;
 }
 
 }  // namespace util
