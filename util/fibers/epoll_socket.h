@@ -55,12 +55,14 @@ class EpollSocket : public LinuxSocketBase {
   // returns true if the operation has completed.
   bool SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec);
 
-  void Wakey(uint32_t mask, EpollProactor* cntr);
+  // kevent pass error code together with completion event.
+  void Wakey(uint32_t event_flags, int error, EpollProactor* cntr);
 
   detail::FiberInterface* write_context_ = nullptr;
   detail::FiberInterface* read_context_ = nullptr;
   int32_t arm_index_ = -1;
-  uint32_t epoll_mask_ = 0;
+  uint16_t epoll_mask_ = 0;
+  uint16_t kev_error_ = 0;
 };
 
 constexpr size_t kSizeofEpollSocket = sizeof(EpollSocket);

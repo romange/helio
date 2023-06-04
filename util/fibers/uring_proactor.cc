@@ -204,7 +204,8 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
 
   // We ignore ECANCELED because submissions with link_timeout that finish successfully generate
   // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
-  if (cqe.res < 0 && cqe.res != -ECANCELED) {
+  // ETIME is when a timer cqe fully completes.
+  if (cqe.res < 0 && cqe.res != -ECANCELED && cqe.res != -ETIME) {
     LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
   }
 

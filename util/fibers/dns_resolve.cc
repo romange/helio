@@ -62,7 +62,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
     // TODO: to unify epoll management under a unified interface in ProactorBase.
     if (state->proactor->GetKind() == ProactorBase::EPOLL) {
       EpollProactor* epoll = (EpollProactor*)state->proactor;
-      auto cb = [state](uint32_t event_mask, EpollProactor* me) {
+      auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
         state->has_writes = HasWrites(event_mask);
         state->has_reads = HasReads(event_mask);
         if (state->fiber_ctx) {

@@ -23,8 +23,9 @@ class EpollProactor : public ProactorBase {
 
   using IoResult = int;
 
-  // event_mask passed from epoll_event.events.
-  using CbType = std::function<void(uint32_t event_mask, EpollProactor*)>;
+  // event_mask passed from epoll_event.events or from kevent.
+  // int error is kevent specific.
+  using CbType = std::function<void(uint32_t, int, EpollProactor*)>;
 
   // Returns the handler id for the armed event.
   unsigned Arm(int fd, CbType cb, uint32_t event_mask);

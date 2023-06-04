@@ -52,7 +52,7 @@ int AcceptSock(int fd) {
   return res;
 }
 
-int CreateSock() {
+int CreateSockFd() {
   return socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 }
 
@@ -80,7 +80,7 @@ int AcceptSock(int fd) {
   return res;
 }
 
-int CreateSock() {
+int CreateSockFd() {
   int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd >= 0) {
     int prev = fcntl(fd, F_GETFL, 0);
@@ -132,7 +132,7 @@ void EpollSocket::OnSetProactor() {
   if (fd_ >= 0) {
     CHECK_LT(arm_index_, 0);
 
-    auto cb = [this](uint32 mask, EpollProactor* cntr) { Wakey(mask, cntr); };
+    auto cb = [this](uint32 mask, int err, EpollProactor* cntr) { Wakey(mask, err, cntr); };
 
     arm_index_ = GetProactor()->Arm(native_handle(), std::move(cb), kEventMask);
     DVSOCK(2) << "OnSetProactor " << arm_index_;
@@ -191,7 +191,7 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
 
   error_code ec;
 
-  int fd = CreateSock();
+  int fd = CreateSockFd();
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
@@ -370,23 +370,30 @@ uint32_t EpollSocket::CancelPoll(uint32_t id) {
 
 bool EpollSocket::SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec) {
   epoll_mask_ = 0;
+  kev_error_ = 0;
+
   DVSOCK(2) << "Suspending " << cntx->name();
   if (timeout() == UINT32_MAX) {
     cntx->Suspend();
   } else {
     cntx->WaitUntil(chrono::steady_clock::now() + chrono::milliseconds(timeout()));
   }
-  DVSOCK(2) << "Resuming " << cntx->name();
-  if (epoll_mask_ & POLLERR)
-    return false;
 
-  if (epoll_mask_ == 0) {  // timeout
+  DVSOCK(2) << "Resuming " << cntx->name() << " em: " << epoll_mask_ << ", errno: " << kev_error_;
+
+  if (epoll_mask_ & POLLERR) {
+    *ec = error_code(kev_error_, system_category());
+    return false;
+  }
+  if (epoll_mask_ & POLLHUP) {
+    *ec = make_error_code(errc::connection_aborted);
+  } else if (epoll_mask_ == 0) {  // timeout
     *ec = make_error_code(errc::operation_canceled);
   }
   return true;
 }
 
-void EpollSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
+void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask;
 #ifdef __linux__
   constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP;
@@ -394,8 +401,12 @@ void EpollSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
   constexpr uint32_t kErrMask = POLLERR | POLLHUP;
 #endif
 
-  epoll_mask_ = ev_mask;
+  if (error)
+    kev_error_ = error;
+
   if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
+    epoll_mask_ |= ev_mask;
+
     // It could be that we scheduled current_context_ already, but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (read_context_ && !read_context_->list_hook.is_linked()) {
@@ -405,6 +416,8 @@ void EpollSocket::Wakey(uint32_t ev_mask, EpollProactor* cntr) {
   }
 
   if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
+    epoll_mask_ |= ev_mask;
+
     // It could be that we scheduled current_context_ already but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (write_context_ && !write_context_->list_hook.is_linked()) {

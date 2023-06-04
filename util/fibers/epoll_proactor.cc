@@ -63,7 +63,8 @@ constexpr size_t kEvBatchSize = 128;
   }
 
 #define USER_DATA(cqe) (cqe).data.u32
-#define EV_MASK(cqe)   (cqe).events
+#define KEV_MASK(cqe)   (cqe).events
+#define KEV_ERROR(cqe)  (0)
 
 #else
   struct EventsBatch {
@@ -99,6 +100,12 @@ constexpr size_t kEvBatchSize = 128;
   }
 
   uint32_t KevMask(const struct kevent& kev) {
+    DVLOG(2) << "kev: " << kev.ident << " filter(" << kev.filter << ") f(" << kev.flags << ") ff("
+             << kev.fflags << ") d" << kev.data;
+
+    if (kev.flags & EV_EOF) {
+      return POLLHUP;
+    }
     uint32_t ev_mask = 0;
 
     switch (kev.filter) {
@@ -116,8 +123,8 @@ constexpr size_t kEvBatchSize = 128;
   }
 
 #define USER_DATA(cqe) ((uint64_t)(cqe).udata)
-#define EV_MASK(cqe)  KevMask(cqe)
-
+#define KEV_MASK(cqe)  KevMask(cqe)
+#define KEV_ERROR(cqe)  cqe.fflags
 #endif
 }  // namespace
 
@@ -149,8 +156,8 @@ void EpollProactor::Init() {
   tl_info_.owner = this;
 
 #ifdef __linux__
-  auto cb = [ev_fd = wake_fd_](uint32_t mask, auto*) {
-    DVLOG(1) << "EventFdCb called " << mask;
+  auto cb = [ev_fd = wake_fd_](uint32_t mask, int, auto*) {
+    DVLOG(2) << "EventFdCb called " << mask;
     uint64_t val;
     CHECK_EQ(8, read(ev_fd, &val, sizeof(val)));
   };
@@ -175,6 +182,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
   while (true) {
     ++loop_cnt;
     num_task_runs = 0;
+    bool task_queue_exhausted = true;
 
     tq_seq = tq_seq_.load(memory_order_acquire);
 
@@ -191,6 +199,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
           ++task_interrupts;
+          task_queue_exhausted = false;
           break;
         }
 
@@ -205,10 +214,13 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       num_task_runs += cnt;
       DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
 
-      // We notify second time to avoid deadlocks.
-      // Without it ProactorTest.AsyncCall blocks.
+      // We notify at the end that the queue is not full.
+      // Tested by ProactorTest.AsyncCall.
       task_queue_avail_.notifyAll();
     }
+
+    // We process remote fibers inside tq_seq section and also before we check for HasReady().
+    scheduler->ProcessRemoteReady();
 
     int timeout = 0;  // By default we do not block on epoll_wait.
 
@@ -216,13 +228,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     // There are few ground rules before we can set timeout=-1 (i.e. block indefinitely)
     // 1. No other fibers are active.
     // 2. Specifically SuspendIoLoop was called and returned true.
-    // 3. Moreover dispatch fiber was switched to at least once since RequestDispatcher
-    //    has been called (i.e. tq_seq_ has a flag on that says we should
-    //    switch to dispatcher fiber). This is verified with (tq_seq & 1) check.
-    //    These rules a bit awkward because we hack into 3rd party fibers framework
-    //    without the ability to build a straightforward epoll/fibers scheduler.
-
-    if (!scheduler->HasReady() && spin_loops >= kMaxSpinLimit) {
+    // 3. Task queue is empty otherwise we should spin more to unload it.
+    if (task_queue_exhausted && !scheduler->HasReady() && spin_loops >= kMaxSpinLimit) {
       spin_loops = 0;
 
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
@@ -256,11 +263,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         continue;
       LOG(FATAL) << "TBD: " << errno << " " << strerror(errno);
     }
-
-    if (timeout == -1) {
-      // Zero all bits except the lsb which signals we need to switch to dispatch fiber.
-      tq_seq_.fetch_and(1, memory_order_release);
-    }
+    tq_seq_.store(0, std::memory_order_release);
 
     cqe_count = epoll_res;
     if (cqe_count) {
@@ -281,8 +284,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         cqe_count = epoll_res;
       };
     }
-
-    scheduler->ProcessRemoteReady();
 
     if (scheduler->HasSleepingFibers()) {
       // avoid calling steady_clock::now() too much.
@@ -351,9 +352,9 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
   unsigned index = 0;
   uint64_t ud = ret + kUserDataCbIndex;
   if (event_mask & EPOLL_IN)
-    EV_SET(&kev[index++], fd /* ident*/, EVFILT_READ, EV_ADD, 0, 0, (void*)ud);
+    EV_SET(&kev[index++], fd /* ident*/, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, (void*)ud);
   if (event_mask & EPOLL_OUT)
-    EV_SET(&kev[index++], fd /* ident*/, EVFILT_WRITE, EV_ADD, 0, 0, (void*)ud);
+    EV_SET(&kev[index++], fd /* ident*/, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, (void*)ud);
 
   CHECK_EQ(0, kevent(epoll_fd_, kev, index, NULL, 0, NULL));
 #endif
@@ -367,7 +368,7 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
 }*/
 
 void EpollProactor::Disarm(int fd, unsigned arm_index) {
-  DVLOG(1) << "Disarming " << fd << " on " << arm_index;
+  DVLOG(2) << "Disarming " << fd << " on " << arm_index;
   CHECK_LT(arm_index, centries_.size());
 
   centries_[arm_index].cb = nullptr;
@@ -393,7 +394,7 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   ts.it_interval = item->period;
   item->val1 = tfd;
 
-  auto cb = [this, item](uint32_t event_mask, EpollProactor*) { this->PeriodicCb(item); };
+  auto cb = [this, item](uint32_t event_mask, int, EpollProactor*) { this->PeriodicCb(item); };
 
   unsigned arm_id = Arm(tfd, std::move(cb), EPOLLIN);
   item->val2 = arm_id;
@@ -408,7 +409,7 @@ void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
   // we call the callback one more time explicitly in order to make sure it
   // deleted PeriodicItem.
   if (centries_[arm_id].cb) {
-    centries_[arm_id].cb(0, this);
+    centries_[arm_id].cb(0, 0, this);
     centries_[arm_id].cb = nullptr;
   }
 
@@ -474,11 +475,19 @@ void EpollProactor::DispatchCompletions(const void* cevents, unsigned count) {
       size_t index = user_data - kUserDataCbIndex;
       DCHECK_LT(index, centries_.size());
       const auto& item = centries_[index];
-      uint32_t ev_mask = EV_MASK(cqe);
 
       // we do not move and reset cb, because epoll events are multishot.
-      if (item.cb) {  // We could disarm an event and get this completion afterwards.
-        item.cb(ev_mask, this);
+      // We could disarm an event and get this completion afterwards.
+      // This is why we check for cb and item.index.
+      //
+      // TODO: However it's still not enough because someone could arm the same index
+      // and we would dispatch the wrong event to the new callback.
+      // Solution - we can use another 32bits in cqe.data for generation number.
+      if (item.index == -1 && item.cb) {
+        uint32_t ev_mask = KEV_MASK(cqe);
+        int ev_err = KEV_ERROR(cqe);
+
+        item.cb(ev_mask, ev_err, this);
       }
       continue;
     }
