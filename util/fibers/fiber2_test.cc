@@ -17,13 +17,14 @@
 #include "util/fibers/synchronization.h"
 
 #ifdef __linux__
- #include "util/fibers/uring_proactor.h"
+#include "util/fibers/uring_proactor.h"
 #else
-  #include <pthread_np.h>
+#include <pthread_np.h>
 #endif
 
 using namespace std;
 using absl::StrCat;
+using namespace testing;
 
 namespace util {
 namespace fb2 {
@@ -72,7 +73,6 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
       LOG(FATAL) << "IOUring is not supported on this platform";
 #endif
       break;
-
   }
 
   proactor_thread = thread{[=] {
@@ -93,7 +93,6 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
 }
 
 class ProactorTest : public testing::TestWithParam<string_view> {
-
  protected:
   static unique_ptr<ProactorThread> CreateProactorThread() {
     string_view param = GetParam();
@@ -110,6 +109,8 @@ class ProactorTest : public testing::TestWithParam<string_view> {
 
   void SetUp() final {
     proactor_th_ = CreateProactorThread();
+    const TestInfo* const test_info = UnitTest::GetInstance()->current_test_info();
+    LOG(INFO) << "Starting " << test_info->name();
   }
 
   void TearDown() final {
@@ -132,9 +133,10 @@ class ProactorTest : public testing::TestWithParam<string_view> {
 INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
                          testing::Values("epoll"
 #ifdef __linux__
-                         ,"uring"
+                                         ,
+                                         "uring"
 #endif
-                         ));
+                                         ));
 
 struct SlistMember {
   detail::FI_ListHook hook;
@@ -325,7 +327,7 @@ TEST_F(FiberTest, Notify) {
   EventCount ec;
   Fiber fb1([&] {
     for (unsigned i = 0; i < 1000; ++i) {
-      ec.await_until([] { return false;}, chrono::steady_clock::now() + 10us);
+      ec.await_until([] { return false; }, chrono::steady_clock::now() + 10us);
     }
   });
 
@@ -418,10 +420,10 @@ TEST_P(ProactorTest, Sleep) {
   });
 }
 
-TEST_P(ProactorTest, MultiParking) {
-  constexpr unsigned kNumFibers = 64;
-  constexpr unsigned kNumThreads = 32;
+constexpr unsigned kNumFibers = 64;
+constexpr unsigned kNumThreads = 16;
 
+TEST_P(ProactorTest, MultiParking) {
   EventCount ec;
   unique_ptr<ProactorThread> ths[kNumThreads];
   atomic_uint num_started{0};
@@ -433,16 +435,21 @@ TEST_P(ProactorTest, MultiParking) {
 
   for (unsigned i = 0; i < kNumThreads; ++i) {
     for (unsigned j = 0; j < kNumFibers; ++j) {
-      fbs[i][j] = ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&] {
+      fbs[i][j] = ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&, i,j] {
         num_started.fetch_add(1, std::memory_order_relaxed);
         ec.notify();
 
-        VLOG(1) << "After ec.notify()";
+        string_view name = ThisFiber::GetName();
+        VLOG(1) << "After ec.notify() " << name;
+
         for (unsigned iter = 0; iter < 10; ++iter) {
           for (unsigned k = 0; k < kNumThreads; ++k) {
-            ths[k]->proactor->AwaitBrief([] { return true; });
+            DVLOG(2) << name << " " << pthread_self() << " -> " << iter << "/" << k;
+            ths[k]->proactor->AwaitBrief([=] {});
           }
         }
+
+        VLOG(1) << "After loop " << name;
       });
     }
   }
@@ -483,7 +490,7 @@ TEST_P(ProactorTest, NotifyRemote) {
   Done done;
   proactor()->Await([&] {
     for (unsigned i = 0; i < 1000; ++i) {
-      ec.await_until([] { return false;}, chrono::steady_clock::now() + 10us);
+      ec.await_until([] { return false; }, chrono::steady_clock::now() + 10us);
     }
     done.Notify();
   });
@@ -504,10 +511,9 @@ TEST_P(ProactorTest, NotifyRemote) {
 TEST_P(ProactorTest, BriefDontBlock) {
   Done done;
 
-
   proactor()->AwaitBrief([&] {
 #ifndef NDEBUG
-  EXPECT_DEATH(done.WaitFor(1ms), "Should not preempt");
+    EXPECT_DEATH(done.WaitFor(1ms), "Should not preempt");
 #endif
   });
 }

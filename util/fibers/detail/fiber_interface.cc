@@ -165,7 +165,7 @@ ctx::fiber_context FiberInterface::Terminate() {
   while (!wait_queue_.empty()) {
     FiberInterface* wait_fib = &wait_queue_.front();
     wait_queue_.pop_front();
-    DVLOG(2) << "Scheduling " << wait_fib;
+    DVLOG(2) << "Scheduling " << wait_fib->name_ << " from " << name_;
 
     ActivateOther(wait_fib);
   }
@@ -217,6 +217,8 @@ void FiberInterface::Join() {
 
   wait_queue_.push_front(*active);
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
+  DVLOG(2) << "Joining on " << name_;
+
   active->scheduler_->Preempt();
 }
 

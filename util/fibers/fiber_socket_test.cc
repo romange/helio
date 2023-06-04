@@ -156,14 +156,21 @@ TEST_P(FiberSocketTest, Basic) {
 }
 
 TEST_P(FiberSocketTest, Timeout) {
-  unique_ptr<LinuxSocketBase> sock[2];
-  for (size_t i = 0; i < 2; ++i) {
+  constexpr unsigned kNumSocks = 2;
+
+#ifndef __linux__
+  int optval = 0;
+  socklen_t optlen = sizeof(optval);
+  getsockopt(listen_socket_->native_handle(), SOL_SOCKET, SO_LISTENQLIMIT, &optval, &optlen);
+#endif
+  unique_ptr<LinuxSocketBase> sock[kNumSocks];
+  for (size_t i = 0; i < kNumSocks; ++i) {
     sock[i].reset(proactor_->CreateSocket());
     sock[i]->set_timeout(5);  // we set timeout that won't supposed to trigger.
   }
 
   proactor_->Await([&] {
-    for (size_t i = 0; i < 2; ++i) {
+    for (size_t i = 0; i < kNumSocks; ++i) {
       error_code ec = sock[i]->Connect(listen_ep_);
       EXPECT_FALSE(ec);
       ThisFiber::SleepFor(5ms);
@@ -177,7 +184,9 @@ TEST_P(FiberSocketTest, Timeout) {
   tm_sock->set_timeout(5);
 
   error_code tm_ec = proactor_->Await([&] { return tm_sock->Connect(listen_ep_); });
-  ASSERT_EQ(tm_ec, errc::operation_canceled);
+
+  // In freebsd, we get connection_aborted (EV_EOF) immediately instead of timeout.
+  ASSERT_TRUE(tm_ec == errc::operation_canceled || tm_ec == errc::connection_aborted);
 
   // sock[0] was accepted and then its peer was deleted.
   // therefore, we read from sock[1] that was opportunistically accepted with the ack from peer.
@@ -191,6 +200,7 @@ TEST_P(FiberSocketTest, Poll) {
   struct linger ling;
   ling.l_onoff = 1;
   ling.l_linger = 0;
+  LOG(INFO) << "Before connect";
 
   proactor_->Await([&] {
     error_code ec = sock->Connect(listen_ep_);
@@ -210,7 +220,7 @@ TEST_P(FiberSocketTest, Poll) {
   };
 
   proactor_->Await([&] { conn_socket_->PollEvent(POLLHUP | POLLERR, poll_cb); });
-
+  LOG(INFO) << "Before close";
   proactor_->Await([&] {
     auto ec = sock->Close();
     (void)ec;
