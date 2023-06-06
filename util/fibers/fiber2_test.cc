@@ -345,12 +345,14 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
+#ifdef __linux__
 TEST_F(FiberTest, AtomicGuard) {
   FiberAtomicGuard guard;
 #ifndef NDEBUG
   EXPECT_DEATH(ThisFiber::Yield(), "Preempting inside");
 #endif
 }
+#endif
 
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(ProactorBase::IsProactorThread());

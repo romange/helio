@@ -119,7 +119,6 @@ auto EpollSocket::Close() -> error_code {
   if (fd_ >= 0) {
     int fd = native_handle();
     DVSOCK(1) << "Closing socket";
-
     GetProactor()->Disarm(fd, arm_index_);
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
@@ -200,6 +199,7 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
 
   fd_ = (fd << kFdShift);
   OnSetProactor();
+
   write_context_ = detail::FiberActive();
 
   // RegisterEvents(GetProactor()->ev_loop_fd(), fd, arm_index_ + 1024);
@@ -223,7 +223,19 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
   }
 
   write_context_ = nullptr;
-
+#ifndef __linux__
+  if (!ec) {
+    // On BSD we need to check for errors after connect. They come asynchronously, hence we
+    // wait for some time to try and collect them.
+    ThisFiber::SleepFor(chrono::milliseconds(1));
+    int error = 0;
+    socklen_t len = sizeof(error);
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
+    if (error) {
+      ec = error_code(error, std::system_category());
+    }
+  }
+#endif
   if (ec) {
     GetProactor()->Disarm(fd, arm_index_);
     if (close(fd) < 0) {

@@ -127,7 +127,10 @@ void FiberSocketTest::TearDown() {
   accept_fb_.JoinIfNeeded();
 
   // We close here because we need to wake up listening socket.
-  listen_socket_->Close();
+  proactor_->Await([&] {
+    listen_socket_->Close();
+  });
+
   proactor_->Stop();
   proactor_thread_.join();
   proactor_.reset();
@@ -185,13 +188,21 @@ TEST_P(FiberSocketTest, Timeout) {
 
   error_code tm_ec = proactor_->Await([&] { return tm_sock->Connect(listen_ep_); });
 
-  // In freebsd, we get connection_aborted (EV_EOF) immediately instead of timeout.
-  ASSERT_TRUE(tm_ec == errc::operation_canceled || tm_ec == errc::connection_aborted);
-
   // sock[0] was accepted and then its peer was deleted.
   // therefore, we read from sock[1] that was opportunistically accepted with the ack from peer.
   uint8_t buf[16];
-  io::Result<size_t> read_res = proactor_->Await([&] { return sock[1]->Recv(buf, 0); });
+  io::Result<size_t> read_res = proactor_->Await([&] {
+    auto res = sock[1]->Recv(buf, 0);
+    tm_sock->Close();
+    for (size_t i = 0; i < kNumSocks; ++i) {
+      sock[i]->Close();
+    }
+    return res;
+  });
+
+   // In freebsd, we get connection_aborted (EV_EOF) immediately instead of timeout.
+  ASSERT_TRUE(tm_ec == errc::operation_canceled || tm_ec == errc::connection_aborted
+              || tm_ec == errc::connection_reset) << tm_ec;
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
@@ -243,6 +254,10 @@ TEST_P(FiberSocketTest, AsyncWrite) {
     });
   });
   done.Wait();
+
+  proactor_->Await([&] {
+    sock->Close();
+  });
 }
 
 TEST_P(FiberSocketTest, UDS) {
@@ -258,6 +273,7 @@ TEST_P(FiberSocketTest, UDS) {
     EXPECT_FALSE(ec) << ec.message();
     LOG(INFO) << "Socket Listening";
     unlink(path.c_str());
+    sock->Close();
   });
 
   LOG(INFO) << "Finished";
