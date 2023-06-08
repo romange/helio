@@ -32,7 +32,4 @@ TEST(BitsTest, Padded) {
   EXPECT_EQ(2048, arr.capacity());
 }
 
-constexpr size_t kStrSz = sizeof(std::string);
-constexpr size_t kPmrStrSz = sizeof(std::pmr::string);
-
 }  // namespace base

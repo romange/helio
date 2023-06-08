@@ -10,7 +10,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+
+#ifdef __clang__
+#include <experimental/memory_resource>
+#define PMR_NS std::experimental::pmr
+#else
 #include <memory_resource>
+#define PMR_NS std::pmr
+#endif
 
 #include <absl/numeric/bits.h>
 #include <absl/base/macros.h>
@@ -35,9 +42,9 @@ template <size_t ELEM_SIZE, size_t ALIGNMENT> class PODArrayBase {
   char* c_start_ = nullptr;
   char* c_end_ = nullptr;
   char* c_end_of_storage_ = nullptr;  /// Не включает в себя pad_right.
-  std::pmr::memory_resource* mr_;
+  PMR_NS::memory_resource* mr_;
 
-  PODArrayBase(std::pmr::memory_resource* mr) : mr_(mr ? mr : std::pmr::get_default_resource()) {
+  PODArrayBase(PMR_NS::memory_resource* mr) : mr_(mr ? mr : PMR_NS::get_default_resource()) {
   }
 
   void alloc(size_t bytes) {
@@ -131,7 +138,7 @@ template <size_t ELEM_SIZE, size_t ALIGNMENT> class PODArrayBase {
     std::swap(c_end_of_storage_, other.c_end_of_storage_);
   }
 
-  std::pmr::memory_resource* mr() {
+  PMR_NS::memory_resource* mr() {
     return mr_;
   }
 };
@@ -192,20 +199,20 @@ class PODArray : public PODArrayBase<sizeof(T), ALIGNMENT> {
   using ParentClass::resize_assume_reserved;
   using ParentClass::size;
 
-  PODArray(std::pmr::memory_resource* mr = nullptr) : ParentClass(mr) {
+  PODArray(PMR_NS::memory_resource* mr = nullptr) : ParentClass(mr) {
   }
 
-  PODArray(size_t n, std::pmr::memory_resource* mr) : ParentClass(mr) {
+  PODArray(size_t n, PMR_NS::memory_resource* mr) : ParentClass(mr) {
     alloc_for_num_elements(n);
     c_end_ += byte_size(n);
   }
 
-  PODArray(size_t n, const T& x, std::pmr::memory_resource* mr) : ParentClass(mr) {
+  PODArray(size_t n, const T& x, PMR_NS::memory_resource* mr) : ParentClass(mr) {
     alloc_for_num_elements(n);
     assign(n, x);
   }
 
-  PODArray(const_iterator from_begin, const_iterator from_end, std::pmr::memory_resource* mr)
+  PODArray(const_iterator from_begin, const_iterator from_end, PMR_NS::memory_resource* mr)
       : ParentClass(mr) {
     alloc_for_num_elements(from_end - from_begin);
     insert(from_begin, from_end);
@@ -381,3 +388,5 @@ void swap(PODArray<T, pad_right_>& lhs, PODArray<T, pad_right_>& rhs) {
 }
 
 }  // namespace base
+
+#undef PMR_NS
