@@ -40,7 +40,7 @@ class AcceptServer {
   std::error_code AddListener(const char* bind_addr, uint16_t port, ListenerInterface* listener);
 
   // Adds a listener on unix domain sockets.
-  std::error_code AddUDSListener(const char* path, ListenerInterface* listener);
+  std::error_code AddUDSListener(const char* path, mode_t permissions, ListenerInterface* listener);
 
   void TriggerOnBreakSignal(std::function<void()> f) {
     on_break_hook_ = std::move(f);
