@@ -121,9 +121,16 @@ error_code LinuxSocketBase::ListenUDS(const char* path, mode_t permissions, unsi
   error_code ec = Bind((struct sockaddr*)&addr, sizeof(addr));
   if (ec)
     return ec;
-  ec = Chmod(path, permissions);
-  if (ec)
+
+  // Set permissions for the socket file
+  int fd = native_handle();
+  int res = chmod(path, permissions);
+  if (posix_err_wrap(res, &ec) < 0) {
+    close(fd);
+    fd_ = -1;
     return ec;
+  }
+
   return Listen(backlog);
 }
 
@@ -138,19 +145,6 @@ error_code LinuxSocketBase::Bind(const struct sockaddr* bind_addr, unsigned addr
   int fd = native_handle();
 
   int res = bind(fd, bind_addr, addr_len);
-  if (posix_err_wrap(res, &ec) < 0) {
-    close(fd);
-    fd_ = -1;
-    return ec;
-  }
-  return ec;
-}
-
-error_code LinuxSocketBase::Chmod(const char* path, mode_t permissions) {
-  error_code ec;
-  int fd = native_handle();
-  // Set permissions for the socket file
-  int res = chmod(path, permissions);
   if (posix_err_wrap(res, &ec) < 0) {
     close(fd);
     fd_ = -1;

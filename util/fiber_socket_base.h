@@ -108,7 +108,6 @@ class LinuxSocketBase : public FiberSocketBase {
   error_code Create(unsigned short protocol_family = 2);
 
   ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len);
-  ABSL_MUST_USE_RESULT error_code Chmod(const char* path, mode_t permissions);
   ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog);
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen

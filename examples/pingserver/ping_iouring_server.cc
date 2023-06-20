@@ -240,7 +240,7 @@ int main(int argc, char* argv[]) {
     uring_acceptor.AddListener(port, listener);
   } else {
     unlink(uds.c_str());
-    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), 700, listener);
+    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), 0700, listener);
     CHECK(!ec) << ec;
   }
 

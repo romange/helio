@@ -124,7 +124,7 @@ TEST_F(AcceptServerTest, Break) {
 TEST_F(AcceptServerTest, UDS) {
   const char kSockPath[] = "/tmp/uds.sock";
   unlink(kSockPath);
-  auto ec = as_->AddUDSListener(kSockPath, 700, new TestListener);
+  auto ec = as_->AddUDSListener(kSockPath, 0700, new TestListener);
   ASSERT_FALSE(ec) << ec;
 }
 
