@@ -98,11 +98,13 @@ error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(port);
   server_addr.sin_addr.s_addr = INADDR_ANY;
-
-  return Listen((struct sockaddr*)&server_addr, sizeof(server_addr), backlog);
+  error_code ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
+  if (ec)
+    return ec;
+  return Listen(backlog);
 }
 
-error_code LinuxSocketBase::ListenUDS(const char* path, unsigned backlog) {
+error_code LinuxSocketBase::ListenUDS(const char* path, mode_t permissions, unsigned backlog) {
   VSOCK(1) << "ListenUDS " << path;
 
   DCHECK(fd_ & IS_UDS);
@@ -116,12 +118,16 @@ error_code LinuxSocketBase::ListenUDS(const char* path, unsigned backlog) {
   addr.sun_family = AF_UNIX;
   memcpy(addr.sun_path, path, len);
   addr.sun_path[len] = 0;
-
-  return Listen((struct sockaddr*)&addr, sizeof(addr), backlog);
+  error_code ec = Bind((struct sockaddr*)&addr, sizeof(addr));
+  if (ec)
+    return ec;
+  ec = Chmod(path, permissions);
+  if (ec)
+    return ec;
+  return Listen(backlog);
 }
 
-error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned addr_len,
-                                   unsigned backlog) {
+error_code LinuxSocketBase::Bind(const struct sockaddr* bind_addr, unsigned addr_len) {
   error_code ec;
   if (fd_ == -1) {
     ec = Create();
@@ -137,10 +143,29 @@ error_code LinuxSocketBase::Listen(const struct sockaddr* bind_addr, unsigned ad
     fd_ = -1;
     return ec;
   }
+  return ec;
+}
+
+error_code LinuxSocketBase::Chmod(const char* path, mode_t permissions) {
+  error_code ec;
+  int fd = native_handle();
+  // Set permissions for the socket file
+  int res = chmod(path, permissions);
+  if (posix_err_wrap(res, &ec) < 0) {
+    close(fd);
+    fd_ = -1;
+    return ec;
+  }
+  return ec;
+}
+
+error_code LinuxSocketBase::Listen(unsigned backlog) {
+  error_code ec;
+  int fd = native_handle();
 
   VSOCK(1) << "Listening " << fd;
 
-  res = posix_err_wrap(listen(fd, backlog), &ec);
+  int res = posix_err_wrap(listen(fd, backlog), &ec);
   if (posix_err_wrap(res, &ec) < 0) {
     close(fd);
     fd_ = -1;

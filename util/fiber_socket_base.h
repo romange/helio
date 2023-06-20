@@ -107,15 +107,16 @@ class LinuxSocketBase : public FiberSocketBase {
   /// Creates a socket. By default with AF_INET family (2).
   error_code Create(unsigned short protocol_family = 2);
 
-  ABSL_MUST_USE_RESULT error_code Listen(const struct sockaddr* bind_addr, unsigned addr_len,
-                                         unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len);
+  ABSL_MUST_USE_RESULT error_code Chmod(const char* path, mode_t permissions);
+  ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog);
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
   // by the OS.
   ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog);
 
   // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
-  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog);
 
   error_code Shutdown(int how) override;
 

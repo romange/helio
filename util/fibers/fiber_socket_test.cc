@@ -62,9 +62,10 @@ class FiberSocketTest : public testing::TestWithParam<string_view> {
 INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
                          testing::Values("epoll"
 #ifdef __linux__
-                         ,"uring"
+                                         ,
+                                         "uring"
 #endif
-                         ));
+                                         ));
 
 void FiberSocketTest::SetUp() {
 #if __linux__
@@ -127,9 +128,7 @@ void FiberSocketTest::TearDown() {
   accept_fb_.JoinIfNeeded();
 
   // We close here because we need to wake up listening socket.
-  proactor_->Await([&] {
-    listen_socket_->Close();
-  });
+  proactor_->Await([&] { listen_socket_->Close(); });
 
   proactor_->Stop();
   proactor_thread_.join();
@@ -200,9 +199,10 @@ TEST_P(FiberSocketTest, Timeout) {
     return res;
   });
 
-   // In freebsd, we get connection_aborted (EV_EOF) immediately instead of timeout.
-  ASSERT_TRUE(tm_ec == errc::operation_canceled || tm_ec == errc::connection_aborted
-              || tm_ec == errc::connection_reset) << tm_ec;
+  // In freebsd, we get connection_aborted (EV_EOF) immediately instead of timeout.
+  ASSERT_TRUE(tm_ec == errc::operation_canceled || tm_ec == errc::connection_aborted ||
+              tm_ec == errc::connection_reset)
+      << tm_ec;
   EXPECT_EQ(read_res.error(), errc::operation_canceled);
 }
 
@@ -255,9 +255,7 @@ TEST_P(FiberSocketTest, AsyncWrite) {
   });
   done.Wait();
 
-  proactor_->Await([&] {
-    sock->Close();
-  });
+  proactor_->Await([&] { sock->Close(); });
 }
 
 TEST_P(FiberSocketTest, UDS) {
@@ -269,8 +267,18 @@ TEST_P(FiberSocketTest, UDS) {
     error_code ec = sock->Create(AF_UNIX);
     EXPECT_FALSE(ec);
     LOG(INFO) << "Socket created " << sock->native_handle();
-    ec = sock->ListenUDS(path.c_str(), 1);
+    mode_t permissions = 0777;
+    ec = sock->ListenUDS(path.c_str(), permissions, 1);
     EXPECT_FALSE(ec) << ec.message();
+
+    // Get file permissions
+    struct stat file_stat;
+    if (stat(path.c_str(), &file_stat) == -1) {
+      ASSERT_TRUE(false) << "Unable to stat file";
+    }
+    mode_t file_permissions = file_stat.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO);
+    EXPECT_EQ(file_permissions, permissions);
+
     LOG(INFO) << "Socket Listening";
     unlink(path.c_str());
     sock->Close();

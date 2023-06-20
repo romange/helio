@@ -9,28 +9,29 @@
 #include "examples/pingserver/resp_parser.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
-#include "util/http/http_handler.h"
-#include "util/tls/tls_socket.h"
 #include "util/fiber_socket_base.h"
 #include "util/fibers/pool.h"
+#include "util/http/http_handler.h"
+#include "util/tls/tls_socket.h"
 #include "util/varz.h"
 
 using namespace boost;
 using namespace std;
 using namespace util;
-using redis::RespParser;
-using fb2::ProactorBase;
-using fb2::Pool;
 using absl::GetFlag;
+using fb2::Pool;
+using fb2::ProactorBase;
+using redis::RespParser;
 
 ABSL_FLAG(int32_t, http_port, 8080, "Http port.");
 ABSL_FLAG(int32_t, port, 6380, "Redis port");
 ABSL_FLAG(uint32_t, iouring_depth, 512, "Io uring depth");
 ABSL_FLAG(bool, tls, false, "Enable tls");
 ABSL_FLAG(bool, tls_verify_peer, false,
-            "Require peer certificate. Please note that this flag requires loading of "
-            "server certificates (not sure why).");
-ABSL_FLAG(bool, use_incoming_cpu, false, "If true uses incoming cpu of a socket in order to distribute incoming connections");
+          "Require peer certificate. Please note that this flag requires loading of "
+          "server certificates (not sure why).");
+ABSL_FLAG(bool, use_incoming_cpu, false,
+          "If true uses incoming cpu of a socket in order to distribute incoming connections");
 ABSL_FLAG(string, tls_cert, "", "");
 ABSL_FLAG(string, tls_key, "", "");
 ABSL_FLAG(string, unixsocket, "", "");
@@ -94,7 +95,6 @@ void PingConnection::HandleRequests() {
     if (FiberSocketBase::IsConnClosed(ec))
       break;
 
-
     CHECK(!ec) << ec << "/" << ec.message();
     VLOG(1) << "Read " << res << " bytes";
     io_buf.CommitWrite(res);
@@ -148,10 +148,10 @@ class PingListener : public ListenerInterface {
   }
 
   ProactorBase* PickConnectionProactor(LinuxSocketBase* sock) final;
+
  private:
   SSL_CTX* ctx_;
 };
-
 
 ProactorBase* PingListener::PickConnectionProactor(LinuxSocketBase* sock) {
   int fd = sock->native_handle();
@@ -240,7 +240,7 @@ int main(int argc, char* argv[]) {
     uring_acceptor.AddListener(port, listener);
   } else {
     unlink(uds.c_str());
-    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), listener);
+    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), 700, listener);
     CHECK(!ec) << ec;
   }
 

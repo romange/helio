@@ -10,9 +10,8 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/asio_stream_adapter.h"
-#include "util/listener_interface.h"
-
 #include "util/fibers/pool.h"
+#include "util/listener_interface.h"
 
 namespace util {
 
@@ -125,7 +124,7 @@ TEST_F(AcceptServerTest, Break) {
 TEST_F(AcceptServerTest, UDS) {
   const char kSockPath[] = "/tmp/uds.sock";
   unlink(kSockPath);
-  auto ec = as_->AddUDSListener(kSockPath, new TestListener);
+  auto ec = as_->AddUDSListener(kSockPath, 700, new TestListener);
   ASSERT_FALSE(ec) << ec;
 }
 

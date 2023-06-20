@@ -124,7 +124,10 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
       if (ec)
         break;
 
-      ec = fs->Listen(p->ai_addr, p->ai_addrlen, backlog_);
+      ec = fs->Bind(p->ai_addr, p->ai_addrlen);
+      if (ec)
+        break;
+      ec = fs->Listen(backlog_);
       if (!ec) {
         const char* safe_bind = bind_addr ? bind_addr : "";
         VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << p->ai_family << " "
@@ -146,7 +149,8 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   return ec;
 }
 
-error_code AcceptServer::AddUDSListener(const char* path, ListenerInterface* listener) {
+error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
+                                        ListenerInterface* listener) {
   CHECK(listener && !listener->socket());
 
   ProactorBase* next = pool_->GetNextProactor();
@@ -161,7 +165,7 @@ error_code AcceptServer::AddUDSListener(const char* path, ListenerInterface* lis
     if (ec)
       return ec;
 
-    return fs->ListenUDS(path, backlog_);
+    return fs->ListenUDS(path, permissions, backlog_);
   });
 
   if (!ec) {
