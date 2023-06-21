@@ -224,6 +224,7 @@ void FiberInterface::Join() {
 
 void FiberInterface::ActivateOther(FiberInterface* other) {
   DCHECK(other->scheduler_);
+  DCHECK(!other->wait_hook.is_linked());
 
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
@@ -247,6 +248,8 @@ void FiberInterface::AttachThread() {
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {
+  // We can not assert !wait_hook.is_linked() because for timed operations,
+  // the fiber can activate with the wait_hook still linked.
   FiberInterface* prev = this;
 
   std::swap(FbInitializer().active, prev);

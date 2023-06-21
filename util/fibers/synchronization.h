@@ -154,6 +154,7 @@ class CondVarAny {
 
   template <typename LockType> void wait(LockType& lt) {
     detail::FiberInterface* active = detail::FiberActive();
+    assert(!active->wait_hook.is_linked());
 
     // atomically call lt.unlock() and block on *this
     // store this fiber in waiting-queue
@@ -180,6 +181,8 @@ class CondVarAny {
   template <typename LockType>
   std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
     detail::FiberInterface* active = detail::FiberActive();
+    assert(!active->wait_hook.is_linked());
+
     std::cv_status status = std::cv_status::no_timeout;
 
     // atomically call lt.unlock() and block on *this
@@ -486,6 +489,8 @@ inline bool EventCount::notify() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
+    assert(!active->wait_hook.is_linked());
+
 #if 1
     std::unique_lock lk(lock_);
 
@@ -517,6 +522,8 @@ inline bool EventCount::notifyAll() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
+    assert(!active->wait_hook.is_linked());
+
 #if 1
     decltype(wait_queue_) tmp_queue;
     {
@@ -544,10 +551,12 @@ inline bool EventCount::notifyAll() noexcept {
 // Atomically checks for epoch and waits on cond_var.
 inline bool EventCount::wait(uint32_t epoch) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
+  assert(!active->wait_hook.is_linked());
 
 #if 1
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+
     wait_queue_.push_back(*active);
     lk.unlock();
     active->scheduler()->Preempt();
@@ -564,6 +573,8 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
 inline std::cv_status EventCount::wait_until(
     uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
+  assert(!active->wait_hook.is_linked());
+
   cv_status status = cv_status::no_timeout;
 
   std::unique_lock lk(lock_);
@@ -573,8 +584,9 @@ inline std::cv_status EventCount::wait_until(
 
     active->WaitUntil(tp);
 
-    lk.lock();
     if (active->wait_hook.is_linked()) {
+      lk.lock();
+
       // We were woken up by timeout, lets remove ourselves from the queue.
       auto it = detail::WaitQueue::s_iterator_to(*active);
       wait_queue_.erase(it);

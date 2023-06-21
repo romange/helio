@@ -286,7 +286,9 @@ TEST_F(FiberTest, EventCount) {
     ThisFiber::SleepFor(2ms);
     ec.notify();
   });
+
   next = chrono::steady_clock::now();
+  LOG(INFO) << "timeout at " << next.time_since_epoch().count();
   EXPECT_EQ(std::cv_status::timeout, ec.await_until([&] { return signal; }, next));
   fb3.Join();
 }

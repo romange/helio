@@ -13,6 +13,7 @@ using namespace std;
 
 void Mutex::lock() {
   detail::FiberInterface* active = detail::FiberActive();
+  DCHECK(!active->wait_hook.is_linked());
 
   while (true) {
     {
@@ -33,6 +34,8 @@ void Mutex::lock() {
 
 bool Mutex::try_lock() {
   detail::FiberInterface* active = detail::FiberActive();
+  DCHECK(!active->wait_hook.is_linked());
+
   {
     unique_lock lk{wait_queue_splk_};
     if (nullptr == owner_) {
@@ -45,6 +48,7 @@ bool Mutex::try_lock() {
 
 void Mutex::unlock() {
   detail::FiberInterface* active = detail::FiberActive();
+  assert(!active->wait_hook.is_linked());
 
   unique_lock lk(wait_queue_splk_);
   CHECK(owner_ == active);
@@ -65,6 +69,8 @@ void CondVarAny::notify_one() noexcept {
   }
 
   detail::FiberInterface* active = detail::FiberActive();
+  DCHECK(!active->wait_hook.is_linked());
+
   detail::FiberInterface* fi = &wait_queue_.front();
   wait_queue_.pop_front();
   active->ActivateOther(fi);
@@ -73,6 +79,7 @@ void CondVarAny::notify_one() noexcept {
 void CondVarAny::notify_all() noexcept {
   decltype(wait_queue_) tmp_queue;
   detail::FiberInterface* active = detail::FiberActive();
+  DCHECK(!active->wait_hook.is_linked());
 
   unique_lock lk(wait_queue_splk_);
   tmp_queue.swap(wait_queue_);
