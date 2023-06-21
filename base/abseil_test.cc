@@ -23,8 +23,6 @@ using namespace absl;
 using namespace std;
 using benchmark::DoNotOptimize;
 
-constexpr size_t kSzStr = sizeof(string);
-
 class AbseilTest : public testing::Test {
  public:
 };

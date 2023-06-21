@@ -129,7 +129,7 @@ class UringProactor : public ProactorBase {
   uint8_t sqpoll_f_ : 1;
   uint8_t register_fd_ : 1;
   uint8_t msgring_f_ : 1;
-  uint8_t reserved_f_ : 5;
+  [[maybe_unused]] uint8_t reserved_f_ : 5;
 
   EventCount sqe_avail_;
 
