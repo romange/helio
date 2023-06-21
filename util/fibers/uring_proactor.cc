@@ -63,6 +63,7 @@ constexpr uint16_t kTimeoutSubmitTag = 2;
 }  // namespace
 
 UringProactor::UringProactor() : ProactorBase() {
+  (void)reserved_f_;
 }
 
 UringProactor::~UringProactor() {

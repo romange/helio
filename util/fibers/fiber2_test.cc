@@ -75,7 +75,7 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
       break;
   }
 
-  proactor_thread = thread{[=] {
+  proactor_thread = thread{[this, kind, index] {
     proactor->SetIndex(index);
     switch (kind) {
       case ProactorBase::Kind::EPOLL:
