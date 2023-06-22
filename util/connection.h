@@ -56,7 +56,14 @@ class Connection {
   virtual void OnPreMigrateThread() {}
   virtual void OnPostMigrateThread() {}
 
+  ListenerInterface* owner() const {
+    return owner_;
+  }
+
   std::unique_ptr<FiberSocketBase> socket_;
+
+private:
+  ListenerInterface* owner_ = nullptr;
   friend class ListenerInterface;
 };
 

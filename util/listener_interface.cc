@@ -62,6 +62,7 @@ struct ListenerInterface::TLConnList {
 
   void Unlink(Connection* c) {
     DCHECK(c->hook_.is_linked());
+    DCHECK(!list.empty());
 
     auto it = ListType::s_iterator_to(*c);
     list.erase(it);
@@ -123,6 +124,7 @@ void ListenerInterface::RunAcceptLoop() {
     peer->SetProactor(next);
     Connection* conn = NewConnection(next);
     conn->SetSocket(peer.release());
+    conn->owner_ = this;
 
     // Run cb in its Proactor thread.
     next->Dispatch([this, conn] {
@@ -239,6 +241,7 @@ void ListenerInterface::TraverseConnections(TraverseCB cb) {
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   fb2::ProactorBase* src_proactor = conn->socket()->proactor();
   CHECK(src_proactor->InMyThread());
+  CHECK(conn->owner() == this);
 
   if (src_proactor == dest)
     return;
