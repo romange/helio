@@ -58,7 +58,7 @@ VarzCount connections("connections");
 
 namespace {
 
-constexpr size_t kInitialSize = 1UL << 20;
+[[maybe_unused]] constexpr size_t kInitialSize = 1UL << 20;
 #ifndef USE_FB2
 struct TL {
   std::unique_ptr<util::uring::LinuxFile> file;
@@ -384,7 +384,8 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     // we discover this upon first Recv. I am not sure why it happens. Right now I retry.
     CHECK(es.error() == std::errc::connection_reset) << es.error();
 
-    socket_->Close();
+    ec = socket_->Close();
+    LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
     LOG(WARNING) << "Driver " << index << " retries";
   }
 

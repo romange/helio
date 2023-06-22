@@ -171,7 +171,8 @@ void ListenerInterface::RunAcceptLoop() {
   VLOG(1) << "Listener - " <<  ep.port() << " connections closed";
 
   PostShutdown();
-  sock_->Close();
+  error_code ec = sock_->Close();
+  LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
   LOG(INFO) << "Listener stopped for port " << ep.port();
 }
 

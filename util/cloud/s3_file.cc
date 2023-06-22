@@ -146,14 +146,14 @@ io::Result<string> InitiateMultiPart(string_view key_path, const AWS& aws, AwsSi
   return upload_id;
 }
 
-class S3ReadFile : public io::ReadonlyFile {
+class S3ReadFile final : public io::ReadonlyFile {
  public:
   // does not own pool object, only wraps it with ReadonlyFile interface.
   S3ReadFile(const AWS& aws, string read_obj_url, http::Client* client)
       : aws_(aws), client_(client), read_obj_url_(std::move(read_obj_url)) {
   }
 
-  virtual ~S3ReadFile() final;
+  ~S3ReadFile() override;
 
   // Reads upto length bytes and updates the result to point to the data.
   // May use buffer for storing data. In case, EOF reached sets result.size() < length but still
@@ -211,7 +211,6 @@ class S3WriteFile : public io::WriteFile {
   const AWS& aws_;
 
   string upload_id_;
-  size_t uploaded_ = 0;
   unique_ptr<http::Client> client_;
   boost::beast::multi_buffer body_mb_;
   vector<string> parts_;
@@ -515,8 +514,6 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
                                              const io::ReadonlyFile::Options& opts) {
   CHECK(opts.sequential && client);
   VLOG(1) << "OpenS3ReadFile: " << path;
-
-  string_view bucket, obj_path;
 
   string read_obj_url{path};
   unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, std::move(read_obj_url), client));

@@ -22,6 +22,7 @@ jobs:
         # Test of these containers
         container: ["ubuntu-dev:20", "alpine-dev:latest"]
         compiler: [{cxx: g++, c: gcc}]
+        cxx_flags: ["-Werror"]
         include:
           - container: "alpine-dev:latest"
             compiler: {cxx: clang++, c: clang}

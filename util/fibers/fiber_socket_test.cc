@@ -122,13 +122,13 @@ void FiberSocketTest::TearDown() {
   proactor_->Await([&] {
     listen_socket_->Shutdown(SHUT_RDWR);
     if (conn_socket_)
-      conn_socket_->Close();
+      (void)conn_socket_->Close();
   });
 
   accept_fb_.JoinIfNeeded();
 
   // We close here because we need to wake up listening socket.
-  proactor_->Await([&] { listen_socket_->Close(); });
+  proactor_->Await([&] { (void)listen_socket_->Close(); });
 
   proactor_->Stop();
   proactor_thread_.join();
@@ -153,7 +153,7 @@ TEST_P(FiberSocketTest, Basic) {
     auto res = sock->WriteSome(io::Bytes(buf));
     EXPECT_EQ(16, res.value_or(0));
     VLOG(1) << "closing client sock " << sock->native_handle();
-    sock->Close();
+    (void)sock->Close();
   });
 }
 
@@ -192,9 +192,9 @@ TEST_P(FiberSocketTest, Timeout) {
   uint8_t buf[16];
   io::Result<size_t> read_res = proactor_->Await([&] {
     auto res = sock[1]->Recv(buf, 0);
-    tm_sock->Close();
+    (void)tm_sock->Close();
     for (size_t i = 0; i < kNumSocks; ++i) {
-      sock[i]->Close();
+      (void)sock[i]->Close();
     }
     return res;
   });
@@ -255,7 +255,7 @@ TEST_P(FiberSocketTest, AsyncWrite) {
   });
   done.Wait();
 
-  proactor_->Await([&] { sock->Close(); });
+  proactor_->Await([&] { (void)sock->Close(); });
 }
 
 TEST_P(FiberSocketTest, UDS) {
@@ -281,7 +281,7 @@ TEST_P(FiberSocketTest, UDS) {
 
     LOG(INFO) << "Socket Listening";
     unlink(path.c_str());
-    sock->Close();
+    (void)sock->Close();
   });
 
   LOG(INFO) << "Finished";

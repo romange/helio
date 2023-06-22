@@ -75,7 +75,7 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
       break;
   }
 
-  proactor_thread = thread{[=] {
+  proactor_thread = thread{[this, kind, index] {
     proactor->SetIndex(index);
     switch (kind) {
       case ProactorBase::Kind::EPOLL:
@@ -439,7 +439,7 @@ TEST_P(ProactorTest, MultiParking) {
 
   for (unsigned i = 0; i < kNumThreads; ++i) {
     for (unsigned j = 0; j < kNumFibers; ++j) {
-      fbs[i][j] = ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&, i,j] {
+      fbs[i][j] = ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&] {
         num_started.fetch_add(1, std::memory_order_relaxed);
         ec.notify();
 

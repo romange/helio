@@ -61,7 +61,8 @@ std::error_code Client::Reconnect() {
   VLOG(1) << "Reconnecting to " << host_ << ":" << port_;
 
   if (socket_) {
-    socket_->Close();
+    error_code ec = socket_->Close();
+    LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
     socket_.reset();
   }
 
@@ -116,8 +117,8 @@ auto Client::Send(Verb verb, string_view url, string_view body, Response* respon
 
 void Client::Shutdown() {
   if (socket_) {
-    std::error_code ec;
-    socket_->Shutdown(SHUT_RDWR);
+    std::error_code ec = socket_->Shutdown(SHUT_RDWR);
+    LOG_IF(WARNING, !ec) << "Socket Shutdown failed: " << ec.message();
     socket_.reset();
   }
 }

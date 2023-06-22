@@ -18,14 +18,6 @@ using namespace std;
 constexpr int kMaxArrayLen = 1024;
 constexpr int64_t kMaxBulkLen = 64 * (1ul << 20);  // 64MB.
 
-namespace {
-
-inline RespParser::Buffer mkbuf(string* s) {
-  return RespParser::Buffer{reinterpret_cast<uint8_t*>(s->data()), s->size()};
-}
-
-}  // namespace
-
 auto RespParser::Parse(Buffer str, uint32_t* consumed, vector<Buffer>* res) -> Status {
   *consumed = 0;
   res->clear();
@@ -154,7 +146,6 @@ auto RespParser::ParseInline(Buffer str) -> Status {
   uint8_t* ptr = str.begin();
   uint8_t* end = str.end();
   uint8_t* token_start = ptr;
-  size_t token_len = 0;
 
   if (is_broken_token_) {
     while (ptr != end && *ptr > 32)
@@ -183,7 +174,6 @@ auto RespParser::ParseInline(Buffer str) -> Status {
     while (ptr != end && *ptr > 32)
       ++ptr;
 
-    token_len += (ptr - token_start);
     top_->emplace_back(Buffer(token_start, ptr - token_start));
   }
 

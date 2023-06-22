@@ -18,11 +18,6 @@ using namespace std;
 
 namespace {
 
-constexpr size_t kSizeOfCtx = sizeof(FiberInterface);  // because of the virtual +8 bytes.
-constexpr size_t kSizeOfSH = sizeof(FI_SleepHook);
-constexpr size_t kSizeOfLH = sizeof(FI_ListHook);
-
-
 #if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {
   std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,
@@ -103,10 +98,11 @@ class ParkingHT {
 // ParkingHT* g_parking_ht = nullptr;
 
 using QsbrEpoch = uint32_t;
+
+#if PARKING_ENABLED
 constexpr QsbrEpoch kEpochInc = 2;
 atomic<QsbrEpoch> qsbr_global_epoch{1};  // global is always non-zero.
 
-#if PARKING_ENABLED
 // TODO: we could move this checkpoint to the proactor loop.
 void qsbr_checkpoint() {
   atomic_thread_fence(memory_order_seq_cst);
