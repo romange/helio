@@ -2,7 +2,7 @@
 // See LICENSE for licensing terms.
 //
 
-#include "util/fibers/fiber2.h"
+#include "util/fibers/fibers.h"
 
 #include "base/logging.h"
 
@@ -33,6 +33,8 @@ void Fiber::Detach() {
 void Fiber::Join() {
   CHECK(IsJoinable());
   impl_->Join();
+  DVLOG(1) << "Fiber::Joined() " << impl_->name() << " "
+           << impl_->DEBUG_use_count();
   impl_.reset();
 }
 

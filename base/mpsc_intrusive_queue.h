@@ -48,7 +48,7 @@ template <typename T> class MPSCIntrusiveQueue {
 
   // Pushes an item to the queue on producer thread.
   void Push(T* item) noexcept {
-    // item becomes a new head.
+    // item becomes a new tail.
     MPSC_intrusive_store_next(item, nullptr);
     T* prev = tail_.exchange(item, std::memory_order_acq_rel);
 

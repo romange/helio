@@ -7,7 +7,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
-#include "util/fibers/fiber2.h"
+#include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
 
 #ifdef __linux__
