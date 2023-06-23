@@ -162,7 +162,7 @@ class CondVarAny {
     lt.unlock();
     wait_queue_.push_back(*active);
     wait_queue_splk_.unlock();
-    active->scheduler()->Preempt();
+    active->Suspend();
 
     // relock external again before returning
     try {
@@ -559,7 +559,7 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
 
     wait_queue_.push_back(*active);
     lk.unlock();
-    active->scheduler()->Preempt();
+    active->Suspend();
     return true;
   }
   return false;
@@ -584,8 +584,10 @@ inline std::cv_status EventCount::wait_until(
 
     active->WaitUntil(tp);
 
+    // We must protect wait_hook because we modify it in notification thread.
+    lk.lock();
     if (active->wait_hook.is_linked()) {
-      lk.lock();
+      assert(!wait_queue_.empty());
 
       // We were woken up by timeout, lets remove ourselves from the queue.
       auto it = detail::WaitQueue::s_iterator_to(*active);

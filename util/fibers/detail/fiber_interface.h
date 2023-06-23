@@ -171,6 +171,9 @@ class FiberInterface {
     return name_;
   }
 
+  uint32_t DEBUG_use_count() const {
+    return use_count_.load(std::memory_order_relaxed);
+  }
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;

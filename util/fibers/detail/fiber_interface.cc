@@ -219,7 +219,7 @@ void FiberInterface::Join() {
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
   DVLOG(2) << "Joining on " << name_;
 
-  active->scheduler_->Preempt();
+  active->Suspend();
 }
 
 void FiberInterface::ActivateOther(FiberInterface* other) {
@@ -228,7 +228,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
-    // In case `other` timed out on wait, it could be added to the ready queue already by
+    // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked())
       scheduler_->AddReady(other);
@@ -248,8 +248,8 @@ void FiberInterface::AttachThread() {
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {
-  // We can not assert !wait_hook.is_linked() because for timed operations,
-  // the fiber can activate with the wait_hook still linked.
+  // We can not assert !wait_hook.is_linked() here, because for timeout operations,
+  // the fiber can be activated with the wait_hook still linked.
   FiberInterface* prev = this;
 
   std::swap(FbInitializer().active, prev);

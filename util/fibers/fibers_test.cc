@@ -2,7 +2,7 @@
 // See LICENSE for licensing terms.
 //
 
-#include "util/fibers/fiber2.h"
+#include "util/fibers/fibers.h"
 
 #include <absl/strings/str_cat.h>
 
@@ -521,6 +521,30 @@ TEST_P(ProactorTest, BriefDontBlock) {
 #endif
   });
 }
+
+TEST_P(ProactorTest, Timeout) {
+  EventCount ec;
+
+  auto consumer_fb = proactor()->LaunchFiber("consumer", [&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      ec.await_until([] { return false; }, chrono::steady_clock::now() + 10us);
+    }
+    LOG(INFO) << "Consumer done";
+  });
+
+  Fiber producer_fb("producer", [&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      ec.notify();
+      ThisFiber::SleepFor(1us);
+    }
+    LOG(INFO) << "Producer done";
+  });
+
+  LOG(INFO) << "Before join ";
+  consumer_fb.Join();
+  producer_fb.Join();
+}
+
 
 }  // namespace fb2
 }  // namespace util

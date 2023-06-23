@@ -511,7 +511,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
-  DVLOG(2) << "ScheduleFromRemote " << cntx->name();
+  DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
   // to make sure that the fiber is not destroyed before it's been pulled from the queue.
   intrusive_ptr_add_ref(cntx);
