@@ -347,7 +347,8 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
-#ifdef __linux__
+// EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
+#if 0
 TEST_F(FiberTest, AtomicGuard) {
   FiberAtomicGuard guard;
 #ifndef NDEBUG

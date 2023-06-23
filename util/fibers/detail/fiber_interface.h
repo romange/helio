@@ -158,11 +158,11 @@ class FiberInterface {
   __attribute__((no_sanitize("undefined")))
 #endif
   friend void MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
-    dest->next_.store(next_node, std::memory_order_relaxed);
+    dest->remote_next_.store(next_node, std::memory_order_relaxed);
   }
 
   friend FiberInterface* MPSC_intrusive_load_next(const FiberInterface& src) {
-    return src.next_.load(std::memory_order_acquire);
+    return src.remote_next_.load(std::memory_order_acquire);
   }
 
   void SetName(std::string_view nm);
@@ -196,7 +196,7 @@ class FiberInterface {
   Scheduler* scheduler_ = nullptr;
   uint64_t park_token_ = 0;
 
-  std::atomic<FiberInterface*> next_{nullptr};
+  std::atomic<FiberInterface*> remote_next_{nullptr};
   std::chrono::steady_clock::time_point tp_;
 
   char name_[24];

@@ -18,6 +18,8 @@ using namespace std;
 
 namespace {
 
+FiberInterface* const kRemoteFree = reinterpret_cast<FiberInterface*>((void*)1);
+
 #if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {
   std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,
@@ -511,11 +513,19 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
-  DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
-
   // to make sure that the fiber is not destroyed before it's been pulled from the queue.
+  FiberInterface* free_cntx = kRemoteFree;
+
+  // we can push only the same fiber instance until it gets pulled. However MPSCIntrusiveQueue
+  // does not verify and expects already free items. We verify it here with kRemoteFree test.
+  if (!cntx->remote_next_.compare_exchange_strong(free_cntx, nullptr, memory_order_acquire,
+                                                  memory_order_relaxed))
+    return;
+
   intrusive_ptr_add_ref(cntx);
   remote_ready_queue_.Push(cntx);
+
+  DVLOG(1) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
   if (custom_policy_) {
     custom_policy_->Notify();
@@ -527,6 +537,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
 
 void Scheduler::Attach(FiberInterface* cntx) {
   cntx->scheduler_ = this;
+
   if (cntx->type() == FiberInterface::WORKER) {
     ++num_worker_fibers_;
   }
@@ -566,14 +577,19 @@ void Scheduler::ProcessRemoteReady() {
     if (!fi)
       break;
 
+    DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
+
     // It could be that we pulled a fiber from remote_ready_queue_ and added it to ready_queue_,
     // but meanwhile a remote thread adds the same fiber again to the remote_ready_queue_,
-    // even before ready_queue_ has even been processed. We should not push the already added fiber
-    // to ready_queue.
+    // even before ready_queue_ has even been processed. We should not push the already added
+    // fiber to ready_queue.
     if (!fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
       AddReady(fi);
     }
+
+    // Mark that this fiber is available to be pushed again into remote_ready_queue_.
+    fi->remote_next_.store(kRemoteFree, memory_order_release);
 
     // Each time we push fi to remote_ready_queue_ we increase the reference count.
     intrusive_ptr_release(fi);

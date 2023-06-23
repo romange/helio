@@ -18,7 +18,6 @@ namespace ctx = boost::context;
 
 namespace {
 
-
 inline void CpuPause() {
 #if defined(__i386__) || defined(__amd64__)
   __asm__ __volatile__("pause");
@@ -118,6 +117,7 @@ FiberInterface* FiberActive() noexcept {
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), flags_(0), type_(type) {
+  remote_next_.store((FiberInterface*)1, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
   if (len) {
