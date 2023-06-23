@@ -105,6 +105,8 @@ if (NOT MARCH_OPT)
     set(MARCH_OPT "-march=sandybridge -mtune=skylake")
   elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64")
     # MacOS on arm64 - TBD.
+  elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "s390x")
+    set(MARCH_OPT "-march=native -mzvector")
   else()
     MESSAGE(FATAL_ERROR "Unsupported architecture ${CMAKE_SYSTEM_PROCESSOR}")
   endif()
