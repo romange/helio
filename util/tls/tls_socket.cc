@@ -290,9 +290,28 @@ auto TlsSocket::HandleRead() -> error_code {
   if (!esz) {
     return esz.error();
   }
+
+  if(cache_) {
+    PlaceBufferInCache(mut_buf, *esz);
+    cache_ = false;
+  }
+
   engine_->CommitInput(*esz);
 
   return error_code{};
+}
+
+void TlsSocket::CacheOnce() {
+  cache_ = true;
+}
+
+TlsSocket::Buffer TlsSocket::GetCachedBuffer() const {
+  return {cached_bytes_.data(), n_bytes_};
+}
+
+void TlsSocket::PlaceBufferInCache(Buffer buffer, size_t n_bytes) {
+  cached_bytes_ = buffer;
+  n_bytes_ = n_bytes;
 }
 
 }  // namespace tls
