@@ -26,15 +26,17 @@ struct DnsResolveCallbackArgs {
   bool done = false;  // Should we use optional<ec> above instead of the additional bool field?
 };
 
+struct AresSocketState {
+  unsigned mask;
+  unsigned arm_index;
+  bool removed = false;  // Used to indicate that the socket was removed, without modifying the map
+};
+
 struct AresChannelState {
   ProactorBase* proactor;
   detail::FiberInterface* fiber_ctx = nullptr;
 
-  // I assume here that a single socket is opened during DNS resolution.
-  ares_socket_t channel_sock = ARES_SOCKET_BAD;
-  bool has_reads = false;
-  bool has_writes = false;
-  unsigned arm_index;
+  absl::flat_hash_map<ares_socket_t, AresSocketState> sockets_state;
 };
 
 inline bool HasReads(uint32_t mask) {
@@ -56,46 +58,48 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
   if (writable)
     mask |= ProactorBase::EPOLL_OUT;
 
-  if (state->channel_sock == ARES_SOCKET_BAD) {
-    state->channel_sock = socket_fd;
-
+  if (mask == 0) {
+    auto it = state->sockets_state.find(socket_fd);
+    CHECK(it != state->sockets_state.end());
     // TODO: to unify epoll management under a unified interface in ProactorBase.
     if (state->proactor->GetKind() == ProactorBase::EPOLL) {
       EpollProactor* epoll = (EpollProactor*)state->proactor;
-      auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
-        state->has_writes = HasWrites(event_mask);
-        state->has_reads = HasReads(event_mask);
-        if (state->fiber_ctx) {
-          detail::FiberActive()->ActivateOther(state->fiber_ctx);
-        }
-      };
-      state->arm_index = epoll->Arm(socket_fd, move(cb), mask);
+      epoll->Disarm(socket_fd, it->second.arm_index);
     } else {
       CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
 #ifdef __linux__
       UringProactor* uring = (UringProactor*)state->proactor;
-      auto cb = [state](uint32_t event_mask) {
-        state->has_writes = HasWrites(event_mask);
-        state->has_reads = HasReads(event_mask);
-        if (state->fiber_ctx) {
-          detail::FiberActive()->ActivateOther(state->fiber_ctx);
-        }
-      };
-      state->arm_index = uring->EpollAdd(socket_fd, move(cb), mask);
+      uring->EpollDel(it->second.arm_index);
 #endif
     }
+    it->second.removed = true;
   } else {
-    CHECK_EQ(state->channel_sock, socket_fd);
-    CHECK_EQ(mask, 0u);
-    if (state->proactor->GetKind() == ProactorBase::EPOLL) {
-      EpollProactor* epoll = (EpollProactor*)state->proactor;
-      epoll->Disarm(socket_fd, state->arm_index);
-    } else {
-      CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+    auto [it, inserted] = state->sockets_state.try_emplace(socket_fd);
+    if (inserted || it->second.removed) {
+      AresSocketState& socket_state = it->second;
+      socket_state.mask = mask;
+      socket_state.removed = false;
+
+      if (state->proactor->GetKind() == ProactorBase::EPOLL) {
+        EpollProactor* epoll = (EpollProactor*)state->proactor;
+        auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
+          if (state->fiber_ctx) {
+            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+          }
+        };
+        socket_state.arm_index = epoll->Arm(socket_fd, std::move(cb), mask);
+      } else {
+        CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
 #ifdef __linux__
-      UringProactor* uring = (UringProactor*)state->proactor;
-      uring->EpollDel(state->arm_index);
+        UringProactor* uring = (UringProactor*)state->proactor;
+        auto cb = [state](uint32_t event_mask) {
+          if (state->fiber_ctx) {
+            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+          }
+        };
+        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
 #endif
+      }
     }
   }
 }
@@ -136,9 +140,11 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
   while (!args->done) {
     myself->Suspend();
 
-    int write_sock = state->has_writes ? state->channel_sock : ARES_SOCKET_BAD;
-    int read_sock = state->has_reads ? state->channel_sock : ARES_SOCKET_BAD;
-    ares_process_fd(channel, read_sock, write_sock);
+    for (const auto& [socket, socket_state] : state->sockets_state) {
+      int read_sock = HasReads(socket_state.mask) ? socket : ARES_SOCKET_BAD;
+      int write_sock = HasWrites(socket_state.mask) ? socket : ARES_SOCKET_BAD;
+      ares_process_fd(channel, read_sock, write_sock);
+    }
   }
   state->fiber_ctx = nullptr;
 }
