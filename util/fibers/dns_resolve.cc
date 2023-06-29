@@ -27,9 +27,9 @@ struct DnsResolveCallbackArgs {
 };
 
 struct AresSocketState {
-  bool has_reads = false;
-  bool has_writes = false;
+  unsigned mask;
   unsigned arm_index;
+  bool removed = false;  // Used to indicate that the socket was removed, without modifying the map
 };
 
 struct AresChannelState {
@@ -58,37 +58,10 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
   if (writable)
     mask |= ProactorBase::EPOLL_OUT;
 
-  auto [it, inserted] = state->sockets_state.try_emplace(socket_fd);
-  if (inserted) {
+  if (mask == 0) {
+    auto it = state->sockets_state.find(socket_fd);
+    CHECK(it != state->sockets_state.end());
     // TODO: to unify epoll management under a unified interface in ProactorBase.
-    if (state->proactor->GetKind() == ProactorBase::EPOLL) {
-      EpollProactor* epoll = (EpollProactor*)state->proactor;
-      auto cb = [state, socket_fd](uint32_t event_mask, int err, EpollProactor* me) {
-        AresSocketState& socket_state = state->sockets_state[socket_fd];
-        socket_state.has_writes = HasWrites(event_mask);
-        socket_state.has_reads = HasReads(event_mask);
-        if (state->fiber_ctx) {
-          detail::FiberActive()->ActivateOther(state->fiber_ctx);
-        }
-      };
-      it->second.arm_index = epoll->Arm(socket_fd, std::move(cb), mask);
-    } else {
-      CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
-#ifdef __linux__
-      UringProactor* uring = (UringProactor*)state->proactor;
-      auto cb = [state, socket_fd](uint32_t event_mask) {
-        AresSocketState& socket_state = state->sockets_state[socket_fd];
-        socket_state.has_writes = HasWrites(event_mask);
-        socket_state.has_reads = HasReads(event_mask);
-        if (state->fiber_ctx) {
-          detail::FiberActive()->ActivateOther(state->fiber_ctx);
-        }
-      };
-      it->second.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
-#endif
-    }
-  } else {
-    CHECK_EQ(mask, 0u);
     if (state->proactor->GetKind() == ProactorBase::EPOLL) {
       EpollProactor* epoll = (EpollProactor*)state->proactor;
       epoll->Disarm(socket_fd, it->second.arm_index);
@@ -98,6 +71,35 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
       UringProactor* uring = (UringProactor*)state->proactor;
       uring->EpollDel(it->second.arm_index);
 #endif
+    }
+    it->second.removed = true;
+  } else {
+    auto [it, inserted] = state->sockets_state.try_emplace(socket_fd);
+    if (inserted || it->second.removed) {
+      AresSocketState& socket_state = it->second;
+      socket_state.mask = mask;
+      socket_state.removed = false;
+
+      if (state->proactor->GetKind() == ProactorBase::EPOLL) {
+        EpollProactor* epoll = (EpollProactor*)state->proactor;
+        auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
+          if (state->fiber_ctx) {
+            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+          }
+        };
+        socket_state.arm_index = epoll->Arm(socket_fd, std::move(cb), mask);
+      } else {
+        CHECK_EQ(state->proactor->GetKind(), ProactorBase::IOURING);
+#ifdef __linux__
+        UringProactor* uring = (UringProactor*)state->proactor;
+        auto cb = [state](uint32_t event_mask) {
+          if (state->fiber_ctx) {
+            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+          }
+        };
+        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
+#endif
+      }
     }
   }
 }
@@ -139,8 +141,8 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
     myself->Suspend();
 
     for (const auto& [socket, socket_state] : state->sockets_state) {
-      int write_sock = socket_state.has_writes ? socket : ARES_SOCKET_BAD;
-      int read_sock = socket_state.has_reads ? socket : ARES_SOCKET_BAD;
+      int read_sock = HasReads(socket_state.mask) ? socket : ARES_SOCKET_BAD;
+      int write_sock = HasWrites(socket_state.mask) ? socket : ARES_SOCKET_BAD;
       ares_process_fd(channel, read_sock, write_sock);
     }
   }
