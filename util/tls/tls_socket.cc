@@ -291,7 +291,7 @@ auto TlsSocket::HandleRead() -> error_code {
     return esz.error();
   }
 
-  if(cache_) {
+  if (cache_) {
     PlaceBufferInCache(mut_buf, *esz);
     cache_ = false;
   }

@@ -47,15 +47,15 @@ class TlsSocket : public FiberSocketBase {
   SSL* ssl_handle();
 
   // Enables caching the first n_bytes received in HandleRead()
-  // such that it can be used later to downgrade tls to non-tls 
+  // such that it can be used later to downgrade tls to non-tls
   // connections
   void CacheOnce();
-  
-  using Buffer = Engine::Buffer;  
+
+  using Buffer = Engine::Buffer;
 
   Buffer GetCachedBuffer() const;
-  
-  void PlaceBufferInCache(Buffer buffer, size_t n_bytes); 
+
+  void PlaceBufferInCache(Buffer buffer, size_t n_bytes);
 
  private:
   error_code MaybeSendOutput();
