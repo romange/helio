@@ -7,6 +7,7 @@
 #include <openssl/ssl.h>
 
 #include "util/fiber_socket_base.h"
+#include "util/tls/tls_engine.h"
 
 namespace util {
 namespace tls {
@@ -45,12 +46,28 @@ class TlsSocket : public FiberSocketBase {
 
   SSL* ssl_handle();
 
+  // Enables caching the first n_bytes received in HandleRead()
+  // such that it can be used later to downgrade tls to non-tls
+  // connections
+  void CacheOnce();
+
+  using Buffer = Engine::Buffer;
+
+  Buffer GetCachedBuffer() const;
+
+  void PlaceBufferInCache(Buffer buffer, size_t n_bytes);
+
  private:
   error_code MaybeSendOutput();
   error_code HandleRead();
 
   FiberSocketBase* next_sock_;
   std::unique_ptr<Engine> engine_;
+
+  // Used to signal HandleRead() to cache the first n_bytes
+  bool cache_{false};
+  size_t n_bytes_{0};
+  Buffer cached_bytes_;
 };
 
 }  // namespace tls
