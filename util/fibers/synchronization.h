@@ -163,7 +163,7 @@ class CondVarAny {
     wait_queue_splk_.lock();
     lt.unlock();
 
-    wait_queue_.Register(&waiter);
+    wait_queue_.Link(&waiter);
     wait_queue_splk_.unlock();
     active->Suspend();
 
@@ -192,18 +192,29 @@ class CondVarAny {
     // store this fiber in waiting-queue
     wait_queue_splk_.lock();
     lt.unlock();
-    wait_queue_.Register(&waiter);
+    wait_queue_.Link(&waiter);
     wait_queue_splk_.unlock();
 
-    active->WaitUntil(tp);
+    bool timed_out = active->WaitUntil(tp);
+    bool clear_remote = true;
 
     wait_queue_splk_.lock();
     if (waiter.IsLinked()) {
-      wait_queue_.Unregister(&waiter);
+      wait_queue_.Unlink(&waiter);
 
+      status = std::cv_status::timeout;
+      clear_remote = false;
+    } else if (timed_out) {
       status = std::cv_status::timeout;
     }
     wait_queue_splk_.unlock();
+
+    if (clear_remote &&
+      MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+      // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
+      // will clear the remote_next pointer.
+      active->Yield();
+    }
 
     lt.lock();
     return status;
@@ -525,41 +536,15 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     detail::Waiter waiter(active->CreateWaiter());
-    wait_queue_.Register(&waiter);
+    wait_queue_.Link(&waiter);
     lk.unlock();
     active->Suspend();
+
     return true;
   }
   return false;
 }
 
-inline std::cv_status EventCount::wait_until(
-    uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
-  detail::FiberInterface* active = detail::FiberActive();
-
-  cv_status status = cv_status::no_timeout;
-
-  std::unique_lock lk(lock_);
-  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
-    detail::Waiter waiter(active->CreateWaiter());
-
-    wait_queue_.Register(&waiter);
-    lk.unlock();
-
-    active->WaitUntil(tp);
-
-    // We must protect wait_hook because we modify it in notification thread.
-    lk.lock();
-    if (waiter.IsLinked()) {
-      assert(!wait_queue_.empty());
-
-      // We were woken up by timeout, lets remove ourselves from the queue.
-      wait_queue_.Unregister(&waiter);
-      status = cv_status::timeout;
-    }
-  }
-  return status;
-}
 
 // Returns true if had to preempt, false if no preemption happenned.
 template <typename Condition> bool EventCount::await(Condition condition) {

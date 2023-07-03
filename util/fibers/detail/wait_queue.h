@@ -48,11 +48,11 @@ class WaitQueue {
     return wait_list_.empty();
   }
 
-  void Register(Waiter* waiter) {
+  void Link(Waiter* waiter) {
     wait_list_.push_back(*waiter);
   }
 
-  void Unregister(Waiter* waiter) {
+  void Unlink(Waiter* waiter) {
     auto it = WaitList::s_iterator_to(*waiter);
     wait_list_.erase(it);
   }

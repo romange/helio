@@ -14,8 +14,8 @@ inline void FiberInterface::Yield() {
   scheduler_->Preempt();
 }
 
-inline void FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) {
-  scheduler_->WaitUntil(tp, this);
+inline bool FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) {
+  return scheduler_->WaitUntil(tp, this);
 }
 
 inline void FiberInterface::Suspend() {

@@ -589,6 +589,28 @@ TEST_P(ProactorTest, Timeout) {
   producer_fb.Join();
 }
 
+TEST_P(ProactorTest, Mutex) {
+  unique_ptr<ProactorThread> ths[kNumThreads];
+  Fiber fbs[kNumThreads];
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    ths[i] = CreateProactorThread();
+  }
+
+  Mutex mu;
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    fbs[i] = ths[i]->get()->LaunchFiber([&] {
+      lock_guard lk(mu);
+    });
+  }
+
+  for (auto& fb : fbs)
+    fb.Join();
+
+  for (auto& th : ths)
+    th.reset();
+}
 
 }  // namespace fb2
 }  // namespace util

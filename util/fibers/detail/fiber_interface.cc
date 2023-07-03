@@ -98,10 +98,6 @@ TL_FiberInitializer::~TL_FiberInitializer() {
     p = &(*p)->next;
   }
   *p = next;
-  /*if (g_fiber_thread_list == nullptr) {
-    delete g_parking_ht;
-    g_parking_ht = nullptr;
-  }*/
 }
 
 TL_FiberInitializer& FbInitializer() noexcept {
@@ -117,7 +113,7 @@ FiberInterface* FiberActive() noexcept {
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), flags_(0), type_(type) {
-  remote_next_.store((FiberInterface*)1, memory_order_relaxed);
+  remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
   if (len) {
@@ -208,7 +204,7 @@ void FiberInterface::Join() {
   }
 
   Waiter waiter{active->CreateWaiter()};
-  wait_queue_.Register(&waiter);
+  wait_queue_.Link(&waiter);
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
   DVLOG(2) << "Joining on " << name_;
 
@@ -235,6 +231,7 @@ void FiberInterface::WakeOther(uint32_t epoch, FiberInterface* other) {
   uint32_t next = epoch + 1;
   bool matched = other->wake_epoch_.compare_exchange_strong(epoch, next, memory_order_acq_rel);
   if (!matched) {
+    LOG(FATAL) << "WakeOther: epoch mismatch.";
     return;
   }
 

@@ -73,7 +73,7 @@ class FiberInterface {
   void Yield();
 
   // inline
-  void WaitUntil(std::chrono::steady_clock::time_point tp);
+  bool WaitUntil(std::chrono::steady_clock::time_point tp);
 
   // Schedules another fiber without switching to it.
   // other can belong to another thread.
@@ -272,6 +272,9 @@ FiberInterface* FiberActive() noexcept;
 void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
+
+constexpr uint64_t kRemoteFree = 1;
+
 
 }  // namespace detail
 }  // namespace fb2

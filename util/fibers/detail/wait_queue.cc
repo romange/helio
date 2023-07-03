@@ -30,7 +30,5 @@ void WaitQueue::NotifyImpl(uint32_t epoch, FiberInterface* suspended, FiberInter
 }
 
 }  // namespace detail
-
 }  // namespace fb2
-
 }  // namespace util
