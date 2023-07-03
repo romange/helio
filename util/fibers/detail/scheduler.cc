@@ -405,7 +405,6 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 
 void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
   DCHECK(FiberActive() == this);
-  DCHECK(!wait_hook.is_linked());
 
   while (true) {
     if (sched->IsShutdown()) {
@@ -464,7 +463,6 @@ Scheduler::~Scheduler() {
 
   while (HasReady()) {
     FiberInterface* fi = PopReady();
-    DCHECK(!fi->wait_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
     fi->SwitchTo();
   }

@@ -13,28 +13,28 @@ using namespace std;
 
 void Mutex::lock() {
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
+  detail::Waiter waiter(active->CreateWaiter());
 
   while (true) {
     {
       unique_lock lk(wait_queue_splk_);
 
       if (nullptr == owner_) {
+        DCHECK(!waiter.IsLinked());
+
         owner_ = active;
         return;
       }
 
       CHECK(active != owner_);
-
-      wait_queue_.push_back(*active);
+      wait_queue_.Register(&waiter);
     }
-    active->scheduler()->Preempt();
+    active->Suspend();
   }
 }
 
 bool Mutex::try_lock() {
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
 
   {
     unique_lock lk{wait_queue_splk_};
@@ -48,47 +48,25 @@ bool Mutex::try_lock() {
 
 void Mutex::unlock() {
   detail::FiberInterface* active = detail::FiberActive();
-  assert(!active->wait_hook.is_linked());
 
   unique_lock lk(wait_queue_splk_);
   CHECK(owner_ == active);
   owner_ = nullptr;
-  if (wait_queue_.empty()) {
-    return;
-  }
 
-  detail::FiberInterface* fi = &wait_queue_.front();
-  wait_queue_.pop_front();
-  active->ActivateOther(fi);
+  wait_queue_.NotifyOne(active);
 }
 
 void CondVarAny::notify_one() noexcept {
-  unique_lock lk(wait_queue_splk_);
-  if (wait_queue_.empty()) {
-    return;
-  }
-
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
 
-  detail::FiberInterface* fi = &wait_queue_.front();
-  wait_queue_.pop_front();
-  active->ActivateOther(fi);
+  unique_lock lk(wait_queue_splk_);
+  wait_queue_.NotifyOne(active);
 }
 
 void CondVarAny::notify_all() noexcept {
-  decltype(wait_queue_) tmp_queue;
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
-
   unique_lock lk(wait_queue_splk_);
-  tmp_queue.swap(wait_queue_);
-
-  while (!tmp_queue.empty()) {
-    detail::FiberInterface* fi = &tmp_queue.front();
-    tmp_queue.pop_front();
-    active->ActivateOther(fi);
-  }
+  wait_queue_.NotifyAll(active);
 }
 
 Barrier::Barrier(size_t initial) : initial_{initial}, current_{initial_} {

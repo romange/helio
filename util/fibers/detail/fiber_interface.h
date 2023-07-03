@@ -11,6 +11,7 @@
 #include <chrono>
 
 #include "base/mpsc_intrusive_queue.h"
+#include "util/fibers/detail/wait_queue.h"
 
 namespace util {
 namespace fb2 {
@@ -59,7 +60,7 @@ class FiberInterface {
   // we need both list and wait because it could be that
   // the object is in the wait queue and then added to ready queue by RemoteToReady.
   // wait_hook should be mutated under a spinlock since it is used by multiple threads.
-  FI_ListHook list_hook, wait_hook;
+  FI_ListHook list_hook; //, wait_hook;
   FI_SleepHook sleep_hook;
 
   ::boost::context::fiber_context SwitchTo();
@@ -77,6 +78,7 @@ class FiberInterface {
   // Schedules another fiber without switching to it.
   // other can belong to another thread.
   void ActivateOther(FiberInterface* other);
+  void WakeOther(uint32_t epoch, FiberInterface* other);
 
   void Suspend();
 
@@ -174,14 +176,18 @@ class FiberInterface {
   uint32_t DEBUG_use_count() const {
     return use_count_.load(std::memory_order_relaxed);
   }
+
+  Waiter CreateWaiter() {
+    return Waiter{this, wake_epoch_.fetch_add(1, std::memory_order_relaxed) + 1};
+  }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
-  static constexpr uint16_t kParkingInProgress = 0x4;
 
-  using WaitQueueType = boost::intrusive::slist<
-      FiberInterface,
-      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::wait_hook>>;
+  // using WaitQueueType = boost::intrusive::slist<
+  //    FiberInterface,
+  //    boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::wait_hook>>;
 
   ::boost::context::fiber_context Terminate();
 
@@ -191,15 +197,15 @@ class FiberInterface {
   Type type_;
 
   // FiberInterfaces that join on this fiber to terminate are added here.
-  WaitQueueType wait_queue_;
+  WaitQueue wait_queue_;
 
   Scheduler* scheduler_ = nullptr;
-  uint64_t park_token_ = 0;
 
   std::atomic<FiberInterface*> remote_next_{nullptr};
   std::chrono::steady_clock::time_point tp_;
 
   char name_[24];
+  std::atomic_uint32_t wake_epoch_{0};
 };
 
 template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {

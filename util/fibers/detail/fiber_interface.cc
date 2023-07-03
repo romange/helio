@@ -129,7 +129,6 @@ FiberInterface::~FiberInterface() {
   DVLOG(2) << "Destroying " << name_;
   DCHECK_EQ(use_count_.load(), 0u);
   DCHECK(wait_queue_.empty());
-  DCHECK(!wait_hook.is_linked());
   DCHECK(!list_hook.is_linked());
 }
 
@@ -149,7 +148,6 @@ void FiberInterface::SetName(std::string_view nm) {
 ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(this == FiberActive());
   DCHECK(!list_hook.is_linked());
-  DCHECK(!wait_hook.is_linked());
 
   scheduler_->ScheduleTermination(this);
   DVLOG(2) << "Terminating " << name_;
@@ -162,13 +160,7 @@ ctx::fiber_context FiberInterface::Terminate() {
     CpuPause();
   }
 
-  while (!wait_queue_.empty()) {
-    FiberInterface* wait_fib = &wait_queue_.front();
-    wait_queue_.pop_front();
-    DVLOG(2) << "Scheduling " << wait_fib->name_ << " from " << name_;
-
-    ActivateOther(wait_fib);
-  }
+  wait_queue_.NotifyAll(this);
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
 
@@ -215,7 +207,8 @@ void FiberInterface::Join() {
     CpuPause();
   }
 
-  wait_queue_.push_front(*active);
+  Waiter waiter{active->CreateWaiter()};
+  wait_queue_.Register(&waiter);
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
   DVLOG(2) << "Joining on " << name_;
 
@@ -224,7 +217,6 @@ void FiberInterface::Join() {
 
 void FiberInterface::ActivateOther(FiberInterface* other) {
   DCHECK(other->scheduler_);
-  DCHECK(!other->wait_hook.is_linked());
 
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
@@ -232,6 +224,28 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // ProcessSleep.
     if (!other->list_hook.is_linked())
       scheduler_->AddReady(other);
+  } else {
+    other->scheduler_->ScheduleFromRemote(other);
+  }
+}
+
+void FiberInterface::WakeOther(uint32_t epoch, FiberInterface* other) {
+  DCHECK(other->scheduler_);
+
+  uint32_t next = epoch + 1;
+  bool matched = other->wake_epoch_.compare_exchange_strong(epoch, next, memory_order_acq_rel);
+  if (!matched) {
+    return;
+  }
+
+  // Check first if we the fiber belongs to the active thread.
+  if (other->scheduler_ == scheduler_) {
+    // In case `other` times out on wait, it could be added to the ready queue already by
+    // ProcessSleep.
+    if (other->list_hook.is_linked())
+      return;
+
+    scheduler_->AddReady(other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
   }
