@@ -5,7 +5,7 @@ endif()
 
 add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             fiber_file.cc epoll_proactor.cc epoll_socket.cc pool.cc
-            detail/scheduler.cc detail/fiber_interface.cc accept_server.cc
+            detail/scheduler.cc detail/fiber_interface.cc detail/wait_queue.cc accept_server.cc
             fiber_socket_base.cc listener_interface.cc
             prebuilt_asio.cc proactor_pool.cc
             sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc

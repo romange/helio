@@ -266,7 +266,6 @@ TEST_F(FiberTest, EventCount) {
   ec.notify();
   fb.Join();
 
-  ASSERT_FALSE(detail::FiberActive()->wait_hook.is_linked());
   EXPECT_EQ(std::cv_status::timeout,
             ec.await_until([] { return false; }, chrono::steady_clock::now() + 10ms));
 
@@ -292,6 +291,50 @@ TEST_F(FiberTest, EventCount) {
   EXPECT_EQ(std::cv_status::timeout, ec.await_until([&] { return signal; }, next));
   fb3.Join();
 }
+
+TEST_F(FiberTest, EventCountMT) {
+  EventCount ec1, ec2;
+  atomic_uint32_t cnt{0}, gate{0};
+  constexpr unsigned kNumIters = 1000;
+
+  array<thread, 5> threads;
+  for (auto& th : threads) {
+    th = thread([&] {
+      Fiber fb2("producer", [&] {
+        for (unsigned i = 0; i < kNumIters; ++i) {
+          ec2.await([&] {
+            return gate.load(memory_order_relaxed) == i;
+          });
+          ThisFiber::SleepFor(1us);
+          if (cnt.fetch_add(1, memory_order_relaxed) == threads.size() - 1)
+            ec1.notify();
+        }
+      });
+      fb2.Join();
+    });
+  }
+
+  unsigned preempts = 0;
+
+  Fiber fb(Launch::dispatch, "fb1", [&] {
+    for (unsigned i = 0; i < kNumIters; ++i) {
+      gate.store(i, memory_order_release);
+      ec2.notifyAll();
+
+      preempts += ec1.await([&] {
+        return cnt.load(memory_order_relaxed) == threads.size();
+      });
+      cnt.store(0, memory_order_relaxed);
+    }
+  });
+
+  fb.Join();
+  for (auto& th : threads) {
+    th.join();
+  }
+  LOG(INFO) << "Preempts: " << preempts;
+}
+
 
 TEST_F(FiberTest, Future) {
   Promise<int> p1;
@@ -546,6 +589,28 @@ TEST_P(ProactorTest, Timeout) {
   producer_fb.Join();
 }
 
+TEST_P(ProactorTest, Mutex) {
+  unique_ptr<ProactorThread> ths[kNumThreads];
+  Fiber fbs[kNumThreads];
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    ths[i] = CreateProactorThread();
+  }
+
+  Mutex mu;
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    fbs[i] = ths[i]->get()->LaunchFiber([&] {
+      lock_guard lk(mu);
+    });
+  }
+
+  for (auto& fb : fbs)
+    fb.Join();
+
+  for (auto& th : ths)
+    th.reset();
+}
 
 }  // namespace fb2
 }  // namespace util

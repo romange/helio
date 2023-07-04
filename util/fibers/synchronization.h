@@ -14,11 +14,12 @@ namespace fb2 {
 
 namespace detail {
 
-using WaitQueue = boost::intrusive::slist<
+/*using WaitQueue2 = boost::intrusive::slist<
     detail::FiberInterface,
     boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
                                   &detail::FiberInterface::wait_hook>,
     boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+*/
 
 }  // namespace detail
 
@@ -154,13 +155,15 @@ class CondVarAny {
 
   template <typename LockType> void wait(LockType& lt) {
     detail::FiberInterface* active = detail::FiberActive();
-    assert(!active->wait_hook.is_linked());
+
+    detail::Waiter waiter(active->CreateWaiter());
 
     // atomically call lt.unlock() and block on *this
     // store this fiber in waiting-queue
     wait_queue_splk_.lock();
     lt.unlock();
-    wait_queue_.push_back(*active);
+
+    wait_queue_.Link(&waiter);
     wait_queue_splk_.unlock();
     active->Suspend();
 
@@ -181,25 +184,37 @@ class CondVarAny {
   template <typename LockType>
   std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
     detail::FiberInterface* active = detail::FiberActive();
-    assert(!active->wait_hook.is_linked());
 
     std::cv_status status = std::cv_status::no_timeout;
+    detail::Waiter waiter(active->CreateWaiter());
 
     // atomically call lt.unlock() and block on *this
     // store this fiber in waiting-queue
     wait_queue_splk_.lock();
     lt.unlock();
-    wait_queue_.push_back(*active);
+    wait_queue_.Link(&waiter);
     wait_queue_splk_.unlock();
-    active->WaitUntil(tp);
+
+    bool timed_out = active->WaitUntil(tp);
+    bool clear_remote = true;
 
     wait_queue_splk_.lock();
-    if (active->wait_hook.is_linked()) {
-      auto it = detail::WaitQueue::s_iterator_to(*active);
-      wait_queue_.erase(it);
+    if (waiter.IsLinked()) {
+      wait_queue_.Unlink(&waiter);
+
+      status = std::cv_status::timeout;
+      clear_remote = false;
+    } else if (timed_out) {
       status = std::cv_status::timeout;
     }
     wait_queue_splk_.unlock();
+
+    if (clear_remote &&
+      MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+      // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
+      // will clear the remote_next pointer.
+      active->Yield();
+    }
 
     lt.lock();
     return status;
@@ -489,31 +504,12 @@ inline bool EventCount::notify() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
-    assert(!active->wait_hook.is_linked());
 
-#if 1
     std::unique_lock lk(lock_);
 
-    if (!wait_queue_.empty()) {
-      detail::FiberInterface* fi = &wait_queue_.front();
-      wait_queue_.pop_front();
-      // At this point we know that fi exists still exists.
-      // but if fi is remote and we cross unlock, it can timeout and destroy itself.
-      // Therefore, we call ActivateOther under lock.
-      active->ActivateOther(fi);
-      lk.unlock();
-
-      return true;
-    }
-
-#else
-    detail::FiberInterface* dest = active->NotifyParked(uintptr_t(this));
-    if (dest) {
-      return true;
-    }
-
-#endif
+    return wait_queue_.NotifyOne(active);
   }
+
   return false;
 }
 
@@ -522,27 +518,12 @@ inline bool EventCount::notifyAll() noexcept {
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
-    assert(!active->wait_hook.is_linked());
 
-#if 1
-    decltype(wait_queue_) tmp_queue;
-    {
-      std::unique_lock holder(lock_);
-      tmp_queue.swap(wait_queue_);
+    std::unique_lock lk(lock_);
 
-      // fi may be remote and when we cross unlock, it can timeout and destroy itself.
-      // therefore we call ActivateOther under lock.
-      while (!tmp_queue.empty()) {
-        detail::FiberInterface* fi = &tmp_queue.front();
-        tmp_queue.pop_front();
-        active->ActivateOther(fi);
-      }
-    }
+    wait_queue_.NotifyAll(active);
 
-#else
-    active->NotifyAllParked(uintptr_t(this));
     return true;
-#endif
   }
 
   return false;
@@ -551,52 +532,19 @@ inline bool EventCount::notifyAll() noexcept {
 // Atomically checks for epoch and waits on cond_var.
 inline bool EventCount::wait(uint32_t epoch) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
-  assert(!active->wait_hook.is_linked());
 
-#if 1
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
-
-    wait_queue_.push_back(*active);
+    detail::Waiter waiter(active->CreateWaiter());
+    wait_queue_.Link(&waiter);
     lk.unlock();
     active->Suspend();
+
     return true;
   }
   return false;
-#else
-  return active->SuspendConditionally(uintptr_t(this), [&] {
-    return (val_.load(std::memory_order_relaxed) >> kEpochShift) != epoch;
-  });
-#endif
 }
 
-inline std::cv_status EventCount::wait_until(
-    uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept {
-  detail::FiberInterface* active = detail::FiberActive();
-  assert(!active->wait_hook.is_linked());
-
-  cv_status status = cv_status::no_timeout;
-
-  std::unique_lock lk(lock_);
-  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
-    wait_queue_.push_back(*active);
-    lk.unlock();
-
-    active->WaitUntil(tp);
-
-    // We must protect wait_hook because we modify it in notification thread.
-    lk.lock();
-    if (active->wait_hook.is_linked()) {
-      assert(!wait_queue_.empty());
-
-      // We were woken up by timeout, lets remove ourselves from the queue.
-      auto it = detail::WaitQueue::s_iterator_to(*active);
-      wait_queue_.erase(it);
-      status = cv_status::timeout;
-    }
-  }
-  return status;
-}
 
 // Returns true if had to preempt, false if no preemption happenned.
 template <typename Condition> bool EventCount::await(Condition condition) {

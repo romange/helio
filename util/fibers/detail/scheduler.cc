@@ -18,7 +18,6 @@ using namespace std;
 
 namespace {
 
-FiberInterface* const kRemoteFree = reinterpret_cast<FiberInterface*>((void*)1);
 
 #if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {
@@ -405,7 +404,6 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 
 void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
   DCHECK(FiberActive() == this);
-  DCHECK(!wait_hook.is_linked());
 
   while (true) {
     if (sched->IsShutdown()) {
@@ -464,7 +462,6 @@ Scheduler::~Scheduler() {
 
   while (HasReady()) {
     FiberInterface* fi = PopReady();
-    DCHECK(!fi->wait_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
     fi->SwitchTo();
   }
@@ -513,14 +510,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
-  // to make sure that the fiber is not destroyed before it's been pulled from the queue.
-  FiberInterface* free_cntx = kRemoteFree;
-
-  // we can push only the same fiber instance until it gets pulled. However MPSCIntrusiveQueue
-  // does not verify and expects already free items. We verify it here with kRemoteFree test.
-  if (!cntx->remote_next_.compare_exchange_strong(free_cntx, nullptr, memory_order_acquire,
-                                                  memory_order_relaxed))
-    return;
+  DCHECK(cntx->remote_next_.load(memory_order_relaxed) == (FiberInterface*)kRemoteFree);
 
   intrusive_ptr_add_ref(cntx);
   remote_ready_queue_.Push(cntx);
@@ -561,7 +551,7 @@ void Scheduler::DestroyTerminated() {
   }
 }
 
-void Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* me) {
+bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* me) {
   DCHECK(!me->sleep_hook.is_linked());
   DCHECK(!me->list_hook.is_linked());
 
@@ -569,6 +559,9 @@ void Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   sleep_queue_.insert(*me);
   auto fc = Preempt();
   DCHECK(!fc);
+  bool has_timed_out = (me->tp_ == chrono::steady_clock::time_point::max());
+
+  return has_timed_out;
 }
 
 void Scheduler::ProcessRemoteReady() {
@@ -576,6 +569,9 @@ void Scheduler::ProcessRemoteReady() {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
       break;
+
+    // Marks as free.
+    fi->remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
 
     DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
@@ -587,9 +583,6 @@ void Scheduler::ProcessRemoteReady() {
       DVLOG(2) << "set ready " << fi->name();
       AddReady(fi);
     }
-
-    // Mark that this fiber is available to be pushed again into remote_ready_queue_.
-    fi->remote_next_.store(kRemoteFree, memory_order_release);
 
     // Each time we push fi to remote_ready_queue_ we increase the reference count.
     intrusive_ptr_release(fi);
@@ -611,6 +604,7 @@ void Scheduler::ProcessSleep() {
 
     DCHECK(!fi.list_hook.is_linked());
     DVLOG(2) << "timeout for " << fi.name();
+    fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     ready_queue_.push_back(fi);
   } while (!sleep_queue_.empty());
 }
@@ -642,75 +636,6 @@ void Scheduler::RunDeferred() {
   }
 #endif
 }
-
-#if PARKING_ENABLED
-void FiberInterface::NotifyParked(FiberInterface* other) {
-  DCHECK(other->scheduler_ && other->scheduler_ != scheduler_);
-
-  uintptr_t token = uintptr_t(other);
-
-  // to avoid the missed notification case, we reset the flag even if we had not find the fiber.
-  // this handles the scenario, where the parking fiber started async process, but has not been
-  // added to the parking lot yet and now this process tries to notify it.
-  FiberInterface* item = g_parking_ht->Remove(
-      token,
-      [](FiberInterface* fibi) {
-        fibi->flags_.fetch_and(~kParkingInProgress, memory_order_relaxed);
-      },
-      [other] { return other->flags_.fetch_and(~kParkingInProgress, memory_order_relaxed); });
-
-  if (item == nullptr) {  // The fiber has not parked yet.
-    // we reset the flag, so "other" will skip the suspension.
-    return;
-  }
-  CHECK(item == other);
-  other->scheduler_->ScheduleFromRemote(other);
-}
-
-FiberInterface* FiberInterface::NotifyParked(uint64_t token) {
-  FiberInterface* removed = g_parking_ht->Remove(
-      token, [](FiberInterface* fibi) {}, [] {});
-  if (removed) {
-    ActivateOther(removed);
-  }
-  return removed;
-}
-
-void FiberInterface::NotifyAllParked(uint64_t token) {
-  WaitQueue res;
-
-  g_parking_ht->RemoveAll(token, &res);
-  while (!res.empty()) {
-    auto& fibi = res.front();
-    res.pop_front();
-    ActivateOther(&fibi);
-  }
-}
-
-void FiberInterface::SuspendUntilWakeup() {
-  uintptr_t token = uintptr_t(this);
-  bool parked = g_parking_ht->Emplace(token, this, [this] {
-    // if parking process was stopped we should not park.
-    return (flags_.load(memory_order_relaxed) & kParkingInProgress) == 0;
-  });
-
-  if (parked) {
-    scheduler_->Preempt();
-  }
-}
-
-bool FiberInterface::SuspendConditionally(uint64_t token, absl::FunctionRef<bool()> validate) {
-  bool parked = g_parking_ht->Emplace(token, this, std::move(validate));
-
-  if (parked) {
-    scheduler_->Preempt();
-    return true;
-  }
-
-  return false;
-}
-
-#endif
 
 }  // namespace detail
 

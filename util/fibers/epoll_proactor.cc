@@ -303,7 +303,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
       DVLOG(2) << "Switching to " << fi->name();
       fi->SwitchTo();
-      DCHECK(!dispatcher->wait_hook.is_linked());
       cqe_count = 1;
     }
 

@@ -575,7 +575,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       DVLOG(2) << "Switching to " << fi->name();
 
       fi->SwitchTo();
-      DCHECK(!dispatcher->wait_hook.is_linked());
     }
 
     if (cqe_count) {

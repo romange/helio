@@ -11,30 +11,73 @@ namespace fb2 {
 
 using namespace std;
 
+std::cv_status EventCount::wait_until(uint32_t epoch,
+                                      const std::chrono::steady_clock::time_point& tp) noexcept {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  cv_status status = cv_status::no_timeout;
+
+  std::unique_lock lk(lock_);
+  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+    detail::Waiter waiter(active->CreateWaiter());
+
+    wait_queue_.Link(&waiter);
+    lk.unlock();
+
+    bool timed_out = active->WaitUntil(tp);
+    bool clear_remote = true;
+
+    // We must protect wait_hook because we modify it in notification thread.
+    lk.lock();
+
+    if (waiter.IsLinked()) {
+      assert(!wait_queue_.empty());
+
+      // We were woken up by timeout, lets remove ourselves from the queue.
+      wait_queue_.Unlink(&waiter);
+      DCHECK(timed_out);
+      status = cv_status::timeout;
+      clear_remote = false;
+    } else if (timed_out) {
+      status = cv_status::timeout;
+    }
+    lk.unlock();
+
+    if (clear_remote &&
+        MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+      // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
+      // will clear the remote_next pointer.
+      active->Yield();
+      CHECK_EQ(detail::kRemoteFree, (uintptr_t)MPSC_intrusive_load_next(*active));
+    }
+  }
+  return status;
+}
+
 void Mutex::lock() {
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
+
 
   while (true) {
-    {
-      unique_lock lk(wait_queue_splk_);
+    detail::Waiter waiter(active->CreateWaiter());
+    wait_queue_splk_.lock();
+    if (nullptr == owner_) {
+      DCHECK(!waiter.IsLinked());
 
-      if (nullptr == owner_) {
-        owner_ = active;
-        return;
-      }
-
-      CHECK(active != owner_);
-
-      wait_queue_.push_back(*active);
+      owner_ = active;
+      wait_queue_splk_.unlock();
+      return;
     }
-    active->scheduler()->Preempt();
+
+    CHECK(active != owner_);
+    wait_queue_.Link(&waiter);
+    wait_queue_splk_.unlock();
+    active->Suspend();
   }
 }
 
 bool Mutex::try_lock() {
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
 
   {
     unique_lock lk{wait_queue_splk_};
@@ -48,47 +91,25 @@ bool Mutex::try_lock() {
 
 void Mutex::unlock() {
   detail::FiberInterface* active = detail::FiberActive();
-  assert(!active->wait_hook.is_linked());
 
   unique_lock lk(wait_queue_splk_);
   CHECK(owner_ == active);
   owner_ = nullptr;
-  if (wait_queue_.empty()) {
-    return;
-  }
 
-  detail::FiberInterface* fi = &wait_queue_.front();
-  wait_queue_.pop_front();
-  active->ActivateOther(fi);
+  wait_queue_.NotifyOne(active);
 }
 
 void CondVarAny::notify_one() noexcept {
-  unique_lock lk(wait_queue_splk_);
-  if (wait_queue_.empty()) {
-    return;
-  }
-
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
 
-  detail::FiberInterface* fi = &wait_queue_.front();
-  wait_queue_.pop_front();
-  active->ActivateOther(fi);
+  unique_lock lk(wait_queue_splk_);
+  wait_queue_.NotifyOne(active);
 }
 
 void CondVarAny::notify_all() noexcept {
-  decltype(wait_queue_) tmp_queue;
   detail::FiberInterface* active = detail::FiberActive();
-  DCHECK(!active->wait_hook.is_linked());
-
   unique_lock lk(wait_queue_splk_);
-  tmp_queue.swap(wait_queue_);
-
-  while (!tmp_queue.empty()) {
-    detail::FiberInterface* fi = &tmp_queue.front();
-    tmp_queue.pop_front();
-    active->ActivateOther(fi);
-  }
+  wait_queue_.NotifyAll(active);
 }
 
 Barrier::Barrier(size_t initial) : initial_{initial}, current_{initial_} {

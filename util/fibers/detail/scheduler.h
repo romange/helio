@@ -42,7 +42,8 @@ class Scheduler {
 
   ::boost::context::fiber_context Preempt();
 
-  void WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
+  // Returns true if the fiber timed out by reaching tp.
+  bool WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
 
   // Assumes HasReady() is true.
   FiberInterface* PopReady() {
