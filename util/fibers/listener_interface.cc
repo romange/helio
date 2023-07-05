@@ -127,8 +127,7 @@ void ListenerInterface::RunAcceptLoop() {
     conn->owner_ = this;
 
     // Run cb in its Proactor thread.
-    next->Dispatch([this, conn] {
-      RunSingleConnection(conn); });
+    next->Dispatch([this, conn] { RunSingleConnection(conn); });
   }
 
   sock_->Shutdown(SHUT_RDWR);
@@ -159,8 +158,8 @@ void ListenerInterface::RunAcceptLoop() {
     }
   });
 
-  VLOG(1) << "Listener - " << ep.port() << " waiting for "
-          << cur_conn_cnt << " connections to close";
+  VLOG(1) << "Listener - " << ep.port() << " waiting for " << cur_conn_cnt
+          << " connections to close";
 
   pool_->AwaitFiberOnAll([this](auto* pb) {
     auto it = conn_list.find(this);
@@ -170,11 +169,11 @@ void ListenerInterface::RunAcceptLoop() {
     delete it->second;
     conn_list.erase(this);
   });
-  VLOG(1) << "Listener - " <<  ep.port() << " connections closed";
+  VLOG(1) << "Listener - " << ep.port() << " connections closed";
 
   PostShutdown();
   error_code ec = sock_->Close();
-  LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
+  LOG_IF(WARNING, ec) << "Socket close failed: " << ec.message();
   LOG(INFO) << "Listener stopped for port " << ep.port();
 }
 
@@ -246,8 +245,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   if (src_proactor == dest)
     return;
 
-  VLOG(1) << "Migrating from " << src_proactor->thread_id() << " to "
-          << dest->thread_id();
+  VLOG(1) << "Migrating from " << src_proactor->thread_id() << " to " << dest->thread_id();
 
   conn->OnPreMigrateThread();
   auto* clist = conn_list.find(this)->second;
