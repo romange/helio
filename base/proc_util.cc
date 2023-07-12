@@ -3,13 +3,13 @@
 //
 #include "base/proc_util.h"
 
+#include <fcntl.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-
-#include <mutex>  // once_flag
 
 #include "absl/strings/escaping.h"
 #include "absl/strings/numbers.h"
@@ -19,19 +19,36 @@
 #include "base/logging.h"
 
 // for MacOS we declare explicitly.
-extern "C" char **environ;
+extern "C" char** environ;
 
 namespace base {
 
-static size_t find_nth(std::string_view str, char c, uint32_t index) {
+using namespace std;
+
+namespace {
+size_t find_nth(string_view str, char c, uint32_t index) {
   for (size_t i = 0; i < str.size(); ++i) {
     if (str[i] == c) {
       if (index-- == 0)
         return i;
     }
   }
-  return std::string_view::npos;
+  return string_view::npos;
 }
+
+bool Matches(string_view str, string_view* line) {
+  if (!absl::ConsumePrefix(line, str))
+    return false;
+  *line = absl::StripLeadingAsciiWhitespace(*line);
+  return true;
+};
+
+inline string_view FirstToken(string_view line, char c) {
+  size_t del = line.find(c);
+  return line.substr(0, del);
+}
+
+}  // namespace
 
 // Runs a child process efficiently.
 // argv must be null terminated array of arguments where the first item in the array is the base
@@ -52,67 +69,103 @@ static int spawn(const char* path, char* argv[], int* child_status) {
 
 ProcessStats ProcessStats::Read() {
   ProcessStats stats;
-  FILE* f = fopen("/proc/self/status", "r");
-  if (f == nullptr)
+  int fd = open("/proc/self/status", O_RDONLY);
+  if (fd == -1)
     return stats;
-  char* line = nullptr;
-  size_t len = 128;
-  while (getline(&line, &len, f) != -1) {
-    line[len - 1] = '\0';
-    std::string_view line_view(line, len);
-    if (absl::ConsumePrefix(&line_view, "VmPeak:")) {
-      line_view = absl::StripLeadingAsciiWhitespace(line_view);
-      size_t del = line_view.find(' ');
-      CHECK(absl::SimpleAtoi(line_view.substr(0, del), &stats.vm_peak)) << (line + 8);
-    } else if (absl::ConsumePrefix(&line_view, "VmSize:")) {
-      line_view = absl::StripLeadingAsciiWhitespace(line_view);
-      size_t del = line_view.find(' ');
-      CHECK(absl::SimpleAtoi(line_view.substr(0, del), &stats.vm_size));
-    } else if (absl::ConsumePrefix(&line_view, "VmRSS:")) {
-      line_view = absl::StripLeadingAsciiWhitespace(line_view);
-      size_t del = line_view.find(' ');
-      CHECK(absl::SimpleAtoi(line_view.substr(0, del), &stats.vm_rss)) << line_view;
-    }
+
+  constexpr size_t kBufSize = 2048;
+  std::unique_ptr<char[]> buf(new char[kBufSize]);
+  ssize_t bytes_read = read(fd, buf.get(), kBufSize);
+  close(fd);
+
+  if (bytes_read == -1) {
+    LOG(WARNING) << "Could not read /proc/self/status, err " << errno;
+
+    return stats;
   }
-  fclose(f);
-  f = fopen("/proc/self/stat", "r");
-  if (f) {
+
+  string_view str(buf.get(), bytes_read);
+
+#define SAFE_ATOI(str, var)                    \
+  do {                                         \
+    if (!absl::SimpleAtoi(str, &var)) {        \
+      LOG(ERROR) << "Could not parse " << str; \
+      return ProcessStats{};                   \
+    }                                          \
+  } while (0)
+
+  while (!str.empty()) {
+    size_t pos = str.find('\n');
+    string_view line = str.substr(0, pos);
+
+    if (Matches("VmPeak:", &line)) {
+      string_view tok = FirstToken(line, ' ');
+      SAFE_ATOI(tok, stats.vm_peak);
+    } else if (Matches("VmSize:", &line)) {
+      string_view tok = FirstToken(line, ' ');
+      SAFE_ATOI(tok, stats.vm_size);
+    } else if (Matches("VmRSS:", &line)) {
+      string_view tok = FirstToken(line, ' ');
+      SAFE_ATOI(tok, stats.vm_rss);
+    } else if (Matches("HugetlbPages:", &line)) {
+      string_view tok = FirstToken(line, ' ');
+      SAFE_ATOI(tok, stats.hugetlb_pages);
+    }
+
+    if (pos == string_view::npos)
+      break;
+    str.remove_prefix(pos + 1);
+  }
+
+  fd = open("/proc/self/stat", O_RDONLY);
+  if (fd > 0) {
     long jiffies_per_second = sysconf(_SC_CLK_TCK);
     uint64 start_since_boot = 0;
-    char buf[512] = {0};
-    size_t bytes_read = fread(buf, 1, sizeof buf, f);
-    if (bytes_read == sizeof buf) {
-      fprintf(stderr, "Buffer is too small %lu\n", sizeof buf);
-    } else {
-      std::string_view str(buf, bytes_read);
+    ssize_t bytes_read = read(fd, buf.get(), kBufSize);
+    close(fd);
+    if (bytes_read > 0) {
+      string_view str(buf.get(), bytes_read);
       size_t pos = find_nth(str, ' ', 20);
-      if (pos != std::string_view::npos) {
-        size_t next = str.find(' ', pos + 1);
-        CHECK(absl::SimpleAtoi(str.substr(pos + 1, next - pos - 1), &start_since_boot));
+      str.remove_prefix(pos);
+      if (!str.empty()) {
+        size_t next = str.find(' ', 1);
+        CHECK(absl::SimpleAtoi(str.substr(1, next - 1), &start_since_boot));
         start_since_boot /= jiffies_per_second;
       }
     }
-    fclose(f);
-    if (start_since_boot > 0) {
-      f = fopen("/proc/stat", "r");
-      if (f) {
-        while (getline(&line, &len, f) != -1) {
-          std::string_view line_view(line, len);
 
-          if (absl::ConsumePrefix(&line_view, "btime ")) {
-            uint64_t boot_time;
-            size_t next = line_view.find('\n');
-            line_view = line_view.substr(0, next);
-            CHECK(absl::SimpleAtoi(line_view, &boot_time)) << absl::CHexEscape(line_view);
-            if (boot_time > 0)
-              stats.start_time_seconds = boot_time + start_since_boot;
+    static atomic_uint64_t boot_time(0);
+    uint64_t btime = boot_time.load(std::memory_order_relaxed);
+    if (btime == 0) {
+      int fd = open("/proc/stat", O_RDONLY);
+      if (fd > 0) {
+        ssize_t bytes_read = read(fd, buf.get(), kBufSize);
+        close(fd);
+        if (bytes_read > 0) {
+          string_view str(buf.get(), bytes_read);
+
+          while (!str.empty()) {
+            size_t pos = str.find('\n');
+            string_view line = str.substr(0, pos);
+
+            if (Matches("btime", &line)) {
+              string_view tok = FirstToken(line, '\n');
+              absl::SimpleAtoi(tok, &btime);
+              boot_time.store(btime, std::memory_order_release);
+              break;
+            }
+
+            if (pos == string_view::npos)
+              break;
+            str.remove_prefix(pos + 1);
           }
         }
-        fclose(f);
       }
     }
-  }
-  free(line);
+
+    stats.start_time_seconds = btime + start_since_boot;
+  }  // fd > 0
+
   return stats;
 }
 

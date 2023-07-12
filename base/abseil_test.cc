@@ -16,6 +16,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "base/proc_util.h"
 
 namespace base {
 
@@ -46,6 +47,12 @@ TEST_F(AbseilTest, PerftoolsProfile) {
 
   int res = ::GetStackTrace(stack, 255, 1);
   ASSERT_GT(res, 5);
+}
+
+TEST_F(AbseilTest, ProcUtil) {
+  ProcessStats stats = ProcessStats::Read();
+  EXPECT_GT(stats.vm_peak, 0);
+  EXPECT_GT(stats.start_time_seconds, 0);
 }
 
 // Does not work in release-mode.

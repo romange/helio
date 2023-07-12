@@ -11,9 +11,11 @@
 namespace base {
 
 struct ProcessStats {
+  // sizes in kilobytes.
   size_t vm_peak = 0;
   size_t vm_rss = 0;
   size_t vm_size = 0;
+  size_t hugetlb_pages = 0;
 
   // Start time of the process in seconds since epoch.
   int64_t start_time_seconds = 0;
