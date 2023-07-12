@@ -38,9 +38,7 @@ class IoBuf {
     return *this;
   }
 
-  ~IoBuf() {
-    delete[] buf_;
-  }
+  ~IoBuf();
 
   // ============== INPUT =======================
 

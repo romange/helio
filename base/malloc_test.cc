@@ -13,7 +13,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
-#include "base/proc_util.h"
+#include "io/proc_reader.h"
 
 namespace base {
 
@@ -78,7 +78,7 @@ TEST_F(MallocTest, Oom) {
 }
 
 inline size_t VmmRss() {
-  return ProcessStats::Read().vm_rss;
+  return io::ReadStatusInfo()->vm_rss;
 }
 
 TEST_F(MallocTest, OS) {
@@ -90,6 +90,7 @@ TEST_F(MallocTest, OS) {
 
   memset(&ru, 0, sizeof(ru));
   ASSERT_EQ(0, getrusage(RUSAGE_SELF, &ru));
+
   LOG(INFO) << "start rss: " << VmmRss() << ", ru_minflt: " << ru.ru_minflt;
 
   map = (char*)mmap(NULL, ps * n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

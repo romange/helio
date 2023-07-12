@@ -13,6 +13,7 @@ struct StatusData {
   size_t vm_peak = 0;
   size_t vm_rss = 0;
   size_t vm_size = 0;
+  size_t hugetlb_pages = 0;
 };
 
 // Sizes in bytes.
@@ -31,7 +32,12 @@ struct MemInfoData {
   // equals to: total - (free + buffers + cached + SReclaimable).
 };
 
+struct SelfStat {
+  uint64_t start_time_sec = 0;
+};
+
 Result<StatusData> ReadStatusInfo();
 Result<MemInfoData> ReadMemInfo();
+Result<SelfStat> ReadSelfStat();
 
 }  // namespace io

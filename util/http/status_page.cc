@@ -1,16 +1,15 @@
 // Copyright 2018, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
-#include "util/http/http_common.h"
-
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_replace.h>
 #include <absl/time/clock.h>
 
 #include <cinttypes>  // for PRIu32 and such
 
-#include "base/proc_util.h"
 #include "base/varz_node.h"
+#include "io/proc_reader.h"
+#include "util/http/http_common.h"
 #include "util/http/http_server_utils.h"
 
 namespace util {
@@ -87,9 +86,11 @@ StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefi
   static std::atomic<time_t> start_time_cached{0};
   time_t start_time = start_time_cached.load(std::memory_order_relaxed);
   if (start_time == 0) {
-    base::ProcessStats stats = base::ProcessStats::Read();
-    start_time = stats.start_time_seconds;
-    start_time_cached.store(stats.start_time_seconds, std::memory_order_seq_cst);
+    io::Result<io::SelfStat> stats = io::ReadSelfStat();
+    if (stats) {
+      start_time = stats->start_time_sec;
+      start_time_cached.store(stats->start_time_sec, std::memory_order_release);
+    }
   }
   absl::Time atime = absl::FromUnixSeconds(start_time);
   string str_fmt = absl::FormatTime("%Y-%m-%dT%H:%M:%S", atime, absl::UTCTimeZone());

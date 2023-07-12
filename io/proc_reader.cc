@@ -15,19 +15,19 @@
 namespace io {
 
 using namespace std;
-using nonstd::make_unexpected;
 using absl::SimpleAtoi;
+using nonstd::make_unexpected;
 
 namespace {
 
 // Reads proc files like /proc/self/status  or /proc/meminfo
 // passes to cb: (key, value)
-error_code ReadProcFile(const char* name, function<void(string_view, string_view)> cb) {
+error_code ReadProcFile(const char* name, char c, function<void(string_view, string_view)> cb) {
   int fd = open(name, O_RDONLY | O_CLOEXEC);
   if (fd == -1)
     return error_code{errno, system_category()};
 
-  base::IoBuf buf;
+  base::IoBuf buf{512};
 
   while (true) {
     auto dest = buf.AppendBuffer();
@@ -47,11 +47,16 @@ error_code ReadProcFile(const char* name, function<void(string_view, string_view
     while (true) {
       auto input = buf.InputBuffer();
       uint8_t* eol = reinterpret_cast<uint8_t*>(memchr(input.data(), '\n', input.size()));
-      if (!eol)
+      if (!eol) {
+        if (buf.AppendLen() == 0) {
+          buf.EnsureCapacity(buf.Capacity() * 2);
+        }
+
         break;
+      }
 
       string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
-      size_t pos = line.find(':');
+      size_t pos = line.find(c);
       if (pos == string_view::npos)
         break;
       string_view key = line.substr(0, pos);
@@ -72,9 +77,17 @@ inline void ParseKb(string_view num, size_t* dest) {
   *dest *= 1024;
 };
 
+size_t find_nth(string_view str, char c, uint32_t index) {
+  for (size_t i = 0; i < str.size(); ++i) {
+    if (str[i] == c) {
+      if (index-- == 0)
+        return i;
+    }
+  }
+  return string_view::npos;
+}
+
 }  // namespace
-
-
 
 Result<StatusData> ReadStatusInfo() {
   StatusData sdata;
@@ -89,10 +102,12 @@ Result<StatusData> ReadStatusInfo() {
       ParseKb(num, &sdata.vm_size);
     } else if (key == "VmRSS") {
       ParseKb(num, &sdata.vm_rss);
+    } else if (key == "HugetlbPages") {
+      ParseKb(num, &sdata.hugetlb_pages);
     }
   };
 
-  error_code ec = ReadProcFile("/proc/self/status", move(cb));
+  error_code ec = ReadProcFile("/proc/self/status", ':', move(cb));
   if (ec)
     return make_unexpected(ec);
 
@@ -127,11 +142,56 @@ Result<MemInfoData> ReadMemInfo() {
     }
   };
 
-  error_code ec = ReadProcFile("/proc/meminfo", move(cb));
+  error_code ec = ReadProcFile("/proc/meminfo", ':', move(cb));
   if (ec)
     return make_unexpected(ec);
 
   return mdata;
+}
+
+Result<SelfStat> ReadSelfStat() {
+  static atomic_uint64_t boot_time(0);
+
+  uint64_t btime = boot_time.load(std::memory_order_relaxed);
+  if (btime == 0) {
+    auto cb = [&](string_view key, string_view value) {
+      if (key == "btime") {
+        absl::SimpleAtoi(value, &btime);
+        boot_time.store(btime, std::memory_order_release);
+      }
+    };
+
+    error_code ec = ReadProcFile("/proc/stat", ' ', move(cb));
+    if (ec)
+      return make_unexpected(ec);
+  }
+
+  int fd = open("/proc/self/stat", O_RDONLY | O_CLOEXEC);
+  if (fd < 0)
+    return make_unexpected(error_code{errno, system_category()});
+
+  long jiffies_per_second = sysconf(_SC_CLK_TCK);
+
+  uint64_t start_since_boot = 0;
+  constexpr size_t kBufSize = 2048;
+  std::unique_ptr<char[]> buf(new char[kBufSize]);
+
+  ssize_t bytes_read = read(fd, buf.get(), kBufSize);
+  close(fd);
+  if (bytes_read <= 0)
+    return make_unexpected(error_code{errno, system_category()});
+
+  string_view str(buf.get(), bytes_read);
+  size_t pos = find_nth(str, ' ', 20);
+  str.remove_prefix(pos);
+  if (!str.empty()) {
+    size_t next = str.find(' ', 1);
+    CHECK(absl::SimpleAtoi(str.substr(1, next - 1), &start_since_boot));
+    start_since_boot /= jiffies_per_second;
+  }
+  SelfStat res;
+  res.start_time_sec = btime + start_since_boot;
+  return res;
 }
 
 }  // namespace io

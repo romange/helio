@@ -5,6 +5,10 @@
 
 namespace base {
 
+IoBuf::~IoBuf() {
+  operator delete[](buf_, std::align_val_t{alignment_});
+}
+
 void IoBuf::ConsumeInput(size_t sz) {
   if (offs_ + sz >= size_) {
     size_ = 0;
