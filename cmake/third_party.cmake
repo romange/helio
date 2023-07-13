@@ -334,16 +334,11 @@ add_third_party(
 
 if(APPLE)
   message("On macOS, please install c-ares via homebrew: ")
-  message("brew install c-ares")
-  message("The current cmake assumes c-ares 1.19.1. For cmake to find
-  the package, create a file named caresConfig.cmake under:")
-  message("/usr/local/Cellar/c-ares/1.19.1/")
-  
+  message("brew install c-ares && brew link c-ares")
+  message("This shall also create cmake config file to guide find_package()")
   add_library(TRDP::cares SHARED IMPORTED)
-  find_package(cares REQUIRED PATHS /usr/local/Cellar/c-ares/1.19.1/)
-  set_target_properties(TRDP::cares PROPERTIES IMPORTED_LOCATION ${cares_DIR}/lib/libcares.dylib
-                              INTERFACE_INCLUDE_DIRECTORIES ${cares_DIR}/include)
-
+  find_package(c-ares REQUIRED)
+  set_target_properties(TRDP::cares PROPERTIES IMPORTED_LOCATION ${c-ares_DIR}/../../libcares.dylib)
 else()
   add_third_party(
     cares
