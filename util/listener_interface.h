@@ -49,7 +49,7 @@ class ListenerInterface {
   // bind is called.
   virtual std::error_code ConfigureServerSocket(int fd);
 
-  virtual fb2::ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
+  virtual fb2::ProactorBase* PickConnectionProactor(FiberSocketBase* sock);
 
   // This callback should not preempt because we traverse the list of connections
   // without locking it.
@@ -66,7 +66,7 @@ class ListenerInterface {
   // Updates socket_ and listener interface bookeepings.
   void Migrate(Connection* conn, fb2::ProactorBase* dest);
 
-  LinuxSocketBase* socket() {
+  FiberSocketBase* socket() {
     return sock_.get();
   }
 
@@ -90,7 +90,7 @@ class ListenerInterface {
 
   static thread_local std::unordered_map<ListenerInterface*, TLConnList*> conn_list;
 
-  std::unique_ptr<LinuxSocketBase> sock_;
+  std::unique_ptr<FiberSocketBase> sock_;
 
   ProactorPool* pool_ = nullptr;
   friend class AcceptServer;

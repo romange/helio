@@ -103,7 +103,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
 
   ProactorBase* next = pool_->GetNextProactor();
 
-  unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
+  unique_ptr<FiberSocketBase> fs{next->CreateSocket()};
   DCHECK(fs);
 
   error_code ec;
@@ -154,7 +154,7 @@ error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
   CHECK(listener && !listener->socket());
 
   ProactorBase* next = pool_->GetNextProactor();
-  unique_ptr<LinuxSocketBase> fs{next->CreateSocket()};
+  unique_ptr<FiberSocketBase> fs{next->CreateSocket()};
 
   error_code ec = next->Await([&] {
     error_code ec = fs->Create(AF_UNIX);

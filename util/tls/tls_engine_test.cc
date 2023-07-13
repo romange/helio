@@ -333,11 +333,6 @@ TEST_F(SslStreamTest, Write) {
   }
 }
 
-
-TEST_F(SslStreamTest, Socket) {
-  TlsSocket socket;
-}
-
 void BM_TlsWrite(benchmark::State& state) {
   unique_ptr<Engine> client_engine, server_engine;
   SslStreamTest::Options sopts{"srv"}, copts{"client"};

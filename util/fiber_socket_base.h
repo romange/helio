@@ -8,6 +8,7 @@
 #include <absl/base/attributes.h>
 
 #include <boost/asio/ip/tcp.hpp>
+#include <functional>
 
 #include "io/io.h"
 
@@ -60,7 +61,7 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
     return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset);
   }
 
-  void SetProactor(ProactorBase* p);
+  virtual void SetProactor(ProactorBase* p);
 
   ProactorBase* proactor() {
     return proactor_;
@@ -76,6 +77,39 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
   using AsyncSink::AsyncWrite;
   using AsyncSink::AsyncWriteSome;
+
+  virtual endpoint_type LocalEndpoint() const = 0;
+  virtual endpoint_type RemoteEndpoint() const = 0;
+
+  //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
+  //! When and an event occurs, the cb will be called with the mask of actual events
+  //! that trigerred it.
+  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
+  virtual uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) = 0;
+
+  //! Cancels the poll event. id must be the id returned by PollEvent function.
+  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
+  //! in process of completing.
+  virtual uint32_t CancelPoll(uint32_t id) = 0;
+
+  virtual  bool IsUDS() const = 0;
+  virtual bool IsDirect() const = 0;
+
+  using native_handle_type = int;
+  virtual native_handle_type native_handle() const = 0;
+
+  /// Creates a socket. By default with AF_INET family (2).
+  virtual error_code Create(unsigned short protocol_family = 2) = 0;
+
+  virtual ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len) = 0;
+  virtual ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog) = 0;
+
+  // Listens on all interfaces. If port is 0 then a random available port is chosen
+  // by the OS.
+  virtual ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog) = 0;
+
+  // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
+  virtual ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog)= 0;
 
  protected:
   virtual void OnSetProactor() {
@@ -93,29 +127,29 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
 class LinuxSocketBase : public FiberSocketBase {
  public:
-  using native_handle_type = int;
+  using FiberSocketBase::native_handle_type;
   constexpr static unsigned kFdShift = 4;
 
   virtual ~LinuxSocketBase();
 
-  native_handle_type native_handle() const {
+  native_handle_type native_handle() const override {
     static_assert(int32_t(-1) >> kFdShift == -1);
 
     return fd_ >> kFdShift;
   }
 
   /// Creates a socket. By default with AF_INET family (2).
-  error_code Create(unsigned short protocol_family = 2);
+  error_code Create(unsigned short protocol_family = 2) override;
 
-  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len);
-  ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len) override;
+  ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog) override;
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
   // by the OS.
-  ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog) override;
 
   // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
-  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog);
+  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog)override;
 
   error_code Shutdown(int how) override;
 
@@ -130,26 +164,15 @@ class LinuxSocketBase : public FiberSocketBase {
     return (fd_ & IS_SHUTDOWN) == 0;
   }
 
-  endpoint_type LocalEndpoint() const;
-  endpoint_type RemoteEndpoint() const;
+  endpoint_type LocalEndpoint() const override;
+  endpoint_type RemoteEndpoint() const override;
 
-  //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
-  //! When and an event occurs, the cb will be called with the mask of actual events
-  //! that trigerred it.
-  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
-  virtual uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) = 0;
-
-  //! Cancels the poll event. id must be the id returned by PollEvent function.
-  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
-  //! in process of completing.
-  virtual uint32_t CancelPoll(uint32_t id) = 0;
-
-  bool IsUDS() const {
+  bool IsUDS() const override {
     return fd_ & IS_UDS;
   }
 
   // Whether it was registered with io_uring engine.
-  bool IsDirect() const {
+  bool IsDirect() const override {
     return fd_ & REGISTER_FD;
   }
 

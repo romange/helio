@@ -173,16 +173,15 @@ void EchoConnection::HandleRequests() {
   uint8_t buf[8];
 
   int yes = 1;
-  LinuxSocketBase* sock = (LinuxSocketBase*)socket_.get();
   if (GetFlag(FLAGS_tcp_nodelay)) {
-    CHECK_EQ(0, setsockopt(sock->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
+    CHECK_EQ(0, setsockopt(socket_->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
   }
 
   connections.IncBy(1);
   vec[0].iov_base = buf;
   vec[0].iov_len = 8;
 
-  auto ep = sock->RemoteEndpoint();
+  auto ep = socket_->RemoteEndpoint();
 
   VLOG(1) << "New connection from " << ep;
 
@@ -320,7 +319,7 @@ void RunServer(ProactorPool* pp) {
 }
 
 class Driver {
-  std::unique_ptr<LinuxSocketBase> socket_;
+  std::unique_ptr<FiberSocketBase> socket_;
 
   Driver(const Driver&) = delete;
 

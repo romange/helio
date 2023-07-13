@@ -77,11 +77,11 @@ std::error_code Client::Reconnect() {
   if (berr)
     return berr;
 
-  LinuxSocketBase* lsb = proactor_->CreateSocket();
+  FiberSocketBase* sock = proactor_->CreateSocket();
   if (on_connect_cb_) {
-    on_connect_cb_(lsb->native_handle());
+    on_connect_cb_(sock->native_handle());
   }
-  socket_.reset(lsb);
+  socket_.reset(sock);
   FiberSocketBase::endpoint_type ep{address, port_};
   return socket_->Connect(ep);
 }
@@ -165,7 +165,7 @@ std::error_code TlsClient::Connect(string_view host, string_view service, SSL_CT
   std::error_code ec = Client::Connect(host, service);
   if (!ec) {
     tcp_socket_.reset(socket_.release());
-    std::unique_ptr<TlsSocket> tls_socket(new TlsSocket(tcp_socket_.get()));
+    std::unique_ptr<TlsSocket> tls_socket(new TlsSocket(std::move(tcp_socket_)));
     tls_socket->InitSSL(context);
 
     const std::string& hn = Client::host();

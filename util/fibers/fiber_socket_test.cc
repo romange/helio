@@ -50,8 +50,8 @@ class FiberSocketTest : public testing::TestWithParam<string_view> {
 
   unique_ptr<ProactorBase> proactor_;
   thread proactor_thread_;
-  unique_ptr<LinuxSocketBase> listen_socket_;
-  unique_ptr<LinuxSocketBase> conn_socket_;
+  unique_ptr<FiberSocketBase> listen_socket_;
+  unique_ptr<FiberSocketBase> conn_socket_;
 
   uint16_t listen_port_ = 0;
   Fiber accept_fb_;
@@ -108,7 +108,7 @@ void FiberSocketTest::SetUp() {
     if (accept_res) {
       VLOG(1) << "Accepted connection " << *accept_res;
       FiberSocketBase* sock = *accept_res;
-      conn_socket_.reset(static_cast<LinuxSocketBase*>(sock));
+      conn_socket_.reset(sock);
       conn_socket_->SetProactor(proactor_.get());
     } else {
       accept_ec_ = accept_res.error();
@@ -136,7 +136,7 @@ void FiberSocketTest::TearDown() {
 }
 
 TEST_P(FiberSocketTest, Basic) {
-  unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
 
   LOG(INFO) << "before wait ";
   proactor_->Await([&] {
@@ -165,7 +165,7 @@ TEST_P(FiberSocketTest, Timeout) {
   socklen_t optlen = sizeof(optval);
   getsockopt(listen_socket_->native_handle(), SOL_SOCKET, SO_LISTENQLIMIT, &optval, &optlen);
 #endif
-  unique_ptr<LinuxSocketBase> sock[kNumSocks];
+  unique_ptr<FiberSocketBase> sock[kNumSocks];
   for (size_t i = 0; i < kNumSocks; ++i) {
     sock[i].reset(proactor_->CreateSocket());
     sock[i]->set_timeout(5);  // we set timeout that won't supposed to trigger.
@@ -182,7 +182,7 @@ TEST_P(FiberSocketTest, Timeout) {
   ASSERT_FALSE(accept_ec_);
 
   LOG(INFO) << "creating timedout socket";
-  unique_ptr<LinuxSocketBase> tm_sock(proactor_->CreateSocket());
+  unique_ptr<FiberSocketBase> tm_sock(proactor_->CreateSocket());
   tm_sock->set_timeout(5);
 
   error_code tm_ec = proactor_->Await([&] { return tm_sock->Connect(listen_ep_); });
@@ -207,7 +207,7 @@ TEST_P(FiberSocketTest, Timeout) {
 }
 
 TEST_P(FiberSocketTest, Poll) {
-  unique_ptr<LinuxSocketBase> sock(proactor_->CreateSocket());
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
   struct linger ling;
   ling.l_onoff = 1;
   ling.l_linger = 0;
@@ -240,7 +240,7 @@ TEST_P(FiberSocketTest, Poll) {
 }
 
 TEST_P(FiberSocketTest, AsyncWrite) {
-  unique_ptr<LinuxSocketBase> sock;
+  unique_ptr<FiberSocketBase> sock;
   Done done;
   proactor_->Dispatch([&] {
     sock.reset(proactor_->CreateSocket());
@@ -261,7 +261,7 @@ TEST_P(FiberSocketTest, AsyncWrite) {
 TEST_P(FiberSocketTest, UDS) {
   string path = base::GetTestTempPath("sock.uds");
 
-  unique_ptr<LinuxSocketBase> sock;
+  unique_ptr<FiberSocketBase> sock;
   proactor_->Await([&] {
     sock.reset(proactor_->CreateSocket());
     error_code ec = sock->Create(AF_UNIX);

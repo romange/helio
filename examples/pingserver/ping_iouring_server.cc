@@ -69,10 +69,11 @@ void PingConnection::HandleRequests() {
   system::error_code ec;
   unique_ptr<tls::TlsSocket> tls_sock;
   if (ctx_) {
-    tls_sock.reset(new tls::TlsSocket(socket_.get()));
+    tls_sock.reset(new tls::TlsSocket(std::move(socket_)));
     tls_sock->InitSSL(ctx_);
 
     FiberSocketBase::AcceptResult aresult = tls_sock->Accept();
+    socket_ = std::move(tls_sock);
     if (!aresult) {
       LOG(ERROR) << "Error handshaking " << aresult.error().message();
       return;
@@ -148,13 +149,13 @@ class PingListener : public ListenerInterface {
     return new PingConnection(ctx_);
   }
 
-  ProactorBase* PickConnectionProactor(LinuxSocketBase* sock) final;
+  ProactorBase* PickConnectionProactor(FiberSocketBase* sock) final;
 
  private:
   SSL_CTX* ctx_;
 };
 
-ProactorBase* PingListener::PickConnectionProactor(LinuxSocketBase* sock) {
+ProactorBase* PingListener::PickConnectionProactor(FiberSocketBase* sock) {
   int fd = sock->native_handle();
 
   int cpu;

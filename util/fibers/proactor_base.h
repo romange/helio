@@ -19,6 +19,7 @@
 #include "util/fibers/detail/result_mover.h"
 #include "util/fibers/synchronization.h"
 #include "util/fibers/fibers.h"
+#include "util/fiber_socket_base.h"
 
 namespace util {
 class LinuxSocketBase;
@@ -57,7 +58,7 @@ class ProactorBase  {
   void Stop();
 
   //! Creates a socket that can be used with this proactor.
-  virtual LinuxSocketBase* CreateSocket(int fd = -1) = 0;
+  virtual FiberSocketBase* CreateSocket(int fd = -1) = 0;
 
   /**
    * @brief Returns true if the called is running in this Proactor thread.

@@ -5,6 +5,7 @@
 
 #include <boost/intrusive/slist.hpp>
 #include <functional>
+#include <memory>
 
 #include "util/fiber_socket_base.h"
 
