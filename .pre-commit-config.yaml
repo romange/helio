@@ -1,0 +1,21 @@
+default_stages: [commit]
+repos:
+  - repo: local
+    hooks:
+      - id: conventional-commits
+        name: Conventional Commit Minder
+        entry: contrib/scripts/conventional-commits
+        language: script
+        stages: [commit-msg]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.3.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v14.0.6
+    hooks:
+      - id: clang-format
+        name: Clang formatting
