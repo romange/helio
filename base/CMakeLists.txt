@@ -3,7 +3,7 @@ add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
 
 # atomic is not present on Fedora. I suspect it's not needed on ubuntu as well
 # removing it for now.
-cxx_link(base glog::glog absl::flags_parse rt # rt for timer_create etc.
+cxx_link(base glog::glog absl::flags_parse
          absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
 
 # Define default gtest_main for tests.
