@@ -332,12 +332,21 @@ add_third_party(
   LIB "none"
 )
 
-add_third_party(
-  cares
-  URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
-  CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
+if(APPLE)
+  message("On macOS, please install c-ares via homebrew: ")
+  message("brew install c-ares && brew link c-ares")
+  message("This shall also create cmake config file to guide find_package()")
+  add_library(TRDP::cares SHARED IMPORTED)
+  find_package(c-ares REQUIRED)
+  set_target_properties(TRDP::cares PROPERTIES IMPORTED_LOCATION ${c-ares_DIR}/../../libcares.dylib)
+else()
+  add_third_party(
+    cares
+    URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
+    CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
-)
+  )
+endif()
 
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
