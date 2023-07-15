@@ -15,4 +15,6 @@ target_compile_definitions(fibers2 PRIVATE USE_FB2)
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
 cxx_test(fibers_test fibers2 LABELS CI)
+
 cxx_test(fiber_socket_test fibers2 LABELS CI)
+
