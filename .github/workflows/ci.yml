@@ -67,6 +67,26 @@ jobs:
              ./accept_server_test || true
           GLOG_logtostderr=1 GLOG_vmodule=proactor=1 ctest -V -L CI
           # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
-
-
-
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v3
+      - run: |
+          brew update && brew install ninja boost openssl automake
+          cmake --version
+          cc --version
+          uname -a
+      - name: Configure CMake  
+        run: |
+          cmake -B ${{github.workspace}}/build \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -GNinja \
+            -DCMAKE_C_COMPILER="cc" \
+            -DCMAKE_CXX_COMPILER="c++"
+      - name: Build & Test
+        run: |
+          cd ${{github.workspace}}/build
+          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
+            https_client_cli
+          ctest -V -L CI

@@ -160,11 +160,6 @@ TEST_P(FiberSocketTest, Basic) {
 TEST_P(FiberSocketTest, Timeout) {
   constexpr unsigned kNumSocks = 2;
 
-#ifndef __linux__
-  int optval = 0;
-  socklen_t optlen = sizeof(optval);
-  getsockopt(listen_socket_->native_handle(), SOL_SOCKET, SO_LISTENQLIMIT, &optval, &optlen);
-#endif
   unique_ptr<FiberSocketBase> sock[kNumSocks];
   for (size_t i = 0; i < kNumSocks; ++i) {
     sock[i].reset(proactor_->CreateSocket());
@@ -226,7 +221,12 @@ TEST_P(FiberSocketTest, Poll) {
 
   auto poll_cb = [](uint32_t mask) {
     LOG(INFO) << "Res: " << mask;
-    EXPECT_TRUE((POLLRDHUP | POLLHUP) & mask);
+    // POLLRDHUP is linux specific
+    #ifdef __linux__
+    EXPECT_TRUE((POLLRDHUP) & mask);
+    #endif
+
+    EXPECT_TRUE((POLLHUP) & mask);
     EXPECT_TRUE(POLLERR & mask);
   };
 

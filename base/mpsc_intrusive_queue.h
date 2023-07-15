@@ -35,7 +35,7 @@ template <typename T> class MPSCIntrusiveQueue {
   alignas(cache_alignment) typename std::aligned_storage<sizeof(T), alignof(T)>::type storage_{};
 
   T* stub() {
-    return reinterpret_cast<T*>(std::addressof(storage_));
+    return reinterpret_cast<T*>(&storage_);
   }
 
  public:

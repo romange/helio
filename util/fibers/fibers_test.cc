@@ -18,7 +18,9 @@
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
-#else
+#endif
+
+#if defined(__FreeBSD__)
 #include <pthread_np.h>
 #endif
 
@@ -29,10 +31,20 @@ using namespace testing;
 namespace util {
 namespace fb2 {
 
-#ifndef __linux__
+#if defined(__FreeBSD__)
 
 int gettid() {
   return pthread_getthreadid_np();
+}
+
+#endif
+
+#if defined(__APPLE__)
+
+unsigned gettid() {
+ uint64_t tid;
+ pthread_threadid_np(NULL, &tid);
+ return tid;
 }
 
 #endif
