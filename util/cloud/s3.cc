@@ -190,10 +190,16 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
     val = 20;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0)
       return;
+    
     val = 60;
+#ifdef __APPLE__    
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0)
+      return;
+#else
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0)
       return;
-
+#endif
+    
     val = 3;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0)
       return;
