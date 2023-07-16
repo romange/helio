@@ -2,7 +2,13 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include <jemalloc/jemalloc.h>
+
+#ifdef __APPLE__
+#include <stdlib.h>
+#else
 #include <malloc.h>
+#endif
+
 #include <mimalloc.h>
 
 // we expose internal types of mimalloc to access its statistics.
