@@ -4,8 +4,9 @@
 
 #include "base/logging.h"
 
-#include <cstdlib>
 #include <unistd.h>
+
+#include <cstdlib>
 #include <iostream>
 
 namespace base {
@@ -13,7 +14,7 @@ namespace base {
 using std::string;
 
 static constexpr char kProcSelf[] = "/proc/self/exe";
-static constexpr char kDeletedSuffix[] =  " (deleted)";
+static constexpr char kDeletedSuffix[] = " (deleted)";
 
 constexpr ssize_t kDeletedSuffixLen = sizeof(kDeletedSuffix) - 1;
 
@@ -47,8 +48,7 @@ string MyUserName() {
 }
 
 void ConsoleLogSink::send(google::LogSeverity severity, const char* full_filename,
-                          const char* base_filename, int line,
-                          const struct ::tm* tm_time,
+                          const char* base_filename, int line, const struct ::tm* tm_time,
                           const char* message, size_t message_len) {
   std::cout.write(message, message_len);
   std::cout << std::endl;

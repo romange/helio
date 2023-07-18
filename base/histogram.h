@@ -5,10 +5,10 @@
 #ifndef _BASE_HISTOGRAM_H_
 #define _BASE_HISTOGRAM_H_
 
-#include "base/integral_types.h"
-
 #include <string>
 #include <vector>
+
+#include "base/integral_types.h"
 
 namespace base {
 
@@ -18,13 +18,17 @@ class Histogram {
   ~Histogram();
 
   void Clear();
-  void Add(double value) { Add(value, 1);}
+  void Add(double value) {
+    Add(value, 1);
+  }
   void Add(double value, uint32 count);
   void Merge(const Histogram& other);
 
   std::string ToString() const;
 
-  unsigned long count() const { return num_; }
+  unsigned long count() const {
+    return num_;
+  }
 
   double Median() const {
     return Percentile(50.0);
@@ -34,8 +38,12 @@ class Histogram {
   double Percentile(double p) const;
   double Average() const;
   double StdDev() const;
-  double max() const { return max_;}
-  double min() const { return min_;}
+  double max() const {
+    return max_;
+  }
+  double min() const {
+    return min_;
+  }
 
   // trim_low_percentile, trim_high_percentile in [0, 100].
   // Returns truncated mean according to http://en.wikipedia.org/wiki/Truncated_mean

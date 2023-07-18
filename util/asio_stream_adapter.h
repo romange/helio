@@ -6,6 +6,7 @@
 
 #include <boost/asio/detail/buffer_sequence_adapter.hpp>
 #include <boost/system/error_code.hpp>
+
 #include "util/fiber_socket_base.h"
 
 namespace util {
@@ -40,8 +41,8 @@ template <typename Socket = FiberSocketBase> class AsioStreamAdapter {
 template <typename Socket>
 template <typename MBS>
 size_t AsioStreamAdapter<Socket>::read_some(const MBS& bufs, error_code& ec) {
-  using badapter = ::boost::asio::detail::buffer_sequence_adapter<
-      boost::asio::mutable_buffer, const MBS&>;
+  using badapter =
+      ::boost::asio::detail::buffer_sequence_adapter<boost::asio::mutable_buffer, const MBS&>;
   badapter bsa(bufs);
 
   auto res = s_.Recv(bsa.buffers(), bsa.count());
@@ -56,8 +57,7 @@ template <typename Socket>
 template <typename BS>
 size_t AsioStreamAdapter<Socket>::write_some(const BS& bufs, error_code& ec) {
   using badapter =
-      ::boost::asio::detail::buffer_sequence_adapter<boost::asio::const_buffer,
-                                                     const BS&>;
+      ::boost::asio::detail::buffer_sequence_adapter<boost::asio::const_buffer, const BS&>;
   badapter bsa(bufs);
 
   std::error_code lec;

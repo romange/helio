@@ -2,7 +2,6 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include "base/gtest.h"
-
 #include "util/asio/accept_server.h"
 #include "util/asio/io_context_pool.h"
 #include "util/http/http_conn_handler.h"
@@ -22,4 +21,3 @@ class HttpBaseTest : public testing::Test {
 };
 
 }  // namespace util
-

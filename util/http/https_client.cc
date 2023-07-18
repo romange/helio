@@ -106,8 +106,8 @@ auto HttpsClient::InitSslClient() -> error_code {
     socket_->set_keep_alive(true);
     ec = socket_->ClientWaitToConnect(reconnect_msec_);
     if (ec) {
-      VLOG(1) << "Error " << ": " << ec << "/" << ec.message() << " for socket "
-              << socket_->native_handle();
+      VLOG(1) << "Error "
+              << ": " << ec << "/" << ec.message() << " for socket " << socket_->native_handle();
     }
   } else {
     client_.reset(new SslStream(FiberSyncSocket{host_name_, kPort, &io_context_}, ssl_cntx_));

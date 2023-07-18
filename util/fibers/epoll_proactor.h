@@ -10,7 +10,7 @@ namespace util {
 namespace fb2 {
 
 namespace detail {
-  class Scheduler;
+class Scheduler;
 }
 
 class EpollProactor : public ProactorBase {
@@ -69,5 +69,5 @@ class EpollProactor : public ProactorBase {
   int32_t next_free_ce_ = -1;
 };
 
-}  // namespace epoll
+}  // namespace fb2
 }  // namespace util

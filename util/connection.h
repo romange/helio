@@ -47,15 +47,16 @@ class Connection {
   void Shutdown();
 
  protected:
-
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;
 
   virtual void OnShutdown() {
   }
 
-  virtual void OnPreMigrateThread() {}
-  virtual void OnPostMigrateThread() {}
+  virtual void OnPreMigrateThread() {
+  }
+  virtual void OnPostMigrateThread() {
+  }
 
   ListenerInterface* owner() const {
     return owner_;
@@ -63,7 +64,7 @@ class Connection {
 
   std::unique_ptr<FiberSocketBase> socket_;
 
-private:
+ private:
   ListenerInterface* owner_ = nullptr;
   friend class ListenerInterface;
 };

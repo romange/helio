@@ -4,12 +4,11 @@
 
 #pragma once
 
-#include <string_view>
 #include <boost/beast/http/field.hpp>
+#include <string_view>
 
 namespace util {
 namespace http {
-
 
 template <typename Fields> inline void SetMime(const char* mime, Fields* dest) {
   dest->set(::boost::beast::http::field::content_type, mime);

@@ -18,7 +18,6 @@ using namespace std;
 
 namespace {
 
-
 #if PARKING_ENABLED
 template <typename T> void WriteOnce(T src, T* dest) {
   std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,

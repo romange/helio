@@ -4,15 +4,12 @@
 #pragma once
 
 #include "base/mpmc_bounded_queue.h"
-
-#include "util/fibers/synchronization.h"
-
 #include "util/fibers/detail/result_mover.h"
+#include "util/fibers/synchronization.h"
 
 namespace util {
 namespace fb2 {
 class FiberQueueThreadPool;
-
 
 /**
  * @brief MPSC task-queue that is handled by a single consumer loop.
@@ -90,7 +87,6 @@ class FiberQueue {
  private:
   typedef std::function<void()> CbFunc;
 
-
   using FuncQ = base::mpmc_bounded_queue<CbFunc>;
   FuncQ queue_;
 
@@ -145,7 +141,6 @@ class FiberQueueThreadPool {
     }
   }
 
-
   /**
    * @brief Runs f on a worker pinned by "index". index does not have to be in range.
    *
@@ -158,12 +153,16 @@ class FiberQueueThreadPool {
     return workers_[index % worker_size_].q->Add(std::forward<F>(f));
   }
 
-  FiberQueue* GetQueue(size_t index) { return  workers_[index % worker_size_].q.get();}
+  FiberQueue* GetQueue(size_t index) {
+    return workers_[index % worker_size_].q.get();
+  }
 
   void Shutdown();
 
  private:
-  size_t wrapped_idx(size_t i) { return i < worker_size_ ? i : i - worker_size_; }
+  size_t wrapped_idx(size_t i) {
+    return i < worker_size_ ? i : i - worker_size_;
+  }
 
   template <typename F> bool AddAnyWorker(size_t start, F&& f) {
     for (size_t i = 0; i < worker_size_; ++i) {

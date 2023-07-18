@@ -27,7 +27,6 @@ using fb2::DnsResolve;
 using fb2::Fiber;
 using fb2::Mutex;
 
-
 using namespace std;
 
 using tcp = ::boost::asio::ip::tcp;

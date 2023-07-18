@@ -1,20 +1,28 @@
 // Copyright 2019, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
-#include <array>
-
 #include <absl/container/inlined_vector.h>
-#include <string_view>
 #include <absl/types/span.h>
+
+#include <array>
+#include <string_view>
 
 namespace redis {
 
 class RespParser {
  public:
-  enum Status { RESP_OK, MORE_INPUT, INVALID_ARRAYLEN, INVALID_BULKLEN, INVALID_STRING, INVALID_INT};
+  enum Status {
+    RESP_OK,
+    MORE_INPUT,
+    INVALID_ARRAYLEN,
+    INVALID_BULKLEN,
+    INVALID_STRING,
+    INVALID_INT
+  };
   using Buffer = absl::Span<uint8_t>;
 
-  explicit RespParser() {}
+  explicit RespParser() {
+  }
 
   // It's a zero-copy parser. A user should not invalidate str if the parser returns COMMAND_READY
   // as long as he continues accessing RespExpr. However, if parser returns MORE_INPUT a user may
@@ -24,7 +32,6 @@ class RespParser {
   Status Parse(Buffer str, uint32_t* consumed, std::vector<Buffer>* res);
 
  private:
-
   enum ParseResult : uint8_t {
     OK,
     MORE,
@@ -49,7 +56,7 @@ class RespParser {
     START = 0,
     INLINE,
     ARRAY_LEN,
-    PARSE_ARG,   // Parse [$:+-]string\r\n
+    PARSE_ARG,  // Parse [$:+-]string\r\n
     BULK_STR,
     FINISH_ARG,
     CMD_COMPLETE,

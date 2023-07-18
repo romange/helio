@@ -5,7 +5,6 @@
 
 #include "base/gtest.h"
 #include "base/integral_types.h"
-
 #include "strings/human_readable.h"
 
 namespace strings {

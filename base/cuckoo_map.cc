@@ -2,6 +2,7 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include "base/cuckoo_map.h"
+
 #include "base/logging.h"
 
 #define ADDITIONAL_CHECKS 0
@@ -17,11 +18,14 @@ inline uint8 random_index(uint32& indx) {
 }
 
 static bool IsPrime(uint64 val) {
-  if (val < 4) return true;
-  if (val % 2 == 0 || val % 3 == 0) return false;
+  if (val < 4)
+    return true;
+  if (val % 2 == 0 || val % 3 == 0)
+    return false;
 
-  for (uint32 i = 5; i*i <= val; i+=2) {
-    if (val % i == 0) return false;
+  for (uint32 i = 5; i * i <= val; i += 2) {
+    if (val % i == 0)
+      return false;
   }
   return true;
 }
@@ -37,8 +41,9 @@ constexpr unsigned kMinBucketCount = 16;
 namespace base {
 
 uint64 GetPrimeNotLessThan(uint64 value) {
-  if (value % 2 == 0) ++value;
-  for (; value < kuint64max ; value += 2) {
+  if (value % 2 == 0)
+    ++value;
+  for (; value < kuint64max; value += 2) {
     if (IsPrime(value)) {
       return value;
     }
@@ -46,7 +51,6 @@ uint64 GetPrimeNotLessThan(uint64 value) {
   LOG(FATAL) << "Should not happen.";
   return 1;
 }
-
 
 constexpr CuckooMapTable::dense_id CuckooMapTable::npos;
 
@@ -60,16 +64,17 @@ constexpr CuckooMapTable::dense_id CuckooMapTable::npos;
 */
 class CuckooMapTable::BucketState {
   static constexpr uint8 kExploredBitVal = (1 << kBucketLength);
-  static constexpr uint8 kVisitedBitVal = (kExploredBitVal << 1); // 32
+  static constexpr uint8 kVisitedBitVal = (kExploredBitVal << 1);  // 32
   static constexpr uint8 kFullBitVal = kVisitedBitVal << 1;
   static constexpr uint8 kChildrenMask = kExploredBitVal - 1;
 
   // contains the state of the bucket: which children might lead to the successful
   // shift chain and what's the state of this bucket in the traversal.
   uint8 mask_;
-public:
+
+ public:
   BucketState() : mask_(0) {
-    static_assert(kBucketLength <=32, "Need more bits to encode the state");
+    static_assert(kBucketLength <= 32, "Need more bits to encode the state");
     static_assert(kChildrenMask == 15, "");
   }
 
@@ -83,18 +88,32 @@ public:
   }
 
   // Returns true if keys of this bucket were not checked yet.
-  bool unexplored() const { return !(mask_ & kExploredBitVal); }
+  bool unexplored() const {
+    return !(mask_ & kExploredBitVal);
+  }
 
   // This bucket was visited during the current DFS.
-  void set_visited() { mask_ |= kVisitedBitVal; }
-  bool visited() const { return mask_ & kVisitedBitVal; }
-  void clear_visited() { mask_ &= ~kVisitedBitVal; }
+  void set_visited() {
+    mask_ |= kVisitedBitVal;
+  }
+  bool visited() const {
+    return mask_ & kVisitedBitVal;
+  }
+  void clear_visited() {
+    mask_ &= ~kVisitedBitVal;
+  }
 
-  void set_full() { mask_ |= kFullBitVal; }
-  bool full() const { return mask_ & kFullBitVal; }
+  void set_full() {
+    mask_ |= kFullBitVal;
+  }
+  bool full() const {
+    return mask_ & kFullBitVal;
+  }
 
   // number of unexplored children in the explored bucket.
-  uint8 num_children() const { return absl::popcount(children_mask()); }
+  uint8 num_children() const {
+    return absl::popcount(children_mask());
+  }
 
   // returns first unexplored child.
   uint8 first_child() const {
@@ -102,12 +121,14 @@ public:
     return absl::countr_zero(children_mask());
   }
 
-  uint8 children_mask() const {return mask_ & kChildrenMask;}
+  uint8 children_mask() const {
+    return mask_ & kChildrenMask;
+  }
 
   // removes child from the set of children we need to explore.
   // Usuall called during backtracking.
   void remove_child(uint8 child) {
-    mask_ &= ~ uint8(1 << child);
+    mask_ &= ~uint8(1 << child);
   }
 
   void add_child(uint8 child) {
@@ -116,7 +137,9 @@ public:
 
   // If bucket was explored and number of its children is 0, it means
   // that it's not possible to shift anything from this bucket.
-  bool unshiftable() const { return (mask_ & ~kFullBitVal) == kExploredBitVal;}
+  bool unshiftable() const {
+    return (mask_ & ~kFullBitVal) == kExploredBitVal;
+  }
 
   void reset_but_preserve_unshiftable() {
     if (!unshiftable())
@@ -125,13 +148,17 @@ public:
       mask_ = kFullBitVal | kExploredBitVal;
   }
 
-  void reset() { mask_ &= kFullBitVal;}
-  uint8 raw_mask() const { return mask_; }
+  void reset() {
+    mask_ &= kFullBitVal;
+  }
+  uint8 raw_mask() const {
+    return mask_;
+  }
 };
 
 // Allocates space for at least the given number of key-values.
 CuckooMapTable::CuckooMapTable(const uint32 value_size, uint64 capacity) : value_size_(value_size) {
-  static_assert(sizeof(Bucket) == 8*kBucketLength, "Wrong bucket size");
+  static_assert(sizeof(Bucket) == 8 * kBucketLength, "Wrong bucket size");
   Init(std::max<BucketId>(kMinBucketCount, BucketFromId(capacity)));
 }
 
@@ -147,8 +174,7 @@ inline uint32 CuckooMapTable::CheckEmpty(const Bucket& bucket) const {
   return result;
 }
 
-inline CuckooMapTable::BucketId CuckooMapTable::NextBucketId(
-      BucketId current, key_type key) const {
+inline CuckooMapTable::BucketId CuckooMapTable::NextBucketId(BucketId current, key_type key) const {
   BucketIdPair id_pair = HashToIdPair(key);
   DCHECK(id_pair.id[0] == current || id_pair.id[1] == current);
   DCHECK_NE(id_pair.id[0], id_pair.id[1]);
@@ -165,21 +191,23 @@ CuckooMapTable::BucketIdPair CuckooMapTable::HashToIdPair(const key_type v) cons
   // VLOG(2) << "HashToIdPair: " << v << " " << a_r << " " << b << " " << bucket_count_;
   // handle the case when 2 hash functions returns the same value.
   if (__builtin_expect(b == a, 0)) {
-    b = (b +1) % bucket_count_;
+    b = (b + 1) % bucket_count_;
   }
 
   return BucketIdPair(a, b);
 }
 
-inline CuckooMapTable::dense_id CuckooMapTable::FindInBucket(
-  const BucketIdPair& id_pair, const key_type k) const {
+inline CuckooMapTable::dense_id CuckooMapTable::FindInBucket(const BucketIdPair& id_pair,
+                                                             const key_type k) const {
   const key_type* a = GetBucketById(id_pair.id[0])->key;
   for (uint8 i = 0; i < kBucketLength; ++i) {
-    if (a[i] == k) return ToDenseId(id_pair.id[0], i);
+    if (a[i] == k)
+      return ToDenseId(id_pair.id[0], i);
   }
   a = GetBucketById(id_pair.id[1])->key;
   for (uint8 i = 0; i < kBucketLength; ++i) {
-    if (a[i] == k) return ToDenseId(id_pair.id[1], i);
+    if (a[i] == k)
+      return ToDenseId(id_pair.id[1], i);
   }
   return npos;
 }
@@ -225,7 +253,7 @@ std::pair<CuckooMapTable::dense_id, bool> CuckooMapTable::Insert(key_type k, con
 inline int CuckooMapTable::InsertIntoBucket(const uint32 empty_mask, Bucket* bucket) {
   int i = absl::countr_zero(empty_mask);
   bucket->key[i] = pending_key_;
-  memcpy(bucket->data + i*value_size_, pending_ptr_, value_size_);
+  memcpy(bucket->data + i * value_size_, pending_ptr_, value_size_);
   return i;
 }
 
@@ -233,9 +261,9 @@ inline void CuckooMapTable::SwapPending(Bucket* bucket, uint8 index) {
   VLOG(3) << "Swapping " << pending_key_ << " and " << bucket->key[index]
           << " which now will be pending";
   std::swap(pending_key_, bucket->key[index]);
-  uint8* next_ptr = (pending_ptr_ == tmp_value_.get()) ? pending_ptr_ + value_size_ :
-      tmp_value_.get();
-  uint8* value_ptr = bucket->data + value_size_* index;
+  uint8* next_ptr =
+      (pending_ptr_ == tmp_value_.get()) ? pending_ptr_ + value_size_ : tmp_value_.get();
+  uint8* value_ptr = bucket->data + value_size_ * index;
   memcpy(next_ptr, value_ptr, value_size_);
   memcpy(value_ptr, pending_ptr_, value_size_);
   pending_ptr_ = next_ptr;
@@ -257,7 +285,7 @@ void CuckooMapTable::Init(BucketId bucket_capacity) {
   bucket_size_ = (1 + (bucket_size_ - 1) / 4) * 4;  // align by 4 for faster access.
 
   growth_ = 1.2f;
-  tmp_value_.reset(new uint8[value_size_*2]);
+  tmp_value_.reset(new uint8[value_size_ * 2]);
   pending_ptr_ = tmp_value_.get();
   SetBucketCount(GetPrimeNotLessThan(bucket_capacity));
   DoAllocate();
@@ -274,8 +302,8 @@ void CuckooMapTable::Reserve(size_t bigger_capacity) {
   }
 }
 
-CuckooMapTable::dense_id CuckooMapTable::RollPending(
-  uint32 shifts_limit, const BucketIdPair& bucket_pair) {
+CuckooMapTable::dense_id CuckooMapTable::RollPending(uint32 shifts_limit,
+                                                     const BucketIdPair& bucket_pair) {
   DCHECK(bucket_pair == HashToIdPair(pending_key_));
 
   // Check both possible buckets for an empty slot.
@@ -296,53 +324,54 @@ CuckooMapTable::dense_id CuckooMapTable::RollPending(
 
   BucketId bid = bucket_pair.id[0];
   Bucket* cur_bucket = buckets[0];
-    if (random_bit(random_bit_indx_)) {
+  if (random_bit(random_bit_indx_)) {
     bid = bucket_pair.id[1];
     cur_bucket = buckets[1];
-    }
-
-    BucketId start_bucket_id = bid;
-    static_assert(kBucketLength == 4, "Other length is not supported yet");
-    uint8 start_index = random_index(random_bit_indx_);
-    uint8 shift_index = start_index;
-    for (uint32 j = 0; j < shifts_limit; ++j) {
-    SwapPending(cur_bucket, shift_index);
-      // Choose the alternative index for the pending value.
-      BucketId next_bid = NextBucketId(bid, pending_key_);
-    cur_bucket = GetBucketById(next_bid);
-      VLOG(3) << "Loop: " << j << ", " << uint32(shift_index) << ", from " << bid
-              << " to next " << next_bid;
-      bid = next_bid;
-    const uint32 empty = CheckEmpty(*cur_bucket);
-      if (empty) {
-      sum_shifts_ += (j + 1);
-      InsertIntoBucket(empty, cur_bucket);
-        return ToDenseId(start_bucket_id, start_index);
-      }
-
-      shift_index = random_index(random_bit_indx_);
-      if (bid == start_bucket_id && shift_index == start_index) {
-        // We made exact cycle and returned to the same place we started from.
-        // Lets change the shift index to something else.
-        shift_index = (shift_index + 1) % kBucketLength;
-      }
-    }
-    // We failed to insert.
-    return npos;
   }
 
-  // There is an empty slot in the second bucket.
+  BucketId start_bucket_id = bid;
+  static_assert(kBucketLength == 4, "Other length is not supported yet");
+  uint8 start_index = random_index(random_bit_indx_);
+  uint8 shift_index = start_index;
+  for (uint32 j = 0; j < shifts_limit; ++j) {
+    SwapPending(cur_bucket, shift_index);
+    // Choose the alternative index for the pending value.
+    BucketId next_bid = NextBucketId(bid, pending_key_);
+    cur_bucket = GetBucketById(next_bid);
+    VLOG(3) << "Loop: " << j << ", " << uint32(shift_index) << ", from " << bid << " to next "
+            << next_bid;
+    bid = next_bid;
+    const uint32 empty = CheckEmpty(*cur_bucket);
+    if (empty) {
+      sum_shifts_ += (j + 1);
+      InsertIntoBucket(empty, cur_bucket);
+      return ToDenseId(start_bucket_id, start_index);
+    }
+
+    shift_index = random_index(random_bit_indx_);
+    if (bid == start_bucket_id && shift_index == start_index) {
+      // We made exact cycle and returned to the same place we started from.
+      // Lets change the shift index to something else.
+      shift_index = (shift_index + 1) % kBucketLength;
+    }
+  }
+  // We failed to insert.
+  return npos;
+}
+
+// There is an empty slot in the second bucket.
 void CuckooMapTable::Grow(size_t low_bucket_bound) {
   // Keep the old metadata
   std::unique_ptr<uint8[]> old_buf(buf_.release());
   const size_t old_bucket_count = bucket_count_;
 
   // Enlarge the container.  Repeat as long as we cannot reinsert everything.
-  double avg_shift_count = inserts_since_last_grow_ == 0 ? 0 :
-      double(sum_shifts_) / inserts_since_last_grow_ ;
-  VLOG(1) << "PreGrow: " << "size_/capacity: " << size_ << "/"
-          << Capacity() << ", utilization: " << Utilization() << ", inserts since last grow: "
-          << inserts_since_last_grow_ << ", avg_shift_count: " << avg_shift_count;
+  double avg_shift_count =
+      inserts_since_last_grow_ == 0 ? 0 : double(sum_shifts_) / inserts_since_last_grow_;
+  VLOG(1) << "PreGrow: "
+          << "size_/capacity: " << size_ << "/" << Capacity() << ", utilization: " << Utilization()
+          << ", inserts since last grow: " << inserts_since_last_grow_
+          << ", avg_shift_count: " << avg_shift_count;
 
   uint32 iteration = 0;
   std::vector<uint8> save_pending_value(pending_ptr_, pending_ptr_ + value_size_);
@@ -358,12 +387,11 @@ void CuckooMapTable::Grow(size_t low_bucket_bound) {
     SetBucketCount(new_bucket_count);
     DoAllocate();
 
-    VLOG(1) << "Growing iteration: " << iteration << ", new_capacity "
-            << Capacity() << ", new utilization " << Utilization() << " allocated: "
-            << BytesAllocated();
+    VLOG(1) << "Growing iteration: " << iteration << ", new_capacity " << Capacity()
+            << ", new utilization " << Utilization() << " allocated: " << BytesAllocated();
     // Copy old the existing data to the new storage.
-    bool success = CopyBuffer(old_buf.get(), old_bucket_count,
-        [this](const BucketIdPair& pair) -> bool {
+    bool success =
+        CopyBuffer(old_buf.get(), old_bucket_count, [this](const BucketIdPair& pair) -> bool {
           // Provide more shifts than usual in order to have higher chance to succeed.
           // Do we need it?!! Needs profiling.
           return RollPending(shifts_limit_ * 2, pair) != npos;
@@ -391,7 +419,7 @@ bool CuckooMapTable::CopyBuffer(const uint8* bucket_array, uint32 count,
       memcpy(pending_ptr_, bucket->data + j * value_size_, value_size_);
       if (!insert_func(id_pair))
         return false;
-      }
+    }
   }
   return true;
 }
@@ -424,30 +452,30 @@ bool CuckooMapTable::Compact(double ratio) {
   BucketId prev_reserved_buckets = bucket_count_;
   std::unique_ptr<uint8[]> old_buf(buf_.release());
   BucketId bucket_count_from_size =
-    std::max<size_t>(kMinBucketCount, 1 + BucketFromId(size() * ratio));
+      std::max<size_t>(kMinBucketCount, 1 + BucketFromId(size() * ratio));
 
   BucketId desired_bucket_size = GetPrimeNotLessThan(bucket_count_from_size);
-  VLOG(1) << "Current bucket size " << bucket_count_ << ", current utilization "
-          <<  Utilization() << " desired bucket size: " << desired_bucket_size;
+  VLOG(1) << "Current bucket size " << bucket_count_ << ", current utilization " << Utilization()
+          << " desired bucket size: " << desired_bucket_size;
   const int kMaxCompactTries = 10;
   for (int i = 0; i < kMaxCompactTries; ++i) {
     SetBucketCount(desired_bucket_size);
-    VLOG(1) << "Trying bucket size " << bucket_count_ <<  " with expected utilization: "
-            << Utilization();
+    VLOG(1) << "Trying bucket size " << bucket_count_
+            << " with expected utilization: " << Utilization();
     DoAllocate();
     std::vector<key_type> problematic_keys;
     std::vector<uint8> problematic_values;
     bool res = CopyBuffer(old_buf.get(), prev_reserved_buckets,
-       [this, &problematic_keys, &problematic_values](const BucketIdPair& pair) {
-          dense_id pos = RollPending(shifts_limit_ * 2, pair);
-          if (pos == npos) {
-            problematic_keys.push_back(pending_key_);
-            size_t sz = problematic_values.size();
-            problematic_values.resize(sz + value_size_);
-            memcpy(&problematic_values[sz], pending_ptr_, value_size_);
-          }
-          return true;
-        });
+                          [this, &problematic_keys, &problematic_values](const BucketIdPair& pair) {
+                            dense_id pos = RollPending(shifts_limit_ * 2, pair);
+                            if (pos == npos) {
+                              problematic_keys.push_back(pending_key_);
+                              size_t sz = problematic_values.size();
+                              problematic_values.resize(sz + value_size_);
+                              memcpy(&problematic_values[sz], pending_ptr_, value_size_);
+                            }
+                            return true;
+                          });
     CHECK(res);
     if (InsertProblematicKeys(problematic_keys, problematic_values.data())) {
       compaction_info_.shrink_to_fit();
@@ -462,8 +490,8 @@ bool CuckooMapTable::Compact(double ratio) {
 bool CuckooMapTable::InsertProblematicKeys(const std::vector<key_type>& keys, const uint8* values) {
   if (keys.empty())
     return true;
-  VLOG(1) << "Got " << keys.size() << " problematic keys during compaction to "
-          << bucket_count_ << " buckets";
+  VLOG(1) << "Got " << keys.size() << " problematic keys during compaction to " << bucket_count_
+          << " buckets";
   compaction_info_.assign(bucket_count_, BucketState());
   for (key_type k : keys) {
     pending_key_ = k;
@@ -487,13 +515,12 @@ bool CuckooMapTable::ShiftExhaustive(BucketId bid) {
   while (!compaction_stack_.empty()) {
     BucketId parent = compaction_stack_.back();
     VLOG(3) << "Peeking at " << parent;
-    #if ADDITIONAL_CHECKS || !defined NDEBUG
+#if ADDITIONAL_CHECKS || !defined NDEBUG
     {
-     BucketIdPair key = HashToIdPair(pending_key_);
-     CHECK(key.id[0] == parent || key.id[1] == parent)
-            << parent << ", " << pending_key_;
+      BucketIdPair key = HashToIdPair(pending_key_);
+      CHECK(key.id[0] == parent || key.id[1] == parent) << parent << ", " << pending_key_;
     }
-    #endif
+#endif
     BucketState& state = compaction_info_[parent];
     Bucket* parent_bucket = GetBucketById(parent);
     if (state.unexplored()) {
@@ -534,9 +561,9 @@ bool CuckooMapTable::ShiftExhaustive(BucketId bid) {
     // in the stack as a grandparent or unshiftable.
     BucketId next_id = NextBucketId(parent, pending_key_);
     BucketState next_state = compaction_info_[next_id];
-    if (next_state.unexplored() ) {
-      VLOG(3) << "Pushing child index " << uint32(child_index) << ", bid " << next_id
-            << " and key " << pending_key_;
+    if (next_state.unexplored()) {
+      VLOG(3) << "Pushing child index " << uint32(child_index) << ", bid " << next_id << " and key "
+              << pending_key_;
       // It's advancing, so we swapped key/value in hope that we find a shift path.
       compaction_stack_.push_back(next_id);
     } else {
@@ -546,7 +573,7 @@ bool CuckooMapTable::ShiftExhaustive(BucketId bid) {
       // of parents' children.
       // Lets check our invariants.
       // key_type child_key = parent_bucket->key[child_index];
-      //BucketId child_id = NextBucketId(parent, child_key);
+      // BucketId child_id = NextBucketId(parent, child_key);
       /*CHECK(compaction_info_[child_id].unshiftable()) << "Transition from " << parent
           << " to " << child_id << " through key " << child_key;*/
       state.remove_child(child_index);
@@ -573,7 +600,7 @@ bool CuckooMapTable::ShiftExhaustive(BucketId bid) {
         uint8 cindex = bstate.first_child();
         BucketId next = NextBucketId(id, b->key[cindex]);
         bstate.remove_child(cindex);
-        if (i > 0 && next == compaction_stack_[i-1])
+        if (i > 0 && next == compaction_stack_[i - 1])
           continue;
         VLOG(3) << "Unmark " << next;
         compaction_info_[next].reset_but_preserve_unshiftable();
@@ -581,8 +608,8 @@ bool CuckooMapTable::ShiftExhaustive(BucketId bid) {
       bstate.reset_but_preserve_unshiftable();
     }
   } else {
-    //LOG(INFO) << "Full Sweep: " << visited_count << " " << compaction_stack_.size()
-    //          << " " << compaction_info_.size();
+    // LOG(INFO) << "Full Sweep: " << visited_count << " " << compaction_stack_.size()
+    //           << " " << compaction_info_.size();
     for (BucketState& bs : compaction_info_) {
       bs.reset_but_preserve_unshiftable();
     }
@@ -606,8 +633,7 @@ bool CuckooMapTable::Explore(BucketId parent) {
     }*/
     if (next_state.visited() || next_state.unshiftable())
       continue;
-    VLOG(3) << "Adding child " << next_id << " to " << parent
-            << " through " << key;
+    VLOG(3) << "Adding child " << next_id << " to " << parent << " through " << key;
     if (!next_state.full()) {
       // Visited  - verified that the bucket is full.
       Bucket* next_bucket = GetBucketById(next_id);
@@ -616,8 +642,8 @@ bool CuckooMapTable::Explore(BucketId parent) {
         key_type pending = pending_key_;
         SwapPending(parent_bucket, k);
         InsertIntoBucket(empty, next_bucket);
-        VLOG(2) << "Found successful bucket " << next_id << " with mask "
-                << empty << ", also stored " << pending << " in " << parent;
+        VLOG(2) << "Found successful bucket " << next_id << " with mask " << empty
+                << ", also stored " << pending << " in " << parent;
         if (mask) {
           // Set this mask so that all marked next states would be cleared when we
           // unwind the stack.
@@ -642,6 +668,5 @@ bool CuckooMapTable::Explore(BucketId parent) {
   VLOG(3) << "Explored " << parent << ", with mask " << mask;
   return false;
 }
-
 
 }  // namespace base

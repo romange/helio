@@ -210,7 +210,7 @@ class CondVarAny {
     wait_queue_splk_.unlock();
 
     if (clear_remote &&
-      MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+        MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
       // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
       // will clear the remote_next pointer.
       active->Yield();
@@ -544,7 +544,6 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
   }
   return false;
 }
-
 
 // Returns true if had to preempt, false if no preemption happenned.
 template <typename Condition> bool EventCount::await(Condition condition) {

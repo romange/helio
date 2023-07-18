@@ -26,33 +26,37 @@ class ModuleInitializer {
 
   CtorNode node_;
 
-  static CtorNode* & global_list();
+  static CtorNode*& global_list();
 
   ModuleInitializer(const ModuleInitializer&) = delete;
   void operator=(const ModuleInitializer&) = delete;
 };
 
-}  // __internal__
+}  // namespace __internal__
 
-#define REGISTER_MODULE_INITIALIZER(name, body)             \
-  namespace {                                               \
-    static void google_init_module_##name () { body; }      \
-    __internal__::ModuleInitializer google_initializer_module_##name(     \
-            google_init_module_##name, true);            \
+#define REGISTER_MODULE_INITIALIZER(name, body)                                               \
+  namespace {                                                                                 \
+  static void google_init_module_##name() {                                                   \
+    body;                                                                                     \
+  }                                                                                           \
+  __internal__::ModuleInitializer google_initializer_module_##name(google_init_module_##name, \
+                                                                   true);                     \
   }
 
-#define REGISTER_MODULE_DESTRUCTOR(name, body)                  \
-  namespace {                                                   \
-    static void google_destruct_module_##name () { body; }      \
-    __internal__::ModuleInitializer google_destructor_module_##name( \
-        google_destruct_module_##name, false);               \
+#define REGISTER_MODULE_DESTRUCTOR(name, body)                                                   \
+  namespace {                                                                                    \
+  static void google_destruct_module_##name() {                                                  \
+    body;                                                                                        \
+  }                                                                                              \
+  __internal__::ModuleInitializer google_destructor_module_##name(google_destruct_module_##name, \
+                                                                  false);                        \
   }
 
 class MainInitGuard {
  public:
-   MainInitGuard(int* argc, char*** argv, uint32_t flags = 0);
+  MainInitGuard(int* argc, char*** argv, uint32_t flags = 0);
 
-   ~MainInitGuard();
+  ~MainInitGuard();
 };
 
 #define MainInitGuard(x, y) static_assert(false, "Forgot variable name")

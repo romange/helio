@@ -16,7 +16,6 @@
 #include "util/http/http_common.h"
 #include "util/http/http_handler.h"
 #include "util/metrics/metrics.h"
-
 #include "util/varz.h"
 
 #ifdef USE_FB2

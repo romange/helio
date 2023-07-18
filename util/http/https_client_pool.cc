@@ -27,7 +27,8 @@ void HttpsClientPool::HandleGuard::operator()(HttpsClient* client) {
 
 HttpsClientPool::HttpsClientPool(const std::string& domain, ::boost::asio::ssl::context* ssl_ctx,
                                  IoContext* io_cntx)
-    : ssl_cntx_(*ssl_ctx), io_cntx_(*io_cntx), domain_(domain) {}
+    : ssl_cntx_(*ssl_ctx), io_cntx_(*io_cntx), domain_(domain) {
+}
 
 HttpsClientPool::~HttpsClientPool() {
   for (auto* ptr : available_handles_) {

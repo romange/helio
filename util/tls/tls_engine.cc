@@ -83,7 +83,6 @@ auto Engine::FetchOutputBuf() -> BufResult {
   return Buffer(reinterpret_cast<const uint8_t*>(buf), res);
 }
 
-
 // TODO: to consider replacing BufResult with Buffer since
 // it seems BIO_C_NREAD0 should not return negative values when used properly.
 auto Engine::PeekOutputBuf() -> BufResult {

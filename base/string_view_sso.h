@@ -416,7 +416,7 @@ class string_view_sso {
                : (compare_result < 0 ? -1 : 1);
   }
   enum {
-    // Test file makes sure that local capacity is not smaller than actual SSO.
+  // Test file makes sure that local capacity is not smaller than actual SSO.
 #if defined(_LIBCPP_VERSION)
     // libc++ supports SSO of up-to 22 bytes
     LOCAL_CAPACITY = 22

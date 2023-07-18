@@ -9,9 +9,8 @@
 #include <boost/beast/http/string_body.hpp>
 #include <system_error>
 
-#include "util/http/http_client.h"
-
 #include "util/fibers/synchronization.h"
+#include "util/http/http_client.h"
 
 namespace util {
 namespace cloud {
@@ -42,7 +41,6 @@ class AwsSignKey {
   }
 
  private:
-
   void RefreshIfNeeded() const;
 
   struct SignHeaders {

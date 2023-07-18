@@ -143,7 +143,9 @@ template <typename T> class ProducerConsumerQueue {
     return ret;
   }
 
-  size_t capacity() const { return size_; }
+  size_t capacity() const {
+    return size_;
+  }
 
  private:
   void destroy() {

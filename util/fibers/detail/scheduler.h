@@ -128,7 +128,7 @@ class Scheduler {
 }  // namespace detail
 
 class DispatchPolicy {
-public:
+ public:
   virtual ~DispatchPolicy();
 
   virtual void Run(detail::Scheduler* sched) = 0;

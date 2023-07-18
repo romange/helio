@@ -19,8 +19,8 @@
 #define PMR_NS std::pmr
 #endif
 
-#include <absl/numeric/bits.h>
 #include <absl/base/macros.h>
+#include <absl/numeric/bits.h>
 
 namespace base {
 

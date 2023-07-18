@@ -11,9 +11,9 @@
 #include <queue>
 #include <thread>
 
+#include "base/function2.hpp"
 #include "base/histogram.h"
 #include "base/init.h"
-#include "base/function2.hpp"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
@@ -97,9 +97,9 @@ struct CqeResult {
 // using CbNotify = std::function<void(fb2::detail::FiberInterface* current, CqeResult)>;
 
 using CbNotify =
-      fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
-                         false /* non-throwing*/, false /* strong exceptions guarantees*/,
-                         void(fb2::detail::FiberInterface*, CqeResult)>;
+    fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
+                       false /* non-throwing*/, false /* strong exceptions guarantees*/,
+                       void(fb2::detail::FiberInterface*, CqeResult)>;
 struct ResumeablePoint {
   CbNotify cb;
   uint32_t next;
