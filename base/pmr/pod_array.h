@@ -1,4 +1,4 @@
-// Copyright 2021, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 // Based ClickHouse PODArray.
@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <memory>
 
-#ifdef __clang__
+#if defined(__clang__) && defined(__APPLE__)
 #include <experimental/memory_resource>
 #define PMR_NS std::experimental::pmr
 #else
