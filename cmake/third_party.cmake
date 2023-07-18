@@ -150,7 +150,7 @@ endfunction()
 
 FetchContent_Declare(
   gtest
-  URL https://github.com/google/googletest/archive/release-1.11.0.zip
+  URL https://github.com/google/googletest/archive/v1.13.0.tar.gz
 )
 
 FetchContent_GetProperties(gtest)
@@ -161,7 +161,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.7.1.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.8.2.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -169,14 +169,14 @@ if (NOT benchmark_POPULATED)
     FetchContent_Populate(benchmark)
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "")
-    set(BENCHMARK_ENABLE_LIBPFM ON CACHE BOOL "")
+    set(BENCHMARK_ENABLE_LIBPFM OFF CACHE BOOL "")
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20230125.2.tar.gz
+  URL https://github.com/abseil/abseil-cpp/archive/20230125.3.tar.gz
 )
 
 FetchContent_GetProperties(abseil_cpp)
@@ -316,9 +316,9 @@ add_third_party(
 
 add_third_party(
   uring
-  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.2.tar.gz
+  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.4.tar.gz
   #GIT_REPOSITORY https://github.com/axboe/liburing.git
-  # GIT_TAG liburing-2.3
+  
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_IN_SOURCE 1
 )
