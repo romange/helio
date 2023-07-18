@@ -92,7 +92,7 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   //! in process of completing.
   virtual uint32_t CancelPoll(uint32_t id) = 0;
 
-  virtual  bool IsUDS() const = 0;
+  virtual bool IsUDS() const = 0;
   virtual bool IsDirect() const = 0;
 
   using native_handle_type = int;
@@ -101,7 +101,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   /// Creates a socket. By default with AF_INET family (2).
   virtual error_code Create(unsigned short protocol_family = 2) = 0;
 
-  virtual ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len) = 0;
+  virtual ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr,
+                                               unsigned addr_len) = 0;
   virtual ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog) = 0;
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
@@ -109,7 +110,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   virtual ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog) = 0;
 
   // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
-  virtual ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog)= 0;
+  virtual ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
+                                                    unsigned backlog) = 0;
 
  protected:
   virtual void OnSetProactor() {
@@ -141,7 +143,8 @@ class LinuxSocketBase : public FiberSocketBase {
   /// Creates a socket. By default with AF_INET family (2).
   error_code Create(unsigned short protocol_family = 2) override;
 
-  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr, unsigned addr_len) override;
+  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr,
+                                       unsigned addr_len) override;
   ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog) override;
 
   // Listens on all interfaces. If port is 0 then a random available port is chosen
@@ -149,7 +152,8 @@ class LinuxSocketBase : public FiberSocketBase {
   ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog) override;
 
   // Listen on UDS socket. Must be created with Create(AF_UNIX) first.
-  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions, unsigned backlog)override;
+  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
+                                            unsigned backlog) override;
 
   error_code Shutdown(int how) override;
 

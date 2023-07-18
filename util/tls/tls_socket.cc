@@ -62,6 +62,9 @@ TlsSocket::TlsSocket(std::unique_ptr<FiberSocketBase> next)
     : FiberSocketBase(next ? next->proactor() : nullptr), next_sock_(std::move(next)) {
 }
 
+TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSocketBase>(next)) {
+}
+
 TlsSocket::~TlsSocket() {
 }
 

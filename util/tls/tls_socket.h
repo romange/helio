@@ -18,7 +18,10 @@ class Engine;
 
 class TlsSocket : public FiberSocketBase {
  public:
-  TlsSocket(std::unique_ptr<FiberSocketBase>);
+  TlsSocket(std::unique_ptr<FiberSocketBase> next);
+
+  // Takes ownership of next
+  TlsSocket(FiberSocketBase* next);
 
   ~TlsSocket();
 

@@ -14,13 +14,11 @@
 #include <boost/beast/http/write.hpp>
 
 #include "base/logging.h"
-
 #include "util/fiber_socket_base.h"
+#include "util/fibers/dns_resolve.h"
+#include "util/fibers/proactor_base.h"
 #include "util/tls/tls_engine.h"
 #include "util/tls/tls_socket.h"
-
-#include "util/fibers/proactor_base.h"
-#include "util/fibers/dns_resolve.h"
 
 namespace util {
 namespace http {
@@ -164,8 +162,7 @@ std::error_code TlsClient::Connect(string_view host, string_view service, SSL_CT
 
   std::error_code ec = Client::Connect(host, service);
   if (!ec) {
-    tcp_socket_.reset(socket_.release());
-    std::unique_ptr<TlsSocket> tls_socket(new TlsSocket(std::move(tcp_socket_)));
+    std::unique_ptr<TlsSocket> tls_socket(std::make_unique<TlsSocket>(socket_.release()));
     tls_socket->InitSSL(context);
 
     const std::string& hn = Client::host();
