@@ -3,8 +3,8 @@
 //
 #include "util/fibers/detail/fiber_interface.h"
 
-#include <mutex>
 #include <condition_variable>
+#include <mutex>
 
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
@@ -105,7 +105,6 @@ TL_FiberInitializer& FbInitializer() noexcept {
   thread_local static TL_FiberInitializer fb_initializer;
   return fb_initializer;
 }
-
 
 FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;

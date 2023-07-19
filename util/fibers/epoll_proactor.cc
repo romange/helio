@@ -9,7 +9,7 @@
 #include <signal.h>
 #include <string.h>
 
-#ifdef  __linux__
+#ifdef __linux__
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #endif
@@ -44,87 +44,89 @@ constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr size_t kEvBatchSize = 128;
 
 #ifdef __linux__
-  struct EventsBatch {
-    struct epoll_event cqe[kEvBatchSize];
-  };
+struct EventsBatch {
+  struct epoll_event cqe[kEvBatchSize];
+};
 
-  int EpollCreate() {
-    int res = epoll_create1(EPOLL_CLOEXEC);
-    CHECK_GE(res, 0);
-    return res;
-  }
+int EpollCreate() {
+  int res = epoll_create1(EPOLL_CLOEXEC);
+  CHECK_GE(res, 0);
+  return res;
+}
 
-  int EpollWait(int epoll_fd, EventsBatch* batch, int timeout) {
-    return epoll_wait(epoll_fd, batch->cqe, kEvBatchSize, timeout);
-  }
+int EpollWait(int epoll_fd, EventsBatch* batch, int timeout) {
+  return epoll_wait(epoll_fd, batch->cqe, kEvBatchSize, timeout);
+}
 
-  void EpollDel(int epoll_fd, int fd) {
-    CHECK_EQ(0, epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL));
-  }
+void EpollDel(int epoll_fd, int fd) {
+  CHECK_EQ(0, epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL));
+}
 
 #define USER_DATA(cqe) (cqe).data.u32
-#define KEV_MASK(cqe)   (cqe).events
-#define KEV_ERROR(cqe)  (0)
+#define KEV_MASK(cqe) (cqe).events
+#define KEV_ERROR(cqe) (0)
 
 #else
-  struct EventsBatch {
-    struct kevent cqe[kEvBatchSize];
+struct EventsBatch {
+  struct kevent cqe[kEvBatchSize];
+};
+
+int EpollCreate() {
+  int res = kqueue();
+  CHECK_GE(res, 0);
+
+  // Register an event to wake up the event loop.
+  struct kevent kev;
+
+  EV_SET(&kev, 0 /* ident*/, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, (void*)kIgnoreIndex);
+  CHECK_EQ(0, kevent(res, &kev, 1, NULL, 0, NULL));
+
+  return res;
+}
+
+int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
+  struct timespec ts {
+    .tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000
   };
 
-  int EpollCreate() {
-    int res = kqueue();
-    CHECK_GE(res, 0);
+  int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
+  return epoll_res;
+}
 
-    // Register an event to wake up the event loop.
-    struct kevent kev;
+void EpollDel(int epoll_fd, int fd) {
+  struct kevent kev[2];
 
-    EV_SET(&kev, 0 /* ident*/, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, (void*)kIgnoreIndex);
-    CHECK_EQ(0, kevent(res, &kev, 1, NULL, 0, NULL));
+  EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+  EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+  CHECK_EQ(0, kevent(epoll_fd, kev, 2, NULL, 0, NULL));
+}
 
-    return res;
+uint32_t KevMask(const struct kevent& kev) {
+  DVLOG(2) << "kev: " << kev.ident << " filter(" << kev.filter << ") f(" << kev.flags << ") ff("
+           << kev.fflags << ") d" << kev.data;
+
+  if (kev.flags & EV_EOF) {
+    return POLLHUP;
   }
+  uint32_t ev_mask = 0;
 
-  int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
-    struct timespec ts{.tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000};
+  switch (kev.filter) {
+    case EVFILT_READ:
+      ev_mask = EpollProactor::EPOLL_IN;
+      break;
+    case EVFILT_WRITE:
+      ev_mask = EpollProactor::EPOLL_OUT;
+      break;
 
-    int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
-    return epoll_res;
+    default:
+      LOG(FATAL) << "unsupported" << kev.filter;
   }
-
-  void EpollDel(int epoll_fd, int fd) {
-    struct kevent kev[2];
-
-    EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-    CHECK_EQ(0, kevent(epoll_fd, kev, 2, NULL, 0, NULL));
-  }
-
-  uint32_t KevMask(const struct kevent& kev) {
-    DVLOG(2) << "kev: " << kev.ident << " filter(" << kev.filter << ") f(" << kev.flags << ") ff("
-             << kev.fflags << ") d" << kev.data;
-
-    if (kev.flags & EV_EOF) {
-      return POLLHUP;
-    }
-    uint32_t ev_mask = 0;
-
-    switch (kev.filter) {
-      case EVFILT_READ:
-        ev_mask = EpollProactor::EPOLL_IN;
-        break;
-      case EVFILT_WRITE:
-        ev_mask = EpollProactor::EPOLL_OUT;
-        break;
-
-      default:
-        LOG(FATAL) << "unsupported" << kev.filter;
-    }
-    return ev_mask;
-  }
+  return ev_mask;
+}
 
 #define USER_DATA(cqe) ((uint64_t)(cqe).udata)
-#define KEV_MASK(cqe)  KevMask(cqe)
-#define KEV_ERROR(cqe)  cqe.fflags
+#define KEV_MASK(cqe) KevMask(cqe)
+#define KEV_ERROR(cqe) cqe.fflags
 #endif
 }  // namespace
 

@@ -20,8 +20,8 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <iostream>
-#include <thread>
 #include <memory>
+#include <thread>
 
 #include "base/flags.h"
 #include "base/init.h"
@@ -29,7 +29,6 @@
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/synchronization.h"
 #include "util/http/http_client.h"
-#include "util/fibers/pool.h"
 #include "util/tls/tls_engine.h"
 #include "util/tls/tls_socket.h"
 

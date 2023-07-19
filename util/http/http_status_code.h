@@ -62,7 +62,6 @@ enum HttpStatusCode {
   HTTP_VERSION_NOT_SUPPORTED = 505,
 };
 
-
 // '200 OK' from HTTP_OK etc.
 const char* StatusStringFromCode(HttpStatusCode code);
 

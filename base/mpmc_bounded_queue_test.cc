@@ -5,6 +5,7 @@
 #include "base/mpmc_bounded_queue.h"
 
 #include <memory>
+
 #include "base/gtest.h"
 #include "base/logging.h"
 
@@ -17,13 +18,20 @@ class MPMCTest : public testing::Test {};
 struct A {
   static int ref;
 
-  A() { ++ref; }
-  A(const A&) { ++ref; }
-  A(A&&) { ++ref; }
+  A() {
+    ++ref;
+  }
+  A(const A&) {
+    ++ref;
+  }
+  A(A&&) {
+    ++ref;
+  }
 
-  ~A() { --ref; }
+  ~A() {
+    --ref;
+  }
 };
-
 
 struct Moveable {
   static int ref;
@@ -53,9 +61,9 @@ TEST_F(MPMCTest, Enqueue) {
   mpmc_bounded_queue<int> q(2);
   ASSERT_TRUE(q.try_enqueue(5));
   const int val = 6;
-  ASSERT_FALSE( q.is_full());
+  ASSERT_FALSE(q.is_full());
   ASSERT_TRUE(q.try_enqueue(val));
-  ASSERT_TRUE( q.is_full());
+  ASSERT_TRUE(q.is_full());
   ASSERT_FALSE(q.try_enqueue(val));
 
   int tmp = 0;
@@ -89,7 +97,6 @@ TEST_F(MPMCTest, Dtor) {
     }
   }
 }
-
 
 TEST_F(MPMCTest, Moveable) {
   mpmc_bounded_queue<Moveable> queue(16);

@@ -67,6 +67,5 @@ class EpollSocket : public LinuxSocketBase {
 
 constexpr size_t kSizeofEpollSocket = sizeof(EpollSocket);
 
-
 }  // namespace fb2
 }  // namespace util

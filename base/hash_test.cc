@@ -4,6 +4,7 @@
 #include "base/hash.h"
 
 #include <absl/random/random.h>
+
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/zipf_gen.h"
@@ -11,7 +12,6 @@
 using namespace std;
 
 namespace base {
-
 
 class HashTest : public testing::Test {
  protected:

@@ -29,11 +29,11 @@ class Engine {
   // In that case the wrapping flow should be stopped since any error there is unretriable.
   // if OpResult has value, then its non-negative value means success depending on the context
   // of the operation. If value == EOF_STREAM it means that a peer closed the SSL connection.
-  // if value == NEED_XXX then it means that it should either write data to IO and then read or just write.
-  // In any case for non-error OpResult a caller must check OutputPending and write the output buffer
-  // to the appropriate channel.
-  using OpResult = io::Result<int, unsigned long> ;
-  using BufResult = io::Result<Buffer, unsigned long> ;
+  // if value == NEED_XXX then it means that it should either write data to IO and then read or just
+  // write. In any case for non-error OpResult a caller must check OutputPending and write the
+  // output buffer to the appropriate channel.
+  using OpResult = io::Result<int, unsigned long>;
+  using BufResult = io::Result<Buffer, unsigned long>;
 
   // Construct a new engine for the specified context.
   explicit Engine(SSL_CTX* context);
@@ -101,7 +101,6 @@ class Engine {
   // Disallow copying and assignment.
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
-
 
   // Perform one operation. Returns > 0 on success.
   using EngineOp = int (Engine::*)(void*, std::size_t);

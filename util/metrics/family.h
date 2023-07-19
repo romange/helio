@@ -6,9 +6,9 @@
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/types/span.h>
+#include <util/fibers/synchronization.h>
 
 #include <string_view>
-#include <util/fibers/synchronization.h>
 
 namespace util {
 class ProactorPool;

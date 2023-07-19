@@ -5,8 +5,8 @@
 
 #include <system_error>
 
-#include "io/io.h"
 #include "io/file.h"
+#include "io/io.h"
 #include "util/cloud/aws.h"
 #include "util/http/http_client.h"
 
@@ -48,8 +48,8 @@ class S3Bucket {
   // Iterate over all bucket objects for the given path.
   std::error_code ListAllObjects(std::string_view path, ListObjectCb cb);
 
-  io::Result<io::ReadonlyFile*> OpenReadFile(std::string_view path,
-      const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
+  io::Result<io::ReadonlyFile*> OpenReadFile(
+      std::string_view path, const io::ReadonlyFile::Options& opts = io::ReadonlyFile::Options{});
 
   io::Result<io::WriteFile*> OpenWriteFile(std::string_view path);
 

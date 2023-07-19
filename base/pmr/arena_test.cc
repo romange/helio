@@ -5,6 +5,7 @@
 #include "base/pmr/arena.h"
 
 #include <sys/mman.h>
+
 #include <random>
 
 #include "base/gtest.h"
@@ -13,7 +14,7 @@
 
 namespace base {
 
-class PmrArenaTest { };
+class PmrArenaTest {};
 
 TEST(PmrArenaTest, Empty) {
   PmrArena arena;
@@ -30,8 +31,7 @@ TEST(PmrArenaTest, Simple) {
     if (i % (N / 10) == 0) {
       s = i;
     } else {
-      s = (rand() % 4000 == 1) ? rand() % 6000 :
-          (rand() % 10 == 1) ? rand() % 100 : rand() % 20;
+      s = (rand() % 4000 == 1) ? rand() % 6000 : (rand() % 10 == 1) ? rand() % 100 : rand() % 20;
     }
     if (s == 0) {
       // Our arena disallows size 0 allocations.
@@ -51,7 +51,7 @@ TEST(PmrArenaTest, Simple) {
     bytes += s;
     allocated.push_back(std::make_pair(s, r));
     ASSERT_GE(arena.MemoryUsage(), bytes);
-    if (i > N/10) {
+    if (i > N / 10) {
       ASSERT_LE(arena.MemoryUsage(), bytes * 1.10);
     }
   }

@@ -32,6 +32,6 @@ template <> class ResultMover<void> {
   }
 };
 
-}
+}  // namespace detail
 
 }  // namespace util

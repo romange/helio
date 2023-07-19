@@ -8,14 +8,14 @@
 #ifndef BASE_PORT_H_
 #define BASE_PORT_H_
 
-#include <limits.h>         // So we can set the bounds of our types
-#include <string.h>         // for memcpy()
-#include <stdlib.h>         // for free()
+#include <limits.h>  // So we can set the bounds of our types
+#include <stdlib.h>  // for free()
+#include <string.h>  // for memcpy()
 
 #if defined(__APPLE__)
-#include <unistd.h>         // for getpagesize() on mac
+#include <unistd.h>  // for getpagesize() on mac
 #elif defined(OS_CYGWIN)
-#include <malloc.h>         // for memalign()
+#include <malloc.h>  // for memalign()
 #endif
 
 #include "base/integral_types.h"
@@ -27,12 +27,12 @@
  *  __STDC_FORMAT_MACROS is defined before <inttypes.h> is included." */
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
-#endif  /* __STDC_FORMAT_MACROS */
-#endif  /* __APPLE__ */
+#endif /* __STDC_FORMAT_MACROS */
+#endif /* __APPLE__ */
 
 /* Default for most OSes */
 /* We use SIGPWR since that seems unlikely to be used for other reasons. */
-#define GOOGLE_OBSCURE_SIGNAL  SIGPWR
+#define GOOGLE_OBSCURE_SIGNAL SIGPWR
 
 #if defined OS_LINUX || defined OS_CYGWIN
 
@@ -40,7 +40,7 @@
 // #include <endian.h>
 
 #if defined(__cplusplus)
-#include <cstddef>              // For _GLIBCXX macros
+#include <cstddef>  // For _GLIBCXX macros
 #endif
 
 #if !defined(HAVE_TLS) && defined(_GLIBCXX_HAVE_TLS) && defined(__x86_64__)
@@ -57,7 +57,7 @@
 // BIG_ENDIAN
 #include <machine/endian.h>  // NOLINT(build/include)
 /* Let's try and follow the Linux convention */
-#define __BYTE_ORDER  BYTE_ORDER
+#define __BYTE_ORDER BYTE_ORDER
 #define __LITTLE_ENDIAN LITTLE_ENDIAN
 #define __BIG_ENDIAN BIG_ENDIAN
 
@@ -89,26 +89,20 @@ static inline uint16 bswap_16(uint16 x) {
 }
 #define bswap_16(x) bswap_16(x)
 static inline uint32 bswap_32(uint32 x) {
-  return (((x & 0xFF) << 24) |
-          ((x & 0xFF00) << 8) |
-          ((x & 0xFF0000) >> 8) |
+  return (((x & 0xFF) << 24) | ((x & 0xFF00) << 8) | ((x & 0xFF0000) >> 8) |
           ((x & 0xFF000000) >> 24));
 }
 #define bswap_32(x) bswap_32(x)
 static inline uint64 bswap_64(uint64 x) {
-  return (((x & GG_ULONGLONG(0xFF)) << 56) |
-          ((x & GG_ULONGLONG(0xFF00)) << 40) |
-          ((x & GG_ULONGLONG(0xFF0000)) << 24) |
-          ((x & GG_ULONGLONG(0xFF000000)) << 8) |
-          ((x & GG_ULONGLONG(0xFF00000000)) >> 8) |
-          ((x & GG_ULONGLONG(0xFF0000000000)) >> 24) |
+  return (((x & GG_ULONGLONG(0xFF)) << 56) | ((x & GG_ULONGLONG(0xFF00)) << 40) |
+          ((x & GG_ULONGLONG(0xFF0000)) << 24) | ((x & GG_ULONGLONG(0xFF000000)) << 8) |
+          ((x & GG_ULONGLONG(0xFF00000000)) >> 8) | ((x & GG_ULONGLONG(0xFF0000000000)) >> 24) |
           ((x & GG_ULONGLONG(0xFF000000000000)) >> 40) |
           ((x & GG_ULONGLONG(0xFF00000000000000)) >> 56));
 }
 #define bswap_64(x) bswap_64(x)
 
 #endif
-
 
 // define the macros IS_LITTLE_ENDIAN or IS_BIG_ENDIAN
 // using the above endian definitions from endian.h if
@@ -142,7 +136,7 @@ static inline uint64 bswap_64(uint64 x) {
 // GCC-specific features
 
 #if (defined(__GNUC__) || defined(__APPLE__) || defined(__clang__)) && !defined(SWIG)
-#define MUST_USE_RESULT __attribute__ ((warn_unused_result))
+#define MUST_USE_RESULT __attribute__((warn_unused_result))
 
 //
 // Tell the compiler to do printf format string checking if the
@@ -154,14 +148,14 @@ static inline uint64 bswap_64(uint64 x) {
 // should be counted from two, not one."
 //
 #define PRINTF_ATTRIBUTE(string_index, first_to_check) \
-    __attribute__((__format__ (__printf__, string_index, first_to_check)))
+  __attribute__((__format__(__printf__, string_index, first_to_check)))
 #define SCANF_ATTRIBUTE(string_index, first_to_check) \
-    __attribute__((__format__ (__scanf__, string_index, first_to_check)))
+  __attribute__((__format__(__scanf__, string_index, first_to_check)))
 
 //
 // Prevent the compiler from padding a structure to natural alignment
 //
-#define PACKED __attribute__ ((packed))
+#define PACKED __attribute__((packed))
 
 // Cache line alignment
 #if defined(__i386__) || defined(__x86_64__)
@@ -194,7 +188,7 @@ static inline uint64 bswap_64(uint64 x) {
 // that appear unused
 // (careful, others e.g. third_party/libxml/xmlversion.h also define this)
 #undef ATTRIBUTE_UNUSED
-#define ATTRIBUTE_UNUSED __attribute__ ((unused))
+#define ATTRIBUTE_UNUSED __attribute__((unused))
 
 //
 // For functions we want to force inline or not inline.
@@ -202,14 +196,14 @@ static inline uint64 bswap_64(uint64 x) {
 #undef ATTRIBUTE_ALWAYS_INLINE
 #undef ATTRIBUTE_NOINLINE
 
-#define ATTRIBUTE_ALWAYS_INLINE  inline __attribute__ ((always_inline))
+#define ATTRIBUTE_ALWAYS_INLINE inline __attribute__((always_inline))
 #define HAVE_ATTRIBUTE_ALWAYS_INLINE 1
-#define ATTRIBUTE_NOINLINE __attribute__ ((noinline))
+#define ATTRIBUTE_NOINLINE __attribute__((noinline))
 #define HAVE_ATTRIBUTE_NOINLINE 1
 
 // For weak functions
 #undef ATTRIBUTE_WEAK
-#define ATTRIBUTE_WEAK __attribute__ ((weak))
+#define ATTRIBUTE_WEAK __attribute__((weak))
 #define HAVE_ATTRIBUTE_WEAK 1
 
 //
@@ -230,12 +224,10 @@ static inline uint64 bswap_64(uint64 x) {
 // calls _exit from a cloned subprocess, deliberately accesses buffer
 // out of bounds or does other scary things with memory.
 #ifdef ADDRESS_SANITIZER
-#define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS \
-    __attribute__((no_address_safety_analysis))
+#define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS __attribute__((no_address_safety_analysis))
 #else
 #define ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS
 #endif
-
 
 #ifndef HAVE_ATTRIBUTE_SECTION  // may have been pre-set to 0, e.g. for Darwin
 #define HAVE_ATTRIBUTE_SECTION 1
@@ -252,8 +244,7 @@ static inline uint64 bswap_64(uint64 x) {
 // be placed into whatever section its caller is placed into.
 //
 #ifndef ATTRIBUTE_SECTION
-#define ATTRIBUTE_SECTION(name) \
-  __attribute__ ((section (#name))) __attribute__ ((noinline))
+#define ATTRIBUTE_SECTION(name) __attribute__((section(#name))) __attribute__((noinline))
 #endif
 
 //
@@ -264,7 +255,7 @@ static inline uint64 bswap_64(uint64 x) {
 // a no-op on ELF but not on Mach-O.
 //
 #ifndef DECLARE_ATTRIBUTE_SECTION_VARS
-#define DECLARE_ATTRIBUTE_SECTION_VARS(name) \
+#define DECLARE_ATTRIBUTE_SECTION_VARS(name)   \
   extern char __start_##name[] ATTRIBUTE_WEAK; \
   extern char __stop_##name[] ATTRIBUTE_WEAK
 #endif
@@ -309,8 +300,6 @@ static inline uint64 bswap_64(uint64 x) {
 #define ATTRIBUTE_STACK_ALIGN_FOR_OLD_LIBC
 #endif
 
-
-
 #if defined(__GNUC__)
 // Defined behavior on some of the uarchs:
 // PREFETCH_HINT_T0:
@@ -329,7 +318,7 @@ enum PrefetchHint {
 // prefetch is a no-op for this target. Feel free to add more sections above.
 #endif
 
-extern inline void prefetch(const char *x, int hint) {
+extern inline void prefetch(const char* x, int hint) {
 #if defined(__llvm__)
   // In the gcc version of prefetch(), hint is only a constant _after_ inlining
   // (assumed to have been successful).  llvm views things differently, and
@@ -365,7 +354,7 @@ extern inline void prefetch(const char *x, int hint) {
       break;
   }
 #elif defined(__GNUC__)
- #if !defined(__i386) || defined(__SSE__)
+#if !defined(__i386) || defined(__SSE__)
   if (__builtin_constant_p(hint)) {
     __builtin_prefetch(x, 0, hint);
   } else {
@@ -380,7 +369,7 @@ extern inline void prefetch(const char *x, int hint) {
   // -- mec 2006-06-06
   if (hint == PREFETCH_HINT_NTA)
     __asm__ __volatile__("prefetchnta (%0)" : : "r"(x));
- #endif
+#endif
 #else
   // You get no effect.  Feel free to add more sections above.
 #endif
@@ -388,7 +377,7 @@ extern inline void prefetch(const char *x, int hint) {
 
 #ifdef __cplusplus
 // prefetch intrinsic (bring data to L1 without polluting L2 cache)
-extern inline void prefetch(const char *x) {
+extern inline void prefetch(const char* x) {
   return prefetch(x, 0);
 }
 #endif  // ifdef __cplusplus
@@ -415,8 +404,8 @@ extern inline void prefetch(const char *x) {
 //   int foo() ATTRIBUTE_HOT;
 //
 #if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)
-#define ATTRIBUTE_HOT __attribute__ ((hot))
-#define ATTRIBUTE_COLD __attribute__ ((cold))
+#define ATTRIBUTE_HOT __attribute__((hot))
+#define ATTRIBUTE_COLD __attribute__((cold))
 #else
 #define ATTRIBUTE_HOT
 #define ATTRIBUTE_COLD
@@ -428,10 +417,10 @@ extern inline void prefetch(const char *x) {
 #if !defined(__cplusplus) && !defined(__APPLE__) && !defined(OS_CYGWIN)
 // stdlib.h only declares this in C++, not in C, so we declare it here.
 // Also make sure to avoid declaring it on platforms which don't support it.
-extern int posix_memalign(void **memptr, size_t alignment, size_t size);
+extern int posix_memalign(void** memptr, size_t alignment, size_t size);
 #endif
 
-inline void *aligned_malloc(size_t size, int minimum_alignment) {
+inline void* aligned_malloc(size_t size, int minimum_alignment) {
 #if defined(__APPLE__)
   // mac lacks memalign(), posix_memalign(), however, according to
   // http://stackoverflow.com/questions/196329/osx-lacks-memalign
@@ -446,7 +435,7 @@ inline void *aligned_malloc(size_t size, int minimum_alignment) {
 #elif defined(OS_CYGWIN)
   return memalign(minimum_alignment, size);
 #else  // !__APPLE__ && !OS_CYGWIN
-  void *ptr = NULL;
+  void* ptr = NULL;
   if (posix_memalign(&ptr, minimum_alignment, size) != 0)
     return NULL;
   else
@@ -454,11 +443,11 @@ inline void *aligned_malloc(size_t size, int minimum_alignment) {
 #endif
 }
 
-inline void aligned_free(void *aligned_memory) {
+inline void aligned_free(void* aligned_memory) {
   free(aligned_memory);
 }
 
-#else   // not GCC
+#else  // not GCC
 
 #define PRINTF_ATTRIBUTE(string_index, first_to_check)
 #define SCANF_ATTRIBUTE(string_index, first_to_check)
@@ -478,7 +467,8 @@ inline void aligned_free(void *aligned_memory) {
 #define ATTRIBUTE_STACK_ALIGN_FOR_OLD_LIBC
 #define REQUIRE_STACK_ALIGN_TRAMPOLINE (0)
 #define MUST_USE_RESULT
-extern inline void prefetch(const char *x) {}
+extern inline void prefetch(const char* x) {
+}
 #define PREDICT_FALSE(x) x
 #define PREDICT_TRUE(x) x
 
@@ -488,7 +478,6 @@ extern inline void prefetch(const char *x) {}
 #define FSEEKO fseek
 
 #endif  // GCC
-
 
 #if !HAVE_ATTRIBUTE_SECTION  // provide dummy definitions
 
@@ -501,8 +490,6 @@ extern inline void prefetch(const char *x) {}
 
 #endif  // !HAVE_ATTRIBUTE_SECTION
 
-
-
 // create macros in which the programmer should enclose all specializations
 // for hash_maps and hash_sets. This is necessary since these classes are not
 // STL standardized. Depending on the STL implementation they are in different
@@ -512,11 +499,11 @@ extern inline void prefetch(const char *x) {}
 //           gcc2: empty
 
 #ifndef HASH_NAMESPACE
-#  define HASH_NAMESPACE_DECLARATION_START
-#  define HASH_NAMESPACE_DECLARATION_END
+#define HASH_NAMESPACE_DECLARATION_START
+#define HASH_NAMESPACE_DECLARATION_END
 #else
-#  define HASH_NAMESPACE_DECLARATION_START  namespace HASH_NAMESPACE {
-#  define HASH_NAMESPACE_DECLARATION_END    }
+#define HASH_NAMESPACE_DECLARATION_START namespace HASH_NAMESPACE {
+#define HASH_NAMESPACE_DECLARATION_END }
 #endif
 
 // Our STL-like classes use __STD.
@@ -524,39 +511,37 @@ extern inline void prefetch(const char *x) {}
 #define __STD std
 #endif
 
-
 // ROMAN: I disabled direct direct access with reinterpret_cast due to
 // problems with unaligned access and simd optimizations.
 // It seems that's the only alloweable solution. Modern compilers are smart enough
 // to eliminate memcpy.
-inline uint16 UNALIGNED_LOAD16(const void *p) {
+inline uint16 UNALIGNED_LOAD16(const void* p) {
   uint16 t;
   memcpy(&t, p, sizeof t);
   return t;
 }
 
-inline uint32 UNALIGNED_LOAD32(const void *p) {
+inline uint32 UNALIGNED_LOAD32(const void* p) {
   uint32 t;
   memcpy(&t, p, sizeof t);
   return t;
 }
 
-inline uint64 UNALIGNED_LOAD64(const void *p) {
+inline uint64 UNALIGNED_LOAD64(const void* p) {
   uint64 t;
   memcpy(&t, p, sizeof t);
   return t;
 }
 
-
-inline void UNALIGNED_STORE16(void *p, uint16 v) {
+inline void UNALIGNED_STORE16(void* p, uint16 v) {
   memcpy(p, &v, sizeof v);
 }
 
-inline void UNALIGNED_STORE32(void *p, uint32 v) {
+inline void UNALIGNED_STORE32(void* p, uint32 v) {
   memcpy(p, &v, sizeof v);
 }
 
-inline void UNALIGNED_STORE64(void *p, uint64 v) {
+inline void UNALIGNED_STORE64(void* p, uint64 v) {
   memcpy(p, &v, sizeof v);
 }
 
@@ -577,17 +562,10 @@ inline void UNALIGNED_STORE64(void *p, uint64 v) {
 // #define UNALIGNED_STORE16(_p, _val) (*reinterpret_cast<uint16 *>(_p) = (_val))
 // #define UNALIGNED_STORE32(_p, _val) (*reinterpret_cast<uint32 *>(_p) = (_val))
 
-#elif defined(__arm__) && \
-      !defined(__ARM_ARCH_5__) && \
-      !defined(__ARM_ARCH_5T__) && \
-      !defined(__ARM_ARCH_5TE__) && \
-      !defined(__ARM_ARCH_5TEJ__) && \
-      !defined(__ARM_ARCH_6__) && \
-      !defined(__ARM_ARCH_6J__) && \
-      !defined(__ARM_ARCH_6K__) && \
-      !defined(__ARM_ARCH_6Z__) && \
-      !defined(__ARM_ARCH_6ZK__) && \
-      !defined(__ARM_ARCH_6T2__)
+#elif defined(__arm__) && !defined(__ARM_ARCH_5__) && !defined(__ARM_ARCH_5T__) &&           \
+    !defined(__ARM_ARCH_5TE__) && !defined(__ARM_ARCH_5TEJ__) && !defined(__ARM_ARCH_6__) && \
+    !defined(__ARM_ARCH_6J__) && !defined(__ARM_ARCH_6K__) && !defined(__ARM_ARCH_6Z__) &&   \
+    !defined(__ARM_ARCH_6ZK__) && !defined(__ARM_ARCH_6T2__)
 
 // ARMv7 and newer support native unaligned accesses, but only of 16-bit
 // and 32-bit values (not 64-bit); older versions either raise a fatal signal,
@@ -599,12 +577,11 @@ inline void UNALIGNED_STORE64(void *p, uint64 v) {
 //
 // This is a mess, but there's not much we can do about it.
 
-#define UNALIGNED_LOAD16(_p) (*reinterpret_cast<const uint16 *>(_p))
-#define UNALIGNED_LOAD32(_p) (*reinterpret_cast<const uint32 *>(_p))
+#define UNALIGNED_LOAD16(_p) (*reinterpret_cast<const uint16*>(_p))
+#define UNALIGNED_LOAD32(_p) (*reinterpret_cast<const uint32*>(_p))
 
-#define UNALIGNED_STORE16(_p, _val) (*reinterpret_cast<uint16 *>(_p) = (_val))
-#define UNALIGNED_STORE32(_p, _val) (*reinterpret_cast<uint32 *>(_p) = (_val))
-
+#define UNALIGNED_STORE16(_p, _val) (*reinterpret_cast<uint16*>(_p) = (_val))
+#define UNALIGNED_STORE32(_p, _val) (*reinterpret_cast<uint32*>(_p) = (_val))
 
 #else
 
@@ -612,7 +589,6 @@ inline void UNALIGNED_STORE64(void *p, uint64 v) {
 
 // These functions are provided for architectures that don't support
 // unaligned loads and stores.
-
 
 #endif
 
@@ -629,20 +605,20 @@ inline void UNALIGNED_STORE64(void *p, uint64 v) {
 
 #if defined(__cplusplus)
 
-inline void UnalignedCopy16(const void *src, void *dst) {
+inline void UnalignedCopy16(const void* src, void* dst) {
   UNALIGNED_STORE16(dst, UNALIGNED_LOAD16(src));
 }
 
-inline void UnalignedCopy32(const void *src, void *dst) {
+inline void UnalignedCopy32(const void* src, void* dst) {
   UNALIGNED_STORE32(dst, UNALIGNED_LOAD32(src));
 }
 
-inline void UnalignedCopy64(const void *src, void *dst) {
-  if (sizeof(void *) == 8) {
+inline void UnalignedCopy64(const void* src, void* dst) {
+  if (sizeof(void*) == 8) {
     UNALIGNED_STORE64(dst, UNALIGNED_LOAD64(src));
   } else {
-    const char *src_char = reinterpret_cast<const char *>(src);
-    char *dst_char = reinterpret_cast<char *>(dst);
+    const char* src_char = reinterpret_cast<const char*>(src);
+    char* dst_char = reinterpret_cast<char*>(dst);
 
     UNALIGNED_STORE32(dst_char, UNALIGNED_LOAD32(src_char));
     UNALIGNED_STORE32(dst_char + 4, UNALIGNED_LOAD32(src_char + 4));
@@ -677,7 +653,6 @@ inline void UnalignedCopy64(const void *src, void *dst) {
 #define PRINTABLE_PTHREAD(pthreadt) pthreadt
 #endif
 
-
 #define LANG_CXX11 1
 
 // On some platforms, a "function pointer" points to a function descriptor
@@ -690,7 +665,7 @@ enum { kPlatformUsesOPDSections = 1 };
 #define FUNC_PTR_TO_CHAR_PTR(func) (reinterpret_cast<char**>(func)[0])
 #else
 enum { kPlatformUsesOPDSections = 0 };
-#define FUNC_PTR_TO_CHAR_PTR(func)  (reinterpret_cast<char *>(func))
+#define FUNC_PTR_TO_CHAR_PTR(func) (reinterpret_cast<char*>(func))
 #endif
 
 // Private implementation detail: __has_extension is useful to implement
@@ -699,7 +674,6 @@ enum { kPlatformUsesOPDSections = 0 };
 #ifndef __has_extension
 #define __has_extension(x) 0  // MSVC 10's preprocessor can't handle 'false'.
 #endif
-
 
 #endif  // __cplusplus
 

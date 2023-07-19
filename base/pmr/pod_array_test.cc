@@ -7,15 +7,13 @@
 #include "base/gtest.h"
 
 namespace base {
-class PodArrayTest {
-};
-
+class PodArrayTest {};
 
 TEST(BitsTest, Padded) {
   PODArray<uint16_t, 16> arr;
   typedef decltype(arr)::value_type value_t;
   arr.push_back(0);
-  EXPECT_EQ(0, (ptrdiff_t)arr.data() % arr.alignment_v ) << arr.data();
+  EXPECT_EQ(0, (ptrdiff_t)arr.data() % arr.alignment_v) << arr.data();
   EXPECT_EQ(arr.alignment_v / sizeof(value_t), arr.capacity());
 
   for (unsigned i = 1; i < 1024; ++i)

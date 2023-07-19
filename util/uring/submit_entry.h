@@ -15,7 +15,6 @@ namespace uring {
 class Proactor;
 #endif
 
-
 /**
  * @brief Wraps and prepares SQE for submission.
  *
@@ -43,7 +42,7 @@ class SubmitEntry {
     PrepFd(IORING_OP_POLL_ADD, fd);
 
 #if __BYTE_ORDER == __BIG_ENDIAN
-	  mask = __swahw32(mask);
+    mask = __swahw32(mask);
 #endif
     sqe_->poll32_events = mask;
   }
@@ -53,7 +52,7 @@ class SubmitEntry {
     sqe_->addr = uid;
   }
 
-  void PrepRecv(int fd, void *buf, size_t len, unsigned flags) {
+  void PrepRecv(int fd, void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_RECV, fd);
     sqe_->addr = (unsigned long)buf;
     sqe_->len = len;
@@ -206,9 +205,9 @@ class SubmitEntry {
     sqe_->fd = fd;
   }
 
-  #ifndef USE_FB2
+#ifndef USE_FB2
   friend class Proactor;
-  #endif
+#endif
 };
 
 }  // namespace uring

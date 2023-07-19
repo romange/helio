@@ -13,7 +13,6 @@
 
 #include "base/RWSpinLock.h"
 #include "base/type_traits.h"
-
 #include "util/fibers/proactor_base.h"
 
 namespace util {
@@ -206,7 +205,9 @@ class ProactorPool {
   std::string_view GetString(std::string_view source);
 
   // map from cpuid to thread array.
-  const std::vector<std::vector<unsigned>>& cpu_threads() const { return cpu_threads_; }
+  const std::vector<std::vector<unsigned>>& cpu_threads() const {
+    return cpu_threads_;
+  }
 
  protected:
   virtual ProactorBase* CreateProactor() = 0;

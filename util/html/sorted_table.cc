@@ -13,7 +13,8 @@ namespace {
 struct THFormatter {
   const char* token;
 
-  THFormatter(const char* t) : token(t) {}
+  THFormatter(const char* t) : token(t) {
+  }
   void operator()(string* out, std::string_view str) const {
     absl::StrAppend(out, "<", token, ">", str, "</", token, ">");
   }
@@ -32,12 +33,14 @@ string SortedTable::HtmlStart() {
   <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.1/css/jquery.tablesorter.pager.min.css">
   <link rel="stylesheet" href=")";
   result.append(kCdnPrefix);
-  result.append(R"(/style.css">
+  result
+      .append(R"(/style.css">
   <script src="//code.jquery.com/jquery-latest.min.js"></script>
   <script src="//cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.1/js/jquery.tablesorter.min.js"></script>
   <script src="//cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.1/js/jquery.tablesorter.widgets.min.js"></script>
   <script src="//cdnjs.cloudflare.com/ajax/libs/jquery.tablesorter/2.31.1/js/extras/jquery.tablesorter.pager.min.js"></script>
-  <script src=")").append(kCdnPrefix);
+  <script src=")")
+      .append(kCdnPrefix);
   result.append(R"(/main.js"></script>
 </head>
 )");
@@ -48,8 +51,8 @@ void SortedTable::StartTable(const std::vector<std::string_view>& header, string
   string col_names = absl::StrCat("\n", absl::StrJoin(header, "\n", THFormatter{"th"}), "\n");
   dest->append(R"(
   <table class="tablesorter" id="tablesorter">
-    <thead class="thead-dark"> <!-- add class="thead-light" for a light header -->)").
-  append(absl::StrCat("<tr>", col_names, "</tr>", "</thead><tfoot>\n"));
+    <thead class="thead-dark"> <!-- add class="thead-light" for a light header -->)")
+      .append(absl::StrCat("<tr>", col_names, "</tr>", "</thead><tfoot>\n"));
   dest->append(absl::StrCat("<tr>", col_names));
   dest->append(R"(</tr> </tfoot>
     <tbody>)");

@@ -12,8 +12,8 @@
 namespace io {
 
 using namespace std;
-using testing::SizeIs;
 using testing::EndsWith;
+using testing::SizeIs;
 class FileTest : public ::testing::Test {
  protected:
 };

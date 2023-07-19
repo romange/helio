@@ -302,9 +302,7 @@ TEST_F(FiberTest, EventCountMT) {
     th = thread([&] {
       Fiber fb2("producer", [&] {
         for (unsigned i = 0; i < kNumIters; ++i) {
-          ec2.await([&] {
-            return gate.load(memory_order_relaxed) == i;
-          });
+          ec2.await([&] { return gate.load(memory_order_relaxed) == i; });
           ThisFiber::SleepFor(1us);
           if (cnt.fetch_add(1, memory_order_relaxed) == threads.size() - 1)
             ec1.notify();
@@ -321,9 +319,7 @@ TEST_F(FiberTest, EventCountMT) {
       gate.store(i, memory_order_release);
       ec2.notifyAll();
 
-      preempts += ec1.await([&] {
-        return cnt.load(memory_order_relaxed) == threads.size();
-      });
+      preempts += ec1.await([&] { return cnt.load(memory_order_relaxed) == threads.size(); });
       cnt.store(0, memory_order_relaxed);
     }
   });
@@ -334,7 +330,6 @@ TEST_F(FiberTest, EventCountMT) {
   }
   LOG(INFO) << "Preempts: " << preempts;
 }
-
 
 TEST_F(FiberTest, Future) {
   Promise<int> p1;
@@ -600,9 +595,7 @@ TEST_P(ProactorTest, Mutex) {
   Mutex mu;
 
   for (unsigned i = 0; i < kNumThreads; ++i) {
-    fbs[i] = ths[i]->get()->LaunchFiber([&] {
-      lock_guard lk(mu);
-    });
+    fbs[i] = ths[i]->get()->LaunchFiber([&] { lock_guard lk(mu); });
   }
 
   for (auto& fb : fbs)

@@ -21,7 +21,7 @@ void WaitQueue::NotifyAll(FiberInterface* active) {
     FiberInterface* cntx = waiter->cntx();
     DVLOG(2) << "Scheduling " << cntx->name() << " from " << active->name();
 
-    active->WakeOther(waiter->epoch(),  cntx);
+    active->WakeOther(waiter->epoch(), cntx);
   }
 }
 

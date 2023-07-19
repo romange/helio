@@ -30,8 +30,7 @@ namespace {
 
 class FiberReadFile : public ReadonlyFile {
  public:
-  FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next,
-                FiberQueueThreadPool* tp);
+  FiberReadFile(const FiberReadOptions& opts, ReadonlyFile* next, FiberQueueThreadPool* tp);
 
   SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
 
@@ -83,7 +82,7 @@ class WriteFileImpl : public WriteFile {
   virtual ~WriteFileImpl() {
   }
 
-#if 0   // TODO: to design an async interface if needed. With io_uring it could be redundant.
+#if 0  // TODO: to design an async interface if needed. With io_uring it could be redundant.
   std::error_code Status() final {
     unique_lock<fibers::mutex> lk(mu_);
     return ec_;

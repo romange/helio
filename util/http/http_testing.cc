@@ -3,13 +3,13 @@
 //
 
 #include "util/http/http_testing.h"
+
 #include "base/logging.h"
 
 namespace util {
 
 using namespace boost;
 using namespace std;
-
 
 void HttpBaseTest::SetUp() {
   pool_.reset(new IoContextPool);

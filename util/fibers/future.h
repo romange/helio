@@ -17,7 +17,6 @@ namespace fb2 {
 enum class future_status { ready = 1, timeout, deferred };
 template <typename R> class Future;
 
-
 namespace detail {
 
 class shared_state_base {

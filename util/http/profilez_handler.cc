@@ -7,7 +7,6 @@
 #include <gperftools/profiler.h>
 
 #include <boost/beast/http/message.hpp>
-
 #include <filesystem>
 #include <thread>
 #include <unordered_map>

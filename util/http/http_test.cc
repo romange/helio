@@ -1,21 +1,20 @@
 // Copyright 2018, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
-#include <boost/beast/core/flat_buffer.hpp>
-#include <boost/beast/http/read.hpp>
-
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 
+#include <boost/beast/core/flat_buffer.hpp>
+#include <boost/beast/http/read.hpp>
+
 #include "base/gtest.h"
 #include "base/logging.h"
-
 #include "util/asio/accept_server.h"
 #include "util/asio/asio_utils.h"
 #include "util/asio/io_context_pool.h"
+#include "util/http/beast_rj_utils.h"
 #include "util/http/http_client.h"
 #include "util/http/http_testing.h"
-#include "util/http/beast_rj_utils.h"
 
 namespace util {
 namespace http {
@@ -57,7 +56,6 @@ TEST_F(HttpTest, Client) {
   EXPECT_FALSE(client.IsConnected());
 }
 
-
 void AddToMB(const char* str, beast::multi_buffer* dest) {
   size_t sz = strlen(str);
   size_t req_sz = sz * 2 + 10;
@@ -90,4 +88,3 @@ TEST_F(HttpTest, JsonParse) {
 
 }  // namespace http
 }  // namespace util
-

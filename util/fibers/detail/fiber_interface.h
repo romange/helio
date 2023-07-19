@@ -60,7 +60,7 @@ class FiberInterface {
   // we need both list and wait because it could be that
   // the object is in the wait queue and then added to ready queue by RemoteToReady.
   // wait_hook should be mutated under a spinlock since it is used by multiple threads.
-  FI_ListHook list_hook; //, wait_hook;
+  FI_ListHook list_hook;  //, wait_hook;
   FI_SleepHook sleep_hook;
 
   ::boost::context::fiber_context SwitchTo();
@@ -92,7 +92,6 @@ class FiberInterface {
   bool IsDefined() const {
     return bool(entry_);
   }
-
 
 #if 0
   void StartParking() {
@@ -155,11 +154,12 @@ class FiberInterface {
 
   // For MPSCIntrusiveQueue queue.
 #if defined(__clang__)
-   // clang ubsan checks that dest is a proper object but it breaks with MPSCIntrusiveQueue
-   // setting a stub.next field since the stub is not properly initialized.
+  // clang ubsan checks that dest is a proper object but it breaks with MPSCIntrusiveQueue
+  // setting a stub.next field since the stub is not properly initialized.
   __attribute__((no_sanitize("undefined")))
 #endif
-  friend void MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
+  friend void
+  MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
     dest->remote_next_.store(next_node, std::memory_order_relaxed);
   }
 
@@ -274,7 +274,6 @@ void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
 
 constexpr uint64_t kRemoteFree = 1;
-
 
 }  // namespace detail
 }  // namespace fb2

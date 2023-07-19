@@ -6,8 +6,9 @@
 
 #include <functional>
 #include <vector>
-#include "base/libdivide.h"
+
 #include "base/integral_types.h"
+#include "base/libdivide.h"
 #include "base/logging.h"
 
 namespace base {
@@ -21,6 +22,7 @@ class CuckooMapTable {
   typedef uint32 BucketId;
 
   friend class CuckooMapTableWrapperBase;
+
  public:
   typedef size_t dense_id;
   typedef uint64_t key_type;
@@ -62,7 +64,9 @@ class CuckooMapTable {
   size_t size() const {
     return size_;
   }
-  uint32 value_size() const { return value_size_; }
+  uint32 value_size() const {
+    return value_size_;
+  }
 
   // Returns the capacity of current bucket array.
   // It also serves as limit for dense_id keys,
@@ -88,22 +92,30 @@ class CuckooMapTable {
 
   // void CopyFrom(const CuckooMapTable& other);
 
-  double Utilization() const { return size() * 1.0 / Capacity();}
-
-  uint64 BytesAllocated() const {
-    return bucket_count_*bucket_size_ + 2 * value_size_;
+  double Utilization() const {
+    return size() * 1.0 / Capacity();
   }
 
-  key_type empty_value() const { return empty_value_; }
+  uint64 BytesAllocated() const {
+    return bucket_count_ * bucket_size_ + 2 * value_size_;
+  }
+
+  key_type empty_value() const {
+    return empty_value_;
+  }
 
   bool IsEmptyKey(dense_id id) const;
 
   class Iterator {
     CuckooMapTable* table_;
     dense_id current_;
-  public:
-    Iterator(CuckooMapTable* table = nullptr, dense_id id = 0) : table_(table), current_(id) {}
-    std::pair<key_type, const uint8*> get() { return table_->FromDenseId(current_); }
+
+   public:
+    Iterator(CuckooMapTable* table = nullptr, dense_id id = 0) : table_(table), current_(id) {
+    }
+    std::pair<key_type, const uint8*> get() {
+      return table_->FromDenseId(current_);
+    }
 
     Iterator& operator++() {
       while (current_ < table_->Capacity()) {
@@ -124,9 +136,12 @@ class CuckooMapTable {
   struct BucketIdPair {
     BucketId id[2];
 
-    bool operator==(const BucketIdPair& o) const { return id[0] == o.id[0] && id[1] == o.id[1];}
+    bool operator==(const BucketIdPair& o) const {
+      return id[0] == o.id[0] && id[1] == o.id[1];
+    }
 
-    BucketIdPair(BucketId a, BucketId b) : id{a, b} {}
+    BucketIdPair(BucketId a, BucketId b) : id{a, b} {
+    }
   };
 
   static dense_id ToDenseId(BucketId id, uint8 offset) {
@@ -150,10 +165,12 @@ class CuckooMapTable {
   // for https://github.com/ridiculousfish/libdivide or libdivide.com to speedup the
   BucketId FromHash(const key_type hash_val) const {
     uint64 p;
-    switch(divide_s_alg_) {
-      case 1: p = libdivide::libdivide_u64_do_alg1(hash_val, &divide_s_);
+    switch (divide_s_alg_) {
+      case 1:
+        p = libdivide::libdivide_u64_do_alg1(hash_val, &divide_s_);
         break;
-      default: p = libdivide::libdivide_u64_do_alg2(hash_val, &divide_s_);
+      default:
+        p = libdivide::libdivide_u64_do_alg2(hash_val, &divide_s_);
         break;
     }
     return hash_val - p * bucket_count_;
@@ -252,7 +269,7 @@ class CuckooMapTable {
   uint32 shifts_limit_;
 
   // used only in Compact();
-  //std::vector<bool> node_state_;
+  // std::vector<bool> node_state_;
   uint32 random_bit_indx_ = 0;
   size_t inserts_since_last_grow_ = 0, sum_shifts_ = 0;
 
@@ -266,37 +283,65 @@ class CuckooMapTable {
 };
 
 class CuckooMapTableWrapperBase {
-public:
+ public:
   typedef CuckooMapTable::dense_id DenseId;
   typedef uint64 KeyType;
 
   static constexpr DenseId npos = CuckooMapTable::npos;
 
   // Must be called before insertions take place.
-  void SetEmptyKey(const KeyType& k) { table_.SetEmptyKey(k); }
-  DenseId find(const KeyType& v) const { return table_.find(v);}
+  void SetEmptyKey(const KeyType& k) {
+    table_.SetEmptyKey(k);
+  }
+  DenseId find(const KeyType& v) const {
+    return table_.find(v);
+  }
 
-  void Clear() {  table_.Clear(); }
-  size_t size() const { return table_.size();}
-  size_t Capacity() const {return table_.Capacity();}
+  void Clear() {
+    table_.Clear();
+  }
+  size_t size() const {
+    return table_.size();
+  }
+  size_t Capacity() const {
+    return table_.Capacity();
+  }
 
-  bool empty() const { return table_.empty();}
-  void Reserve(size_t bigger_capacity) { table_.Reserve(bigger_capacity); }
-  void SetGrowth(float growth) { table_.SetGrowth(growth);}
-  bool Compact(double ratio) { return table_.Compact(ratio);}
+  bool empty() const {
+    return table_.empty();
+  }
+  void Reserve(size_t bigger_capacity) {
+    table_.Reserve(bigger_capacity);
+  }
+  void SetGrowth(float growth) {
+    table_.SetGrowth(growth);
+  }
+  bool Compact(double ratio) {
+    return table_.Compact(ratio);
+  }
 
-  double utilization() const { return table_.Utilization();}
-  uint64 bytes_allocated() const { return table_.BytesAllocated();}
+  double utilization() const {
+    return table_.Utilization();
+  }
+  uint64 bytes_allocated() const {
+    return table_.BytesAllocated();
+  }
 
-  DenseId dense_id_end() const { return Capacity(); }
+  DenseId dense_id_end() const {
+    return Capacity();
+  }
 
-  KeyType empty_value() const { return table_.empty_value(); }
+  KeyType empty_value() const {
+    return table_.empty_value();
+  }
 
   bool is_empty(DenseId d) const {
     return table_.FromDenseId(d).first == table_.empty_value();
   }
 
-  uint32 value_size() const { return table_.value_size(); }
+  uint32 value_size() const {
+    return table_.value_size();
+  }
 
   // The method below give internal access to the cuckoo table structure, allowing to
   // read and write directly into it.
@@ -311,14 +356,17 @@ public:
     dest->second = table_.bucket_size_ * table_.bucket_count_;
   }
 
-  void SetSize(size_t size) { table_.size_ = size; }
-protected:
+  void SetSize(size_t size) {
+    table_.size_ = size;
+  }
+
+ protected:
   CuckooMapTableWrapperBase(const uint32 value_size, uint32 capacity)
-      : table_(value_size, capacity) {}
+      : table_(value_size, capacity) {
+  }
 
   CuckooMapTable table_;
 };
-
 
 // Implementation
 /******************************************************************/
@@ -329,7 +377,8 @@ inline CuckooMapTable::dense_id CuckooMapTable::find(const key_type v) const {
   BucketId bid1 = hash1(v);
   const key_type* a = GetBucketById(bid1)->key;
   for (uint8 i = 0; i < kBucketLength; ++i) {
-    if (a[i] == v) return ToDenseId(bid1, i);
+    if (a[i] == v)
+      return ToDenseId(bid1, i);
   }
 
   BucketId bid2 = hash2(v);
@@ -338,7 +387,8 @@ inline CuckooMapTable::dense_id CuckooMapTable::find(const key_type v) const {
   }
   const key_type* b = GetBucketById(bid2)->key;
   for (uint8 i = 0; i < kBucketLength; ++i) {
-    if (b[i] == v) return ToDenseId(bid2, i);
+    if (b[i] == v)
+      return ToDenseId(bid2, i);
   }
   return npos;
 }
@@ -351,7 +401,8 @@ inline std::pair<CuckooMapTable::key_type, uint8*> CuckooMapTable::FromDenseId(d
   return std::pair<key_type, uint8*>(bucket->key[index], bucket->data + value_size_ * index);
 }
 
-inline std::pair<CuckooMapTable::key_type, const uint8*> CuckooMapTable::FromDenseId(dense_id d) const {
+inline std::pair<CuckooMapTable::key_type, const uint8*> CuckooMapTable::FromDenseId(
+    dense_id d) const {
   DCHECK_LT(d, Capacity());
   BucketId b = BucketFromId(d);
   const Bucket* bucket = GetBucketById(b);

@@ -8,15 +8,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-
 #include "base/integral_types.h"
 #include "base/logging.h"
 
 // for MacOS we declare explicitly.
-extern "C" char **environ;
+extern "C" char** environ;
 
 namespace base {
-
 
 // Runs a child process efficiently.
 // argv must be null terminated array of arguments where the first item in the array is the base
@@ -61,4 +59,3 @@ int sh_exec(const char* cmd) {
 }
 
 }  // namespace base
-

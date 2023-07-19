@@ -108,8 +108,6 @@ static_assert(detail::TestRange(1, 9, [](unsigned i) {
   return EncodingLength((1ULL << (7 * i)) - 1) == i;
 }));
 
-
-
 // Decodes buf into v and returns number of bytes needed to encode the number.
 // Requires that src points to buffer has memory access to at least 8 bytes
 // even if the encoding smaller and it assumes that the input is valid,

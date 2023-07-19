@@ -57,7 +57,6 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
 void Mutex::lock() {
   detail::FiberInterface* active = detail::FiberActive();
 
-
   while (true) {
     detail::Waiter waiter(active->CreateWaiter());
     wait_queue_splk_.lock();

@@ -290,8 +290,8 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
   if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res)
-               << " " << RemoteEndpoint();
+    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
+               << RemoteEndpoint();
   }
 
   if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
@@ -355,8 +355,8 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
   if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res)
-               << " " << RemoteEndpoint();
+    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
+               << RemoteEndpoint();
   }
 
   ec = std::error_code(res, std::system_category());

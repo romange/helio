@@ -16,10 +16,10 @@
 #include <functional>
 
 #include "base/mpmc_bounded_queue.h"
-#include "util/fibers/detail/result_mover.h"
-#include "util/fibers/synchronization.h"
-#include "util/fibers/fibers.h"
 #include "util/fiber_socket_base.h"
+#include "util/fibers/detail/result_mover.h"
+#include "util/fibers/fibers.h"
+#include "util/fibers/synchronization.h"
 
 namespace util {
 class LinuxSocketBase;
@@ -29,7 +29,7 @@ namespace fb2 {
 // A proxy class that binds ProactorBase to fibers scheduler.
 class ProactorDispatcher;
 
-class ProactorBase  {
+class ProactorBase {
   ProactorBase(const ProactorBase&) = delete;
   void operator=(const ProactorBase&) = delete;
   friend class ProactorDispatcher;
@@ -277,17 +277,16 @@ class ProactorBase  {
 };
 
 class ProactorDispatcher : public DispatchPolicy {
-public:
+ public:
   explicit ProactorDispatcher(ProactorBase* proactor) : proactor_(proactor) {
   }
 
-private:
+ private:
   void Run(detail::Scheduler* sched);
   void Notify() final;
 
   ProactorBase* proactor_;
 };
-
 
 // Implementation
 // **********************************************************************
@@ -339,7 +338,6 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
   using ResultType = decltype(f());
   util::detail::ResultMover<ResultType> mover;
   Done done;
-
 
   // active->StartParking();
 
