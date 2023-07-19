@@ -22,7 +22,6 @@ class Waiter {
   using ListHookType =
       boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
-
   FiberInterface* cntx() const {
     return cntx_;
   }
@@ -69,7 +68,6 @@ class WaitQueue {
   }
 
   void NotifyAll(FiberInterface* active);
-
 
  private:
   using WaitList = boost::intrusive::slist<

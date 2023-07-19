@@ -234,7 +234,6 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
   }
 }
 
-
 void ProactorBase::Pause(unsigned count) {
   auto pc = pause_amplifier;
 

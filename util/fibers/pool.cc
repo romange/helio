@@ -5,7 +5,6 @@
 #include "util/fibers/pool.h"
 
 #include "base/logging.h"
-
 #include "util/fibers/epoll_proactor.h"
 
 #ifdef __linux__

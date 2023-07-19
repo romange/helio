@@ -254,9 +254,7 @@ TEST_F(FibersTest, BoostContextResumeWith) {
 typedef testing::Types<base::mpmc_bounded_queue<int>, folly::ProducerConsumerQueue<int>>
     QueueImplementations;
 
-template <typename Q> class ChannelTest : public ::testing::Test {
- public:
-};
+template <typename Q> class ChannelTest : public ::testing::Test { public: };
 TYPED_TEST_SUITE(ChannelTest, QueueImplementations);
 
 TYPED_TEST(ChannelTest, SimpleChannel) {

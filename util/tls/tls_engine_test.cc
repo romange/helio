@@ -4,14 +4,14 @@
 
 #include "util/tls/tls_engine.h"
 
-#include <string_view>
 #include <openssl/err.h>
+
+#include <string_view>
 
 #include "base/gtest.h"
 #include "base/logging.h"
-
-#include "util/tls/tls_socket.h"
 #include "util/fibers/fibers.h"
+#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace tls {
@@ -346,11 +346,11 @@ void BM_TlsWrite(benchmark::State& state) {
   SSL* ssl = server_engine->native_handle();
   CHECK_EQ(1, SSL_set_dh_auto(ssl, 1));
 
-  auto client_fb = Fiber(
-      [&] { RunPeer(copts, cl_handshake, client_engine.get(), server_engine.get()); });
+  auto client_fb =
+      Fiber([&] { RunPeer(copts, cl_handshake, client_engine.get(), server_engine.get()); });
 
-  auto server_fb = Fiber(
-      [&] { RunPeer(sopts, srv_handshake, server_engine.get(), client_engine.get()); });
+  auto server_fb =
+      Fiber([&] { RunPeer(sopts, srv_handshake, server_engine.get(), client_engine.get()); });
 
   client_fb.Join();
   server_fb.Join();

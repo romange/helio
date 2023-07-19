@@ -2,8 +2,9 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
-#include "base/logging.h"
 #include "base/pthread_utils.h"
+
+#include "base/logging.h"
 
 #if defined(__APPLE__) && defined(__MACH__)
 #define _MAC_OS_ 1
@@ -11,7 +12,7 @@
 
 namespace base {
 
-static void* start_cpp_function(void *arg) {
+static void* start_cpp_function(void* arg) {
   std::function<void()>* fp = (std::function<void()>*)arg;
   CHECK(*fp);
   (*fp)();
@@ -30,14 +31,12 @@ void InitCondVarWithClock(clockid_t clock_id, pthread_cond_t* var) {
   PTHREAD_CHECK(condattr_destroy(&attr));
 }
 
-
-pthread_t StartThread(const char* name, void *(*start_routine) (void *), void *arg) {
+pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg) {
   CHECK_LT(strlen(name), 16U);
 
   pthread_attr_t attrs;
   PTHREAD_CHECK(attr_init(&attrs));
   PTHREAD_CHECK(attr_setstacksize(&attrs, kThreadStackSize));
-
 
   pthread_t result;
   VLOG(1) << "Starting thread " << name;

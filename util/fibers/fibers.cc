@@ -33,8 +33,7 @@ void Fiber::Detach() {
 void Fiber::Join() {
   CHECK(IsJoinable());
   impl_->Join();
-  DVLOG(1) << "Fiber::Joined() " << impl_->name() << " "
-           << impl_->DEBUG_use_count();
+  DVLOG(1) << "Fiber::Joined() " << impl_->name() << " " << impl_->DEBUG_use_count();
   impl_.reset();
 }
 

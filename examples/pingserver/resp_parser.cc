@@ -4,14 +4,13 @@
 #include "examples/pingserver/resp_parser.h"
 
 #include <absl/strings/numbers.h>
+
 #include "absl/strings/ascii.h"
 #include "base/logging.h"
 
 namespace redis {
 
-namespace {
-}  // namespace
-
+namespace {}  // namespace
 
 using namespace std;
 
@@ -236,7 +235,7 @@ auto RespParser::ConsumeArrayLen(Buffer str) -> Status {
   if (arr_stack_.size() == 0 && !top_->empty())
     return INVALID_STRING;
 
-  if (len <= 0  || !top_->empty()) {
+  if (len <= 0 || !top_->empty()) {
     return INVALID_ARRAYLEN;
   }
 
@@ -286,7 +285,7 @@ auto RespParser::ConsumeBulk(Buffer str) -> Status {
       if (is_broken_token_) {
         memcpy(bulk_str.end(), str.data(), bulk_len_);
         bulk_str = Buffer{bulk_str.data(), bulk_str.size() + bulk_len_};
-      } else  {
+      } else {
         bulk_str = str.subspan(0, bulk_len_);
       }
     }
@@ -305,7 +304,8 @@ auto RespParser::ConsumeBulk(Buffer str) -> Status {
     if (is_broken_token_) {
       memcpy(bulk_str.end(), str.data(), len);
       bulk_str = Buffer{bulk_str.data(), bulk_str.size() + len};
-      DVLOG(1) << "Extending bulk stash to size " << bulk_str.size();;
+      DVLOG(1) << "Extending bulk stash to size " << bulk_str.size();
+      ;
     } else {
       DVLOG(1) << "New bulk stash size " << bulk_len_;
       std::unique_ptr<uint8_t[]> nb(new uint8_t[bulk_len_]);

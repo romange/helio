@@ -3,8 +3,8 @@
 //
 
 #include "util/varz.h"
-#include "base/logging.h"
 
+#include "base/logging.h"
 #include "util/fibers/synchronization.h"
 
 using base::VarzValue;
@@ -14,7 +14,6 @@ namespace util {
 
 using fb2::Mutex;
 using fb2::ProactorBase;
-
 
 VarzValue VarzQps::GetData() const {
   uint32_t qps = val_.SumTail() / (Counter::WIN_SIZE - 1);  // Average over kWinSize values.
@@ -34,7 +33,6 @@ void VarzMapAverage::Shutdown() {
   avg_map_.reset();
   pp_ = nullptr;
 }
-
 
 unsigned VarzMapAverage::ProactorThreadIndex() const {
   unsigned tnum = CHECK_NOTNULL(pp_)->size();
@@ -93,7 +91,6 @@ VarzValue VarzFunction::GetData() const {
 void VarzCount::Init(ProactorPool* pp) {
   CHECK_NOTNULL(pp);
 }
-
 
 void VarzCount::Shutdown() {
 }

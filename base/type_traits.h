@@ -62,8 +62,6 @@ struct DecayedTupleFromParams<R (C::*)(Args...) const> {
 template <typename C>
 struct DecayedTupleFromParams : public DecayedTupleFromParams<decltype(&C::operator())> {};
 
-
-
 template <typename RType, typename... Args> struct FunctionSig {
   //! arity is the number of arguments.
   static constexpr size_t arity = sizeof...(Args);
@@ -161,10 +159,14 @@ template <typename T> struct function_traits<T&&> : function_traits<T> {};
     template <typename U> static Signature Internal(helper<Signature, &U::FuncName>*) { \
       return &U::FuncName;                                                              \
     }                                                                                   \
-    template <typename U> static Signature Internal(...) { return nullptr; }            \
+    template <typename U> static Signature Internal(...) {                              \
+      return nullptr;                                                                   \
+    }                                                                                   \
                                                                                         \
    public:                                                                              \
-    static Signature Get() { return Internal<T>(0); }                                   \
+    static Signature Get() {                                                            \
+      return Internal<T>(0);                                                            \
+    }                                                                                   \
   }
 
 #endif

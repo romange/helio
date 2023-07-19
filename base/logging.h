@@ -4,8 +4,9 @@
 
 #pragma once
 
-#include <string>
 #include <glog/logging.h>
+
+#include <string>
 
 namespace base {
 std::string ProgramAbsoluteFileName();
@@ -14,12 +15,10 @@ std::string ProgramBaseName();
 
 std::string MyUserName();
 
-
 class ConsoleLogSink : public google::LogSink {
-public:
+ public:
   virtual void send(google::LogSeverity severity, const char* full_filename,
-                    const char* base_filename, int line,
-                    const struct ::tm* tm_time,
+                    const char* base_filename, int line, const struct ::tm* tm_time,
                     const char* message, size_t message_len) override;
 
   static ConsoleLogSink* instance();

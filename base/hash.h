@@ -5,9 +5,8 @@
 #define BASE_HASH_H
 
 #include <cstdint>
-#include <string>
-
 #include <optional>
+#include <string>
 #include <string_view>
 
 // XXH_STATIC_LINKING_ONLY allows accessing internal structs and declare them on stack
@@ -29,7 +28,6 @@ inline uint32_t Murmur32(const std::string& str, uint32_t seed = 10) {
   return MurmurHash3_x86_32(reinterpret_cast<const uint8_t*>(str.data()), str.size(), seed);
 }
 
-
 uint64_t Fingerprint(const char* str, uint32_t len);
 
 inline uint64_t Fingerprint(const std::string& str) {
@@ -44,28 +42,28 @@ inline uint32_t Fingerprint32(const std::string& str) {
 namespace detail {
 
 // Should use std::has_unique_object_representations but we do not have in C++14.
-template<typename Hasher, typename T>
-std::enable_if_t<std::is_integral<T>::value || std::is_enum<T>::value>
-HashAppend(Hasher& h, const T& t) noexcept {
+template <typename Hasher, typename T>
+std::enable_if_t<std::is_integral<T>::value || std::is_enum<T>::value> HashAppend(
+    Hasher& h, const T& t) noexcept {
   h.update(&t, sizeof(t));
 }
 
-template<typename Hasher, typename T>
+template <typename Hasher, typename T>
 void HashAppend(Hasher& h, const std::optional<T>& x) noexcept {
   if (x)
     HashAppend(h, *x);
 }
 
-template<typename Hasher> void HashAppend(Hasher& h, const std::string& t) noexcept {
+template <typename Hasher> void HashAppend(Hasher& h, const std::string& t) noexcept {
   h.update(t.data(), t.size());
 }
 
-template<typename Hasher> void HashAppend(Hasher& h, const std::string_view& t) noexcept {
+template <typename Hasher> void HashAppend(Hasher& h, const std::string_view& t) noexcept {
   h.update(t.data(), t.size());
 }
 
-template <class Hasher, typename T0, typename T1, typename ...T>
-void HashAppend(Hasher& h, const T0& t0, const T1& t1, const T& ...t) noexcept {
+template <class Hasher, typename T0, typename T1, typename... T>
+void HashAppend(Hasher& h, const T0& t0, const T1& t1, const T&... t) noexcept {
   HashAppend(h, t0);
   HashAppend(h, t1, t...);
 }
@@ -73,8 +71,9 @@ void HashAppend(Hasher& h, const T0& t0, const T1& t1, const T& ...t) noexcept {
 template <std::size_t BITS> class XXHashImp;
 
 template <> class XXHashImp<32> {
-    XXH32_state_t state_;
-public:
+  XXH32_state_t state_;
+
+ public:
   XXHashImp(unsigned seed = 0) noexcept {
     XXH32_reset(&state_, seed);
   }
@@ -89,8 +88,9 @@ public:
 };
 
 template <> class XXHashImp<64> {
-    XXH64_state_t state_;
-public:
+  XXH64_state_t state_;
+
+ public:
   XXHashImp(unsigned long long seed = 0) noexcept {
     XXH64_reset(&state_, seed);
   }
@@ -106,35 +106,36 @@ public:
 
 }  // namespace detail
 
-template <typename ...T> uint32_t XXHash32(const T&... t) {
+template <typename... T> uint32_t XXHash32(const T&... t) {
   detail::XXHashImp<32> hasher;
   detail::HashAppend(hasher, t...);
   return hasher.digest();
 }
 
-template <typename ...T> uint64_t XXHash64(const T&... t) {
+template <typename... T> uint64_t XXHash64(const T&... t) {
   detail::XXHashImp<64> hasher;
   detail::HashAppend(hasher, t...);
   return hasher.digest();
 }
 
-
-template <class ...T, size_t... Is>
+template <class... T, size_t... Is>
 uint64_t TupleHashImpl(const std::tuple<T...>& t, std::index_sequence<Is...>) {
   return XXHash64(std::get<Is>(t)...);
 }
 
-template <typename ...T> uint64_t XXHash64(const std::tuple<T...>& t) {
+template <typename... T> uint64_t XXHash64(const std::tuple<T...>& t) {
   return TupleHashImpl(t, std::index_sequence_for<T...>{});
 }
 
-template <typename T, typename U> uint64_t XXHash64(const std::pair<T,U>& t) {
+template <typename T, typename U> uint64_t XXHash64(const std::pair<T, U>& t) {
   return XXHash64(t.first, t.second);
 }
 
 // Hash functor for std::tuple.
 struct TupleHash {
-  template <class ...T> size_t operator()(const std::tuple<T...>& t) const { return XXHash64(t); }
+  template <class... T> size_t operator()(const std::tuple<T...>& t) const {
+    return XXHash64(t);
+  }
 };
 
 }  // namespace base

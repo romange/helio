@@ -5,12 +5,12 @@
 #define _CUCKOO_MAP_H
 
 #include <memory>
-#include <vector>
 #include <type_traits>
+#include <vector>
 
 #include "base/bits.h"
-#include "base/integral_types.h"
 #include "base/cuckoo_map-internal.h"
+#include "base/integral_types.h"
 
 /* Cuckoo works very bad with non-prime table sizes.
    In particular, for random input we quickly find many numbers pairs that map to the same
@@ -25,20 +25,25 @@ uint64 GetPrimeNotLessThan(uint64 value);
   Cuckoo Set.
 */
 class CuckooSet : public CuckooMapTableWrapperBase {
-public:
+ public:
   // Allocates space for the minimal number of values.
-  explicit CuckooSet(uint32 capacity = 0) : CuckooMapTableWrapperBase(0, capacity) {}
+  explicit CuckooSet(uint32 capacity = 0) : CuckooMapTableWrapperBase(0, capacity) {
+  }
 
   // Inserts x into the map. This function invalidates all dense_ids.
-  std::pair<DenseId, bool> Insert(KeyType v) { return table_.Insert(v, nullptr); }
-  KeyType FromDenseId(DenseId d) const { return table_.FromDenseId(d).first;}
+  std::pair<DenseId, bool> Insert(KeyType v) {
+    return table_.Insert(v, nullptr);
+  }
+  KeyType FromDenseId(DenseId d) const {
+    return table_.FromDenseId(d).first;
+  }
 };
 
 /*
   Cuckoo Map. T must be trivially copyable type.
 */
-template<typename T> class CuckooMap : public CuckooMapTableWrapperBase {
-public:
+template <typename T> class CuckooMap : public CuckooMapTableWrapperBase {
+ public:
   explicit CuckooMap(uint32 capacity = 0) : CuckooMapTableWrapperBase(sizeof(T), capacity) {
     // TODO(roman): to add is_trivially_copyable restriction once it's supported by gcc.
     // static_assert(std::is_trivially_copyable<T>::value, "T should be copied trvially");

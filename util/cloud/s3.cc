@@ -15,9 +15,8 @@
 #include "base/logging.h"
 #include "util/cloud/aws.h"
 #include "util/cloud/s3_file.h"
-#include "util/http/encoding.h"
-
 #include "util/fibers/proactor_base.h"
+#include "util/http/encoding.h"
 
 namespace util {
 namespace cloud {
@@ -190,16 +189,16 @@ std::error_code S3Bucket::Connect(uint32_t ms) {
     val = 20;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0)
       return;
-    
+
     val = 60;
-#ifdef __APPLE__    
+#ifdef __APPLE__
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0)
       return;
 #else
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0)
       return;
 #endif
-    
+
     val = 3;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0)
       return;

@@ -21,7 +21,9 @@ class RjBufSequenceStream {
   }
 
   // Read
-  Ch Peek() const { return *src_.current; }
+  Ch Peek() const {
+    return *src_.current;
+  }
 
   Ch Take() {
     Ch res = *src_.current++;
@@ -39,9 +41,17 @@ class RjBufSequenceStream {
     return res;
   }
 
-  Ch* PutBegin() { assert(0); return nullptr; }
-  size_t PutEnd(Ch* begin) { assert(0); return 0; }
-  void Put(Ch c) { assert(0); }
+  Ch* PutBegin() {
+    assert(0);
+    return nullptr;
+  }
+  size_t PutEnd(Ch* begin) {
+    assert(0);
+    return 0;
+  }
+  void Put(Ch c) {
+    assert(0);
+  }
 
   /*Ch* PutBegin() {
     assert(*src_.current);
@@ -73,7 +83,8 @@ class RjBufSequenceStream {
     const_iterator it;
     const char *current, *end;
 
-    Item() : current(nullptr), end(nullptr) {}
+    Item() : current(nullptr), end(nullptr) {
+    }
 
     size_t Inc(const_iterator end_it) {
       size_t res = (*it).size();
@@ -93,7 +104,9 @@ class RjBufSequenceStream {
       end = current + mb.size();
     }
 
-    bool finish() const { return end == current; }
+    bool finish() const {
+      return end == current;
+    }
   };
 
   const_iterator end_;

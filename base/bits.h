@@ -15,7 +15,6 @@ class [[deprecated]] Bits {
     return __builtin_popcountll(n);
   }
 
-
   static uint32_t RoundUp(uint32_t x) {
     return absl::bit_ceil(x);
   }

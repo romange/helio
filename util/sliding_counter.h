@@ -32,8 +32,7 @@ class SlidingCounterBase {
  *
  * @tparam NUM
  */
-template <unsigned NUM, typename T = int32_t>
-class SlidingCounter {
+template <unsigned NUM, typename T = int32_t> class SlidingCounter {
   static_assert(NUM > 1, "Invalid window size");
 
   mutable std::array<T, NUM> count_;
@@ -136,8 +135,7 @@ template <unsigned NUM, typename T> auto SlidingCounter<NUM, T>::SumTail() const
   return sum;
 }
 
-template <unsigned NUM, typename T>
-uint32_t SlidingCounter<NUM, T>::MoveTsIfNeeded() const {
+template <unsigned NUM, typename T> uint32_t SlidingCounter<NUM, T>::MoveTsIfNeeded() const {
   uint32_t current_sec = time(NULL);
   if (last_ts_ + NUM <= current_sec) {
     count_.fill(0);

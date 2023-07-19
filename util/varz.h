@@ -4,9 +4,10 @@
 
 #pragma once
 
+#include <absl/container/flat_hash_map.h>
+
 #include <string_view>
 
-#include <absl/container/flat_hash_map.h>
 #include "base/varz_node.h"
 #include "util/sliding_counter.h"
 

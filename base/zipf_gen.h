@@ -41,10 +41,9 @@ class ZipfianGenerator {
     eta_ = Eta();
   }
 
-  template<typename URNG> uint64_t Next(URNG& u);
+  template <typename URNG> uint64_t Next(URNG& u);
 
  private:
-
   double Eta() {
     return (1 - std::pow(2.0 / items_, 1 - theta_)) / (1 - zeta_2_ / zeta_n_);
   }
@@ -71,9 +70,7 @@ class ZipfianGenerator {
   uint64_t count_for_zeta_;  /// Number of items used to compute zeta_n
 };
 
-
-template<typename URNG>
-uint64_t ZipfianGenerator::Next(URNG& gen) {
+template <typename URNG> uint64_t ZipfianGenerator::Next(URNG& gen) {
   std::uniform_real_distribution<double> uniform(0, 1);
   double u = uniform(gen);
   double uz = u * zeta_n_;
@@ -88,7 +85,6 @@ uint64_t ZipfianGenerator::Next(URNG& gen) {
   }
   return res;
 }
-
 
 }  // namespace base
 

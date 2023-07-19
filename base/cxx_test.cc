@@ -5,8 +5,8 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
-#include "base/string_view_sso.h"
 #include "base/random.h"
+#include "base/string_view_sso.h"
 
 using namespace std;
 
@@ -98,7 +98,8 @@ class Pointer1 {
   string sval_;
 
  public:
-  Pointer1(int i, string s) : ival_(i), sval_(s) {}
+  Pointer1(int i, string s) : ival_(i), sval_(s) {
+  }
 
   class Wrapper {
    public:
@@ -143,7 +144,6 @@ TEST_F(CxxTest, UnderDebugger) {
   table.emplace_back(HasVector{.vals = move(ints)});
   table.emplace_back();  // verified that HasVector was moved without copying the array.
 }
-
 
 #if 0
 TEST_F(CxxTest, StringViewSSO) {

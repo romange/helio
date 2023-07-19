@@ -2,15 +2,16 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 #include "base/histogram.h"
-#include "base/integral_types.h"
-#include "base/logging.h"
 
 #include <gtest/gtest.h>
+
+#include "base/integral_types.h"
+#include "base/logging.h"
 
 namespace base {
 
 class HistogramTest : public testing::Test {
-protected:
+ protected:
   Histogram hist_;
 };
 

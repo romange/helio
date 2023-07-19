@@ -21,7 +21,8 @@ class HttpsClientPool {
  public:
   class HandleGuard {
    public:
-    HandleGuard(HttpsClientPool* pool = nullptr) : pool_(pool) {}
+    HandleGuard(HttpsClientPool* pool = nullptr) : pool_(pool) {
+    }
 
     void operator()(HttpsClient* client);
 
@@ -45,17 +46,27 @@ class HttpsClientPool {
    */
   ClientHandle GetHandle();
 
-  void set_connect_timeout(unsigned msec) { connect_msec_ = msec; }
+  void set_connect_timeout(unsigned msec) {
+    connect_msec_ = msec;
+  }
 
   //! Sets number of retries for https client handles.
-  void set_retry_count(uint32_t cnt) { retry_cnt_ = cnt; }
+  void set_retry_count(uint32_t cnt) {
+    retry_cnt_ = cnt;
+  }
 
-  IoContext& io_context() { return io_cntx_; }
+  IoContext& io_context() {
+    return io_cntx_;
+  }
 
   //! Number of existing handles created by this pool.
-  unsigned handles_count() const { return existing_handles_; }
+  unsigned handles_count() const {
+    return existing_handles_;
+  }
 
-  const std::string domain() const { return domain_; }
+  const std::string domain() const {
+    return domain_;
+  }
 
  private:
   using SslContext = ::boost::asio::ssl::context;
