@@ -6,12 +6,10 @@
 
 #include <absl/container/flat_hash_set.h>
 
-#if defined(__linux__)
-#include <memory_resource>
-#endif
 #include <string_view>
 
 #include "base/RWSpinLock.h"
+#include "base/pmr/memory_resource.h"
 #include "base/type_traits.h"
 #include "util/fibers/proactor_base.h"
 
@@ -230,7 +228,7 @@ class ProactorPool {
 
 #if defined(__linux__)
   // clang on my mac (13.0) does not have monotonic_buffer_resource yet.
-  std::pmr::monotonic_buffer_resource str_arena_;
+  PMR_NS::monotonic_buffer_resource str_arena_;
 #endif
 
   enum State { STOPPED, RUN } state_ = STOPPED;
