@@ -206,14 +206,21 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   DCHECK(engine_);
   DCHECK_GT(len, 0u);
 
-  Engine::Buffer dest{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
+  Engine::Buffer dest;
   size_t send_total = 0;
+
+  if (len == 1) {
+    dest = {reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
+  } else {
+    write_buffer_.Clear();
+    for (size_t i = 0; i < len; i++) {
+      write_buffer_.WriteAndCommit(ptr[i].iov_base, ptr[i].iov_len);
+    }
+    dest = write_buffer_.InputBuffer();
+  }
 
   while (true) {
     DCHECK(!dest.empty());
-
-    size_t send_len = std::min(dest.size(), size_t(INT_MAX));
-
     Engine::OpResult op_result = engine_->Write(dest);
     if (!op_result) {
       return make_unexpected(SSL2Error(op_result.error()));
@@ -229,23 +236,12 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
     if (op_val > 0) {
       send_total += op_val;
 
-      if (size_t(op_val) == send_len) {
-        if (size_t(op_val) < dest.size()) {
-          dest.remove_prefix(op_val);
-        } else {
-          ++ptr;
-          --len;
-          if (len == 0)
-            break;
-          dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
-        }
-        continue;  // We read everything we asked for - lets retry.
+      if (size_t(op_val) == dest.size()) {
+        break;
+      } else {
+        dest.remove_prefix(op_val);
       }
-      break;
     }
-
-    if (send_total)  // if we sent something lets return it before we handle other states.
-      break;
 
     if (op_val == Engine::EOF_STREAM) {
       return make_unexpected(make_error_code(errc::connection_reset));

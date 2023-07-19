@@ -87,11 +87,15 @@ class TlsSocket : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
+  /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
+  /// Read encrypted data from the network socket and feed it into the TLS engine.
   error_code HandleRead();
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
+
+  base::IoBuf write_buffer_;
 
   // Used to signal HandleRead() to cache the first n_bytes
   bool cache_{false};
