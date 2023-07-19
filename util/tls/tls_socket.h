@@ -6,6 +6,8 @@
 
 #include <openssl/ssl.h>
 
+#include <memory>
+
 #include "util/fiber_socket_base.h"
 #include "util/tls/tls_engine.h"
 
@@ -16,9 +18,10 @@ class Engine;
 
 class TlsSocket : public FiberSocketBase {
  public:
-  //! Does not take ownership over next. 'next' must be live as long as we use
-  //! TlsSocket instance.
-  TlsSocket(FiberSocketBase* next = nullptr);
+  TlsSocket(std::unique_ptr<FiberSocketBase> next);
+
+  // Takes ownership of next
+  TlsSocket(FiberSocketBase* next);
 
   ~TlsSocket();
 
@@ -56,12 +59,38 @@ class TlsSocket : public FiberSocketBase {
   Buffer GetCachedBuffer() const;
 
   void PlaceBufferInCache(Buffer buffer, size_t n_bytes);
+  using FiberSocketBase::endpoint_type;
+  endpoint_type LocalEndpoint() const override;
+  endpoint_type RemoteEndpoint() const override;
+
+  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) override;
+
+  uint32_t CancelPoll(uint32_t id) override;
+
+  bool IsUDS() const override;
+  bool IsDirect() const override;
+
+  using FiberSocketBase::native_handle_type;
+  native_handle_type native_handle() const override;
+
+  error_code Create(unsigned short protocol_family = 2) override;
+
+  ABSL_MUST_USE_RESULT error_code Bind(const struct sockaddr* bind_addr,
+                                       unsigned addr_len) override;
+  ABSL_MUST_USE_RESULT error_code Listen(unsigned backlog) override;
+
+  ABSL_MUST_USE_RESULT error_code Listen(uint16_t port, unsigned backlog) override;
+
+  ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
+                                            unsigned backlog) override;
+
+  virtual void SetProactor(ProactorBase* p) override;
 
  private:
   error_code MaybeSendOutput();
   error_code HandleRead();
 
-  FiberSocketBase* next_sock_;
+  std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
 
   // Used to signal HandleRead() to cache the first n_bytes

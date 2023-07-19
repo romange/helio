@@ -180,11 +180,6 @@ class TlsClient : public Client {
    *  @param context a valid SSL context that was created with the function CreateSslContext
    */
   std::error_code Connect(std::string_view host, std::string_view service, SSL_CTX* context);
-
- private:
-  // holds the socket that was generated with the base class, it should live as long as we're
-  // connected.
-  std::unique_ptr<FiberSocketBase> tcp_socket_;
 };
 
 }  // namespace http

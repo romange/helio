@@ -30,13 +30,12 @@ using fibers_ext::Await;
 
 namespace {
 
-auto native_handle(const LinuxSocketBase& sock) {
+auto native_handle(const FiberSocketBase& sock) {
   return sock.native_handle();
 }
 
 auto native_handle(const Connection& conn) {
-  const LinuxSocketBase* ls = static_cast<const LinuxSocketBase*>(conn.socket());
-  return ls->native_handle();
+  return conn.socket()->native_handle();
 }
 
 using ListType =
@@ -114,7 +113,7 @@ void ListenerInterface::RunAcceptLoop() {
       break;
     }
 
-    unique_ptr<LinuxSocketBase> peer{static_cast<LinuxSocketBase*>(res.value())};
+    unique_ptr<FiberSocketBase> peer{res.value()};
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
@@ -222,7 +221,7 @@ error_code ListenerInterface::ConfigureServerSocket(int fd) {
   return ec;
 }
 
-fb2::ProactorBase* ListenerInterface::PickConnectionProactor(LinuxSocketBase* sock) {
+fb2::ProactorBase* ListenerInterface::PickConnectionProactor(FiberSocketBase* sock) {
   return pool_->GetNextProactor();
 }
 

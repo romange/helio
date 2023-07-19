@@ -6,6 +6,8 @@
 
 #include <openssl/err.h>
 
+#include <algorithm>
+
 #include "base/logging.h"
 #include "util/tls/tls_engine.h"
 
@@ -56,8 +58,11 @@ inline error_code SSL2Error(unsigned long err) {
 
 }  // namespace
 
-TlsSocket::TlsSocket(FiberSocketBase* next)
-    : FiberSocketBase(next ? next->proactor() : nullptr), next_sock_(next) {
+TlsSocket::TlsSocket(std::unique_ptr<FiberSocketBase> next)
+    : FiberSocketBase(next ? next->proactor() : nullptr), next_sock_(std::move(next)) {
+}
+
+TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSocketBase>(next)) {
 }
 
 TlsSocket::~TlsSocket() {
@@ -70,8 +75,7 @@ void TlsSocket::InitSSL(SSL_CTX* context) {
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
-
-  return error_code{};
+  return next_sock_->Shutdown(how);
 }
 
 auto TlsSocket::Accept() -> AcceptResult {
@@ -106,20 +110,19 @@ auto TlsSocket::Accept() -> AcceptResult {
   return nullptr;
 }
 
-auto TlsSocket::Connect(const endpoint_type&) -> error_code {
+auto TlsSocket::Connect(const endpoint_type& endpoint) -> error_code {
   DCHECK(engine_);
   auto io_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
-  if (io_result.has_value()) {
-    return std::error_code{};
-  } else {
+  if (!io_result.has_value()) {
     return std::error_code(io_result.error(), std::system_category());
   }
 
-  return error_code{};
+  return next_sock_->Connect(endpoint);
 }
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
+  next_sock_->Close();
 
   return error_code{};
 }
@@ -312,6 +315,59 @@ TlsSocket::Buffer TlsSocket::GetCachedBuffer() const {
 void TlsSocket::PlaceBufferInCache(Buffer buffer, size_t n_bytes) {
   cached_bytes_ = buffer;
   n_bytes_ = n_bytes;
+}
+
+TlsSocket::endpoint_type TlsSocket::LocalEndpoint() const {
+  return next_sock_->LocalEndpoint();
+}
+
+TlsSocket::endpoint_type TlsSocket::RemoteEndpoint() const {
+  return next_sock_->RemoteEndpoint();
+}
+
+uint32_t TlsSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
+  return next_sock_->PollEvent(event_mask, cb);
+}
+
+uint32_t TlsSocket::CancelPoll(uint32_t id) {
+  return next_sock_->CancelPoll(id);
+}
+
+bool TlsSocket::IsUDS() const {
+  return next_sock_->IsUDS();
+}
+
+TlsSocket::native_handle_type TlsSocket::native_handle() const {
+  return next_sock_->native_handle();
+}
+
+bool TlsSocket::IsDirect() const {
+  return next_sock_->IsDirect();
+}
+
+error_code TlsSocket::Create(unsigned short protocol_family) {
+  return next_sock_->Create(protocol_family);
+}
+
+error_code TlsSocket::Bind(const struct sockaddr* bind_addr, unsigned addr_len) {
+  return next_sock_->Bind(bind_addr, addr_len);
+}
+
+error_code TlsSocket::Listen(unsigned backlog) {
+  return next_sock_->Listen(backlog);
+}
+
+error_code TlsSocket::Listen(uint16_t port, unsigned backlog) {
+  return next_sock_->Listen(port, backlog);
+}
+
+error_code TlsSocket::ListenUDS(const char* path, mode_t permissions, unsigned backlog) {
+  return next_sock_->ListenUDS(path, permissions, backlog);
+}
+
+void TlsSocket::SetProactor(ProactorBase* p) {
+  next_sock_->SetProactor(p);
+  FiberSocketBase::SetProactor(p);
 }
 
 }  // namespace tls

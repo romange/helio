@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <vector>
+#include <memory>
 
 #include "util/connection.h"
 #include "util/fibers/synchronization.h"
