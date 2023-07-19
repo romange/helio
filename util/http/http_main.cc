@@ -37,10 +37,10 @@ metrics::CounterFamily http_req("http_requests_total", "Number of served http re
 
 class MyListener : public HttpListener<> {
  public:
-  ProactorBase* PickConnectionProactor(LinuxSocketBase* sock);
+  ProactorBase* PickConnectionProactor(FiberSocketBase* sock);
 };
 
-ProactorBase* MyListener::PickConnectionProactor(LinuxSocketBase* sock) {
+ProactorBase* MyListener::PickConnectionProactor(FiberSocketBase* sock) {
   int fd = sock->native_handle();
 
   int cpu;

@@ -7,15 +7,16 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory_resource>
 #include <vector>
+
+#include "memory_resource.h"
 
 namespace base {
 
 // Used to allocate small blobs with size upto 4GB.
 class PmrArena {
  public:
-  PmrArena(std::pmr::memory_resource* mr = std::pmr::get_default_resource());
+  PmrArena(PMR_NS::memory_resource* mr = PMR_NS::get_default_resource());
   ~PmrArena();
 
   // Return a pointer to a newly allocated memory block of "bytes" bytes.
@@ -37,7 +38,7 @@ class PmrArena {
   char* AllocateFallback(size_t bytes);
   char* AllocateNewBlock(uint32_t block_bytes);
 
-  std::pmr::memory_resource* mr_;
+  PMR_NS::memory_resource* mr_;
 
   // Allocation state
   char* alloc_ptr_ = nullptr;
@@ -54,7 +55,7 @@ class PmrArena {
   static_assert(sizeof(Block) == 12);
 
   // Array of the allocated memory blocks
-  std::pmr::vector<Block> blocks_;
+  PMR_NS::vector<Block> blocks_;
 
   // No copying allowed
   PmrArena(const PmrArena&) = delete;

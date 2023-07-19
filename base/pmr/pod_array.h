@@ -5,22 +5,15 @@
 //
 #pragma once
 
+#include <absl/base/macros.h>
+#include <absl/numeric/bits.h>
 #include <string.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <memory>
 
-#if defined(__clang__) && defined(__APPLE__)
-#include <experimental/memory_resource>
-#define PMR_NS std::experimental::pmr
-#else
-#include <memory_resource>
-#define PMR_NS std::pmr
-#endif
-
-#include <absl/base/macros.h>
-#include <absl/numeric/bits.h>
+#include "base/pmr/memory_resource.h"
 
 namespace base {
 
@@ -388,5 +381,3 @@ void swap(PODArray<T, pad_right_>& lhs, PODArray<T, pad_right_>& rhs) {
 }
 
 }  // namespace base
-
-#undef PMR_NS
