@@ -203,18 +203,45 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
-  DCHECK(engine_);
-  DCHECK_GT(len, 0u);
+  // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
+  // IP - max 24 bytes. TCP - max 60 bytes. TLS - max 21 bytes.
+  constexpr size_t kBufferSize = 1392;
+  io::Result<size_t> ec;
+  size_t total_sent = 0;
 
-  Engine::Buffer dest{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
+  while (len) {
+    if (ptr->iov_len > kBufferSize || len == 1) {
+      ec = SendBuffer(Engine::Buffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len});
+      ptr++;
+      len--;
+    } else {
+      alignas(64) uint8_t scratch[kBufferSize];
+      size_t buffered_size = 0;
+      while (len && (buffered_size + ptr->iov_len) <= kBufferSize) {
+        std::memcpy(scratch + buffered_size, ptr->iov_base, ptr->iov_len);
+        buffered_size += ptr->iov_len;
+        ptr++;
+        len--;
+      }
+      ec = SendBuffer({scratch, buffered_size});
+    }
+    if (!ec.has_value()) {
+      return ec;
+    } else {
+      total_sent += ec.value();
+    }
+  }
+  return total_sent;
+}
+
+io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
+  DCHECK(engine_);
+  DCHECK_GT(buf.size(), 0u);
+
   size_t send_total = 0;
 
   while (true) {
-    DCHECK(!dest.empty());
-
-    size_t send_len = std::min(dest.size(), size_t(INT_MAX));
-
-    Engine::OpResult op_result = engine_->Write(dest);
+    Engine::OpResult op_result = engine_->Write(buf);
     if (!op_result) {
       return make_unexpected(SSL2Error(op_result.error()));
     }
@@ -229,23 +256,12 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
     if (op_val > 0) {
       send_total += op_val;
 
-      if (size_t(op_val) == send_len) {
-        if (size_t(op_val) < dest.size()) {
-          dest.remove_prefix(op_val);
-        } else {
-          ++ptr;
-          --len;
-          if (len == 0)
-            break;
-          dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
-        }
-        continue;  // We read everything we asked for - lets retry.
+      if (size_t(op_val) == buf.size()) {
+        break;
+      } else {
+        buf.remove_prefix(op_val);
       }
-      break;
     }
-
-    if (send_total)  // if we sent something lets return it before we handle other states.
-      break;
 
     if (op_val == Engine::EOF_STREAM) {
       return make_unexpected(make_error_code(errc::connection_reset));
