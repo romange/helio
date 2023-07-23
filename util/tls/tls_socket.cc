@@ -203,25 +203,44 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
-  DCHECK(engine_);
-  DCHECK_GT(len, 0u);
+  // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 64.
+  constexpr size_t kBufferSize = 1408;
+  io::Result<size_t> ec;
+  size_t total_sent = 0;
 
-  Engine::Buffer dest;
+  while (len) {
+    if (ptr->iov_len > kBufferSize || len == 1) {
+      ec = SendBuffer(Engine::Buffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len});
+      ptr++;
+      len--;
+    } else {
+      alignas(64) uint8_t scratch[kBufferSize];
+      size_t buffered_size = 0;
+      while (len && (buffered_size + ptr->iov_len) <= kBufferSize) {
+        std::memcpy(scratch + buffered_size, ptr->iov_base, ptr->iov_len);
+        buffered_size += ptr->iov_len;
+        ptr++;
+        len--;
+      }
+      ec = SendBuffer({scratch, buffered_size});
+    }
+    if (!ec.has_value()) {
+      return ec;
+    } else {
+      total_sent += ec.value();
+    }
+  }
+  return total_sent;
+}
+
+io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
+  DCHECK(engine_);
+  DCHECK_GT(buf.size(), 0u);
+
   size_t send_total = 0;
 
-  if (len == 1) {
-    dest = {reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
-  } else {
-    write_buffer_.Clear();
-    for (size_t i = 0; i < len; i++) {
-      write_buffer_.WriteAndCommit(ptr[i].iov_base, ptr[i].iov_len);
-    }
-    dest = write_buffer_.InputBuffer();
-  }
-
   while (true) {
-    DCHECK(!dest.empty());
-    Engine::OpResult op_result = engine_->Write(dest);
+    Engine::OpResult op_result = engine_->Write(buf);
     if (!op_result) {
       return make_unexpected(SSL2Error(op_result.error()));
     }
@@ -236,10 +255,10 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
     if (op_val > 0) {
       send_total += op_val;
 
-      if (size_t(op_val) == dest.size()) {
+      if (size_t(op_val) == buf.size()) {
         break;
       } else {
-        dest.remove_prefix(op_val);
+        buf.remove_prefix(op_val);
       }
     }
 
