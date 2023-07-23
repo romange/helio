@@ -203,8 +203,9 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
-  // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 64.
-  constexpr size_t kBufferSize = 1408;
+  // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
+  // IP - max 24 bytes. TCP - max 60 bytes. TLS - max 21 bytes.
+  constexpr size_t kBufferSize = 1392;
   io::Result<size_t> ec;
   size_t total_sent = 0;
 
