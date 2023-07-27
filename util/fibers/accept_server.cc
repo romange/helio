@@ -41,9 +41,12 @@ void AcceptServer::Run() {
 
     for (auto& lw : list_interface_) {
       ProactorBase* proactor = lw->socket()->proactor();
-      proactor->Dispatch([li = lw.get(), this] {
+
+      // We must capture ref_bc_ by value because once it is decremented AcceptServer
+      // instance can be destroyed before Dec returnes.
+      proactor->Dispatch([li = lw.get(), bc = ref_bc_] () mutable {
         li->RunAcceptLoop();
-        ref_bc_.Dec();
+        bc.Dec();
       });
     }
   }
@@ -83,6 +86,7 @@ unsigned short AcceptServer::AddListener(unsigned short port, ListenerInterface*
 error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
                                      ListenerInterface* listener) {
   CHECK(listener && !listener->socket());
+  CHECK(!was_run_);
 
   char str_port[16];
   struct addrinfo hints, *servinfo;
@@ -152,6 +156,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
 error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
                                         ListenerInterface* listener) {
   CHECK(listener && !listener->socket());
+  CHECK(!was_run_);
 
   ProactorBase* next = pool_->GetNextProactor();
   unique_ptr<FiberSocketBase> fs{next->CreateSocket()};

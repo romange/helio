@@ -198,6 +198,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
 
   // Our connection could migrate, hence we should find it again
   OnConnectionClose(conn);
+  LOG_IF(ERROR, conn->socket()->Close());
 
   clist = conn_list.find(this)->second;
   clist->Unlink(conn);

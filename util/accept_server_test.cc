@@ -61,6 +61,7 @@ class AcceptServerTest : public testing::Test {
   void SetUp() override;
 
   void TearDown() override {
+    client_sock_->Close();
     as_->Stop(true);
     pp_->Stop();
   }
@@ -109,7 +110,8 @@ void RunClient(FiberSocketBase* fs) {
   req.body().assign("foo");
   req.prepare_payload();
   h2::write(asa, req);
-
+  uint8_t buf[128];
+  fs->Read(io::MutableBytes(buf));
   LOG(INFO) << ": echo-client stopped";
 }
 
@@ -122,10 +124,13 @@ TEST_F(AcceptServerTest, Break) {
 }
 
 TEST_F(AcceptServerTest, UDS) {
+  AcceptServer as{pp_.get(), false};
   const char kSockPath[] = "/tmp/uds.sock";
   unlink(kSockPath);
-  auto ec = as_->AddUDSListener(kSockPath, 0700, new TestListener);
+  auto ec = as.AddUDSListener(kSockPath, 0700, new TestListener);
   ASSERT_FALSE(ec) << ec;
+  as.Run();
+  as.Stop(true);
 }
 
 }  // namespace util
