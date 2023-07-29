@@ -82,8 +82,8 @@ error_code LinuxSocketBase::Create(unsigned short pfamily) {
     return ec;
 
 #ifndef __linux__
-  int prev = fcntl(fd, F_GETFL, 0);
-  CHECK_EQ(0, fcntl(fd, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK));
+  SetNonBlocking(fd);
+  SetCloexec(fd);
 #endif
   fd_ = fd << kFdShift;
   if (pfamily == AF_UNIX) {
@@ -220,6 +220,16 @@ auto LinuxSocketBase::RemoteEndpoint() const -> endpoint_type {
     endpoint.resize(addr_len);
 
   return endpoint;
+}
+
+void SetNonBlocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  CHECK_EQ(0, fcntl(fd, F_SETFL, flags | O_NONBLOCK));
+}
+
+void SetCloexec(int fd) {
+  int flags = fcntl(fd, F_GETFD, 0);
+  CHECK_EQ(0, fcntl(fd, F_SETFD, flags | FD_CLOEXEC));
 }
 
 }  // namespace util
