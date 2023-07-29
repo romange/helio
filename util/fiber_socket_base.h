@@ -196,6 +196,10 @@ class LinuxSocketBase : public FiberSocketBase {
   int32_t fd_;
 };
 
+void SetNonBlocking(int fd);
+
+void SetCloexec(int fd);
+
 #if 0
 class SocketSource : public io::Source {
  public:

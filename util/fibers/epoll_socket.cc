@@ -73,8 +73,8 @@ int AcceptSock(int fd) {
   socklen_t addr_len = sizeof(client_addr);
   int res = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
   if (res >= 0) {
-    int prev = fcntl(res, F_GETFL, 0);
-    fcntl(res, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK);
+    SetNonBlocking(fd);
+    SetCloexec(fd);
   }
 
   return res;
@@ -83,8 +83,8 @@ int AcceptSock(int fd) {
 int CreateSockFd() {
   int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd >= 0) {
-    int prev = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, prev | FD_CLOEXEC | O_NONBLOCK);
+    SetNonBlocking(fd);
+    SetCloexec(fd);
   }
   return fd;
 }
