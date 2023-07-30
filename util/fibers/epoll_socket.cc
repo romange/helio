@@ -163,6 +163,7 @@ auto EpollSocket::Accept() -> AcceptResult {
 
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
+      read_context_ = nullptr;
       return MakeUnexpected(errc::connection_aborted);
     }
 
@@ -378,6 +379,19 @@ io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {
   vec[0].iov_base = mb.data();
   vec[0].iov_len = mb.size();
   return RecvMsg(msg, flags);
+}
+
+auto EpollSocket::Shutdown(int how) -> error_code {
+  auto ec = LinuxSocketBase::Shutdown(how);
+
+#ifdef __APPLE__
+  // Since kqueue won't notify listen sockets when shutdown, explicitly wake
+  // up any read contexts. Note this will do nothing if there is no
+  // read_context_ so its safe to call multiple times.
+  Wakey(EpollProactor::EPOLL_IN, 0, nullptr);
+#endif
+
+  return ec;
 }
 
 uint32_t EpollSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
