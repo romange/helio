@@ -70,6 +70,11 @@ class ListenerInterface {
     return sock_.get();
   }
 
+  // Set the max clients value. Returns true if successful. Can fail if process limits
+  // are too low and cannot be changed.
+  bool SetMaxClients(uint32_t max_clients);
+  uint32_t GetMaxClients() const;
+
  protected:
   ProactorPool* pool() {
     return pool_;
@@ -81,6 +86,13 @@ class ListenerInterface {
   virtual void OnConnectionClose(Connection* conn) {
   }
 
+  // Called when a connection is rejected because max connections number was reached.
+  // Override to send a different error message.
+  virtual void OnMaxConnectionsReached(FiberSocketBase* sock) {
+    const char* errmsg = "error: max connections reached";
+    sock->Write(io::Bytes(reinterpret_cast<const uint8_t*>(errmsg), strlen(errmsg) + 1));
+  };
+
  private:
   void RunAcceptLoop();
 
@@ -91,6 +103,11 @@ class ListenerInterface {
   static thread_local std::unordered_map<ListenerInterface*, TLConnList*> conn_list;
 
   std::unique_ptr<FiberSocketBase> sock_;
+  // Number of max connections. Unlimited by default.
+  uint32_t max_clients_{UINT32_MAX};
+  // Number of current open connections. Incremented in RunAcceptLoop, decremented at the end of
+  // RunSingleConnection.
+  std::atomic_uint32_t open_connections_{0};
 
   ProactorPool* pool_ = nullptr;
   friend class AcceptServer;

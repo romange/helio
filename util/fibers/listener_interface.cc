@@ -5,6 +5,7 @@
 #include "util/listener_interface.h"
 
 #include <signal.h>
+#include <sys/resource.h>
 
 // #include <boost/fiber/operations.hpp>
 
@@ -117,6 +118,14 @@ void ListenerInterface::RunAcceptLoop() {
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
+    if (open_connections_ >= max_clients_) {
+      peer->SetProactor(sock_->proactor());
+      OnMaxConnectionsReached(peer.get());
+      (void)peer->Close();
+      continue;
+    }
+    open_connections_.fetch_add(1, std::memory_order_relaxed);
+
     // Most probably next is in another thread.
     fb2::ProactorBase* next = PickConnectionProactor(peer.get());
 
@@ -204,6 +213,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   clist->Unlink(conn);
 
   guard.reset();
+  open_connections_.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void ListenerInterface::RegisterPool(ProactorPool* pool) {
@@ -261,6 +271,34 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   clist2->Link(conn);
   conn->OnPostMigrateThread();
+}
+
+bool ListenerInterface::SetMaxClients(uint32_t max_clients) {
+  // We usually have 2 open files per proactor and ~10 more open files
+  // for the rest. Assuming a usual thread count (<40) this value is large enough.
+  const uint32_t kResidualOpenFiles = 128;
+  max_clients_ = max_clients;
+
+  struct rlimit lim;
+  if (getrlimit(RLIMIT_NOFILE, &lim)) {
+    LOG(ERROR) << "Error in getrlimit: " << strerror(errno);
+    return false;
+  }
+
+  if (lim.rlim_cur < max_clients + kResidualOpenFiles) {
+    lim.rlim_cur = max_clients + kResidualOpenFiles;
+    if (setrlimit(RLIMIT_NOFILE, &lim)) {
+      LOG(WARNING) << "Couldn't increase the open files limit to " << lim.rlim_cur
+                   << ". setrlimit: " << strerror(errno);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+uint32_t ListenerInterface::GetMaxClients() const {
+  return max_clients_;
 }
 
 void Connection::Shutdown() {

@@ -171,7 +171,7 @@ ProactorBase* ProactorPool::GetNextProactor() {
 
   ProactorBase* proactor = at(index++);
 
-  // Not-perfect round-robind since this function is non-transactional but it "works".
+  // Not-perfect round-robin since this function is non-transactional but it "works".
   if (index >= pool_size_)
     index = 0;
 
