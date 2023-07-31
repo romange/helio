@@ -49,10 +49,16 @@ void TestConnection::HandleRequests() {
   VLOG(1) << "TestConnection exit";
 }
 
+const char* kMaxConnectionsError = "max connections received";
+
 class TestListener : public ListenerInterface {
  public:
   virtual Connection* NewConnection(ProactorBase* context) final {
     return new TestConnection;
+  }
+
+  virtual void OnMaxConnectionsReached(FiberSocketBase* sock) override {
+    sock->Write(io::Buffer(kMaxConnectionsError));
   }
 };
 
@@ -141,9 +147,9 @@ TEST_F(AcceptServerTest, ConnectionsLimit) {
     CHECK(!ec) << ec;
 
     // Check that we get the error message from the server.
-    uint8_t buf[200];
+    uint8_t buf[200] = {0};
     second_client->Recv({buf, 200});
-    ASSERT_FALSE(strcmp(reinterpret_cast<const char*>(buf), "error: max connections reached"));
+    EXPECT_FALSE(strcmp(reinterpret_cast<const char*>(buf), kMaxConnectionsError)) << buf;
 
     // The server should close the socket on its side after sending the error message,
     // but it's not trivial to test for this. What we do is to perform two dummy writes
@@ -152,7 +158,7 @@ TEST_F(AcceptServerTest, ConnectionsLimit) {
     second_client->Write(io::Buffer("test"));
     second_client->Write(io::Buffer("test"));
     ThisFiber::SleepFor(2ms);
-    ASSERT_TRUE(second_client->Write(io::Buffer("test")));
+    EXPECT_TRUE(second_client->Write(io::Buffer("test")));
 
     second_client->Close();
   });

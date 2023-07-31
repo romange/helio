@@ -87,11 +87,9 @@ class ListenerInterface {
   }
 
   // Called when a connection is rejected because max connections number was reached.
-  // Override to send a different error message.
+  // Override to send an error message to the socket.
   virtual void OnMaxConnectionsReached(FiberSocketBase* sock) {
-    const char* errmsg = "error: max connections reached";
-    sock->Write(io::Bytes(reinterpret_cast<const uint8_t*>(errmsg), strlen(errmsg) + 1));
-  };
+  }
 
  private:
   void RunAcceptLoop();

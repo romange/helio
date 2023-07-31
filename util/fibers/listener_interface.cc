@@ -118,13 +118,14 @@ void ListenerInterface::RunAcceptLoop() {
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
-    if (open_connections_ >= max_clients_) {
+    uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_relaxed);
+    if (prev_connections >= max_clients_) {
       peer->SetProactor(sock_->proactor());
       OnMaxConnectionsReached(peer.get());
       (void)peer->Close();
+      open_connections_.fetch_sub(1, std::memory_order_relaxed);
       continue;
     }
-    open_connections_.fetch_add(1, std::memory_order_relaxed);
 
     // Most probably next is in another thread.
     fb2::ProactorBase* next = PickConnectionProactor(peer.get());
