@@ -51,6 +51,8 @@ UringSocket::~UringSocket() {
 auto UringSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
+    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+
     DVSOCK(1) << "Closing socket";
 
     int fd = native_handle();
