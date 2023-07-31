@@ -61,7 +61,7 @@ class AcceptServerTest : public testing::Test {
   void SetUp() override;
 
   void TearDown() override {
-    client_sock_->Close();
+    client_sock_->proactor()->Await([&] { client_sock_->Close(); });
     as_->Stop(true);
     pp_->Stop();
   }
