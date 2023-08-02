@@ -32,6 +32,8 @@ class EpollSocket : public LinuxSocketBase {
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
   Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
+  error_code Shutdown(int how) override;
+
   //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
   //! When and an event occurs, the cb will be called with the mask of actual events
   //! that trigerred it.
