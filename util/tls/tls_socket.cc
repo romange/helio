@@ -117,6 +117,11 @@ auto TlsSocket::Connect(const endpoint_type& endpoint) -> error_code {
     return std::error_code(io_result.error(), std::system_category());
   }
 
+  // If the socket is already open, we should not call connect on it
+  if (IsOpen()) {
+    return {};
+  }
+
   return next_sock_->Connect(endpoint);
 }
 
