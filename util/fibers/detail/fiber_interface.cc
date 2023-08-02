@@ -90,8 +90,15 @@ TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
 
 TL_FiberInitializer::~TL_FiberInitializer() {
   FiberInterface* main_cntx = sched->main_context();
-  delete sched;
-  delete main_cntx;
+
+  // If main_cntx != active it means we are exiting via unexpected route (exit, abort, etc).
+  // Do not bother with orderly clean-up of the fibers since they can just block on events
+  // that will never happen.
+  if (main_cntx == active) {
+    delete sched;
+    delete main_cntx;
+  }
+
   unique_lock lk(g_scheduler_lock);
   TL_FiberInitializer** p = &g_fiber_thread_list;
   while (*p != this) {

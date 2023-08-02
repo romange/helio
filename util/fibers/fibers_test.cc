@@ -385,6 +385,17 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
+TEST_F(FiberTest, CleanExit) {
+  ASSERT_EXIT(
+      {
+        thread th([] {
+          Fiber([] { exit(42); }).Join();
+        });
+        th.join();
+      },
+      ::testing::ExitedWithCode(42), "");
+}
+
 // EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
 #if 0
 TEST_F(FiberTest, AtomicGuard) {
