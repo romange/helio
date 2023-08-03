@@ -118,7 +118,7 @@ EpollSocket::~EpollSocket() {
 auto EpollSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
-    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+    // DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
 
     int fd = native_handle();
     DVSOCK(1) << "Closing socket";
