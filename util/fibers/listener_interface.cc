@@ -274,28 +274,27 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   conn->OnPostMigrateThread();
 }
 
-bool ListenerInterface::SetMaxClients(uint32_t max_clients) {
-  // We usually have 2 open files per proactor and ~10 more open files
-  // for the rest. Assuming a usual thread count (<40) this value is large enough.
-  const uint32_t kResidualOpenFiles = 128;
+void ListenerInterface::SetMaxClients(uint32_t max_clients) {
   max_clients_ = max_clients;
 
+  // We usually have 2 open files per proactor and ~10 more open files
+  // for the rest. Taking 32 as a reasonable maximum bound.
+  const uint32_t kResidualOpenFiles = 32;
+  uint32_t wanted_limit = 2 * pool_->size() + max_clients + kResidualOpenFiles;
+
   struct rlimit lim;
-  if (getrlimit(RLIMIT_NOFILE, &lim)) {
+  if (getrlimit(RLIMIT_NOFILE, &lim) == -1) {
     LOG(ERROR) << "Error in getrlimit: " << strerror(errno);
-    return false;
+    return;
   }
 
-  if (lim.rlim_cur < max_clients + kResidualOpenFiles) {
-    lim.rlim_cur = max_clients + kResidualOpenFiles;
-    if (setrlimit(RLIMIT_NOFILE, &lim)) {
+  if (lim.rlim_cur < wanted_limit) {
+    lim.rlim_cur = wanted_limit;
+    if (setrlimit(RLIMIT_NOFILE, &lim) == -1) {
       LOG(WARNING) << "Couldn't increase the open files limit to " << lim.rlim_cur
                    << ". setrlimit: " << strerror(errno);
-      return false;
     }
   }
-
-  return true;
 }
 
 uint32_t ListenerInterface::GetMaxClients() const {

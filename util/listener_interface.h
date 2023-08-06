@@ -70,9 +70,9 @@ class ListenerInterface {
     return sock_.get();
   }
 
-  // Set the max clients value. Returns true if successful. Can fail if process limits
-  // are too low and cannot be changed.
-  bool SetMaxClients(uint32_t max_clients);
+  // Set the max clients value. Attempts to increase the rlimit for max open connections
+  // if it is too low.
+  void SetMaxClients(uint32_t max_clients);
   uint32_t GetMaxClients() const;
 
  protected:
