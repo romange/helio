@@ -278,9 +278,9 @@ void ListenerInterface::SetMaxClients(uint32_t max_clients) {
   max_clients_ = max_clients;
 
   // We usually have 2 open files per proactor and ~10 more open files
-  // for the rest. Taking 32 as a reasonable maximum bound.
-  const uint32_t kResidualOpenFiles = 32;
-  uint32_t wanted_limit = 2 * pool_->size() + max_clients + kResidualOpenFiles;
+  // for the rest. Taking 150 as a reasonable upper bound.
+  const uint32_t kResidualOpenFiles = 150;
+  uint32_t wanted_limit = max_clients + kResidualOpenFiles;
 
   struct rlimit lim;
   if (getrlimit(RLIMIT_NOFILE, &lim) == -1) {
