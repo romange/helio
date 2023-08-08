@@ -118,12 +118,12 @@ void ListenerInterface::RunAcceptLoop() {
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
-    uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_relaxed);
+    uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_acquire);
     if (prev_connections >= max_clients_) {
       peer->SetProactor(sock_->proactor());
       OnMaxConnectionsReached(peer.get());
       (void)peer->Close();
-      open_connections_.fetch_sub(1, std::memory_order_relaxed);
+      open_connections_.fetch_sub(1, std::memory_order_release);
       continue;
     }
 
@@ -214,7 +214,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   clist->Unlink(conn);
 
   guard.reset();
-  open_connections_.fetch_sub(1, std::memory_order_relaxed);
+  open_connections_.fetch_sub(1, std::memory_order_release);
 }
 
 void ListenerInterface::RegisterPool(ProactorPool* pool) {
