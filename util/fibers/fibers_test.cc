@@ -388,9 +388,7 @@ TEST_F(FiberTest, Notify) {
 TEST_F(FiberTest, CleanExit) {
   ASSERT_EXIT(
       {
-        thread th([] {
-          Fiber([] { exit(42); }).Join();
-        });
+        thread th([] { Fiber([] { exit(42); }).Join(); });
         th.join();
       },
       ::testing::ExitedWithCode(42), "");
@@ -614,6 +612,76 @@ TEST_P(ProactorTest, Mutex) {
 
   for (auto& th : ths)
     th.reset();
+}
+
+TEST_P(ProactorTest, DragonflyBug1591) {
+  unique_ptr<ProactorThread> ths[kNumThreads];
+  Fiber fbs[kNumThreads];
+
+  auto sock = std::unique_ptr<FiberSocketBase>(proactor()->CreateSocket());
+  auto sock2 = std::unique_ptr<FiberSocketBase>(proactor()->CreateSocket());
+
+  int next_step = 0;
+  auto start_step = [&next_step](int step) {
+    while (next_step < step) {
+      ThisFiber::Yield();
+    }
+    LOG(WARNING) << "step " << step;
+  };
+  auto end_step = [&next_step]() { next_step++; };
+
+  Mutex m1, m2;
+  auto fb_server = proactor()->LaunchFiber("server", [&] {
+    start_step(0);
+    auto ec = sock->Listen(0, /*backlog=*/10);
+    ASSERT_FALSE(ec) << ec.message();
+    end_step();
+
+    start_step(2);
+    auto a_res = sock->Accept();
+    a_res.value()->SetProactor(proactor());
+    ASSERT_TRUE(a_res.has_value()) << a_res.error().message();
+    m1.lock();
+    end_step();
+
+    start_step(4);
+    for (size_t i = 0; i < 100; i++) {
+      ec = a_res.value()->Write(io::Buffer("TRIGGERS A READ IN THE OTHER SOCKET"sv));
+      ThisFiber::SleepFor(1ms);
+    }
+
+    a_res.value()->Close();
+    sock->Close();
+
+    m1.unlock();
+    end_step();
+  });
+
+  auto fb_client = proactor()->LaunchFiber("client", [&] {
+    start_step(1);
+    auto localhost = boost::asio::ip::make_address("127.0.0.1");
+    auto ep = FiberSocketBase::endpoint_type{localhost, sock->LocalEndpoint().port()};
+    auto ec = sock2->Connect(ep);
+    end_step();
+
+    start_step(3);
+    ASSERT_FALSE(ec) << ec.message();
+    uint8_t buf[128];
+    // This triggers the dangling read_context_ bug on timeout.
+    sock2->set_timeout(1);
+    auto res = sock2->Recv(buf);
+    ASSERT_FALSE(res.has_value()) << "Receive should fail on timeout";
+    end_step();
+
+    // Now try to acquire the lock. Since it was acquired by the other fiber in step #2,
+    // this will stall. Make sure that we don't get spurios wakeups because of the socket.
+    m1.lock();
+    m1.unlock();
+    sock2->Close();
+  });
+
+  fb_client.Join();
+  fb_server.Join();
 }
 
 }  // namespace fb2

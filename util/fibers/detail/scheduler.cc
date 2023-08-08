@@ -500,6 +500,8 @@ ctx::fiber_context Scheduler::Preempt() {
 
 void Scheduler::AddReady(FiberInterface* fibi) {
   DCHECK(!fibi->list_hook.is_linked());
+  DVLOG(1) << "Adding " << fibi->name() << " to ready_queue_";
+
   ready_queue_.push_back(*fibi);
 
   // Case of notifications coming to a sleeping fiber.
