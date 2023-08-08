@@ -218,6 +218,7 @@ void FiberInterface::Join() {
 }
 
 void FiberInterface::ActivateOther(FiberInterface* other) {
+  DVLOG(1) << "Activating " << other->name() << " from " << this->name();
   DCHECK(other->scheduler_);
 
   // Check first if we the fiber belongs to the active thread.
@@ -232,6 +233,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 }
 
 void FiberInterface::WakeOther(uint32_t epoch, FiberInterface* other) {
+  DVLOG(1) << "Waking " << other->name() << " from " << this->name();
   DCHECK(other->scheduler_);
 
   uint32_t next = epoch + 1;

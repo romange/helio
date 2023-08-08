@@ -6,6 +6,8 @@
 
 #include <netinet/in.h>
 
+#include "absl/cleanup/cleanup.h"
+
 #ifdef __linux__
 #include <sys/epoll.h>
 #else
@@ -159,11 +161,11 @@ auto EpollSocket::Accept() -> AcceptResult {
   CHECK(read_context_ == NULL);
 
   read_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
   DVSOCK(2) << "Accepting from " << read_context_->name();
 
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
-      read_context_ = nullptr;
       return MakeUnexpected(errc::connection_aborted);
     }
 
@@ -171,7 +173,6 @@ auto EpollSocket::Accept() -> AcceptResult {
     if (res >= 0) {
       EpollSocket* fs = new EpollSocket;
       fs->fd_ = res << kFdShift;  // we keep some flags in the first 3 bits of fd_.
-      read_context_ = nullptr;
       return fs;
     }
 
@@ -184,7 +185,6 @@ auto EpollSocket::Accept() -> AcceptResult {
 
     read_context_->Suspend();
   }
-  read_context_ = nullptr;
   return nonstd::make_unexpected(ec);
 }
 
@@ -205,6 +205,7 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
   OnSetProactor();
 
   write_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { write_context_ = nullptr; };
 
   // RegisterEvents(GetProactor()->ev_loop_fd(), fd, arm_index_ + 1024);
 
@@ -226,7 +227,6 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
     }
   }
 
-  write_context_ = nullptr;
 #ifndef __linux__
   if (!ec) {
     // On BSD we need to check for errors after connect. They come asynchronously, hence we
@@ -266,6 +266,7 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   ssize_t res;
   int fd = native_handle();
   write_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { write_context_ = nullptr; };
 
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
@@ -275,7 +276,6 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
     res = sendmsg(fd, &msg, MSG_NOSIGNAL);
     if (res >= 0) {
-      write_context_ = nullptr;
       return res;
     }
 
@@ -288,8 +288,6 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     DVLOG(1) << "Suspending " << fd << "/" << write_context_->name();
     write_context_->Suspend();
   }
-
-  write_context_ = nullptr;
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
@@ -321,6 +319,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 
   int fd = native_handle();
   read_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
 
   ssize_t res;
   error_code ec;
@@ -332,7 +331,6 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 
     res = recvmsg(fd, const_cast<msghdr*>(&msg), flags);
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
-      read_context_ = nullptr;
       return res;
     }
 
@@ -344,8 +342,6 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
       return nonstd::make_unexpected(std::move(ec));
     }
   }
-
-  read_context_ = nullptr;
 
   // Error handling - finale part.
   if (res == -1) {
@@ -444,7 +440,7 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
     // It could be that we scheduled current_context_ already, but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (read_context_ && !read_context_->list_hook.is_linked()) {
-      DVSOCK(2) << "Wakey: Schedule read ";
+      DVSOCK(2) << "Wakey: Schedule read in " << read_context_->name();
       detail::FiberActive()->ActivateOther(read_context_);
     }
   }
@@ -455,7 +451,7 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
     // It could be that we scheduled current_context_ already but has not switched to it yet.
     // Meanwhile a new event has arrived that triggered this callback again.
     if (write_context_ && !write_context_->list_hook.is_linked()) {
-      DVSOCK(2) << "Wakey: Schedule write ";
+      DVSOCK(2) << "Wakey: Schedule write in " << write_context_->name();
       detail::FiberActive()->ActivateOther(write_context_);
     }
   }
