@@ -615,9 +615,6 @@ TEST_P(ProactorTest, Mutex) {
 }
 
 TEST_P(ProactorTest, DragonflyBug1591) {
-  unique_ptr<ProactorThread> ths[kNumThreads];
-  Fiber fbs[kNumThreads];
-
   auto sock = std::unique_ptr<FiberSocketBase>(proactor()->CreateSocket());
   auto sock2 = std::unique_ptr<FiberSocketBase>(proactor()->CreateSocket());
 
