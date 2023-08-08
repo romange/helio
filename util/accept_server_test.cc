@@ -49,10 +49,16 @@ void TestConnection::HandleRequests() {
   VLOG(1) << "TestConnection exit";
 }
 
+const char* kMaxConnectionsError = "max connections received";
+
 class TestListener : public ListenerInterface {
  public:
   virtual Connection* NewConnection(ProactorBase* context) final {
     return new TestConnection;
+  }
+
+  virtual void OnMaxConnectionsReached(FiberSocketBase* sock) override {
+    sock->Write(io::Buffer(kMaxConnectionsError));
   }
 };
 
@@ -69,9 +75,12 @@ class AcceptServerTest : public testing::Test {
   static void SetUpTestCase() {
   }
 
+  FiberSocketBase::endpoint_type ep;
+
   std::unique_ptr<ProactorPool> pp_;
   std::unique_ptr<AcceptServer> as_;
   std::unique_ptr<FiberSocketBase> client_sock_;
+  TestListener* listener_;
 };
 
 void AcceptServerTest::SetUp() {
@@ -85,14 +94,15 @@ void AcceptServerTest::SetUp() {
   pp_->Run();
 
   as_.reset(new AcceptServer{up});
-  auto ec = as_->AddListener("localhost", kPort, new TestListener);
+  listener_ = new TestListener();
+  auto ec = as_->AddListener("localhost", kPort, listener_);
   CHECK(!ec) << ec;
   as_->Run();
 
   ProactorBase* pb = pp_->GetNextProactor();
   client_sock_.reset(pb->CreateSocket());
   auto address = boost::asio::ip::make_address("127.0.0.1");
-  FiberSocketBase::endpoint_type ep{address, kPort};
+  ep = FiberSocketBase::endpoint_type{address, kPort};
 
   pb->Await([&] {
     FiberSocketBase::error_code ec = client_sock_->Connect(ep);
@@ -121,6 +131,40 @@ TEST_F(AcceptServerTest, Basic) {
 
 TEST_F(AcceptServerTest, Break) {
   usleep(1000);
+}
+
+TEST_F(AcceptServerTest, ConnectionsLimit) {
+  listener_->SetMaxClients((1 << 16) - 1);
+  ASSERT_EQ(listener_->GetMaxClients(), (1 << 16) - 1);
+  listener_->SetMaxClients(1);
+  ASSERT_EQ(listener_->GetMaxClients(), 1);
+
+  ProactorBase* pb = pp_->GetNextProactor();
+  std::unique_ptr<FiberSocketBase> second_client(pb->CreateSocket());
+
+  pb->Await([&] {
+    FiberSocketBase::error_code ec = second_client->Connect(ep);
+    CHECK(!ec) << ec;
+
+    // Check that we get the error message from the server.
+    uint8_t buf[200] = {0};
+    second_client->Recv({buf, 200});
+    EXPECT_FALSE(strcmp(reinterpret_cast<const char*>(buf), kMaxConnectionsError)) << buf;
+
+    // The server should close the socket on its side after sending the error message,
+    // but it's not trivial to test for this. What we do is to perform two dummy writes
+    // and a small sleep. The writes should trigger a RST response from the closed socket
+    // and after a RST response further writes should fail.
+    second_client->Write(io::Buffer("test"));
+    second_client->Write(io::Buffer("test"));
+    ThisFiber::SleepFor(2ms);
+    EXPECT_TRUE(second_client->Write(io::Buffer("test")));
+
+    second_client->Close();
+  });
+
+  listener_->SetMaxClients((1 << 16) - 1);
+  ASSERT_EQ(listener_->GetMaxClients(), (1 << 16) - 1);
 }
 
 TEST_F(AcceptServerTest, UDS) {

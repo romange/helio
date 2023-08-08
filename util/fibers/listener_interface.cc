@@ -5,6 +5,7 @@
 #include "util/listener_interface.h"
 
 #include <signal.h>
+#include <sys/resource.h>
 
 // #include <boost/fiber/operations.hpp>
 
@@ -117,6 +118,15 @@ void ListenerInterface::RunAcceptLoop() {
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
+    uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_acquire);
+    if (prev_connections >= max_clients_) {
+      peer->SetProactor(sock_->proactor());
+      OnMaxConnectionsReached(peer.get());
+      (void)peer->Close();
+      open_connections_.fetch_sub(1, std::memory_order_release);
+      continue;
+    }
+
     // Most probably next is in another thread.
     fb2::ProactorBase* next = PickConnectionProactor(peer.get());
 
@@ -204,6 +214,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   clist->Unlink(conn);
 
   guard.reset();
+  open_connections_.fetch_sub(1, std::memory_order_release);
 }
 
 void ListenerInterface::RegisterPool(ProactorPool* pool) {
@@ -261,6 +272,33 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   clist2->Link(conn);
   conn->OnPostMigrateThread();
+}
+
+void ListenerInterface::SetMaxClients(uint32_t max_clients) {
+  max_clients_ = max_clients;
+
+  // We usually have 2 open files per proactor and ~10 more open files
+  // for the rest. Taking 32 as a reasonable maximum bound.
+  const uint32_t kResidualOpenFiles = 32;
+  uint32_t wanted_limit = 2 * pool_->size() + max_clients + kResidualOpenFiles;
+
+  struct rlimit lim;
+  if (getrlimit(RLIMIT_NOFILE, &lim) == -1) {
+    LOG(ERROR) << "Error in getrlimit: " << strerror(errno);
+    return;
+  }
+
+  if (lim.rlim_cur < wanted_limit) {
+    lim.rlim_cur = wanted_limit;
+    if (setrlimit(RLIMIT_NOFILE, &lim) == -1) {
+      LOG(WARNING) << "Couldn't increase the open files limit to " << lim.rlim_cur
+                   << ". setrlimit: " << strerror(errno);
+    }
+  }
+}
+
+uint32_t ListenerInterface::GetMaxClients() const {
+  return max_clients_;
 }
 
 void Connection::Shutdown() {
