@@ -4,7 +4,6 @@
 
 #include "util/fibers/epoll_proactor.h"
 
-#include <absl/base/internal/cycleclock.h>
 #include <absl/time/clock.h>
 #include <signal.h>
 #include <string.h>
@@ -128,6 +127,7 @@ uint32_t KevMask(const struct kevent& kev) {
 #define KEV_MASK(cqe) KevMask(cqe)
 #define KEV_ERROR(cqe) cqe.fflags
 #endif
+
 }  // namespace
 
 EpollProactor::EpollProactor() : ProactorBase() {
@@ -177,8 +177,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t cqe_count = 0;
-  uint64_t last_sleep_check = absl::base_internal::CycleClock::Now();
-  const uint64_t cycles_per_10us = absl::base_internal::CycleClock::Frequency() / 100'000;
   Tasklet task;
 
   while (true) {
@@ -288,12 +286,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     if (scheduler->HasSleepingFibers()) {
-      // avoid calling steady_clock::now() too much.
-      uint64_t now = absl::base_internal::CycleClock::Now();
-      if (now >= last_sleep_check + cycles_per_10us) {
-        last_sleep_check = now;
-        scheduler->ProcessSleep();
-      }
+      ProcessSleepFibers(scheduler);
     }
 
     // must be if and not while - see uring_proactor.cc for more details.

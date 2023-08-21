@@ -5,6 +5,7 @@
 #include "util/fibers/proactor_base.h"
 
 #include <absl/base/attributes.h>
+#include <absl/base/internal/cycleclock.h>
 #include <signal.h>
 
 #if __linux__
@@ -53,7 +54,12 @@ void SigAction(int signal, siginfo_t*, void*) {
   }
 }
 
+inline uint64_t GetCPUCycleCount() {
+  return absl::base_internal::CycleClock::Now();
+}
+
 unsigned pause_amplifier = 50;
+uint64_t cycles_per_10us = 1000000;  // correctly defined inside ModuleInit.
 std::once_flag module_init;
 
 }  // namespace
@@ -234,6 +240,24 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
   }
 }
 
+void ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
+  // avoid calling steady_clock::now() too much.
+  // Cycles count can reset, for example when CPU is suspended, therefore we also allow
+  // "returning  into past". False positive is possible but it's not a big deal.
+  uint64_t now = GetCPUCycleCount();
+  if (ABSL_PREDICT_FALSE(now < last_sleep_cycle_)) {
+    // LOG_FIRST_N - otherwise every adjustment will trigger num-threads messages.
+    LOG_FIRST_N(WARNING, 1) << "The cycle clock was adjusted backwards by "
+                            << last_sleep_cycle_ - now << " cycles";
+    now = last_sleep_cycle_ + cycles_per_10us;
+  }
+
+  if (now >= last_sleep_cycle_ + cycles_per_10us) {
+    last_sleep_cycle_ = now;
+    scheduler->ProcessSleep();
+  }
+}
+
 void ProactorBase::Pause(unsigned count) {
   auto pc = pause_amplifier;
 
@@ -252,6 +276,8 @@ void ProactorBase::Pause(unsigned count) {
 
 void ProactorBase::ModuleInit() {
   uint64_t delta;
+  cycles_per_10us = absl::base_internal::CycleClock::Frequency() / 100'000;
+
   while (true) {
     uint64_t now = GetClockNanos();
     for (unsigned i = 0; i < 10; ++i) {

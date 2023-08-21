@@ -223,6 +223,8 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
+  void ProcessSleepFibers(detail::Scheduler* scheduler);
+
   pthread_t thread_id_ = 0U;
   int wake_fd_ = -1;
   bool is_stopped_ = true;
@@ -274,6 +276,8 @@ class ProactorBase {
     }
     return false;
   }
+
+  uint64_t last_sleep_cycle_ = 0;
 };
 
 class ProactorDispatcher : public DispatchPolicy {
