@@ -5,7 +5,6 @@
 #include "util/fibers/uring_proactor.h"
 
 #include <absl/base/attributes.h>
-#include <absl/base/internal/cycleclock.h>
 #include <liburing.h>
 #include <poll.h>
 #include <string.h>
@@ -465,8 +464,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   static_assert(sizeof(cqes) == 2048);
 
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_submits = 0;
-  uint64_t last_sleep_check = absl::base_internal::CycleClock::Now();
-  uint64_t cycles_per_10us = absl::base_internal::CycleClock::Frequency() / 100'000;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
   uint32_t busy_sq_cnt = 0;
@@ -554,12 +551,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     scheduler->ProcessRemoteReady();
 
     if (scheduler->HasSleepingFibers()) {
-      // avoid calling steady_clock::now() too much.
-      uint64_t now = absl::base_internal::CycleClock::Now();
-      if (now >= last_sleep_check + cycles_per_10us) {
-        last_sleep_check = now;
-        scheduler->ProcessSleep();
-      }
+      ProcessSleepFibers(scheduler);
     }
 
     // must be if and not while (or at most k iterations for while) because
