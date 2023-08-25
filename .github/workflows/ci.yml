@@ -26,47 +26,46 @@ jobs:
         include:
           - container: "alpine-dev:latest"
             compiler: {cxx: clang++, c: clang}
-    timeout-minutes: 90
+    timeout-minutes: 50
     container:
       image: ghcr.io/romange/${{ matrix.container }}
     steps:
     - uses: actions/checkout@v3
-    - name: Choose toolchain
-      run: |
-        if [ "${{matrix.compiler.c}}" = "clang" ]; then
-          apk update && apk add clang
-        fi
-    - name: Cache build deps
-      id: cache-deps
-      uses: actions/cache@v3
+
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.3
+
+    - name: Configure Cache Env
+      uses: actions/github-script@v6
       with:
-        path: |
-          ~/.ccache
-          ${{github.workspace}}/build/_deps
-        key: ${{ runner.os }}-deps2-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-deps2-
+        script: |
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
+
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
       run: |
+          uname -a
+          ulimit -a
+          cat /proc/cpuinfo
           cmake -B ${{github.workspace}}/build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
             -DCMAKE_C_COMPILER="${{matrix.compiler.c}}" \
             -DCMAKE_CXX_COMPILER="${{matrix.compiler.cxx}}" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-    - name: Build & Test
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_C_COMPILER_LAUNCHER=sccache
+    - name: Build
       run: |
           cd ${{github.workspace}}/build
-          uname -a
-          ulimit -a
-          cat /proc/cpuinfo
+          
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli
+          ${SCCACHE_PATH} --show-stats
+    
+    - name: Test
+      run: |
+          cd ${{github.workspace}}/build
           GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \
              ./accept_server_test || true
           GLOG_logtostderr=1 GLOG_vmodule=proactor=1 ctest -V -L CI
           # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
-
-
-
