@@ -11,7 +11,7 @@ namespace base {
 static const int kBlockSize = 8192;
 using namespace std;
 
-PmrArena::PmrArena(pmr::memory_resource* mr) : mr_(mr), blocks_(mr) {
+PmrArena::PmrArena(PMR_NS::memory_resource* mr) : mr_(mr), blocks_(mr) {
 }
 
 PmrArena::~PmrArena() {

@@ -161,7 +161,12 @@ int main(int argc, char** argv) {
 
   SSL_library_init();
   SSL_load_error_strings();
+
+#ifdef __linux__
   unique_ptr<util::ProactorPool> pp(fb2::Pool::IOUring(128));
+#else
+  unique_ptr<util::ProactorPool> pp(fb2::Pool::Epoll());
+#endif
 
   pp->Run();
 

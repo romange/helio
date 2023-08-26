@@ -19,7 +19,11 @@ using namespace std;
 namespace h2 = boost::beast::http;
 using fb2::Pool;
 
+#ifdef __linux__
 #define USE_URING 1
+#else
+#define USE_URING 0
+#endif
 
 class TestConnection : public Connection {
  protected:
@@ -85,10 +89,10 @@ class AcceptServerTest : public testing::Test {
 
 void AcceptServerTest::SetUp() {
   const uint16_t kPort = 1234;
-#ifdef USE_URING
+#if USE_URING
   ProactorPool* up = Pool::IOUring(16, 2);
 #else
-  ProactorPool* up = new epoll::EvPool(2);
+  ProactorPool* up = Pool::Epoll();
 #endif
   pp_.reset(up);
   pp_->Run();
@@ -168,6 +172,10 @@ TEST_F(AcceptServerTest, ConnectionsLimit) {
 }
 
 TEST_F(AcceptServerTest, UDS) {
+#ifdef __APPLE__
+    GTEST_SKIP() << "Skipped AcceptServerTest.UDS test on MacOS";
+    return;
+#endif
   AcceptServer as{pp_.get(), false};
   const char kSockPath[] = "/tmp/uds.sock";
   unlink(kSockPath);

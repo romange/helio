@@ -86,6 +86,10 @@ TEST_F(IoTest, LineReader) {
 }
 
 TEST_F(IoTest, ProcReader) {
+#ifdef __APPLE__
+    GTEST_SKIP() << "Skipped IoTest.ProcReader test on MacOS";
+    return;
+#endif
   auto sdata = ReadStatusInfo();
   ASSERT_TRUE(sdata.has_value());
   LOG(INFO) << sdata->vm_peak << " " << sdata->vm_size << " " << sdata->vm_rss;

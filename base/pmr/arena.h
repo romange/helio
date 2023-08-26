@@ -55,7 +55,8 @@ class PmrArena {
   static_assert(sizeof(Block) == 12);
 
   // Array of the allocated memory blocks
-  PMR_NS::vector<Block> blocks_;
+  using BlockAllocator = PMR_NS::polymorphic_allocator<Block>;
+  std::vector<Block, BlockAllocator> blocks_;
 
   // No copying allowed
   PmrArena(const PmrArena&) = delete;

@@ -6,6 +6,8 @@
 //   gcc -O3 -mtune=native -mavx -std=c++11 -S -masm=intel  -fverbose-asm bits_test.cc
 //    -I.. -I../third_party/libs/benchmark/include/ -I../third_party/libs/gtest/include/
 
+#ifdef __linux__
+
 #include <absl/base/internal/cycleclock.h>
 #include <absl/debugging/internal/vdso_support.h>
 #include <absl/debugging/stacktrace.h>
@@ -112,3 +114,5 @@ BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_THREAD_CPUTIME_ID);
 BENCHMARK_TEMPLATE(BM_ClockType, CLOCK_BOOTTIME_ALARM);
 
 }  // namespace base
+
+#endif  // __linux__

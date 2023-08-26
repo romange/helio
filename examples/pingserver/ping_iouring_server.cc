@@ -156,6 +156,7 @@ class PingListener : public ListenerInterface {
 };
 
 ProactorBase* PingListener::PickConnectionProactor(FiberSocketBase* sock) {
+#ifdef __linux__
   int fd = sock->native_handle();
 
   int cpu;
@@ -171,6 +172,8 @@ ProactorBase* PingListener::PickConnectionProactor(FiberSocketBase* sock) {
       return pool()->at(ids.front());
     }
   }
+#endif
+
   return pool()->GetNextProactor();
 }
 
@@ -230,30 +233,35 @@ int main(int argc, char* argv[]) {
     ctx = CreateSslCntx();
   }
 
-  unique_ptr<util::ProactorPool> pp(fb2::Pool::IOUring(GetFlag(FLAGS_iouring_depth)));
+  unique_ptr<util::ProactorPool> pp;
+#ifdef __linux__
+  pp.reset(Pool::IOUring(GetFlag(FLAGS_iouring_depth)));
+#else
+  pp.reset(Pool::Epoll());
+#endif
 
   pp->Run();
   ping_qps.Init(pp.get());
 
-  AcceptServer uring_acceptor(pp.get());
+  AcceptServer acceptor(pp.get());
   PingListener* listener = new PingListener(ctx);
 
   if (uds.empty()) {
-    uring_acceptor.AddListener(port, listener);
+    acceptor.AddListener(port, listener);
   } else {
     unlink(uds.c_str());
-    error_code ec = uring_acceptor.AddUDSListener(uds.c_str(), 0700, listener);
+    error_code ec = acceptor.AddUDSListener(uds.c_str(), 0700, listener);
     CHECK(!ec) << ec;
   }
 
   int http_port = GetFlag(FLAGS_http_port);
   if (http_port >= 0) {
-    uint16_t port = uring_acceptor.AddListener(http_port, new HttpListener<>);
+    uint16_t port = acceptor.AddListener(http_port, new HttpListener<>);
     LOG(INFO) << "Started http server on port " << port;
   }
 
-  uring_acceptor.Run();
-  uring_acceptor.Wait();
+  acceptor.Run();
+  acceptor.Wait();
 
   pp->Stop();
 

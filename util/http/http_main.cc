@@ -18,11 +18,7 @@
 #include "util/metrics/metrics.h"
 #include "util/varz.h"
 
-#ifdef USE_FB2
 #include "util/fibers/pool.h"
-#else
-#include "util/uring/uring_pool.h"
-#endif
 
 ABSL_FLAG(uint32_t, port, 8080, "Port number.");
 ABSL_FLAG(bool, use_incoming_cpu, false,
@@ -41,6 +37,7 @@ class MyListener : public HttpListener<> {
 };
 
 ProactorBase* MyListener::PickConnectionProactor(FiberSocketBase* sock) {
+#ifdef __linux__
   int fd = sock->native_handle();
 
   int cpu;
@@ -56,6 +53,8 @@ ProactorBase* MyListener::PickConnectionProactor(FiberSocketBase* sock) {
       return pool()->at(ids.front());
     }
   }
+#endif
+
   return pool()->GetNextProactor();
 }
 
@@ -155,10 +154,10 @@ int main(int argc, char** argv) {
   MainInitGuard guard(&argc, &argv);
 
   std::unique_ptr<ProactorPool> pool;
-#ifdef USE_FB2
+#ifdef __linux__
   pool.reset(fb2::Pool::IOUring(256));
 #else
-  pool = std::make_unique<uring::UringPool>();
+  pool.reset(fb2::Pool::Epoll());
 #endif
 
   pool->Run();
