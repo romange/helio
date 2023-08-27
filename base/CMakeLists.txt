@@ -1,10 +1,10 @@
 add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
-            pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc)
+    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc)
 
 # atomic is not present on Fedora. I suspect it's not needed on ubuntu as well
 # removing it for now.
 cxx_link(base glog::glog absl::flags_parse
-         absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
+    absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
 
 # Define default gtest_main for tests.
 add_library(gtest_main_ext gtest_main.cc)
@@ -24,4 +24,5 @@ endif()
 
 cxx_test(flit_test base LABELS CI)
 cxx_test(cxx_test base absl::flat_hash_map LABELS CI)
-cxx_test(string_view_sso_test base base LABELS CI)
+cxx_test(string_view_sso_test base LABELS CI)
+cxx_test(ring_buffer_test base LABELS CI)
