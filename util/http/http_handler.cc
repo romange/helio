@@ -294,8 +294,8 @@ bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
   return res.second;
 }
 
-HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base) {
-  req_buffer_.max_size(4096);  // Limit the parsing buffer to 4K.
+// Limit the parsing buffer to 4K.
+HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base), req_buffer_(4096)  {
 }
 
 error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
