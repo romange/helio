@@ -86,7 +86,7 @@ void ServerRun(ProactorPool* pool) {
 
   auto json_cb = [](const http::QueryArgs& args, HttpContext* send) {
     auto resp = sb_resp;
-    return send->Invoke(move(resp));
+    return send->Invoke(std::move(resp));
   };
 
   listener->RegisterCb("/json", json_cb);

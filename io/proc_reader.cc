@@ -107,7 +107,7 @@ Result<StatusData> ReadStatusInfo() {
     }
   };
 
-  error_code ec = ReadProcFile("/proc/self/status", ':', move(cb));
+  error_code ec = ReadProcFile("/proc/self/status", ':', std::move(cb));
   if (ec)
     return make_unexpected(ec);
 
@@ -142,7 +142,7 @@ Result<MemInfoData> ReadMemInfo() {
     }
   };
 
-  error_code ec = ReadProcFile("/proc/meminfo", ':', move(cb));
+  error_code ec = ReadProcFile("/proc/meminfo", ':', std::move(cb));
   if (ec)
     return make_unexpected(ec);
 
@@ -161,7 +161,7 @@ Result<SelfStat> ReadSelfStat() {
       }
     };
 
-    error_code ec = ReadProcFile("/proc/stat", ' ', move(cb));
+    error_code ec = ReadProcFile("/proc/stat", ' ', std::move(cb));
     if (ec)
       return make_unexpected(ec);
   }

@@ -290,7 +290,7 @@ void DispatchCqe(FiberInterface* current, const io_uring_cqe& cqe) {
   res.flags = cqe.flags;
   suspended_list[index].next = next_rp_id;
   next_rp_id = index;
-  auto func = move(suspended_list[index].cb);
+  auto func = std::move(suspended_list[index].cb);
   func(current, res);
 }
 

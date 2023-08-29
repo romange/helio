@@ -311,7 +311,7 @@ auto RespParser::ConsumeBulk(Buffer str) -> Status {
       std::unique_ptr<uint8_t[]> nb(new uint8_t[bulk_len_]);
       memcpy(nb.get(), str.data(), len);
       bulk_str = Buffer{nb.get(), len};
-      buf_stash_.emplace_back(move(nb));
+      buf_stash_.emplace_back(std::move(nb));
       is_broken_token_ = true;
     }
     last_consumed_ = len;

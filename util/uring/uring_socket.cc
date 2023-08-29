@@ -187,7 +187,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       CHECK_GT(res, 0);  // TODO - handle errors.
     };
 
-    SubmitEntry se = p->GetSubmitEntry(move(cb));
+    SubmitEntry se = p->GetSubmitEntry(std::move(cb));
     se.PrepWriteFixed(fd, reg_buf, short_len, 0, 0);
     se.sqe()->flags |= register_flag();
 

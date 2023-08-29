@@ -365,7 +365,7 @@ error_code LinuxFile::Write(const iovec* iov, unsigned iovcnt, off_t offset, uns
     return res;
   };
 
-  return io::ApplyExactly(iov, iovcnt, move(cb));
+  return io::ApplyExactly(iov, iovcnt, std::move(cb));
 }
 
 error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsigned flags) {
@@ -377,7 +377,7 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
     return res;
   };
 
-  return io::ApplyExactly(iov, iovcnt, move(cb));
+  return io::ApplyExactly(iov, iovcnt, std::move(cb));
 }
 
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {

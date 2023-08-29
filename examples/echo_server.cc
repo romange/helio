@@ -72,7 +72,7 @@ struct TL {
 
     auto res = uring::OpenLinux(path, flags, 0666);
     CHECK(res);
-    file = move(res.value());
+    file = std::move(res.value());
 #if 0
     Proactor* proactor = (Proactor*)ProactorBase::me();
     uring::FiberCall fc(proactor);
@@ -107,7 +107,7 @@ void TL::WriteToFile() {
   ++pending_write_reqs;
   uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
 
-  uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
+  uring::SubmitEntry se = proactor->GetSubmitEntry(std::move(ring_cb), 0);
   se.PrepWrite(file->fd(), blob, 4096, 0);
   if (GetFlag(FLAGS_sqe_async))
     se.sqe()->flags |= IOSQE_ASYNC;
@@ -289,7 +289,7 @@ void RunServer(ProactorPool* pp) {
             LOG(ERROR) << "Error writing to file " << -res;
         };
 
-        uring::SubmitEntry se = proactor->GetSubmitEntry(move(ring_cb), 0);
+        uring::SubmitEntry se = proactor->GetSubmitEntry(std::move(ring_cb), 0);
         se.PrepWrite(tl->file->fd(), blob, 4096, 0);
         se.sqe()->flags |= IOSQE_ASYNC;
         if (i % 1000 == 0) {
