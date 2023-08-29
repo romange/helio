@@ -297,7 +297,7 @@ io::Result<io::WriteFile*> S3Bucket::OpenWriteFile(std::string_view path) {
   } else {
     full_path = absl::StrCat(bucket_, "/", path);
   }
-  unique_ptr http_client = move(http_client_);
+  unique_ptr http_client = std::move(http_client_);
   error_code ec = Connect(http_client->connect_timeout_ms());
   if (ec)
     return make_unexpected(ec);

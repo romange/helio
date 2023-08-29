@@ -79,7 +79,7 @@ class MyType {
 
 template <typename T> class Wrapper {
  public:
-  Wrapper(T s) : t(move(s)) {
+  Wrapper(T s) : t(std::move(s)) {
   }
 
   T t;
@@ -121,7 +121,7 @@ class Pointer1 {
 
 TEST_F(CxxTest, Move) {
   MyType t{"foo"};
-  MyType a = move(t);
+  MyType a = std::move(t);
   EXPECT_EQ(0, copy_ctors);
 
   vector<MyType> v;

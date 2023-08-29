@@ -212,7 +212,7 @@ TEST_F(FiberTest, Stack) {
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
   Fiber(
-      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, move(pass))
+      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
       .Detach();
 }
 
@@ -347,7 +347,7 @@ TEST_F(FiberTest, Future) {
   Promise<int> p1;
   Future<int> f1 = p1.get_future();
 
-  Fiber fb("fb3", [f1 = move(f1)]() mutable { EXPECT_EQ(42, f1.get()); });
+  Fiber fb("fb3", [f1 = std::move(f1)]() mutable { EXPECT_EQ(42, f1.get()); });
   p1.set_value(42);
 
   fb.Join();
@@ -364,7 +364,7 @@ TEST_F(FiberTest, AsyncEvent) {
 
   ProactorThread pth(0, ProactorBase::IOURING);
   pth.get()->DispatchBrief(
-      [up = reinterpret_cast<UringProactor*>(pth.proactor.get()), cb = move(cb)] {
+      [up = reinterpret_cast<UringProactor*>(pth.proactor.get()), cb = std::move(cb)] {
         SubmitEntry se = up->GetSubmitEntry(std::move(cb));
         se.sqe()->opcode = IORING_OP_NOP;
         LOG(INFO) << "submit";

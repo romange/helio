@@ -230,7 +230,7 @@ endif()
 
 
 # 1.71 comes with ubuntu 20.04 so that's what we require.
-find_package(Boost 1.71.0 REQUIRED COMPONENTS context system fiber)
+find_package(Boost 1.71.0 REQUIRED COMPONENTS context system)
 Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_VERSION}")
 
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)

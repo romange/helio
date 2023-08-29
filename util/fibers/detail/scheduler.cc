@@ -436,9 +436,9 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       unique_lock<mutex> lk{mu_};
       if (has_sleeping) {
         auto next_tp = sched->NextSleepPoint();
-        cnd_.wait_until(lk, next_tp, move(cb));
+        cnd_.wait_until(lk, next_tp, std::move(cb));
       } else {
-        cnd_.wait(lk, move(cb));
+        cnd_.wait(lk, std::move(cb));
       }
       wake_suspend_ = false;
     }

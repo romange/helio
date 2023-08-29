@@ -191,7 +191,7 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
     auto& e = centries_[index];
     DCHECK(e.cb) << index;
 
-    CbType func = move(e.cb);
+    CbType func = std::move(e.cb);
 
     // Set e to be the head of free-list.
     e.index = next_free_ce_;
@@ -688,7 +688,7 @@ void UringProactor::EpollAddInternal(EpollIndex id) {
     }
   };
 
-  SubmitEntry se = GetSubmitEntry(move(uring_cb));
+  SubmitEntry se = GetSubmitEntry(std::move(uring_cb));
   auto& epoll = epoll_entries_[id];
   se.PrepPollAdd(epoll.fd, epoll.event_mask);
   epoll.index = se.sqe()->user_data;
