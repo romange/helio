@@ -21,11 +21,14 @@ jobs:
       matrix:
         # Test of these containers
         include:
-          - container: "alpine-dev:latest"
+          - container: alpine-dev:latest
             compiler: {cxx: clang++, c: clang}
-          - container: "ubuntu-dev:20"
+          - container: ubuntu-dev:20
             compiler: {cxx: g++, c: gcc}
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
+          - container: fedora:30
+            compiler: {cxx: g++, c: gcc}
+
     timeout-minutes: 50
     container:
       image: ghcr.io/romange/${{ matrix.container }}
@@ -72,13 +75,13 @@ jobs:
           GLOG_logtostderr=1 GLOG_vmodule=proactor=1 ctest -V -L CI
           # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
     - name: Coverage
-      if: matrix.compiler.cxx == 'g++'
+      if: matrix.container == 'ubuntu-dev:20'
       run: |
           lcov -c -d ${{github.workspace}}/build -o coverage.info
           lcov --remove coverage.info -o coverage.info '/usr/*' '*/_deps/*' '*/third_party/*'
 
     - name: Upload coverage to Codecov
-      if: matrix.compiler.cxx == 'g++'
+      if: matrix.container == 'ubuntu-dev:20'
       uses: codecov/codecov-action@v3
       with:
          files: ./coverage.info

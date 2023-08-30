@@ -18,6 +18,13 @@
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
+#include <sys/syscall.h>
+
+// older linux systems do not expose this system call so we wrap it in our own function.
+int my_gettid() {
+  return syscall(SYS_gettid);
+}
+
 #endif
 
 #if defined(__FreeBSD__)
@@ -33,7 +40,7 @@ namespace fb2 {
 
 #if defined(__FreeBSD__)
 
-int gettid() {
+int my_gettid() {
   return pthread_getthreadid_np();
 }
 
@@ -41,7 +48,7 @@ int gettid() {
 
 #if defined(__APPLE__)
 
-unsigned gettid() {
+unsigned my_gettid() {
  uint64_t tid;
  pthread_threadid_np(NULL, &tid);
  return tid;
@@ -534,17 +541,17 @@ TEST_P(ProactorTest, MultiParking) {
 TEST_P(ProactorTest, Migrate) {
   ProactorThread pth(0, proactor()->GetKind());
 
-  pid_t dest_tid = pth.get()->AwaitBrief([&] { return gettid(); });
+  pid_t dest_tid = pth.get()->AwaitBrief([&] { return my_gettid(); });
 
   Fiber fb = proactor()->LaunchFiber([&] {
     // Originally I used pthread_self(). However it is declared as 'attribute ((const))'
     // thus it allows compiler to eliminate subsequent calls to this function.
     // Therefore I use syscall variant to get fresh values.
-    pid_t tid1 = gettid();
+    pid_t tid1 = my_gettid();
     LOG(INFO) << "Source pid " << tid1 << ", dest pid " << dest_tid;
     proactor()->Migrate(pth.get());
     LOG(INFO) << "After migrate";
-    ASSERT_EQ(dest_tid, gettid());
+    ASSERT_EQ(dest_tid, my_gettid());
   });
   fb.Join();
 }
