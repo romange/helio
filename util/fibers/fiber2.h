@@ -83,6 +83,11 @@ class Fiber {
   boost::intrusive_ptr<util::fb2::detail::FiberInterface> impl_;
 };
 
+// Returns the context switch epoch number for this thread.
+inline uint64_t FiberSwitchEpoch() noexcept {
+  return detail::FiberEpoch();
+}
+
 }  // namespace fb2
 
 template <typename Fn, typename... Arg> fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {

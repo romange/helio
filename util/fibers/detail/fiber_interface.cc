@@ -63,6 +63,8 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
+  uint64_t epoch = 0;
+
   uint32_t atomic_section = 0;
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
@@ -115,6 +117,10 @@ TL_FiberInitializer& FbInitializer() noexcept {
 
 FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
+}
+
+uint64_t FiberEpoch() noexcept {
+  return FbInitializer().epoch;
 }
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
@@ -271,7 +277,9 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   // the fiber can be activated with the wait_hook still linked.
   FiberInterface* prev = this;
 
-  std::swap(FbInitializer().active, prev);
+  auto& fb_initializer = FbInitializer();
+  std::swap(fb_initializer.active, prev);
+  ++fb_initializer.epoch;
 
   // pass pointer to the context that resumes `this`
   return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {

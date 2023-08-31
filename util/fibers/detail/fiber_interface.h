@@ -272,6 +272,7 @@ FiberInterface* FiberActive() noexcept;
 void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
+uint64_t FiberEpoch() noexcept;
 
 constexpr uint64_t kRemoteFree = 1;
 
