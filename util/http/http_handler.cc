@@ -10,6 +10,7 @@
 #include <boost/beast/http.hpp>
 #include <filesystem>
 
+#include "absl/strings/escaping.h"
 #include "base/logging.h"
 #include "util/http/http_common.h"
 #include "util/metrics/family.h"
@@ -366,8 +367,43 @@ void HttpConnection::HandleRequests() {
   LOG_IF(INFO, !FiberSocketBase::IsConnClosed(ec)) << "Http error " << ec.message();
 }
 
+bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpContext* cntx) {
+  CHECK(owner_);
+
+  bool authenticated = false;
+  if (const boost::string_view header = req[h2::field::authorization]; !header.empty()) {
+    std::string_view header_stl{header.data(), header.size()};
+    if (absl::StartsWith(header_stl, "Basic ")) {
+      std::string decoded;
+      absl::Base64Unescape(header_stl.substr(6), &decoded);
+      auto split_pos = decoded.find(':');
+      if (split_pos != std::string::npos) {
+        std::string username = decoded.substr(0, split_pos);
+        std::string password = decoded.substr(split_pos + 1, decoded.size());
+        if (username == "user" && password == owner_->password_) {
+          authenticated = true;
+        }
+      }
+    }
+  }
+
+  if (!authenticated) {
+    h2::response<h2::string_body> resp{h2::status::unauthorized, req.version()};
+    resp.set(h2::field::content_type, "text/plain");
+    resp.set(h2::field::www_authenticate, "Basic realm=\"Restricted Area\"");
+    resp.body() = "Please authorize!";
+    cntx->Invoke(std::move(resp));
+    return false;
+  }
+
+  return true;
+}
+
 void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cntx) {
   CHECK(owner_);
+
+  if (!owner_->password_.empty() && !CheckRequestAuthorization(req, cntx))
+    return;
 
   if (owner_->HandleRoot(req, cntx)) {
     return;

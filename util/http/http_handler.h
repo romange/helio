@@ -80,6 +80,12 @@ class HttpListenerBase : public ListenerInterface {
     enable_metrics_ = true;
   }
 
+  // Enforce authentication to this HTTP server with the user "user"
+  // and this password.
+  void SetPassword(std::string password) {
+    password_ = std::move(password);
+  }
+
  private:
   bool HandleRoot(const RequestType& rt, HttpContext* cntx) const;
 
@@ -91,13 +97,15 @@ class HttpListenerBase : public ListenerInterface {
   std::string favicon_url_;
   std::string resource_prefix_;
   bool enable_metrics_ = false;
+
+  std::string password_;
 };
 
 class HttpConnection : public Connection {
  public:
   using RequestType = ::boost::beast::http::request<::boost::beast::http::string_body>;
 
-  HttpConnection(const HttpListenerBase* base);
+  explicit HttpConnection(const HttpListenerBase* base);
 
   // Parses one or more http request from the buffer.
   // In case that there is a leftover - keeps it so that
@@ -109,6 +117,9 @@ class HttpConnection : public Connection {
 
  protected:
   void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
+
+  // Check request authorization and return whether we can proceed.
+  bool CheckRequestAuthorization(const RequestType& req, HttpContext* cntx);
 
  private:
   const HttpListenerBase* owner_;
