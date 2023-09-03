@@ -387,7 +387,7 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
     }
   }
 
-  if (!owner_->password_.empty() && !authenticated) {
+  if (!authenticated) {
     h2::response<h2::string_body> resp{h2::status::unauthorized, req.version()};
     resp.set(h2::field::content_type, "text/plain");
     resp.set(h2::field::www_authenticate, "Basic realm=\"Restricted Area\"");
@@ -402,7 +402,7 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
 void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cntx) {
   CHECK(owner_);
 
-  if (!CheckRequestAuthorization(req, cntx))
+  if (!owner_->password_.empty() && !CheckRequestAuthorization(req, cntx))
     return;
 
   if (owner_->HandleRoot(req, cntx)) {
