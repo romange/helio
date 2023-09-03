@@ -23,6 +23,7 @@
 ABSL_FLAG(uint32_t, port, 8080, "Port number.");
 ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses incoming cpu of a socket in order to distribute incoming connections");
+ABSL_FLAG(std::string, password, "", "Protect the web interface with this password.");
 
 using namespace std;
 using namespace util;
@@ -63,6 +64,7 @@ void ServerRun(ProactorPool* pool) {
   http_req.Init(pool, {"type", "handle"});
 
   HttpListener<>* listener = new MyListener;
+  listener->SetPassword(absl::GetFlag(FLAGS_password));
   auto cb = [](const http::QueryArgs& args, HttpContext* send) {
     http::StringResponse resp = http::MakeStringResponse(h2::status::ok);
     resp.body() = "Bar";

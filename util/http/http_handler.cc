@@ -372,10 +372,10 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
 
   bool authenticated = false;
   if (const boost::string_view header = req[h2::field::authorization]; !header.empty()) {
-    if (header.substr(0, 6) == "Basic ") {
-      boost::string_view encoded_login = header.substr(6);
+    std::string_view header_stl{header.data(), header.size()};
+    if (absl::StartsWith(header_stl, "Basic ")) {
       std::string decoded;
-      absl::Base64Unescape({encoded_login.data(), encoded_login.size()}, &decoded);
+      absl::Base64Unescape(header_stl.substr(6), &decoded);
       auto split_pos = decoded.find(':');
       if (split_pos != std::string::npos) {
         std::string username = decoded.substr(0, split_pos);
