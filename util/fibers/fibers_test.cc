@@ -179,12 +179,17 @@ TEST_F(FiberTest, SList) {
 
 TEST_F(FiberTest, Basic) {
   int run = 0;
+  uint64_t epoch = FiberSwitchEpoch();
+
   Fiber fb1("test1", [&] { ++run; });
   Fiber fb2("test2", [&] { ++run; });
+  EXPECT_EQ(epoch, FiberSwitchEpoch());
+
   fb1.Join();
   fb2.Join();
 
   EXPECT_EQ(2, run);
+  EXPECT_LT(epoch, FiberSwitchEpoch());
 
   Fiber fb3(
       "test3", [](int i) {}, 1);
