@@ -9,6 +9,10 @@
 #include <cstdlib>
 #include <iostream>
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 namespace base {
 
 using std::string;
@@ -20,6 +24,15 @@ constexpr ssize_t kDeletedSuffixLen = sizeof(kDeletedSuffix) - 1;
 
 string ProgramAbsoluteFileName() {
   string res(2048, '\0');
+
+#ifdef __APPLE__
+  uint32_t sz = res.size();
+
+  if (_NSGetExecutablePath( &res.front(), &sz) != 0) {
+    // Buffer size is too small.
+    return res;
+  }
+#else // not __APPLE__
   ssize_t sz = readlink(kProcSelf, &res.front(), res.size());
   CHECK_GT(sz, 0);
   if (sz > kDeletedSuffixLen) {
@@ -30,6 +43,7 @@ string ProgramAbsoluteFileName() {
       res[sz] = '\0';
     }
   }
+#endif
   res.resize(sz);
   return res;
 }
