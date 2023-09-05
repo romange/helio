@@ -662,6 +662,31 @@ void Scheduler::RunDeferred() {
 #endif
 }
 
+void Scheduler::PrintAllFiberStackTraces() {
+  ProcessRemoteReady();
+
+  auto print_stack_trace = [](FiberInterface& fi) { fi.PrintStackTrace(); };
+
+  if (!ready_queue_.empty()) {
+    LOG(INFO) << "Ready fibers:";
+    for (auto& fiber : ready_queue_) {
+      print_stack_trace(fiber);
+    }
+  }
+  if (!terminate_queue_.empty()) {
+    LOG(INFO) << "Terminated fibers:";
+    for (auto& fiber : terminate_queue_) {
+      print_stack_trace(fiber);
+    }
+  }
+  if (!sleep_queue_.empty()) {
+    LOG(INFO) << "Sleeping fibers:";
+    for (auto& fiber : sleep_queue_) {
+      print_stack_trace(fiber);
+    }
+  }
+}
+
 }  // namespace detail
 
 DispatchPolicy::~DispatchPolicy() {

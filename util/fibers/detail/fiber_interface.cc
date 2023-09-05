@@ -8,6 +8,7 @@
 
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -264,6 +265,20 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
+}
+
+void FiberInterface::PrintStackTrace() {
+  entry_ = std::move(entry_).resume_with([name = name_](ctx::fiber_context&& c) {
+    std::string stacktrace = GetStacktrace(false);
+    LOG(INFO) << "Fiber " << name << ":\n" << stacktrace;
+
+    c = std::move(c).resume();
+    return std::move(c);
+  });
+}
+
+void FiberInterface::PrintAllFiberStackTraces() {
+  FbInitializer().sched->PrintAllFiberStackTraces();
 }
 
 void EnterFiberAtomicSection() noexcept {

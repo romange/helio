@@ -92,6 +92,8 @@ class Scheduler {
     --num_worker_fibers_;
   }
 
+  void PrintAllFiberStackTraces();
+
  private:
   // I use cache_last<true> so that slist will have push_back support.
   using FI_Queue = boost::intrusive::slist<

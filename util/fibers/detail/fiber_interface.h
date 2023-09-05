@@ -66,6 +66,9 @@ class FiberInterface {
   FI_SleepHook sleep_hook;
 
   ::boost::context::fiber_context SwitchTo();
+  void PrintStackTrace();
+
+  static void PrintAllFiberStackTraces();
 
   void Start(Launch launch);
 
