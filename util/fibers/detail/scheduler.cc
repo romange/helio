@@ -523,7 +523,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   }
 
   if (cntx->IsScheduledRemotely()) {
-    // We schedule a fiber remotely one once.
+    // We schedule a fiber remotely only once.
     // This should not happen in general, because we usually schedule a fiber under
     // a spinlock when pulling it from the WaitQueue. However, there are ActivateOther calls
     // that happen due to I/O events that might break this assumption. To see if this happens,
