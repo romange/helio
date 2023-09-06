@@ -4,59 +4,32 @@
 
 #include "util/fibers/stacktrace.h"
 
-#include <dlfcn.h>
-#include <execinfo.h>
-
+#include "absl/debugging/stacktrace.h"
+#include "absl/debugging/symbolize.h"
 #include "absl/strings/str_format.h"
-#include "absl/strings/str_join.h"
-#include "base/logging.h"
 
-std::string util::GetStacktrace(bool symbolize) {
+#ifdef NDEBUG
+#define SKIP_COUNT_TOP 2
+#define SKIP_COUNT_BOTTOM 2
+#else
+#define SKIP_COUNT_TOP 5
+#define SKIP_COUNT_BOTTOM 5
+#endif
+
+std::string util::GetStacktrace() {
   void* addresses[20];
-  int size = backtrace(addresses, sizeof(addresses) / sizeof(void*));
+  int size = absl::GetStackTrace(addresses, sizeof(addresses) / sizeof(void*),
+                                 /*skip_count=*/SKIP_COUNT_TOP);
 
-  // Faster code path, no function/lines
-  if (!symbolize) {
-    char** symbolized = backtrace_symbols(addresses, size);
-
-    std::string rv = absl::StrJoin(symbolized, symbolized + size, "\n");
-    free(symbolized);
-
-    return rv;
-  }
-
-  for (int i = 0; i < size; i++) {
-    Dl_info info;
-    if (dladdr(addresses[i], &info) != 0) {
-      // dladdr returns non-zero on success
-      uintptr_t base_address = reinterpret_cast<uintptr_t>(info.dli_fbase);
-      addresses[i] =
-          reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(addresses[i]) - base_address);
-    }
-  }
-
-  std::string addresses_string;
-  for (int i = 0; i < size; ++i) {
-    addresses_string += absl::StrFormat(" %p", addresses[i]);
-  }
-
-  std::string cmd =
-      absl::StrCat("addr2line -e ", base::ProgramAbsoluteFileName(), " -p -f", addresses_string);
-  FILE* pipe = popen(cmd.c_str(), "r");
-  if (pipe == nullptr) {
-    LOG(ERROR) << "Error opening pipe to addr2line." << std::endl;
-    return "";
-  }
-
-  // Read and print the addr2line output
-  char line[1024];
   std::string rv;
-  int i = 0;
-  while (fgets(line, sizeof(line), pipe) != nullptr) {
-    rv += absl::StrFormat("[%02d]: %s", i, line);
-    i++;
+  for (int i = 0; i < size - SKIP_COUNT_BOTTOM; i++) {
+    char symbol_buf[1024];
+    const char* symbol = "(unknown)";
+    if (absl::Symbolize(addresses[i], symbol_buf, sizeof(symbol_buf))) {
+      symbol = symbol_buf;
+    }
+    rv += absl::StrFormat("%p  %s\n", addresses[i], symbol);
   }
 
-  pclose(pipe);
   return rv;
 }

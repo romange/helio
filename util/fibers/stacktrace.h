@@ -8,6 +8,6 @@
 
 namespace util {
 
-std::string GetStacktrace(bool symbolize = false);
+std::string GetStacktrace();
 
 }

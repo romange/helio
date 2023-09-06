@@ -269,7 +269,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 
 void FiberInterface::PrintStackTrace() {
   entry_ = std::move(entry_).resume_with([name = name_](ctx::fiber_context&& c) {
-    std::string stacktrace = GetStacktrace(false);
+    std::string stacktrace = GetStacktrace();
     LOG(INFO) << "Fiber " << name << ":\n" << stacktrace;
 
     c = std::move(c).resume();
