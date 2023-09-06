@@ -38,17 +38,18 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
       DCHECK(timed_out);
       status = cv_status::timeout;
       clear_remote = false;
-    } else if (timed_out) {
+    } else if (timed_out) {  // we can still reach timeout even if we are not in the wait queue.
       status = cv_status::timeout;
     }
     lk.unlock();
 
-    if (clear_remote &&
-        MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+    // We must pull ourselves from the scheduler's remote_ready_queue in case we are there.
+    // We can not just remove ourselves from the middle of the queue.
+    if (clear_remote && active->IsScheduledRemotely()) {
       // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
       // will clear the remote_next pointer.
       active->Yield();
-      CHECK_EQ(detail::kRemoteFree, (uintptr_t)MPSC_intrusive_load_next(*active));
+      CHECK(!active->IsScheduledRemotely());
     }
   }
   return status;

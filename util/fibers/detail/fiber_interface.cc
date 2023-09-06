@@ -238,30 +238,6 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
   }
 }
 
-void FiberInterface::WakeOther(uint32_t epoch, FiberInterface* other) {
-  DVLOG(1) << "Waking " << other->name() << " from " << this->name();
-  DCHECK(other->scheduler_);
-
-  uint32_t next = epoch + 1;
-  bool matched = other->wake_epoch_.compare_exchange_strong(epoch, next, memory_order_acq_rel);
-  if (!matched) {
-    LOG(FATAL) << "WakeOther: epoch mismatch.";
-    return;
-  }
-
-  // Check first if we the fiber belongs to the active thread.
-  if (other->scheduler_ == scheduler_) {
-    // In case `other` times out on wait, it could be added to the ready queue already by
-    // ProcessSleep.
-    if (other->list_hook.is_linked())
-      return;
-
-    scheduler_->AddReady(other);
-  } else {
-    other->scheduler_->ScheduleFromRemote(other);
-  }
-}
-
 void FiberInterface::DetachThread() {
   scheduler_->DetachWorker();
   scheduler_ = nullptr;

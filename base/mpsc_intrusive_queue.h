@@ -47,6 +47,7 @@ template <typename T> class MPSCIntrusiveQueue {
   MPSCIntrusiveQueue& operator=(MPSCIntrusiveQueue const&) = delete;
 
   // Pushes an item to the queue on producer thread.
+  // The queue grows from the tail.
   void Push(T* item) noexcept {
     // item becomes a new tail.
     MPSC_intrusive_store_next(item, nullptr);
@@ -56,6 +57,7 @@ template <typename T> class MPSCIntrusiveQueue {
     MPSC_intrusive_store_next(prev, item);
   }
 
+  // Poops the first item at the head or returns nullptr if the queue is empty.
   T* Pop() noexcept;
 
   // Can be run only on a consumer thread.

@@ -21,12 +21,12 @@ void WaitQueue::NotifyAll(FiberInterface* active) {
     FiberInterface* cntx = waiter->cntx();
     DVLOG(2) << "Scheduling " << cntx->name() << " from " << active->name();
 
-    active->WakeOther(waiter->epoch(), cntx);
+    active->ActivateOther(cntx);
   }
 }
 
-void WaitQueue::NotifyImpl(uint32_t epoch, FiberInterface* suspended, FiberInterface* active) {
-  active->WakeOther(epoch, suspended);
+void WaitQueue::NotifyImpl(FiberInterface* suspended, FiberInterface* active) {
+  active->ActivateOther(suspended);
 }
 
 }  // namespace detail

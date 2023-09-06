@@ -209,8 +209,7 @@ class CondVarAny {
     }
     wait_queue_splk_.unlock();
 
-    if (clear_remote &&
-        MPSC_intrusive_load_next(*active) != (detail::FiberInterface*)detail::kRemoteFree) {
+    if (clear_remote && active->IsScheduledRemotely()) {
       // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
       // will clear the remote_next pointer.
       active->Yield();

@@ -647,7 +647,7 @@ TEST_P(ProactorTest, DragonflyBug1591) {
     while (next_step < step) {
       ThisFiber::Yield();
     }
-    LOG(WARNING) << "step " << step;
+    LOG(INFO) << "step " << step;
   };
   auto end_step = [&next_step]() { next_step++; };
 
