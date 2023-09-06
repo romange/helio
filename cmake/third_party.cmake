@@ -317,7 +317,6 @@ add_third_party(
 add_third_party(
   uring
   URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.4.tar.gz
-  #GIT_REPOSITORY https://github.com/axboe/liburing.git
   
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_IN_SOURCE 1
@@ -330,6 +329,11 @@ add_third_party(
   CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
                     -DRAPIDJSON_BUILD_DOC=OFF"
   LIB "none"
+)
+
+add_third_party(
+  pugixml
+  URL https://github.com/zeux/pugixml/archive/refs/tags/v1.13.tar.gz
 )
 
 if(APPLE)
@@ -360,3 +364,4 @@ endif()
 
 cmake_policy (SET CMP0079 NEW)
 target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
+target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIXML_NO_XPATH=1)

@@ -5,8 +5,7 @@
 
 #include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
-#include <libxml/xpath.h>
-
+#include <pugixml.hpp>
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/dynamic_body.hpp>
 
@@ -80,39 +79,26 @@ error_code DrainResponse(http::Client* client, h2::response_parser<h2::buffer_bo
   return error_code{};
 }
 
-inline xmlDocPtr XmlRead(string_view xml) {
-  return xmlReadMemory(xml.data(), xml.size(), NULL, NULL, XML_PARSE_COMPACT | XML_PARSE_NOBLANKS);
-}
-
-inline const char* as_char(const xmlChar* var) {
-  return reinterpret_cast<const char*>(var);
-}
-
 error_code ParseXmlStartUpload(std::string_view xml_resp, string* upload_id) {
-  xmlDocPtr doc = XmlRead(xml_resp);
-  if (!doc)
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
+
+  if (!result) {
+    LOG(ERROR) << "ParseXmlStartUpload: " << result.description();
     return make_error_code(errc::bad_message);
-
-  absl::Cleanup xml_free{[doc]() { xmlFreeDoc(doc); }};
-
-  xmlNodePtr root = xmlDocGetRootElement(doc);
-
-  string_view rname = as_char(root->name);
-  if (rname != "InitiateMultipartUploadResult"sv) {
+  }
+  pugi::xml_node upload_res = doc.child("InitiateMultipartUploadResult");
+  if (upload_res.type() != pugi::node_element) {
+    LOG(ERROR) << "Missing InitiateMultipartUploadResult " << xml_resp;
     return make_error_code(errc::bad_message);
   }
 
-  for (xmlNodePtr child = root->children; child; child = child->next) {
-    if (child->type == XML_ELEMENT_NODE) {
-      xmlNodePtr grand = child->children;
-      if (!strcmp(as_char(child->name), "UploadId")) {
-        if (!grand || grand->type != XML_TEXT_NODE)
-          return make_error_code(errc::bad_message);
-        upload_id->assign(as_char(grand->content));
-        break;
-      }
-    }
+  pugi::xml_node upload_text = upload_res.child("UploadId");
+  if (upload_text.type() != pugi::node_element) {
+    LOG(ERROR) << "Missing UploadId" << upload_res.text();
+    return make_error_code(errc::bad_message);
   }
+  *upload_id = upload_text.child_value();
 
   return error_code{};
 }
