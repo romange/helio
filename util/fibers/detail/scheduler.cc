@@ -511,18 +511,42 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
-  DCHECK(cntx->remote_next_.load(memory_order_relaxed) == (FiberInterface*)kRemoteFree);
+  // This function is called from FiberInterface::ActivateOther from a remote scheduler.
+  // But the fiber belongs to this scheduler.
+  DCHECK(cntx->scheduler_ == this);
 
-  intrusive_ptr_add_ref(cntx);
-  remote_ready_queue_.Push(cntx);
+  // If someone else holds the bit - give up on scheduling by this call.
+  if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
+       FiberInterface::kScheduleRemote) == 1) {
+    DVLOG(1) << "Already scheduled remotely " << cntx->name();
+    return;
+  }
 
-  DVLOG(1) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
+  if (cntx->IsScheduledRemotely()) {
+    // We schedule a fiber remotely only once.
+    // This should not happen in general, because we usually schedule a fiber under
+    // a spinlock when pulling it from the WaitQueue. However, there are ActivateOther calls
+    // that happen due to I/O events that might break this assumption. To see if this happens,
+    // I log the case and will investigate if it happens.
+    LOG(WARNING) << "Fiber " << cntx->name() << " is already scheduled remotely";
 
-  if (custom_policy_) {
-    custom_policy_->Notify();
+    // revert the flags.
+    cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
   } else {
-    DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
-    dimpl->Notify();
+    intrusive_ptr_add_ref(cntx);
+    remote_ready_queue_.Push(cntx);
+
+    // clear the bit after we pushed to the queue.
+    cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
+
+    DVLOG(1) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
+
+    if (custom_policy_) {
+      custom_policy_->Notify();
+    } else {
+      DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
+      dimpl->Notify();
+    }
   }
 }
 
@@ -572,7 +596,7 @@ void Scheduler::ProcessRemoteReady() {
       break;
 
     // Marks as free.
-    fi->remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
+    fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
 
     DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
@@ -585,7 +609,7 @@ void Scheduler::ProcessRemoteReady() {
       AddReady(fi);
     }
 
-    // Each time we push fi to remote_ready_queue_ we increase the reference count.
+    // When we push fi to remote_ready_queue_ we increase the reference count.
     intrusive_ptr_release(fi);
   }
 }

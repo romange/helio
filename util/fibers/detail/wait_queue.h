@@ -15,7 +15,7 @@ class FiberInterface;
 class Waiter {
   friend class FiberInterface;
 
-  explicit Waiter(FiberInterface* cntx, uint32_t epoch) : cntx_(cntx), epoch_(epoch) {
+  explicit Waiter(FiberInterface* cntx) : cntx_(cntx) {
   }
 
  public:
@@ -26,10 +26,6 @@ class Waiter {
     return cntx_;
   }
 
-  uint32_t epoch() const {
-    return epoch_;
-  }
-
   bool IsLinked() const {
     return wait_hook.is_linked();
   }
@@ -38,8 +34,9 @@ class Waiter {
 
  private:
   FiberInterface* cntx_;
-  uint32_t epoch_;
 };
+
+// All WaitQueue are not thread safe and must be run under a spinlock.
 
 class WaitQueue {
  public:
@@ -62,7 +59,7 @@ class WaitQueue {
 
     Waiter* waiter = &wait_list_.front();
     wait_list_.pop_front();
-    NotifyImpl(waiter->epoch(), waiter->cntx(), active);
+    NotifyImpl(waiter->cntx(), active);
 
     return true;
   }
@@ -74,7 +71,7 @@ class WaitQueue {
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,
       boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
-  void NotifyImpl(uint32_t epoch, FiberInterface* suspended, FiberInterface* active);
+  void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
 
   WaitList wait_list_;
 };

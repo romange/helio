@@ -34,6 +34,8 @@ class Scheduler;
 class FiberInterface {
   friend class Scheduler;
 
+  static constexpr uint64_t kRemoteFree = 1;
+
  protected:
   // holds its own fiber_context when it's not active.
   // the difference between fiber_context and continuation is that continuation is launched
@@ -78,7 +80,6 @@ class FiberInterface {
   // Schedules another fiber without switching to it.
   // other can belong to another thread.
   void ActivateOther(FiberInterface* other);
-  void WakeOther(uint32_t epoch, FiberInterface* other);
 
   void Suspend();
 
@@ -92,29 +93,6 @@ class FiberInterface {
   bool IsDefined() const {
     return bool(entry_);
   }
-
-#if 0
-  void StartParking() {
-    flags_.fetch_or(kParkingInProgress, std::memory_order_relaxed);
-  }
-
-  // Notifies a fiber that intends to park to resume itself.
-  void NotifyParked(FiberInterface* other);
-  FiberInterface* NotifyParked(uint64_t token);
-  void NotifyAllParked(uint64_t token);
-  void SuspendUntilWakeup();
-
-  // Returns true if the fiber was suspended, false otherwise.
-  bool SuspendConditionally(uint64_t token, absl::FunctionRef<bool()> validate);
-
-  void set_park_token(uint64_t token) {
-    park_token_ = token;
-  }
-
-  uint64_t park_token() const {
-    return park_token_;
-  }
-#endif
 
   // We need refcounting for referencing handles via .
   friend void intrusive_ptr_add_ref(FiberInterface* ctx) noexcept {
@@ -178,20 +156,23 @@ class FiberInterface {
   }
 
   Waiter CreateWaiter() {
-    return Waiter{this, wake_epoch_.fetch_add(1, std::memory_order_relaxed) + 1};
+    return Waiter{this};
+  }
+
+  bool IsScheduledRemotely() const {
+    return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
   }
 
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
 
-  // using WaitQueueType = boost::intrusive::slist<
-  //    FiberInterface,
-  //    boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::wait_hook>>;
+  // used to set up a critical section when scheduling a fiber from another thread.
+  static constexpr uint16_t kScheduleRemote = 0x4;
 
   ::boost::context::fiber_context Terminate();
 
-  std::atomic<uint32_t> use_count_;
+  std::atomic<uint32_t> use_count_;  // used for intrusive_ptr refcounting.
   std::atomic<uint16_t> flags_;
 
   Type type_;
@@ -205,7 +186,6 @@ class FiberInterface {
   std::chrono::steady_clock::time_point tp_;
 
   char name_[24];
-  std::atomic_uint32_t wake_epoch_{0};
 };
 
 template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {
@@ -273,8 +253,6 @@ void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
 uint64_t FiberEpoch() noexcept;
-
-constexpr uint64_t kRemoteFree = 1;
 
 }  // namespace detail
 }  // namespace fb2
