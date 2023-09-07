@@ -240,7 +240,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 }
 
 void FiberInterface::DetachThread() {
-  scheduler_->DetachWorker();
+  scheduler_->DetachWorker(this);
   scheduler_ = nullptr;
 }
 
@@ -268,9 +268,13 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 }
 
 void FiberInterface::PrintStackTrace() {
+  if (FiberActive() == this) {
+    LOG(INFO) << "------------ Fiber " << name_ << " ------------:\n" << GetStacktrace();
+    return;
+  }
+
   entry_ = std::move(entry_).resume_with([name = name_](ctx::fiber_context&& c) {
-    std::string stacktrace = GetStacktrace();
-    LOG(INFO) << "Fiber " << name << ":\n" << stacktrace;
+    LOG(INFO) << "------------ Fiber " << name << " ------------:\n" << GetStacktrace();
 
     c = std::move(c).resume();
     return std::move(c);

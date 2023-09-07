@@ -33,6 +33,7 @@ class Scheduler {
   void ScheduleFromRemote(FiberInterface* fibi);
 
   void Attach(FiberInterface* fibi);
+  void DetachWorker(FiberInterface* cntx);
 
   void ScheduleTermination(FiberInterface* fibi);
 
@@ -88,10 +89,6 @@ class Scheduler {
 
   void RunDeferred();
 
-  void DetachWorker() {
-    --num_worker_fibers_;
-  }
-
   void PrintAllFiberStackTraces();
 
  private:
@@ -99,6 +96,11 @@ class Scheduler {
   using FI_Queue = boost::intrusive::slist<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>,
+      boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+
+  using FI_List = boost::intrusive::slist<
+      FiberInterface,
+      boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::fibers_hook>,
       boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
   struct TpLess {
@@ -122,6 +124,9 @@ class Scheduler {
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
   std::vector<std::pair<uint64_t, std::function<void()>>> deferred_cb_;
+
+  // A list of all fibers in the thread.
+  FI_List fibers_;
 
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;

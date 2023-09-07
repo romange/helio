@@ -453,6 +453,8 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   DCHECK(!main_cntx->scheduler_);
   main_cntx->scheduler_ = this;
   dispatch_cntx_.reset(MakeDispatcher(this));
+
+  fibers_.push_back(*main_cntx);
 }
 
 Scheduler::~Scheduler() {
@@ -553,9 +555,16 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
 void Scheduler::Attach(FiberInterface* cntx) {
   cntx->scheduler_ = this;
 
+  fibers_.push_back(*cntx);
+
   if (cntx->type() == FiberInterface::WORKER) {
     ++num_worker_fibers_;
   }
+}
+
+void Scheduler::DetachWorker(FiberInterface* cntx) {
+  fibers_.erase(fibers_.iterator_to(*cntx));
+  --num_worker_fibers_;
 }
 
 void Scheduler::ScheduleTermination(FiberInterface* cntx) {
@@ -570,6 +579,8 @@ void Scheduler::DestroyTerminated() {
     FiberInterface* tfi = &terminate_queue_.front();
     terminate_queue_.pop_front();
     DVLOG(2) << "Releasing terminated " << tfi->name_;
+
+    fibers_.erase(fibers_.iterator_to(*tfi));
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
@@ -679,9 +690,24 @@ void Scheduler::PrintAllFiberStackTraces() {
       print_stack_trace(fiber);
     }
   }
+
+  bool print_sleeping_header = true;
   if (!sleep_queue_.empty()) {
     LOG(INFO) << "Sleeping fibers:";
+    print_sleeping_header = false;
     for (auto& fiber : sleep_queue_) {
+      print_stack_trace(fiber);
+    }
+  }
+
+  // Print any other fibers that are sleeping outside of the scheduler's reach.
+  // Don't print ourselves?
+  for (auto& fiber : fibers_) {
+    if (!(fiber.sleep_hook.is_linked() || fiber.list_hook.is_linked())) {
+      if (print_sleeping_header) {
+        LOG(INFO) << "Sleeping fibers:";
+        print_sleeping_header = false;
+      }
       print_stack_trace(fiber);
     }
   }
