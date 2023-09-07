@@ -22,9 +22,6 @@ using ListObjectsResult = io::Result<std::string>;
 // List all S3 buckets. Refresh AWS token if needed.
 ListBucketsResult ListS3Buckets(AWS* aws, http::Client* http_client);
 
-// Please note that all S3 paths should already be url encoded.
-// We can not do inside S3Bucket because then "/" will be encoded as well.
-// We expect that each path component is already encoded and "/" is being preserved.
 class S3Bucket {
  public:
   S3Bucket(const S3Bucket&) = delete;
