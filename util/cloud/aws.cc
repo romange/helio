@@ -5,6 +5,7 @@
 #include "util/cloud/aws.h"
 
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_format.h>
 #include <absl/strings/str_join.h>
 #include <absl/strings/str_split.h>
 #include <absl/time/clock.h>
@@ -362,6 +363,31 @@ bool IsExpiredBody(string_view body) {
   return body.find(kExpiredTokenSentinel) != std::string::npos;
 }
 
+bool AwsIsEscaped(char c) {
+  return !((c >= 'A' && c <= 'Z') ||
+    (c >= 'a' && c <= 'z') ||
+    (c >= '0' && c <= '9') ||
+    c == '-' ||
+    c == '.' ||
+    c == '_' ||
+    c == '~'
+  );
+}
+
+// Escapes the given path as documented by
+// https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html.
+std::string AwsEscapePath(const std::string_view& path, bool encode_sep) {
+  std::string escaped;
+  for (char c : path) {
+    if (!AwsIsEscaped(c) || (c == '/' && !encode_sep)) {
+      escaped.push_back(c);
+    } else {
+      absl::StrAppendFormat(&escaped, "%%%02X", c);
+    }
+  }
+  return escaped;
+}
+
 }  // namespace
 
 const char AWS::kEmptySig[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -465,7 +491,7 @@ string AwsSignKey::AuthHeader(const SignHeaders& headers) const {
   }
 
   string canonical_request =
-      absl::StrCat(headers.method, "\n", url, "\n", canonical_querystring, "\n");
+      absl::StrCat(headers.method, "\n", AwsEscapePath(url, false), "\n", canonical_querystring, "\n");
   string signed_headers = "host;x-amz-content-sha256;x-amz-date";
   if (!connection_data_.session_token.empty()) {
     signed_headers += ";x-amz-security-token";
