@@ -705,5 +705,9 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   fb_server.Join();
 }
 
+TEST_P(ProactorTest, dump_fiber_stacks) {
+  fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+}
+
 }  // namespace fb2
 }  // namespace util
