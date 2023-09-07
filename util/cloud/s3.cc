@@ -6,11 +6,10 @@
 
 #include <absl/cleanup/cleanup.h>
 #include <absl/strings/match.h>
-#include <libxml/xpath.h>
-#include <libxml/xpathInternals.h>
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <pugixml.hpp>
 
 #include "base/logging.h"
 #include "util/cloud/aws.h"
@@ -38,97 +37,60 @@ bool IsAwsEndpoint(string_view endpoint) {
 
 namespace xml {
 
-inline xmlDocPtr XmlRead(string_view xml) {
-  return xmlReadMemory(xml.data(), xml.size(), NULL, NULL, XML_PARSE_COMPACT | XML_PARSE_NOBLANKS);
-}
-
-inline const char* as_char(const xmlChar* var) {
-  return reinterpret_cast<const char*>(var);
-}
-
-vector<string> ParseXmlListBuckets(string_view xml_resp) {
-  xmlDocPtr doc = XmlRead(xml_resp);
-  CHECK(doc);
-
-  xmlXPathContextPtr xpathCtx = xmlXPathNewContext(doc);
-
-  auto register_res = xmlXPathRegisterNs(xpathCtx, BAD_CAST "NS",
-                                         BAD_CAST "http://s3.amazonaws.com/doc/2006-03-01/");
-  CHECK_EQ(register_res, 0);
-
-  xmlXPathObjectPtr xpathObj = xmlXPathEvalExpression(
-      BAD_CAST "/NS:ListAllMyBucketsResult/NS:Buckets/NS:Bucket/NS:Name", xpathCtx);
-  CHECK(xpathObj);
-  xmlNodeSetPtr nodes = xpathObj->nodesetval;
-  vector<string> res;
-  if (nodes) {
-    int size = nodes->nodeNr;
-    for (int i = 0; i < size; ++i) {
-      xmlNodePtr cur = nodes->nodeTab[i];
-      CHECK_EQ(XML_ELEMENT_NODE, cur->type);
-      CHECK(cur->ns);
-      CHECK(nullptr == cur->content);
-
-      if (cur->children && cur->last == cur->children && cur->children->type == XML_TEXT_NODE) {
-        CHECK(cur->children->content);
-        res.push_back(as_char(cur->children->content));
-      }
-    }
-  }
-
-  xmlXPathFreeObject(xpathObj);
-  xmlXPathFreeContext(xpathCtx);
-  xmlFreeDoc(doc);
-
-  return res;
-}
-
-std::pair<size_t, string_view> ParseXmlObjContents(xmlNodePtr node) {
-  std::pair<size_t, string_view> res;
-
-  for (xmlNodePtr child = node->children; child; child = child->next) {
-    if (child->type == XML_ELEMENT_NODE) {
-      xmlNodePtr grand = child->children;
-
-      if (!strcmp(as_char(child->name), "Key")) {
-        CHECK(grand && grand->type == XML_TEXT_NODE);
-        res.second = string_view(as_char(grand->content));
-      } else if (!strcmp(as_char(child->name), "Size")) {
-        CHECK(grand && grand->type == XML_TEXT_NODE);
-        CHECK(absl::SimpleAtoi(as_char(grand->content), &res.first));
-      }
-    }
-  }
-  return res;
-}
-
-ListObjectsResult ParseListObj(string_view xml_obj, S3Bucket::ListObjectCb cb) {
-  xmlDocPtr doc = XmlRead(xml_obj);
-
-  bool truncated = false;
-  string_view last_key = "";
-
-  if (!doc) {
-    LOG(ERROR) << "Could not parse xml response " << xml_obj;
+ListBucketsResult ParseXmlListBuckets(string_view xml_resp) {
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
+  if (!result) {
+    LOG(ERROR) << "Could not parse xml response " << result.description();
     return make_unexpected(make_error_code(errc::bad_message));
   }
 
-  absl::Cleanup xml_free{[doc]() { xmlFreeDoc(doc); }};
+  pugi::xml_node root = doc.child("ListAllMyBucketsResult");
+  if (root.type() != pugi::node_element) {
+    LOG(ERROR) << "Could not find root node " << xml_resp;
+    return make_unexpected(make_error_code(errc::bad_message));
+  }
 
-  xmlNodePtr root = xmlDocGetRootElement(doc);
-  CHECK_STREQ("ListBucketResult", as_char(root->name));
-  for (xmlNodePtr child = root->children; child; child = child->next) {
-    if (child->type == XML_ELEMENT_NODE) {
-      xmlNodePtr grand = child->children;
-      if (as_char(child->name) == "IsTruncated"sv) {
-        truncated = as_char(grand->content) == "true"sv;
-      } else if (as_char(child->name) == "Marker"sv) {
-      } else if (as_char(child->name) == "Contents"sv) {
-        auto sz_name = ParseXmlObjContents(child);
-        cb(sz_name.first, sz_name.second);
-        last_key = sz_name.second;
-      }
-    }
+  pugi::xml_node buckets = root.child("Buckets");
+  if (buckets.type() != pugi::node_element) {
+    LOG(ERROR) << "Could not find buckets node " << xml_resp;
+    return make_unexpected(make_error_code(errc::bad_message));
+  }
+
+  vector<string> res;
+  for (pugi::xml_node bucket = buckets.child("Bucket"); bucket; bucket = bucket.next_sibling()) {
+    res.emplace_back(bucket.child("Name").text().get());
+  }
+
+  return res;
+}
+
+ListObjectsResult ParseListObj(string_view xml_resp, S3Bucket::ListObjectCb cb) {
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
+  if (!result) {
+    LOG(ERROR) << "Could not parse xml response " << result.description();
+    return make_unexpected(make_error_code(errc::bad_message));
+  }
+
+  string_view last_key;
+
+  pugi::xml_node root = doc.child("ListBucketResult");
+  if (root.type() != pugi::node_element) {
+    LOG(ERROR) << "Could not find root node " << xml_resp;
+    return make_unexpected(make_error_code(errc::bad_message));
+  }
+
+  // text() provides a convenient interface to avoid checking for potentially missing
+  // fields and rely on the defaults.
+  bool truncated = root.child("IsTruncated").text().as_bool();
+  for (pugi::xml_node contents = root.child("Contents"); contents;
+       contents = contents.next_sibling("Contents")) {
+    size_t sz = contents.child("Size").text().as_ullong();
+    string_view key = contents.child("Key").text().get();
+    if (!key.empty())
+      cb(sz, key);
+    last_key = key;
   }
 
   return truncated ? std::string{last_key} : "";
