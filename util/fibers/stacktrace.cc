@@ -16,7 +16,7 @@
 #define SKIP_COUNT_BOTTOM 5
 #endif
 
-std::string util::GetStacktrace() {
+std::string util::fb2::GetStacktrace() {
   void* addresses[20];
   int size = absl::GetStackTrace(addresses, sizeof(addresses) / sizeof(void*),
                                  /*skip_count=*/SKIP_COUNT_TOP);

@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace util {
+namespace util::fb2 {
 
 std::string GetStacktrace();
 
