@@ -678,10 +678,8 @@ void Scheduler::RunDeferred() {
 }
 
 void Scheduler::PrintAllFiberStackTraces() {
-  for (auto& fiber : ready_queue_) {
-    fiber.PrintStackTrace();
-  }
   for (auto& fiber : fibers_) {
+    DCHECK(fiber.scheduler() == this);
     fiber.PrintStackTrace();
   }
 }
