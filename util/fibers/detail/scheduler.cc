@@ -455,6 +455,7 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   dispatch_cntx_.reset(MakeDispatcher(this));
 
   fibers_.push_back(*main_cntx);
+  fibers_.push_back(*dispatch_cntx_);
 }
 
 Scheduler::~Scheduler() {
@@ -478,6 +479,9 @@ Scheduler::~Scheduler() {
   custom_policy_ = nullptr;
 
   CHECK_EQ(0u, num_worker_fibers_);
+
+  fibers_.erase(fibers_.iterator_to(*dispatch_cntx_));
+  fibers_.erase(fibers_.iterator_to(*main_cntx_));
 
   // destroys the stack and the object via intrusive_ptr_release.
   dispatch_cntx_.reset();
@@ -674,42 +678,11 @@ void Scheduler::RunDeferred() {
 }
 
 void Scheduler::PrintAllFiberStackTraces() {
-  ProcessRemoteReady();
-
-  auto print_stack_trace = [](FiberInterface& fi) { fi.PrintStackTrace(); };
-
-  if (!ready_queue_.empty()) {
-    LOG(INFO) << "Ready fibers:";
-    for (auto& fiber : ready_queue_) {
-      print_stack_trace(fiber);
-    }
+  for (auto& fiber : ready_queue_) {
+    fiber.PrintStackTrace();
   }
-  if (!terminate_queue_.empty()) {
-    LOG(INFO) << "Terminated fibers:";
-    for (auto& fiber : terminate_queue_) {
-      print_stack_trace(fiber);
-    }
-  }
-
-  bool print_sleeping_header = true;
-  if (!sleep_queue_.empty()) {
-    LOG(INFO) << "Sleeping fibers:";
-    print_sleeping_header = false;
-    for (auto& fiber : sleep_queue_) {
-      print_stack_trace(fiber);
-    }
-  }
-
-  // Print any other fibers that are sleeping outside of the scheduler's reach.
-  // Don't print ourselves?
   for (auto& fiber : fibers_) {
-    if (!(fiber.sleep_hook.is_linked() || fiber.list_hook.is_linked())) {
-      if (print_sleeping_header) {
-        LOG(INFO) << "Sleeping fibers:";
-        print_sleeping_header = false;
-      }
-      print_stack_trace(fiber);
-    }
+    fiber.PrintStackTrace();
   }
 }
 

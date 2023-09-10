@@ -268,13 +268,23 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 }
 
 void FiberInterface::PrintStackTrace() {
-  if (FiberActive() == this) {
-    LOG(INFO) << "------------ Fiber " << name_ << " ------------:\n" << GetStacktrace();
-    return;
+  std::string_view state = "sleeping";
+  if (list_hook.is_linked()) {
+    state = "ready";
+  } else if (FiberActive() == this) {
+    state = "active";
   }
 
-  entry_ = std::move(entry_).resume_with([name = name_](ctx::fiber_context&& c) {
-    LOG(INFO) << "------------ Fiber " << name << " ------------:\n" << GetStacktrace();
+  auto print = [this, state]() {
+    LOG(INFO) << "------------ Fiber " << this->name_ << " (" << state << ") ------------\n" << GetStacktrace();
+  };
+
+  if (FiberActive() == this) {
+    return print();
+  }
+
+  entry_ = std::move(entry_).resume_with([print = std::move(print)](ctx::fiber_context&& c) {
+    print();
 
     c = std::move(c).resume();
     return std::move(c);
