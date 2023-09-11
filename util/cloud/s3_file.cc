@@ -6,6 +6,7 @@
 #include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <pugixml.hpp>
+
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/dynamic_body.hpp>
 
@@ -135,8 +136,8 @@ io::Result<string> InitiateMultiPart(string_view key_path, const AWS& aws, AwsSi
 class S3ReadFile final : public io::ReadonlyFile {
  public:
   // does not own pool object, only wraps it with ReadonlyFile interface.
-  S3ReadFile(const AWS& aws, string read_obj_url, http::Client* client)
-      : aws_(aws), client_(client), read_obj_url_(std::move(read_obj_url)) {
+  S3ReadFile(const AWS& aws, string read_obj_url, std::unique_ptr<http::Client> client)
+      : aws_(aws), client_(std::move(client)), read_obj_url_(std::move(read_obj_url)) {
   }
 
   ~S3ReadFile() override;
@@ -165,7 +166,7 @@ class S3ReadFile final : public io::ReadonlyFile {
   }
 
   const AWS& aws_;
-  http::Client* client_;
+  std::unique_ptr<http::Client> client_;
 
   const string read_obj_url_;
 
@@ -183,7 +184,8 @@ class S3WriteFile : public io::WriteFile {
    * @param aws - initialized AWS object.
    * @param pool - https connection pool connected to google api server.
    */
-  S3WriteFile(string_view key_name, string_view region, const AWS& aws, http::Client* client);
+  S3WriteFile(string_view key_name, string_view region, const AWS& aws,
+              std::unique_ptr<http::Client> client);
 
   error_code Close() final;
 
@@ -216,13 +218,13 @@ error_code S3ReadFile::Open(string_view region) {
 
   VLOG(1) << "Unsigned request: " << req;
   sign_key_ = aws_.GetSignKey(region);
-  RETURN_ON_ERR(aws_.Handshake(client_, &sign_key_, &req, &parser_));
+  RETURN_ON_ERR(aws_.Handshake(client_.get(), &sign_key_, &req, &parser_));
 
   const auto& msg = parser_.get();
   VLOG(1) << "HeaderResp: " << msg.result_int() << " " << msg;
 
   if (msg.result() == h2::status::not_found) {
-    RETURN_ON_ERR(DrainResponse(client_, &parser_));
+    RETURN_ON_ERR(DrainResponse(client_.get(), &parser_));
 
     return make_error_code(errc::no_such_file_or_directory);
   }
@@ -307,8 +309,9 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
   return read_sofar;
 }
 
-S3WriteFile::S3WriteFile(string_view name, string_view region, const AWS& aws, http::Client* client)
-    : WriteFile(name), aws_(aws), client_(client), body_mb_(kMaxPartSize) {
+S3WriteFile::S3WriteFile(string_view name, string_view region, const AWS& aws,
+                         std::unique_ptr<http::Client> client)
+    : WriteFile(name), aws_(aws), client_(std::move(client)), body_mb_(kMaxPartSize) {
   skey_ = aws_.GetSignKey(region);
 }
 
@@ -496,13 +499,13 @@ error_code S3WriteFile::Upload() {
 }  // namespace
 
 io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_view path,
-                                             const AWS& aws, http::Client* client,
+                                             const AWS& aws, std::unique_ptr<http::Client> client,
                                              const io::ReadonlyFile::Options& opts) {
   CHECK(opts.sequential && client);
   VLOG(1) << "OpenS3ReadFile: " << path;
 
   string read_obj_url{path};
-  unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, std::move(read_obj_url), client));
+  unique_ptr<S3ReadFile> fl(new S3ReadFile(aws, std::move(read_obj_url), std::move(client)));
 
   auto ec = fl->Open(region);
   if (ec)
@@ -512,8 +515,8 @@ io::Result<io::ReadonlyFile*> OpenS3ReadFile(std::string_view region, string_vie
 }
 
 io::Result<io::WriteFile*> OpenS3WriteFile(string_view region, string_view key_path, const AWS& aws,
-                                           http::Client* client) {
-  return new S3WriteFile{key_path, region, aws, client};
+                                           std::unique_ptr<http::Client> client) {
+  return new S3WriteFile{key_path, region, aws, std::move(client)};
 }
 
 }  // namespace cloud

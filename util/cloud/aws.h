@@ -68,6 +68,7 @@ class AWS {
     connection_data_.region = region;
   }
 
+  // Init must be run in a proactor thread.
   std::error_code Init();
 
   const AwsConnectionData& connection_data() const {
