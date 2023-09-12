@@ -705,5 +705,22 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   fb_server.Join();
 }
 
+TEST_P(ProactorTest, dump_fiber_stacks) {
+  ProactorThread pth(0, proactor()->GetKind());
+
+  Fiber fb = proactor()->LaunchFiber([&] {
+    ThisFiber::SetName("migrated");
+    proactor()->Migrate(pth.get());
+    ThisFiber::SleepFor(30ms);
+  });
+
+  fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+  pth.get()->Await([]() {
+    fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+  });
+
+  fb.Join();
+}
+
 }  // namespace fb2
 }  // namespace util

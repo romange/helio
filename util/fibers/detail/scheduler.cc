@@ -453,6 +453,9 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   DCHECK(!main_cntx->scheduler_);
   main_cntx->scheduler_ = this;
   dispatch_cntx_.reset(MakeDispatcher(this));
+
+  fibers_.push_back(*main_cntx);
+  fibers_.push_back(*dispatch_cntx_);
 }
 
 Scheduler::~Scheduler() {
@@ -476,6 +479,9 @@ Scheduler::~Scheduler() {
   custom_policy_ = nullptr;
 
   CHECK_EQ(0u, num_worker_fibers_);
+
+  fibers_.erase(fibers_.iterator_to(*dispatch_cntx_));
+  fibers_.erase(fibers_.iterator_to(*main_cntx_));
 
   // destroys the stack and the object via intrusive_ptr_release.
   dispatch_cntx_.reset();
@@ -553,9 +559,16 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
 void Scheduler::Attach(FiberInterface* cntx) {
   cntx->scheduler_ = this;
 
+  fibers_.push_back(*cntx);
+
   if (cntx->type() == FiberInterface::WORKER) {
     ++num_worker_fibers_;
   }
+}
+
+void Scheduler::DetachWorker(FiberInterface* cntx) {
+  fibers_.erase(fibers_.iterator_to(*cntx));
+  --num_worker_fibers_;
 }
 
 void Scheduler::ScheduleTermination(FiberInterface* cntx) {
@@ -570,6 +583,8 @@ void Scheduler::DestroyTerminated() {
     FiberInterface* tfi = &terminate_queue_.front();
     terminate_queue_.pop_front();
     DVLOG(2) << "Releasing terminated " << tfi->name_;
+
+    fibers_.erase(fibers_.iterator_to(*tfi));
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
@@ -660,6 +675,13 @@ void Scheduler::RunDeferred() {
     deferred_cb_.pop_back();
   }
 #endif
+}
+
+void Scheduler::PrintAllFiberStackTraces() {
+  for (auto& fiber : fibers_) {
+    DCHECK(fiber.scheduler() == this);
+    fiber.PrintStackTrace();
+  }
 }
 
 }  // namespace detail

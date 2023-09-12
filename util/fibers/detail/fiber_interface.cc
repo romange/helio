@@ -8,6 +8,7 @@
 
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -239,7 +240,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 }
 
 void FiberInterface::DetachThread() {
-  scheduler_->DetachWorker();
+  scheduler_->DetachWorker(this);
   scheduler_ = nullptr;
 }
 
@@ -264,6 +265,34 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
+}
+
+void FiberInterface::PrintStackTrace() {
+  std::string_view state = "sleeping";
+  if (list_hook.is_linked()) {
+    state = "ready";
+  } else if (FiberActive() == this) {
+    state = "active";
+  }
+
+  auto print = [this, state]() {
+    LOG(INFO) << "------------ Fiber " << this->name_ << " (" << state << ") ------------\n" << GetStacktrace();
+  };
+
+  if (FiberActive() == this) {
+    return print();
+  }
+
+  entry_ = std::move(entry_).resume_with([print = std::move(print)](ctx::fiber_context&& c) {
+    print();
+
+    c = std::move(c).resume();
+    return std::move(c);
+  });
+}
+
+void FiberInterface::PrintAllFiberStackTraces() {
+  FbInitializer().sched->PrintAllFiberStackTraces();
 }
 
 void EnterFiberAtomicSection() noexcept {

@@ -65,7 +65,12 @@ class FiberInterface {
   FI_ListHook list_hook;  //, wait_hook;
   FI_SleepHook sleep_hook;
 
+  FI_ListHook fibers_hook;  // For a list of all fibers in the thread
+
   ::boost::context::fiber_context SwitchTo();
+  void PrintStackTrace();
+
+  static void PrintAllFiberStackTraces();
 
   void Start(Launch launch);
 
