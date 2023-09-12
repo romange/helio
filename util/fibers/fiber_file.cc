@@ -13,12 +13,7 @@
 #include "base/histogram.h"
 #include "base/logging.h"
 
-#ifdef USE_FB2
 #include "util/fibers/synchronization.h"
-#else
-#include "util/fibers/fibers_ext.h"
-using Mutex = ::boost::fibers::mutex;
-#endif
 
 namespace util {
 using namespace io;

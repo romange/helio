@@ -2,7 +2,7 @@
 // See LICENSE for licensing terms.
 //
 
-#include "util/uring/uring_socket.h"
+#include "util/fibers/uring_socket.h"
 
 #include <netinet/in.h>
 #include <poll.h>
@@ -14,11 +14,7 @@
 #define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
 
 namespace util {
-#ifdef USE_FB2
 namespace fb2 {
-#else
-namespace uring {
-#endif
 
 using namespace std;
 using IoResult = Proactor::IoResult;
@@ -178,11 +174,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       memcpy(next, ptr[i].iov_base, ptr[i].iov_len);
       next += ptr[i].iov_len;
     }
-#ifdef USE_FB2
     auto cb = [p, reg_buf](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags) {
-#else
-    auto cb = [p, reg_buf](Proactor::IoResult res, uint32_t flags, uint64_t) {
-#endif
       p->ReturnRegisteredBuffer(reg_buf);
       CHECK_GT(res, 0);  // TODO - handle errors.
     };
@@ -264,12 +256,8 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) 
 
   int fd = native_handle();
   Proactor* proactor = GetProactor();
-#ifdef USE_FB2
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
                                         uint32_t flags) {
-#else
-  auto mycb = [msg, cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, uint64_t) {
-#endif
     delete msg;
 
     if (res >= 0) {
@@ -369,12 +357,8 @@ uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t
   int fd = native_handle();
   Proactor* p = GetProactor();
 
-#ifdef USE_FB2
   auto se_cb = [cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
                                     uint32_t flags) { cb(res); };
-#else
-  auto se_cb = [cb = std::move(cb)](Proactor::IoResult res, uint32_t flags, uint64_t) { cb(res); };
-#endif
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
   se.PrepPollAdd(fd, event_mask);
   se.sqe()->flags |= register_flag();
@@ -393,5 +377,5 @@ uint32_t UringSocket::CancelPoll(uint32_t id) {
   return io_res;
 }
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

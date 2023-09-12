@@ -2,27 +2,19 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
-#include "util/uring/uring_file.h"
+#include "util/fibers/uring_file.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
 
 #include "base/logging.h"
 
-#ifdef USE_FB2
 #include "util/fibers/uring_proactor.h"
-#else
-#include "util/uring/proactor.h"
-#endif
 
 namespace util {
 
-#ifdef USE_FB2
 namespace fb2 {
 using Proactor = UringProactor;
-#else
-namespace uring {
-#endif
 
 using namespace std;
 using namespace io;
@@ -399,5 +391,5 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
   return make_unique<LinuxFileImpl>(io_res, p);
 }
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

@@ -10,11 +10,7 @@
 #include "base/pthread_utils.h"
 
 namespace util {
-#ifdef USE_FB2
 namespace fb2 {
-#else
-namespace fibers_ext {
-#endif
 
 using namespace std;
 
@@ -111,5 +107,5 @@ void FiberQueueThreadPool::WorkerFunction(unsigned index) {
   VLOG(1) << "FiberQueueThreadPool::Exit";
 }
 
-}  // namespace fibers_ext
+}  // namespace fb2
 }  // namespace util

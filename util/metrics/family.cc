@@ -12,11 +12,7 @@ namespace util {
 namespace metrics {
 using namespace std;
 
-#ifdef USE_FB2
 using fb2::Mutex;
-#else
-using Mutex = ::boost::fibers::mutex;
-#endif
 
 namespace {
 

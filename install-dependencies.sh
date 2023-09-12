@@ -2,8 +2,8 @@
 
 set -e
 
-apt install -y cmake libunwind-dev zip libfl-dev bison ninja-build autoconf-archive libtool
-apt install -y curl libxml2-dev
+apt install -y cmake libunwind-dev zip bison ninja-build autoconf-archive libtool
+apt install -y curl
 g++ --version
 
 BVER=1.76.0

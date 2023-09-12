@@ -19,7 +19,6 @@ endif()
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
 option (USE_MOLD "whether to use mold linker" OFF)
-option (USE_FB2 "whether to use fibers2 library" OFF)
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
 
