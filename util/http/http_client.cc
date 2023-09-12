@@ -32,76 +32,12 @@ using boost_error = boost::system::error_code;
 using util::tls::TlsSocket;
 
 namespace {
+
 // This can be used for debugging
 int VerifyCallback(int ok, X509_STORE_CTX* ctx) {
   // since this is a client side, we don't do much here,
   VLOG(1) << "verify_callback: " << std::boolalpha << bool(ok);
   return ok;
-}
-
-static void ClearSslError() {
-  unsigned long l;
-
-  do {
-    const char *file, *data;
-    int line, flags;
-
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
-    const char* func;
-    l = ERR_get_error_all(&file, &line, &func, &data, &flags);
-#else
-    l = ERR_get_error_line_data(&file, &line, &data, &flags);
-#endif
-  } while (l);
-}
-
-// returns -1 if failed to load any CA certificates, 0 if loaded successfully
-static int SslProbeSetDefaultCaLocation(SSL_CTX* ctx) {
-  /* The probe paths are based on:
-   * https://www.happyassassin.net/posts/2015/01/12/a-note-about-ssltls-trusted-certificate-stores-and-platforms/
-   */
-  static const char* paths[] = {
-      "/etc/pki/tls/certs/ca-bundle.crt",
-      "/etc/ssl/certs/ca-bundle.crt",
-      "/etc/pki/tls/certs/ca-bundle.trust.crt",
-      "/etc/ssl/cert.pem",
-      "/etc/ssl/cacert.pem",
-
-      "/etc/ssl/certs/ca-certificates.crt",
-
-      /* BSD */
-      "/usr/local/share/certs/ca-root-nss.crt",
-      "/etc/openssl/certs/ca-certificates.crt",
-#ifdef __APPLE__
-      "/private/etc/ssl/cert.pem",
-      "/private/etc/ssl/certs",
-      "/usr/local/etc/openssl@1.1/cert.pem",
-      "/usr/local/etc/openssl@1.0/cert.pem",
-      "/usr/local/etc/openssl/certs",
-      "/System/Library/OpenSSL",
-#endif
-      NULL,
-  };
-  const char* path = NULL;
-  int i;
-
-  for (i = 0; (path = paths[i]); i++) {
-    struct stat st;
-
-    if (stat(path, &st) != 0)
-      continue;
-
-    int res = SSL_CTX_load_verify_locations(ctx, path, NULL);
-    if (res != 1) {
-      ClearSslError();
-
-      continue;
-    }
-
-    return 0;
-  }
-
-  return -1;
 }
 
 }  // namespace
@@ -202,7 +138,7 @@ SSL_CTX* TlsClient::CreateSslContext() {
     // see https://www.openssl.org/docs/man3.0/man1/openssl-verification-options.html
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
 
-    if (SslProbeSetDefaultCaLocation(ctx) != 0) {
+    if (tls::SslProbeSetDefaultCALocation(ctx) != 0) {
       if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
         LOG(WARNING) << "failed to set default verify path on client context for TLS connection";
         FreeContext(ctx);
