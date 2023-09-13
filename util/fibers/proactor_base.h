@@ -195,7 +195,7 @@ class ProactorBase {
 
     // We must keep it as timespec because io-uring accesses timespec asynchronously
     // after the submition.
-    timespec period;
+    struct timespec period;
 
     uint32_t val1;  // implementation dependent payload.
     uint32_t val2;  // implementation dependent payload.
