@@ -38,7 +38,6 @@ using detail::FiberInterface;
 namespace {
 
 constexpr uint64_t kIgnoreIndex = 0;
-constexpr uint64_t kNopIndex = 2;
 constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr size_t kEvBatchSize = 128;
 
@@ -342,6 +341,7 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
 
   CHECK_EQ(0, epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev));
 #else
+  // FreeBsd
   struct kevent kev[2];
   unsigned index = 0;
   uint64_t ud = ret + kUserDataCbIndex;
@@ -355,11 +355,6 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
 
   return ret;
 }
-
-/*void EpollProactor::UpdateCb(unsigned arm_index, CbType cb) {
-  CHECK_LT(arm_index, centries_.size());
-  centries_[arm_index].cb = cb;
-}*/
 
 void EpollProactor::Disarm(int fd, unsigned arm_index) {
   DCHECK(pthread_self() == thread_id_);
@@ -397,11 +392,18 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
 
   CHECK_EQ(0, timerfd_settime(tfd, 0, &ts, NULL));
 #else
-  CHECK(false);
+  // FreeBsd
+  struct kevent kev;
+  int64_t msec = item->period.tv_sec * 1000 + item->period.tv_nsec / 1000000;
+
+  // Create a timer event with EV_SET
+  EV_SET(&kev, id, EVFILT_TIMER, EV_ADD | EV_ENABLE, 0, msec, item);
+  item->val1 = id;
+  CHECK_EQ(0, kevent(epoll_fd_, &kev, 1, NULL, 0, NULL));
 #endif
 }
 
-void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
+void EpollProactor::CancelPeriodicInternal(uint32_t val1, uint32_t arm_id) {
   // we call the callback one more time explicitly in order to make sure it
   // deleted PeriodicItem.
   if (centries_[arm_id].cb) {
@@ -409,10 +411,18 @@ void EpollProactor::CancelPeriodicInternal(uint32_t tfd, uint32_t arm_id) {
     centries_[arm_id].cb = nullptr;
   }
 
+#ifdef __linux__
+  uint32_t tfd = val1;
   Disarm(tfd, arm_id);
   if (close(tfd) == -1) {
     LOG(ERROR) << "Could not close timer, error " << errno;
   }
+#else
+  // FreeBsd
+  struct kevent kev;
+  EV_SET(&kev, val1, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+  CHECK_EQ(0, kevent(epoll_fd_, &kev, 1, NULL, 0, NULL));
+#endif
 }
 
 void EpollProactor::WakeRing() {
@@ -439,7 +449,7 @@ void EpollProactor::WakeRing() {
   CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
 #else
   struct kevent kev;
-  EV_SET(&kev, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, 0);
+  EV_SET(&kev, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, (void*)kIgnoreIndex);
   CHECK_EQ(0, kevent(epoll_fd_, &kev, 1, NULL, 0, NULL));
 #endif
 }
@@ -463,6 +473,15 @@ void EpollProactor::DispatchCompletions(const void* cevents, unsigned count) {
 
   for (unsigned i = 0; i < count; ++i) {
     const auto& cqe = ev_batch.cqe[i];
+
+#ifndef __linux__
+    // FreeBsd based timer event.
+    if (cqe.filter == EVFILT_TIMER) {
+      PeriodicItem* item = reinterpret_cast<PeriodicItem*>(cqe.udata);
+      PeriodicCb(item);
+      continue;
+    }
+#endif
 
     // I allocate range of 1024 reserved values for the internal EpollProactor use.
     uint32_t user_data = USER_DATA(cqe);
@@ -488,7 +507,7 @@ void EpollProactor::DispatchCompletions(const void* cevents, unsigned count) {
       continue;
     }
 
-    if (user_data == kIgnoreIndex || kNopIndex)
+    if (user_data == kIgnoreIndex)
       continue;
 
     LOG(ERROR) << "Unrecognized user_data " << user_data;

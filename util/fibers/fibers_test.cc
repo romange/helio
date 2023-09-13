@@ -17,8 +17,9 @@
 #include "util/fibers/synchronization.h"
 
 #ifdef __linux__
-#include "util/fibers/uring_proactor.h"
 #include <sys/syscall.h>
+
+#include "util/fibers/uring_proactor.h"
 
 // older linux systems do not expose this system call so we wrap it in our own function.
 int my_gettid() {
@@ -49,9 +50,9 @@ int my_gettid() {
 #if defined(__APPLE__)
 
 unsigned my_gettid() {
- uint64_t tid;
- pthread_threadid_np(NULL, &tid);
- return tid;
+  uint64_t tid;
+  pthread_threadid_np(NULL, &tid);
+  return tid;
 }
 
 #endif
@@ -705,7 +706,7 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   fb_server.Join();
 }
 
-TEST_P(ProactorTest, dump_fiber_stacks) {
+TEST_P(ProactorTest, DumpFiberStacks) {
   ProactorThread pth(0, proactor()->GetKind());
 
   Fiber fb = proactor()->LaunchFiber([&] {
@@ -715,11 +716,21 @@ TEST_P(ProactorTest, dump_fiber_stacks) {
   });
 
   fb2::detail::FiberInterface::PrintAllFiberStackTraces();
-  pth.get()->Await([]() {
-    fb2::detail::FiberInterface::PrintAllFiberStackTraces();
-  });
+  pth.get()->Await([]() { fb2::detail::FiberInterface::PrintAllFiberStackTraces(); });
 
   fb.Join();
+}
+
+TEST_P(ProactorTest, Periodic) {
+  unsigned cnt = 0;
+
+  proactor()->Await([&] {
+    auto task_id = proactor()->AddPeriodic(1, [&] { ++cnt; });
+    ThisFiber::SleepFor(20ms);
+    proactor()->CancelPeriodic(task_id);
+  });
+
+  EXPECT_GT(cnt, 0u);
 }
 
 }  // namespace fb2
