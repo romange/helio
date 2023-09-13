@@ -111,5 +111,9 @@ class Engine {
   BIO* external_bio_;
 };
 
+/// Tries to load CA certificates from predefined (hardcoded) locations.
+/// Returns 0 on success, -1 on failure.
+int SslProbeSetDefaultCALocation(SSL_CTX* ctx);
+
 }  // namespace tls
 }  // namespace util

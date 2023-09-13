@@ -5,6 +5,7 @@
 #include "util/http/http_client.h"
 
 #include <absl/strings/numbers.h>
+#include <openssl/err.h>
 
 #include <boost/asio/connect.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
@@ -31,12 +32,14 @@ using boost_error = boost::system::error_code;
 using util::tls::TlsSocket;
 
 namespace {
+
 // This can be used for debugging
 int VerifyCallback(int ok, X509_STORE_CTX* ctx) {
   // since this is a client side, we don't do much here,
   VLOG(1) << "verify_callback: " << std::boolalpha << bool(ok);
   return ok;
 }
+
 }  // namespace
 
 Client::Client(ProactorBase* proactor) : proactor_(proactor) {
@@ -134,10 +137,13 @@ SSL_CTX* TlsClient::CreateSslContext() {
     // remote host by this local host, will be trusted as well.
     // see https://www.openssl.org/docs/man3.0/man1/openssl-verification-options.html
     SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
-    if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
-      LOG(WARNING) << "failed to set default verify path on client context for TLS connection";
-      FreeContext(ctx);
-      return nullptr;
+
+    if (tls::SslProbeSetDefaultCALocation(ctx) != 0) {
+      if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+        LOG(WARNING) << "failed to set default verify path on client context for TLS connection";
+        FreeContext(ctx);
+        return nullptr;
+      }
     }
     SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, VerifyCallback);
