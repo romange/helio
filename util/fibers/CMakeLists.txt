@@ -1,6 +1,6 @@
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
   set(FB_LINUX_LIBS TRDP::uring rt) # rt is required for timerfd_create
-  set(FB_LINUX_SRCS uring_proactor.cc ../uring/uring_socket.cc ../uring/uring_file.cc)
+  set(FB_LINUX_SRCS uring_proactor.cc uring_socket.cc uring_file.cc)
 endif()
 
 add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
@@ -11,7 +11,6 @@ add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc
             ${FB_LINUX_SRCS})
 
-target_compile_definitions(fibers2 PRIVATE USE_FB2)
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
 cxx_test(fibers_test fibers2 LABELS CI)

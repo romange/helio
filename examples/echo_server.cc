@@ -58,7 +58,7 @@ VarzCount connections("connections");
 namespace {
 
 [[maybe_unused]] constexpr size_t kInitialSize = 1UL << 20;
-#ifndef USE_FB2
+#if 0
 struct TL {
   std::unique_ptr<util::uring::LinuxFile> file;
 
@@ -226,7 +226,7 @@ void EchoConnection::HandleRequests() {
     vec[1].iov_base = work_buf_.get();
     vec[1].iov_len = sz;
 
-#ifndef USE_FB2
+#if 0
     if (tl)
       tl->WriteToFile();
 #endif
@@ -268,7 +268,7 @@ void RunServer(ProactorPool* pp) {
     LOG(INFO) << "Started http server on port " << port;
   }
 
-#ifndef USE_FB2
+#if 0
   if (!GetFlag(FLAGS_write_file).empty()) {
     static void* blob =
         mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

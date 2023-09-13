@@ -16,14 +16,9 @@
 #include "util/http/http_common.h"
 #include "util/http/http_server_utils.h"
 
-#ifdef USE_FB2
 #include "util/fibers/synchronization.h"
-using util::fb2::Done;
-#else
-#include "util/fibers/fibers_ext.h"
-using util::fibers_ext::Done;
-#endif
 
+using util::fb2::Done;
 namespace util {
 namespace http {
 namespace {

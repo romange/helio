@@ -11,12 +11,7 @@
 #include "util/cloud/s3.h"
 #include "util/cloud/s3_file.h"
 
-#ifdef USE_FB2
 #include "util/fibers/pool.h"
-#else
-#include "util/uring/uring_pool.h"
-#endif
-
 #include "util/http/http_client.h"
 
 using namespace std;
@@ -81,11 +76,7 @@ int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
   unique_ptr<ProactorPool> pp;
-#ifdef USE_FB2
   pp.reset(fb2::Pool::IOUring(256));
-#else
-  pp.reset(new uring::UringPool);
-#endif
   pp->Run();
 
   AWS aws{"s3", GetFlag(FLAGS_region)};

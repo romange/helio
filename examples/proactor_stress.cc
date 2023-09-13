@@ -8,7 +8,7 @@
 #include "base/logging.h"
 #include "util/accept_server.h"
 #include "util/http/http_handler.h"
-#include "util/uring/uring_pool.h"
+#include "util/fibers/pool.h"
 
 DEFINE_uint32(c, 10, "Number of connections per thread");
 DEFINE_uint32(n, 500000, "num requests");
@@ -17,7 +17,6 @@ DEFINE_bool(send_myself, false, "");
 
 using namespace util;
 using namespace std;
-using ::boost::fibers::fiber;
 using uring::UringPool;
 
 atomic_bool finish_run{false};

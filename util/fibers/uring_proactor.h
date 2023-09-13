@@ -8,14 +8,10 @@
 #include <pthread.h>
 
 #include "util/fibers/proactor_base.h"
-#include "util/uring/submit_entry.h"
+#include "util/fibers/submit_entry.h"
 
 namespace util {
 namespace fb2 {
-
-#ifndef USE_FB2
-using uring::SubmitEntry;
-#endif
 
 namespace detail {
 class Scheduler;

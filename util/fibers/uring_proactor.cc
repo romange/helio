@@ -15,7 +15,7 @@
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/fibers/detail/scheduler.h"
-#include "util/uring/uring_socket.h"
+#include "util/fibers/uring_socket.h"
 
 ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
 

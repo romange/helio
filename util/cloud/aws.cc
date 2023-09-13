@@ -22,11 +22,7 @@
 #include "io/file.h"
 #include "io/line_reader.h"
 
-#ifdef USE_FB2
 #include "util/fibers/proactor_base.h"
-#else
-#include "util/proactor_base.h"
-#endif
 
 #define RETURN_ON_ERR(x)                                       \
   do {                                                         \
