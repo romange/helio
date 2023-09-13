@@ -38,7 +38,7 @@ auto Unexpected(std::errc e) {
 }  // namespace
 
 UringSocket::~UringSocket() {
-  // DCHECK_LT(fd_, 0) << "Socket must have been closed explicitly.";
+  DCHECK_LT(fd_, 0) << "Socket must have been closed explicitly.";
   error_code ec = Close();  // Quietly close.
 
   LOG_IF(WARNING, ec) << "Error closing socket " << ec << "/" << ec.message();
@@ -47,7 +47,7 @@ UringSocket::~UringSocket() {
 auto UringSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
-    // DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
 
     DVSOCK(1) << "Closing socket";
 

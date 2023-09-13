@@ -111,7 +111,7 @@ EpollSocket::EpollSocket(int fd) : LinuxSocketBase(fd, nullptr) {
 }
 
 EpollSocket::~EpollSocket() {
-  // DCHECK_LT(fd_, 0) << "Socket must have been closed explicitly.";
+  DCHECK_LT(fd_, 0) << "Socket must have been closed explicitly.";
   error_code ec = Close();  // Quietly close.
 
   LOG_IF(WARNING, ec) << "Error closing socket " << ec << "/" << ec.message();
@@ -120,7 +120,7 @@ EpollSocket::~EpollSocket() {
 auto EpollSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
-    // DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
 
     int fd = native_handle();
     DVSOCK(1) << "Closing socket";
