@@ -32,6 +32,8 @@ else()
   include(internal)
 endif()
 
+set(AWS_SERVICE_COMPONENTS s3)
+find_package(AWSSDK REQUIRED COMPONENTS ${AWS_SERVICE_COMPONENTS})
 
 add_definitions(-DUSE_FB2)
 
