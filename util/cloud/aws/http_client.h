@@ -5,12 +5,18 @@
 
 #include <aws/core/http/HttpClient.h>
 
+#include <memory>
+
+#include "util/http/http_client.h"
+
 namespace util {
 namespace cloud {
 namespace aws {
 
 class HttpClient : public Aws::Http::HttpClient {
  public:
+  HttpClient();
+
   std::shared_ptr<Aws::Http::HttpResponse> MakeRequest(
       const std::shared_ptr<Aws::Http::HttpRequest>& request,
       Aws::Utils::RateLimits::RateLimiterInterface* readLimiter = nullptr,
@@ -25,6 +31,9 @@ class HttpClient : public Aws::Http::HttpClient {
   bool ContinueRequest(const Aws::Http::HttpRequest&) const override;
 
   void RetryRequestSleep(std::chrono::milliseconds sleepTime) override;
+
+ private:
+  std::unique_ptr<http::Client> http_client_;
 };
 
 }  // namespace aws
