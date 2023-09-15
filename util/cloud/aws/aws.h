@@ -1,11 +1,17 @@
+// Copyright 2023, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
+
 #pragma once
 
 namespace util {
 namespace cloud {
 namespace aws {
 
-class Aws {
-};
+// Initialises the AWS library. This must be called before using any AWS
+// services.
+void Init();
+
+void Shutdown();
 
 }  // namespace aws
 }  // namespace cloud
