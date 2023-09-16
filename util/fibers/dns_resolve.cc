@@ -152,6 +152,7 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
 }  // namespace
 
 error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBase* proactor) {
+  // TODO this fails - so its from the WRONG proactor thread
   DCHECK(ProactorBase::me() == proactor) << "must call from the proactor thread";
 
   VLOG(1) << "DnsResolveStart";

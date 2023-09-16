@@ -66,7 +66,7 @@ std::error_code Client::Reconnect() {
 
   if (socket_) {
     error_code ec = socket_->Close();
-    LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
+    LOG_IF(WARNING, ec) << "Socket close failed: " << ec.message();
     socket_.reset();
   }
 
