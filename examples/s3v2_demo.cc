@@ -4,6 +4,7 @@
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/PutObjectRequest.h>
 
 #include <memory>
 
@@ -65,6 +66,34 @@ void ListObjects() {
   }
 }
 
+void PutObject(const std::string& bucket, const std::string& key, const std::string& body) {
+  Aws::S3::S3ClientConfiguration s3_conf{};
+  // Out HTTP client currently only supports HTTP.
+  s3_conf.scheme = Aws::Http::Scheme::HTTP;
+  // HTTP 1.1 is the latest version our HTTP client supports.
+  s3_conf.version = Aws::Http::Version::HTTP_VERSION_1_1;
+
+  // TODO(andydunstall) For now only support the environment provider.
+  std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
+      Aws::MakeShared<Aws::Auth::EnvironmentAWSCredentialsProvider>("helio");
+  Aws::S3::S3Client s3{credentials_provider, Aws::MakeShared<Aws::S3::S3EndpointProvider>("helio"),
+                       s3_conf};
+
+  Aws::S3::Model::PutObjectRequest put_object_request;
+  put_object_request.SetBucket(bucket);
+  put_object_request.SetKey(key);
+  std::shared_ptr<Aws::IOStream> object_stream = Aws::MakeShared<Aws::StringStream>("helio");
+  *object_stream << body;
+  put_object_request.SetBody(object_stream);
+
+  Aws::S3::Model::PutObjectOutcome outcome = s3.PutObject(put_object_request);
+  if (outcome.IsSuccess()) {
+    LOG(INFO) << "OK";
+  } else {
+    LOG(ERROR) << "failed to put object: " << outcome.GetError().GetExceptionName();
+  }
+}
+
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
@@ -86,7 +115,8 @@ int main(int argc, char* argv[]) {
     util::cloud::aws::Init();
 
     // ListBuckets();
-    ListObjects();
+    // ListObjects();
+    PutObject("dev-andy-dfcloud-backups-us-east-1", "myobject", "mybody");
 
     util::cloud::aws::Shutdown();
   });

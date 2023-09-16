@@ -74,9 +74,22 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
 
   // TODO(andydunstall): Verify HTTP version
   // TODO(andydunstall): Support non-empty body
-  h2::request<h2::empty_body> req{method, request->GetUri().GetURIString(), 11};
+  h2::request<h2::string_body> req{method, request->GetUri().GetURIString(), 11};
   for (const auto& h : request->GetHeaders()) {
     req.set(h.first, h.second);
+  }
+
+  // TODO(andydunstall): Look at using file body so we don't have to buffer
+  // like this
+  if (request->GetSize() > 0 && request->GetContentBody()) {
+    int content_size;
+    if (!absl::SimpleAtoi(request->GetContentLength(), &content_size)) {
+      // TODO(andydunstall)
+    }
+    std::string s(content_size, '0');
+    request->GetContentBody()->read(s.data(), s.size());
+    auto& body = req.body();
+    body = s;
   }
 
   std::shared_ptr<Aws::Http::HttpResponse> response =
