@@ -153,8 +153,8 @@ bool HttpClient::ContinueRequest(const Aws::Http::HttpRequest&) const {
 }
 
 void HttpClient::RetryRequestSleep(std::chrono::milliseconds sleepTime) {
-  // TODO(andydunstall) Add an arbitrary sleep for now
-  ThisFiber::SleepFor(5s);
+  // TODO(andydunstall): Handle disable request processing
+  ThisFiber::SleepFor(sleepTime);
 }
 
 }  // namespace aws
