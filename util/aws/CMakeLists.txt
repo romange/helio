@@ -15,5 +15,5 @@ else()
            TRDP::aws-crt-cpp TRDP::aws-c-mqtt TRDP::aws-c-event-stream
            TRDP::aws-c-s3 TRDP::aws-c-auth  TRDP::aws-c-http TRDP::aws-c-io
            TRDP::s2n TRDP::aws-c-compression TRDP::aws-c-cal TRDP::aws-c-sdkutils
-           TRDP::aws-checksums TRDP::aws-c-common OpenSSL::Crypto ZLIB::ZLIB)
+           TRDP::aws-checksums TRDP::aws-c-common OpenSSL::Crypto ZLIB::ZLIB ${CMAKE_DL_LIBS})
 endif()
