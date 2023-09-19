@@ -59,17 +59,20 @@ class FiberInterface {
 
   virtual ~FiberInterface();
 
-  // we need both list and wait because it could be that
-  // the object is in the wait queue and then added to ready queue by RemoteToReady.
-  // wait_hook should be mutated under a spinlock since it is used by multiple threads.
-  FI_ListHook list_hook;  //, wait_hook;
+  FI_ListHook list_hook;  // used to add to ready queue.
   FI_SleepHook sleep_hook;
 
   FI_ListHook fibers_hook;  // For a list of all fibers in the thread
 
   ::boost::context::fiber_context SwitchTo();
-  void PrintStackTrace();
 
+  using PrintFn = std::function<void(FiberInterface*)>;
+
+  // ExecuteInFiberStack function must be called from the thread where this fiber is running.
+  // 'fn' should not preempt (i.e. should not use any fiber-blocking primitives),
+  void ExecuteOnFiberStack(PrintFn fn);
+
+  // Deprecated. Use detail::PrintAllFiberStackTraces() below.
   static void PrintAllFiberStackTraces();
 
   void Start(Launch launch);
@@ -258,6 +261,11 @@ void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
 uint64_t FiberEpoch() noexcept;
+
+void PrintAllFiberStackTraces();
+
+// Runs fn on all fibers in the thread. See FiberInterface::ExecuteOnFiberStack for details.
+void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
 
 }  // namespace detail
 }  // namespace fb2
