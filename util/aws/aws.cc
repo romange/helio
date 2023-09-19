@@ -6,6 +6,7 @@
 #include <aws/core/Aws.h>
 #include <aws/core/utils/logging/LogSystemInterface.h>
 
+#include "util/aws/http_client_factory.h"
 #include "util/aws/logger.h"
 
 namespace util {
@@ -26,6 +27,16 @@ void Init() {
     return Aws::MakeShared<Logger>("helio");
   };
   options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Trace;
+
+  // Disable starting the background IO event loop thread which we don't need.
+  options.ioOptions.clientBootstrap_create_fn =
+      []() -> std::shared_ptr<Aws::Crt::Io::ClientBootstrap> { return nullptr; };
+
+  // We must use non-blocking network IO so use our own fiber based HTTP client.
+  options.httpOptions.httpClientFactory_create_fn =
+      []() -> std::shared_ptr<Aws::Http::HttpClientFactory> {
+    return Aws::MakeShared<HttpClientFactory>("helio");
+  };
 
   Aws::InitAPI(options);
 }
