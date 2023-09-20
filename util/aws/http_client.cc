@@ -60,9 +60,6 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     const std::shared_ptr<Aws::Http::HttpRequest>& request,
     Aws::Utils::RateLimits::RateLimiterInterface* readLimiter,
     Aws::Utils::RateLimits::RateLimiterInterface* writeLimiter) const {
-  // TODO(andydunstall): We currently only support HTTP.
-  request->GetUri().SetScheme(Aws::Http::Scheme::HTTP);
-
   VLOG(1) << "aws: http client: request; method="
           << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
           << "; url=" << request->GetUri().GetURIString()
