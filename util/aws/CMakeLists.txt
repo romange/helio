@@ -2,7 +2,8 @@ find_package(OpenSSL)
 find_package(ZLIB)
 
 add_library(awsv2_lib aws.cc credentials_provider_chain.cc logger.cc
-            http_client.cc http_client_factory.cc s3_endpoint_provider.cc)
+            http_client.cc http_client_factory.cc s3_endpoint_provider.cc
+            s3_write_file.cc)
 
 if (APPLE)
   find_library(SECURITY Security)

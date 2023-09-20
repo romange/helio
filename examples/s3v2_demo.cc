@@ -12,25 +12,29 @@
 #include "util/aws/aws.h"
 #include "util/aws/credentials_provider_chain.h"
 #include "util/aws/s3_endpoint_provider.h"
+#include "util/aws/s3_write_file.h"
 #include "util/fibers/pool.h"
 
 ABSL_FLAG(std::string, cmd, "list-buckets", "Command to run");
 ABSL_FLAG(std::string, bucket, "", "S3 bucket name");
+ABSL_FLAG(std::string, key, "", "S3 file key");
 ABSL_FLAG(std::string, endpoint, "", "S3 endpoint");
+ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
+ABSL_FLAG(size_t, chunk_size, 1024, "Upload file chunk size");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
-Aws::S3::S3Client OpenS3Client() {
+std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   Aws::S3::S3ClientConfiguration s3_conf{};
   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
       Aws::MakeShared<util::aws::CredentialsProviderChain>("helio");
   std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
       Aws::MakeShared<util::aws::S3EndpointProvider>("helio", absl::GetFlag(FLAGS_endpoint));
-  return Aws::S3::S3Client{credentials_provider, endpoint_provider, s3_conf};
+  return std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
 }
 
 void ListBuckets() {
-  Aws::S3::S3Client s3 = OpenS3Client();
-  Aws::S3::Model::ListBucketsOutcome outcome = s3.ListBuckets();
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  Aws::S3::Model::ListBucketsOutcome outcome = s3->ListBuckets();
   if (outcome.IsSuccess()) {
     std::cout << "buckets:" << std::endl;
     for (const Aws::S3::Model::Bucket& bucket : outcome.GetResult().GetBuckets()) {
@@ -47,11 +51,11 @@ void ListObjects(const std::string& bucket) {
     return;
   }
 
-  Aws::S3::S3Client s3 = OpenS3Client();
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
   Aws::S3::Model::ListObjectsV2Request request;
   request.SetBucket(bucket);
 
-  Aws::S3::Model::ListObjectsV2Outcome outcome = s3.ListObjectsV2(request);
+  Aws::S3::Model::ListObjectsV2Outcome outcome = s3->ListObjectsV2(request);
   if (outcome.IsSuccess()) {
     std::cout << "objects in " << bucket << ":" << std::endl;
     for (const auto& object : outcome.GetResult().GetContents()) {
@@ -59,6 +63,44 @@ void ListObjects(const std::string& bucket) {
     }
   } else {
     LOG(ERROR) << "failed to list objects: " << outcome.GetError().GetExceptionName();
+  }
+}
+
+void Upload(const std::string& bucket, const std::string& key, size_t upload_size,
+            size_t chunk_size) {
+  if (bucket == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  io::Result<util::aws::S3WriteFile> file = util::aws::S3WriteFile::Open(bucket, key, s3);
+  if (!file) {
+    LOG(ERROR) << "failed to open s3 write file: " << file.error();
+    return;
+  }
+
+  size_t chunks = upload_size / chunk_size;
+
+  LOG(INFO) << "uploading s3 file; chunks=" << chunks << "; chunk_size=" << chunk_size;
+
+  std::vector<uint8_t> buf(chunk_size, 0xff);
+  for (int i = 0; i != chunks; i++) {
+    std::error_code ec = file->Write(io::Bytes(buf.data(), buf.size()));
+    if (ec) {
+      LOG(ERROR) << "failed to write to s3: " << file.error();
+      return;
+    }
+  }
+  std::error_code ec = file->Close();
+  if (ec) {
+    LOG(ERROR) << "failed to close s3 write file: " << file.error();
+    return;
   }
 }
 
@@ -88,6 +130,11 @@ int main(int argc, char* argv[]) {
       ListBuckets();
     } else if (cmd == "list-objects") {
       ListObjects(absl::GetFlag(FLAGS_bucket));
+    } else if (cmd == "upload") {
+      Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
+             absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
+    } else {
+      LOG(ERROR) << "unknown command: " << cmd;
     }
 
     util::aws::Shutdown();
