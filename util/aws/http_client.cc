@@ -50,7 +50,7 @@ h2::verb BoostMethod(Aws::Http::HttpMethod method) {
 }  // namespace
 
 HttpClient::HttpClient(const Aws::Client::ClientConfiguration& client_conf)
-    : client_conf_{client_conf} {
+    : client_conf_{client_conf}, disable_request_processing_{false} {
   // TODO(andydunstall): Handle client conf
   proactor_ = ProactorBase::me();
   CHECK(proactor_) << "must run in a proactor thread";
@@ -134,6 +134,25 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   conn->Close();
 
   return response;
+}
+
+void HttpClient::DisableRequestProcessing() {
+  disable_request_processing_ = true;
+  request_processing_signal_.notify_all();
+}
+
+void HttpClient::EnableRequestProcessing() {
+  disable_request_processing_ = false;
+}
+
+bool HttpClient::IsRequestProcessingEnabled() const {
+  return disable_request_processing_.load() == false;
+}
+
+void HttpClient::RetryRequestSleep(std::chrono::milliseconds sleep_time) {
+  std::unique_lock<fb2::Mutex> lk(request_processing_signal_lock_);
+  request_processing_signal_.wait_for(
+      lk, sleep_time, [this]() { return disable_request_processing_.load() == true; });
 }
 
 io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::string& host,

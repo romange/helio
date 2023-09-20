@@ -32,6 +32,14 @@ class HttpClient : public Aws::Http::HttpClient {
       Aws::Utils::RateLimits::RateLimiterInterface* readLimiter = nullptr,
       Aws::Utils::RateLimits::RateLimiterInterface* writeLimiter = nullptr) const override;
 
+  void DisableRequestProcessing() override;
+
+  void EnableRequestProcessing() override;
+
+  bool IsRequestProcessingEnabled() const override;
+
+  void RetryRequestSleep(std::chrono::milliseconds sleep_time) override;
+
  private:
   io::Result<std::unique_ptr<FiberSocketBase>> Connect(const std::string& host,
                                                        uint16_t port) const;
@@ -43,6 +51,12 @@ class HttpClient : public Aws::Http::HttpClient {
   Aws::Client::ClientConfiguration client_conf_;
 
   ProactorBase* proactor_;
+
+  std::atomic<bool> disable_request_processing_;
+
+  fb2::Mutex request_processing_signal_lock_;
+
+  fb2::CondVarAny request_processing_signal_;
 };
 
 }  // namespace aws
