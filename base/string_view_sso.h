@@ -405,6 +405,11 @@ class string_view_sso {
   // that is not `c` within the `string_view_sso`.
   size_type find_last_not_of(char c, size_type pos = npos) const noexcept;
 
+  // IO Insertion Operator
+  friend std::ostream& operator<<(std::ostream& o, string_view_sso piece) {
+    return operator<<(o, static_cast<std::string_view>(piece));
+  }
+
  private:
   static constexpr size_t Min(size_type length_a, size_type length_b) {
     return length_a < length_b ? length_a : length_b;
@@ -479,20 +484,12 @@ constexpr bool operator>=(string_view_sso x, string_view_sso y) noexcept {
   return !(x < y);
 }
 
-// IO Insertion Operator
-inline std::ostream& operator<<(std::ostream& o, string_view_sso piece) {
-  return operator<<(o, static_cast<std::string_view>(piece));
-}
-
 }  // namespace base
-
-namespace std {
 
 // expected: hash support
 
-template <> struct hash<base::string_view_sso> {
+template <> struct std::hash<base::string_view_sso> {
   size_t operator()(base::string_view_sso arg) const {
     return hash<string_view>{}(static_cast<string_view>(arg));
   }
 };
-}  // namespace std
