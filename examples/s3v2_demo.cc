@@ -12,6 +12,7 @@
 #include "util/aws/aws.h"
 #include "util/aws/credentials_provider_chain.h"
 #include "util/aws/s3_endpoint_provider.h"
+#include "util/aws/s3_read_file.h"
 #include "util/aws/s3_write_file.h"
 #include "util/fibers/pool.h"
 
@@ -20,7 +21,7 @@ ABSL_FLAG(std::string, bucket, "", "S3 bucket name");
 ABSL_FLAG(std::string, key, "", "S3 file key");
 ABSL_FLAG(std::string, endpoint, "", "S3 endpoint");
 ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
-ABSL_FLAG(size_t, chunk_size, 1024, "Upload file chunk size");
+ABSL_FLAG(size_t, chunk_size, 1024, "File chunk size");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
@@ -90,7 +91,7 @@ void Upload(const std::string& bucket, const std::string& key, size_t upload_siz
   LOG(INFO) << "uploading s3 file; chunks=" << chunks << "; chunk_size=" << chunk_size;
 
   std::vector<uint8_t> buf(chunk_size, 0xff);
-  for (int i = 0; i != chunks; i++) {
+  for (size_t i = 0; i != chunks; i++) {
     std::error_code ec = file->Write(io::Bytes(buf.data(), buf.size()));
     if (ec) {
       LOG(ERROR) << "failed to write to s3: " << file.error();
@@ -101,6 +102,38 @@ void Upload(const std::string& bucket, const std::string& key, size_t upload_siz
   if (ec) {
     LOG(ERROR) << "failed to close s3 write file: " << file.error();
     return;
+  }
+}
+
+void Download(const std::string& bucket, const std::string& key, size_t chunk_size) {
+  if (bucket == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  std::unique_ptr<io::ReadonlyFile> file = std::make_unique<util::aws::S3ReadFile>(bucket, key, s3, chunk_size);
+
+  LOG(INFO) << "downloading s3 file; chunk_size=" << chunk_size;
+
+  std::vector<uint8_t> buf(1024, 0);
+  size_t read_n = 0;
+  while (true) {
+    io::Result<size_t> n = file->Read(read_n, io::MutableBytes(buf.data(), buf.size()));
+    if (!n) {
+      LOG(ERROR) << "failed to read from s3: " << n.error();
+      return;
+    }
+    if (*n == 0) {
+      LOG(INFO) << "finished download; read_n=" << read_n;
+      return;
+    }
+    read_n += *n;
   }
 }
 
@@ -133,6 +166,8 @@ int main(int argc, char* argv[]) {
     } else if (cmd == "upload") {
       Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
              absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
+    } else if (cmd == "download") {
+      Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key), absl::GetFlag(FLAGS_chunk_size));
     } else {
       LOG(ERROR) << "unknown command: " << cmd;
     }
