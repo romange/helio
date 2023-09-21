@@ -69,7 +69,7 @@ std::error_code S3WriteFile::Close() {
   Aws::S3::Model::CompleteMultipartUploadOutcome outcome =
       client_->CompleteMultipartUpload(request);
   if (outcome.IsSuccess()) {
-    LOG(INFO) << "aws: s3 write file: completed multipart upload; parts=" << parts_.size();
+    VLOG(2) << "aws: s3 write file: completed multipart upload; parts=" << parts_.size();
   } else {
     LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: "
                << outcome.GetError().GetExceptionName();
@@ -124,7 +124,7 @@ std::error_code S3WriteFile::Flush() {
 
   Aws::S3::Model::UploadPartOutcome outcome = client_->UploadPart(request);
   if (outcome.IsSuccess()) {
-    LOG(INFO) << "aws: s3 write file: upload part; part_number=" << parts_.size() + 1;
+    VLOG(2) << "aws: s3 write file: upload part; part_number=" << parts_.size() + 1;
 
     parts_.push_back(outcome.GetResult().GetETag());
     offset_ = 0;

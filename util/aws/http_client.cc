@@ -50,10 +50,8 @@ h2::verb BoostMethod(Aws::Http::HttpMethod method) {
 }  // namespace
 
 HttpClient::HttpClient(const Aws::Client::ClientConfiguration& client_conf)
-    : client_conf_{client_conf}, disable_request_processing_{false} {
+    : client_conf_{client_conf} {
   // TODO(andydunstall): Handle client conf
-  proactor_ = ProactorBase::me();
-  CHECK(proactor_) << "must run in a proactor thread";
 }
 
 std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
@@ -67,6 +65,9 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   for (const auto& h : request->GetHeaders()) {
     DVLOG(2) << "aws: http client: request; header=" << h.first << "=" << h.second;
   }
+
+  ProactorBase* proactor = ProactorBase::me();
+  CHECK(proactor) << "aws: http client: must run in a proactor thread";
 
   h2::request<h2::string_body> boost_req{BoostMethod(request->GetMethod()),
                                          request->GetUri().GetURIString(), kHttpVersion1_1};
@@ -86,9 +87,17 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   std::shared_ptr<Aws::Http::HttpResponse> response =
       Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>("helio", request);
 
-  // TODO(andydunstall): Cache connections
+  // TODO(andydunstall): So the HTTP client can be accessed by multiple
+  // threads/proactors, we reconnect on each request.
+  //
+  // Long term we can cache connections, though must ensure that is thread
+  // safe and we always return a connection on the same proactor thread.
+  //
+  // Since we currently primarily use the HTTP client for large
+  // requests/responses (such as 10MB when uploading), the overhead of
+  // connecting is reduced.
   io::Result<std::unique_ptr<FiberSocketBase>> connect_res =
-      Connect(request->GetUri().GetAuthority(), request->GetUri().GetPort());
+      Connect(request->GetUri().GetAuthority(), request->GetUri().GetPort(), proactor);
   if (!connect_res) {
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
     return response;
@@ -106,7 +115,8 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     return response;
   }
   h2::response<h2::string_body> boost_resp;
-  h2::read(adapter, buf_, boost_resp, ec);
+  boost::beast::flat_buffer buf;
+  h2::read(adapter, buf, boost_resp, ec);
   if (ec) {
     LOG(WARNING) << "aws: http client: failed to read response; method="
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
@@ -134,35 +144,34 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
 }
 
 void HttpClient::DisableRequestProcessing() {
-  disable_request_processing_ = true;
-  request_processing_signal_.notify_all();
+  // Unused so we don't need to implement.
 }
 
 void HttpClient::EnableRequestProcessing() {
-  disable_request_processing_ = false;
+  // Unused so we don't need to implement.
 }
 
 bool HttpClient::IsRequestProcessingEnabled() const {
-  return disable_request_processing_.load() == false;
+  // Unused so we don't need to implement.
+  return true;
 }
 
 void HttpClient::RetryRequestSleep(std::chrono::milliseconds sleep_time) {
-  std::unique_lock<fb2::Mutex> lk(request_processing_signal_lock_);
-  request_processing_signal_.wait_for(
-      lk, sleep_time, [this]() { return disable_request_processing_.load() == true; });
+  ThisFiber::SleepFor(sleep_time);
 }
 
 io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::string& host,
-                                                                 uint16_t port) const {
+                                                                 uint16_t port,
+                                                                 ProactorBase* proactor) const {
   VLOG(1) << "aws: http client: connecting; host=" << host << "; port=" << port;
 
-  io::Result<boost::asio::ip::address> addr = Resolve(host);
+  io::Result<boost::asio::ip::address> addr = Resolve(host, proactor);
   if (!addr) {
     return nonstd::make_unexpected(addr.error());
   }
 
   std::unique_ptr<FiberSocketBase> socket;
-  socket.reset(proactor_->CreateSocket());
+  socket.reset(proactor->CreateSocket());
   FiberSocketBase::endpoint_type ep{*addr, port};
   // TODO(andydunstall): Add connect timeout (client_conf_.connectTimeoutMs)
   std::error_code ec = socket->Connect(ep);
@@ -177,11 +186,12 @@ io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::stri
   return socket;
 }
 
-io::Result<boost::asio::ip::address> HttpClient::Resolve(const std::string& host) const {
+io::Result<boost::asio::ip::address> HttpClient::Resolve(const std::string& host,
+                                                         ProactorBase* proactor) const {
   VLOG(1) << "aws: http client: resolving host; host=" << host;
 
   char ip[INET_ADDRSTRLEN];
-  std::error_code ec = fb2::DnsResolve(host.data(), client_conf_.connectTimeoutMs, ip, proactor_);
+  std::error_code ec = fb2::DnsResolve(host.data(), client_conf_.connectTimeoutMs, ip, proactor);
   if (ec) {
     LOG(WARNING) << "aws: http client: failed to resolve host; host=" << host << "; error=" << ec;
     return nonstd::make_unexpected(ec);

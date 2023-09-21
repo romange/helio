@@ -15,8 +15,7 @@ namespace aws {
 
 // HTTP client manages connecting to and sending HTTP requests.
 //
-// It is NOT thread OR fiber safe, so must only accessed by a single fiber. It
-// may block the fiber but not the thread.
+// This is stateless so can be accessed by multiple threads.
 class HttpClient : public Aws::Http::HttpClient {
  public:
   HttpClient(const Aws::Client::ClientConfiguration& client_conf);
@@ -41,22 +40,13 @@ class HttpClient : public Aws::Http::HttpClient {
   void RetryRequestSleep(std::chrono::milliseconds sleep_time) override;
 
  private:
-  io::Result<std::unique_ptr<FiberSocketBase>> Connect(const std::string& host,
-                                                       uint16_t port) const;
+  io::Result<std::unique_ptr<FiberSocketBase>> Connect(const std::string& host, uint16_t port,
+                                                       ProactorBase* proactor) const;
 
-  io::Result<boost::asio::ip::address> Resolve(const std::string& host) const;
-
-  mutable boost::beast::flat_buffer buf_;
+  io::Result<boost::asio::ip::address> Resolve(const std::string& host,
+                                               ProactorBase* proactor) const;
 
   Aws::Client::ClientConfiguration client_conf_;
-
-  ProactorBase* proactor_;
-
-  std::atomic<bool> disable_request_processing_;
-
-  fb2::Mutex request_processing_signal_lock_;
-
-  fb2::CondVarAny request_processing_signal_;
 };
 
 }  // namespace aws
