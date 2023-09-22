@@ -129,7 +129,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
 
   response->SetResponseCode(static_cast<Aws::Http::HttpResponseCode>(boost_resp.result_int()));
   for (const auto& h : boost_resp.base()) {
-    response->AddHeader(h.name_string(), h.value());
+    response->AddHeader(std::string(h.name_string()), std::string(h.value()));
   }
   // TODO(andydunstall) We can avoid this copy by adding a custom body type
   // that writes directly from the body std::iostream.
