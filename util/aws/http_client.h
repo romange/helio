@@ -26,6 +26,8 @@ class HttpClient : public Aws::Http::HttpClient {
   // network error on a connection that was previously healthy. HTTP requests
   // are considered idempotent it they have methods GET, HEAD, OPTIONS, or
   // TRACE.
+  //
+  // Note we don't support readLimiter or writeLimiter.
   std::shared_ptr<Aws::Http::HttpResponse> MakeRequest(
       const std::shared_ptr<Aws::Http::HttpRequest>& request,
       Aws::Utils::RateLimits::RateLimiterInterface* readLimiter = nullptr,
@@ -45,6 +47,8 @@ class HttpClient : public Aws::Http::HttpClient {
 
   io::Result<boost::asio::ip::address> Resolve(const std::string& host,
                                                ProactorBase* proactor) const;
+
+  std::error_code EnableKeepAlive(int fd) const;
 
   Aws::Client::ClientConfiguration client_conf_;
 };

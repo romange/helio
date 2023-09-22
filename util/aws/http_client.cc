@@ -51,7 +51,6 @@ h2::verb BoostMethod(Aws::Http::HttpMethod method) {
 
 HttpClient::HttpClient(const Aws::Client::ClientConfiguration& client_conf)
     : client_conf_{client_conf} {
-  // TODO(andydunstall): Handle client conf
 }
 
 std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
@@ -100,6 +99,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
       Connect(request->GetUri().GetAuthority(), request->GetUri().GetPort(), proactor);
   if (!connect_res) {
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+    response->SetClientErrorMessage("Failed to connect to host");
     return response;
   }
   std::unique_ptr<FiberSocketBase> conn = std::move(*connect_res);
@@ -185,6 +185,16 @@ io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::stri
 
   VLOG(1) << "aws: http client: connected; host=" << host << "; port=" << port;
 
+  if (client_conf_.enableTcpKeepAlive) {
+    ec = EnableKeepAlive(socket->native_handle());
+    if (ec) {
+      // Log the error but we still continue with the request.
+      LOG(ERROR) << "aws: http client: failed to enable tcp keep alive; error=" << ec;
+    } else {
+      DVLOG(2) << "aws: http client: enabled tcp keep alive";
+    }
+  }
+
   return socket;
 }
 
@@ -209,6 +219,36 @@ io::Result<boost::asio::ip::address> HttpClient::Resolve(const std::string& host
   VLOG(1) << "aws: http client: resolved host; host=" << host << "; ip=" << address;
 
   return address;
+}
+
+std::error_code HttpClient::EnableKeepAlive(int fd) const {
+  int val = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = client_conf_.tcpKeepAliveIntervalMs / 1000;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = client_conf_.tcpKeepAliveIntervalMs / 1000;
+#ifdef __APPLE__
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#else
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#endif
+
+  val = 3;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  return std::error_code{};
 }
 
 }  // namespace aws
