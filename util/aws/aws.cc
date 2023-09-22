@@ -24,7 +24,7 @@ void Init() {
   // use trace logging to get all logs from AWS then filter in the logger.
   options.loggingOptions.logger_create_fn =
       []() -> std::shared_ptr<Aws::Utils::Logging::LogSystemInterface> {
-    return Aws::MakeShared<Logger>("helio");
+    return std::make_shared<Logger>();
   };
   options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Trace;
 
@@ -35,7 +35,7 @@ void Init() {
   // We must use non-blocking network IO so use our own fiber based HTTP client.
   options.httpOptions.httpClientFactory_create_fn =
       []() -> std::shared_ptr<Aws::Http::HttpClientFactory> {
-    return Aws::MakeShared<HttpClientFactory>("helio");
+    return std::make_shared<HttpClientFactory>();
   };
 
   Aws::InitAPI(options);

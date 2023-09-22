@@ -11,12 +11,12 @@ namespace util {
 namespace aws {
 
 CredentialsProviderChain::CredentialsProviderChain() {
-  AddProvider(Aws::MakeShared<Aws::Auth::EnvironmentAWSCredentialsProvider>("helio"));
-  AddProvider(Aws::MakeShared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>("helio"));
+  AddProvider(std::make_shared<Aws::Auth::EnvironmentAWSCredentialsProvider>());
+  AddProvider(std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>());
 
   const auto ec2_metadata_disabled = Aws::Environment::GetEnv("AWS_EC2_METADATA_DISABLED");
   if (Aws::Utils::StringUtils::ToLower(ec2_metadata_disabled.c_str()) != "true") {
-    AddProvider(Aws::MakeShared<Aws::Auth::InstanceProfileCredentialsProvider>("helio"));
+    AddProvider(std::make_shared<Aws::Auth::InstanceProfileCredentialsProvider>());
   } else {
     LOG(INFO) << "aws: disabled EC2 metadata";
   }

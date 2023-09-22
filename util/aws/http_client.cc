@@ -85,7 +85,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   }
 
   std::shared_ptr<Aws::Http::HttpResponse> response =
-      Aws::MakeShared<Aws::Http::Standard::StandardHttpResponse>("helio", request);
+      std::make_shared<Aws::Http::Standard::StandardHttpResponse>(request);
 
   // TODO(andydunstall): So the HTTP client can be accessed by multiple
   // threads/proactors, we reconnect on each request.

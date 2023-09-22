@@ -118,7 +118,7 @@ std::error_code S3WriteFile::Flush() {
 
   // TODO(andydunstall): Look at avoiding this copy. We're copying to an IO
   // stream, then back to a buffer in HTTP client.
-  std::shared_ptr<Aws::IOStream> object_stream = Aws::MakeShared<Aws::StringStream>("helio");
+  std::shared_ptr<Aws::IOStream> object_stream = std::make_shared<Aws::StringStream>();
   object_stream->write((const char*)buf_.data(), offset_);
   request.SetBody(object_stream);
 

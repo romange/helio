@@ -27,9 +27,9 @@ ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   Aws::S3::S3ClientConfiguration s3_conf{};
   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
-      Aws::MakeShared<util::aws::CredentialsProviderChain>("helio");
+      std::make_shared<util::aws::CredentialsProviderChain>();
   std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
-      Aws::MakeShared<util::aws::S3EndpointProvider>("helio", absl::GetFlag(FLAGS_endpoint));
+      std::make_shared<util::aws::S3EndpointProvider>(absl::GetFlag(FLAGS_endpoint));
   return std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
 }
 

@@ -12,7 +12,7 @@ namespace aws {
 
 std::shared_ptr<Aws::Http::HttpClient> HttpClientFactory::CreateHttpClient(
     const Aws::Client::ClientConfiguration& client_conf) const {
-  return Aws::MakeShared<HttpClient>("helio", client_conf);
+  return std::make_shared<HttpClient>(client_conf);
 }
 
 std::shared_ptr<Aws::Http::HttpRequest> HttpClientFactory::CreateHttpRequest(
@@ -24,7 +24,7 @@ std::shared_ptr<Aws::Http::HttpRequest> HttpClientFactory::CreateHttpRequest(
 std::shared_ptr<Aws::Http::HttpRequest> HttpClientFactory::CreateHttpRequest(
     const Aws::Http::URI& uri, Aws::Http::HttpMethod method,
     const Aws::IOStreamFactory& stream_factory) const {
-  auto request = Aws::MakeShared<Aws::Http::Standard::StandardHttpRequest>("helio", uri, method);
+  auto request = std::make_shared<Aws::Http::Standard::StandardHttpRequest>(uri, method);
   request->SetResponseStreamFactory(stream_factory);
   return request;
 }
