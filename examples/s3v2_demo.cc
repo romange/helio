@@ -14,6 +14,9 @@
 #include "util/aws/s3_endpoint_provider.h"
 #include "util/aws/s3_read_file.h"
 #include "util/aws/s3_write_file.h"
+#include "util/cloud/aws.h"
+#include "util/cloud/s3.h"
+#include "util/cloud/s3_file.h"
 #include "util/fibers/pool.h"
 
 ABSL_FLAG(std::string, cmd, "list-buckets", "Command to run");
@@ -105,7 +108,55 @@ void Upload(const std::string& bucket, const std::string& key, size_t upload_siz
   }
 }
 
-void Download(const std::string& bucket, const std::string& key, size_t chunk_size) {
+void UploadLegacy(const std::string& bucket_name, const std::string& key, size_t upload_size,
+                  size_t chunk_size) {
+  if (bucket_name == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  util::cloud::AWS aws{"s3", "us-east-1"};
+  CHECK(!aws.Init());
+
+  util::cloud::S3Bucket bucket =
+      util::cloud::S3Bucket::FromEndpoint(aws, absl::GetFlag(FLAGS_endpoint), bucket_name);
+
+  std::error_code ec = bucket.Connect(300);
+  CHECK(!ec);
+
+  io::Result<io::WriteFile*> res = bucket.OpenWriteFile(key);
+  if (!res) {
+    LOG(ERROR) << "failed to open write file; error=" << res.error().message();
+    return;
+  }
+
+  io::WriteFile* file = *res;
+
+  size_t chunks = upload_size / chunk_size;
+
+  LOG(INFO) << "uploading s3 file; chunks=" << chunks << "; chunk_size=" << chunk_size;
+
+  std::vector<uint8_t> buf(chunk_size, 0xff);
+  for (size_t i = 0; i != chunks; i++) {
+    std::error_code ec = file->Write(io::Bytes(buf.data(), buf.size()));
+    if (ec) {
+      LOG(ERROR) << "failed to write to s3: " << ec;
+      return;
+    }
+  }
+  ec = file->Close();
+  if (ec) {
+    LOG(ERROR) << "failed to close s3 write file: " << ec;
+    return;
+  }
+}
+
+void Download(const std::string& bucket, const std::string& key) {
   if (bucket == "") {
     LOG(ERROR) << "missing bucket name";
     return;
@@ -117,9 +168,53 @@ void Download(const std::string& bucket, const std::string& key, size_t chunk_si
   }
 
   std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
-  std::unique_ptr<io::ReadonlyFile> file = std::make_unique<util::aws::S3ReadFile>(bucket, key, s3, chunk_size);
+  std::unique_ptr<io::ReadonlyFile> file = std::make_unique<util::aws::S3ReadFile>(bucket, key, s3);
 
-  LOG(INFO) << "downloading s3 file; chunk_size=" << chunk_size;
+  LOG(INFO) << "downloading s3 file";
+
+  std::vector<uint8_t> buf(1024, 0);
+  size_t read_n = 0;
+  while (true) {
+    io::Result<size_t> n = file->Read(read_n, io::MutableBytes(buf.data(), buf.size()));
+    if (!n) {
+      LOG(ERROR) << "failed to read from s3: " << n.error();
+      return;
+    }
+    if (*n == 0) {
+      LOG(INFO) << "finished download; read_n=" << read_n;
+      return;
+    }
+    read_n += *n;
+  }
+}
+
+void DownloadLegacy(const std::string& bucket_name, const std::string& key) {
+  if (bucket_name == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  util::cloud::AWS aws{"s3", "us-east-1"};
+  CHECK(!aws.Init());
+
+  util::cloud::S3Bucket bucket =
+      util::cloud::S3Bucket::FromEndpoint(aws, absl::GetFlag(FLAGS_endpoint), bucket_name);
+
+  auto ec = bucket.Connect(300);
+  CHECK(!ec);
+
+  io::Result<io::ReadonlyFile*> res = bucket.OpenReadFile(key);
+  if (!res) {
+    LOG(ERROR) << "failed to open read file; error=" << res.error().message();
+    return;
+  }
+
+  io::ReadonlyFile* file = *res;
 
   std::vector<uint8_t> buf(1024, 0);
   size_t read_n = 0;
@@ -166,8 +261,13 @@ int main(int argc, char* argv[]) {
     } else if (cmd == "upload") {
       Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
              absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
+    } else if (cmd == "upload-legacy") {
+      UploadLegacy(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
+                   absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
     } else if (cmd == "download") {
-      Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key), absl::GetFlag(FLAGS_chunk_size));
+      Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
+    } else if (cmd == "download-legacy") {
+      DownloadLegacy(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
     } else {
       LOG(ERROR) << "unknown command: " << cmd;
     }
