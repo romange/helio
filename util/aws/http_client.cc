@@ -112,6 +112,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+    conn->Close();
     return response;
   }
   h2::response<h2::string_body> boost_resp;
@@ -122,6 +123,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+    conn->Close();
     return response;
   }
 

@@ -11,7 +11,9 @@
 namespace util {
 namespace aws {
 
-constexpr size_t kDefaultChunkSize = 10 * (1 << 20);
+// TODO(andydunstall) Using 10MB fails with a boost body_limit error.
+// Not sure what this limit is.
+constexpr size_t kDefaultChunkSize = 1 * (1 << 20);
 
 class S3ReadFile final : public io::ReadonlyFile {
  public:
