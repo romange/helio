@@ -7,6 +7,8 @@
 #include <aws/s3/model/CreateMultipartUploadRequest.h>
 #include <aws/s3/model/UploadPartRequest.h>
 
+#include <boost/interprocess/streams/bufferstream.hpp>
+
 #include "base/logging.h"
 
 namespace util {
@@ -116,11 +118,11 @@ std::error_code S3WriteFile::Flush() {
   request.SetPartNumber(parts_.size() + 1);
   request.SetUploadId(upload_id_);
 
-  // TODO(andydunstall): Look at avoiding this copy. We're copying to an IO
-  // stream, then back to a buffer in HTTP client.
-  std::shared_ptr<Aws::IOStream> object_stream = std::make_shared<Aws::StringStream>();
-  object_stream->write((const char*)buf_.data(), offset_);
-  request.SetBody(object_stream);
+  // Avoid copying by creating a stream that directly references the underlying
+  // buffer. This is ok since we won't modify buf_ until the request completes.
+  std::shared_ptr<Aws::IOStream> stream =
+      std::make_shared<boost::interprocess::bufferstream>(reinterpret_cast<char*>(buf_.data()), offset_);
+  request.SetBody(stream);
 
   Aws::S3::Model::UploadPartOutcome outcome = client_->UploadPart(request);
   if (outcome.IsSuccess()) {

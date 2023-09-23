@@ -12,6 +12,7 @@
 #include <boost/beast/http/read.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>
+#include <boost/interprocess/streams/bufferstream.hpp>
 
 #include "base/logging.h"
 #include "util/asio_stream_adapter.h"
@@ -73,14 +74,29 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   for (const auto& h : request->GetHeaders()) {
     boost_req.set(h.first, h.second);
   }
-  // TODO(andydunstall) We can avoid this copy by adding a custom body type
-  // that reads directly from the body std::iostream.
+
+  // If the body is a known type with an underlying buffer we can access
+  // directly without copying, we don't include a body in the boost request but
+  // instead write the buffer directly to the socket.
+  //
+  // So h2::write will only write the header (where content-length etc have
+  // already been set by the AWS SDK), then we write the body directly.
+  //
+  // This is a bit of a hack, though it saves us doing expensive copies,
+  // especially when we're uploading 10MB file parts.
+  boost::interprocess::bufferstream* buf_body = nullptr;
+  std::stringstream* string_body = nullptr;
   if (request->GetContentBody()) {
-    int content_size;
-    absl::SimpleAtoi(request->GetContentLength(), &content_size);
-    std::string s(content_size, '0');
-    request->GetContentBody()->read(s.data(), s.size());
-    boost_req.body() = s;
+    buf_body = dynamic_cast<boost::interprocess::bufferstream*>(request->GetContentBody().get());
+    string_body = dynamic_cast<std::stringstream*>(request->GetContentBody().get());
+    // Only copy if we don't know the type.
+    if (!buf_body && !string_body) {
+      int content_size;
+      absl::SimpleAtoi(request->GetContentLength(), &content_size);
+      std::string s(content_size, '0');
+      request->GetContentBody()->read(s.data(), s.size());
+      boost_req.body() = s;
+    }
   }
 
   std::shared_ptr<Aws::Http::HttpResponse> response =
@@ -115,6 +131,34 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     conn->Close();
     return response;
   }
+
+  // As described above, if we have a known type write the bytes directly
+  // without copying.
+  if (buf_body) {
+    auto [buf, size] = buf_body->buffer();
+    ec = conn->Write(io::Bytes{reinterpret_cast<const uint8_t*>(buf), size});
+    if (ec) {
+      LOG(WARNING) << "aws: http client: failed to send request body; method="
+                   << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
+                   << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
+      response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+      conn->Close();
+      return response;
+    }
+  }
+  if (string_body) {
+    ec = conn->Write(io::Bytes{reinterpret_cast<const uint8_t*>(string_body->view().data()),
+                               string_body->view().size()});
+    if (ec) {
+      LOG(WARNING) << "aws: http client: failed to send request body; method="
+                   << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
+                   << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
+      response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+      conn->Close();
+      return response;
+    }
+  }
+
   h2::response<h2::string_body> boost_resp;
   boost::beast::flat_buffer buf;
   h2::read(adapter, buf, boost_resp, ec);

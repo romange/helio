@@ -28,7 +28,8 @@ io::Result<size_t> S3ReadFile::Read(size_t offset, const iovec* v, uint32_t len)
     read_n += *n;
   }
 
-  VLOG(2) << "aws: s3 read file: read=" << read_n << "; file_read=" << file_read_ << "; file_size=" << file_size_;
+  VLOG(2) << "aws: s3 read file: read=" << read_n << "; file_read=" << file_read_
+          << "; file_size=" << file_size_;
 
   if (read_n == 0) {
     VLOG(2) << "aws: s3 read file: read complete; file_size=" << file_size_;
@@ -125,14 +126,15 @@ std::error_code S3ReadFile::ParseFileSize(const Aws::S3::Model::GetObjectResult&
   if (result.GetContentRange() == "") {
     file_size_ = result.GetContentLength();
   } else {
-    std::vector<std::string_view> parts =
-        absl::StrSplit(result.GetContentRange(), "/");
+    std::vector<std::string_view> parts = absl::StrSplit(result.GetContentRange(), "/");
     if (parts.size() < 2) {
-      LOG(ERROR) << "aws: s3 read file: failed to parse file size: range=" << result.GetContentRange();
+      LOG(ERROR) << "aws: s3 read file: failed to parse file size: range="
+                 << result.GetContentRange();
       return std::make_error_code(std::errc::io_error);
     }
     if (!absl::SimpleAtoi(parts[1], &file_size_)) {
-      LOG(ERROR) << "aws: s3 read file: failed to parse file size: range=" << result.GetContentRange();
+      LOG(ERROR) << "aws: s3 read file: failed to parse file size: range="
+                 << result.GetContentRange();
       return std::make_error_code(std::errc::io_error);
     }
   }
