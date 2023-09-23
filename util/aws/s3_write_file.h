@@ -11,7 +11,7 @@
 namespace util {
 namespace aws {
 
-constexpr size_t kDefaultPartSize = 10 * (1 << 20);
+constexpr size_t kDefaultPartSize = 1ULL << 23;  // 8MB.
 
 // File handle that writes to S3.
 //
