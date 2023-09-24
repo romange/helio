@@ -8,6 +8,7 @@
 namespace util {
 namespace aws {
 
+// A glog based logger for AWS.
 class Logger : public Aws::Utils::Logging::LogSystemInterface {
  public:
   Aws::Utils::Logging::LogLevel GetLogLevel() const override;

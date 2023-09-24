@@ -7,7 +7,6 @@
 #include <aws/core/http/HttpResponse.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>
 
-#include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/message.hpp>
 #include <boost/beast/http/read.hpp>
 #include <boost/beast/http/string_body.hpp>
@@ -25,7 +24,6 @@ namespace h2 = boost::beast::http;
 
 namespace {
 
-// TODO(andydunstall): Check what versions boost supports
 constexpr unsigned kHttpVersion1_1 = 11;
 
 h2::verb BoostMethod(Aws::Http::HttpMethod method) {
@@ -100,15 +98,9 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   std::shared_ptr<Aws::Http::HttpResponse> response =
       std::make_shared<Aws::Http::Standard::StandardHttpResponse>(request);
 
-  // TODO(andydunstall): So the HTTP client can be accessed by multiple
-  // threads/proactors, we reconnect on each request.
-  //
-  // Long term we can cache connections, though must ensure that is thread
-  // safe and we always return a connection on the same proactor thread.
-  //
-  // Since we currently primarily use the HTTP client for large
-  // requests/responses (such as 10MB when uploading), the overhead of
-  // connecting is reduced.
+  // To keep the HTTP client simple and thread safe, reconect on each request.
+  // Given we have large request/responses (8MB) the cost of reconnecting
+  // is negligible.
   io::Result<std::unique_ptr<FiberSocketBase>> connect_res =
       Connect(request->GetUri().GetAuthority(), request->GetUri().GetPort(), proactor);
   if (!connect_res) {
@@ -131,8 +123,8 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   }
 
   std::error_code ec;
-  // As described above, if we have a known type write the bytes directly
-  // without copying.
+  // As described above, if we have a known type write the body directly
+  // without copying (the headers are written in h2::write.
   if (buf_body) {
     auto [buf, size] = buf_body->buffer();
     ec = conn->Write(io::Bytes{reinterpret_cast<const uint8_t*>(buf), size});
@@ -162,8 +154,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   for (const auto& h : boost_resp.base()) {
     response->AddHeader(std::string(h.name_string()), std::string(h.value()));
   }
-  // TODO(andydunstall) We can avoid this copy by adding a custom body type
-  // that writes directly from the body std::iostream.
+  // Copy the response. This can be improved in the future.
   response->GetResponseBody().write(boost_resp.body().data(), boost_resp.body().size());
 
   VLOG(1) << "aws: http client: response; status=" << boost_resp.result_int();
@@ -190,6 +181,7 @@ bool HttpClient::IsRequestProcessingEnabled() const {
 }
 
 void HttpClient::RetryRequestSleep(std::chrono::milliseconds sleep_time) {
+  // Override to only block the fiber, not the thread.
   ThisFiber::SleepFor(sleep_time);
 }
 
@@ -206,7 +198,6 @@ io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::stri
   std::unique_ptr<FiberSocketBase> socket;
   socket.reset(proactor->CreateSocket());
   FiberSocketBase::endpoint_type ep{*addr, port};
-  // TODO(andydunstall): Add connect timeout (client_conf_.connectTimeoutMs)
   std::error_code ec = socket->Connect(ep);
   if (ec) {
     LOG(WARNING) << "aws: http client: failed to connect; host=" << host << "; error=" << ec;

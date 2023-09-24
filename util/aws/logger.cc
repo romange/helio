@@ -20,6 +20,7 @@ Aws::Utils::Logging::LogLevel Logger::GetLogLevel() const {
 void Logger::Log(Aws::Utils::Logging::LogLevel level, const char* tag, const char* format_str,
                  ...) {
   // Note Logger::Log is almost unused by the SDK, it instead uses LogStream.
+  // Copied formatting vararg from the AWS SDK.
 
   std::stringstream ss;
 

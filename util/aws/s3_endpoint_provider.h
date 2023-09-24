@@ -12,6 +12,8 @@ namespace aws {
 //
 // We override the default to support configuring custom endpoints, which the
 // C++ SDK doesn't yet support.
+//
+// We also only support HTTP.
 class S3EndpointProvider : public Aws::S3::S3EndpointProvider {
  public:
   // Configure a non-empty endpoint string to configure a custom endpoint.

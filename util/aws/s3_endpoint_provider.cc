@@ -18,7 +18,7 @@ Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
     Aws::Endpoint::ResolveEndpointOutcome outcome =
         Aws::S3::S3EndpointProvider::ResolveEndpoint(endpoint_params);
     if (outcome.IsSuccess()) {
-      // TODO(andydunstall): We currently only support HTTP.
+      // We currently only support HTTP.
       Aws::Http::URI uri = outcome.GetResult().GetURI();
       uri.SetScheme(Aws::Http::Scheme::HTTP);
       outcome.GetResult().SetURI(uri);
@@ -27,7 +27,7 @@ Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
   }
 
   // If a custom endpoint is configured, construct the URL. Note this misses
-  // lots of functionality of Aws::S3::S3EndpointProvider, though we are
+  // some functionality of Aws::S3::S3EndpointProvider, though we are
   // currently only using the custom endpoint for testing.
 
   std::string bucket;
@@ -38,7 +38,7 @@ Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
   }
 
   Aws::Endpoint::AWSEndpoint endpoint;
-  // TODO(andydunstall): We currently only support HTTP.
+  // We currently only support HTTP.
   if (bucket != "") {
     endpoint.SetURL("http://" + endpoint_ + "/" + bucket);
   } else {

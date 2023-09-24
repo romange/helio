@@ -22,11 +22,6 @@ class HttpClient : public Aws::Http::HttpClient {
 
   // Sends the given HTTP request to the server and returns a response.
   //
-  // Requests will only be retried if the request is idempotent and it gets a
-  // network error on a connection that was previously healthy. HTTP requests
-  // are considered idempotent it they have methods GET, HEAD, OPTIONS, or
-  // TRACE.
-  //
   // Note we don't support readLimiter or writeLimiter.
   std::shared_ptr<Aws::Http::HttpResponse> MakeRequest(
       const std::shared_ptr<Aws::Http::HttpRequest>& request,
