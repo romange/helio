@@ -120,8 +120,8 @@ std::error_code S3WriteFile::Flush() {
 
   // Avoid copying by creating a stream that directly references the underlying
   // buffer. This is ok since we won't modify buf_ until the request completes.
-  std::shared_ptr<Aws::IOStream> stream =
-      std::make_shared<boost::interprocess::bufferstream>(reinterpret_cast<char*>(buf_.data()), offset_);
+  std::shared_ptr<Aws::IOStream> stream = std::make_shared<boost::interprocess::bufferstream>(
+      reinterpret_cast<char*>(buf_.data()), offset_);
   request.SetBody(stream);
 
   Aws::S3::Model::UploadPartOutcome outcome = client_->UploadPart(request);

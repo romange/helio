@@ -85,12 +85,10 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   // This is a bit of a hack, though it saves us doing expensive copies,
   // especially when we're uploading 10MB file parts.
   boost::interprocess::bufferstream* buf_body = nullptr;
-  std::stringstream* string_body = nullptr;
   if (request->GetContentBody()) {
     buf_body = dynamic_cast<boost::interprocess::bufferstream*>(request->GetContentBody().get());
-    string_body = dynamic_cast<std::stringstream*>(request->GetContentBody().get());
     // Only copy if we don't know the type.
-    if (!buf_body && !string_body) {
+    if (!buf_body) {
       int content_size;
       absl::SimpleAtoi(request->GetContentLength(), &content_size);
       std::string s(content_size, '0');
@@ -120,18 +118,19 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   }
   std::unique_ptr<FiberSocketBase> conn = std::move(*connect_res);
 
-  boost::system::error_code ec;
+  boost::system::error_code bec;
   AsioStreamAdapter<> adapter(*conn);
-  h2::write(adapter, boost_req, ec);
-  if (ec) {
+  h2::write(adapter, boost_req, bec);
+  if (bec) {
     LOG(WARNING) << "aws: http client: failed to send request; method="
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
-                 << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
+                 << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
     conn->Close();
     return response;
   }
 
+  std::error_code ec;
   // As described above, if we have a known type write the bytes directly
   // without copying.
   if (buf_body) {
@@ -146,26 +145,14 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
       return response;
     }
   }
-  if (string_body) {
-    ec = conn->Write(io::Bytes{reinterpret_cast<const uint8_t*>(string_body->view().data()),
-                               string_body->view().size()});
-    if (ec) {
-      LOG(WARNING) << "aws: http client: failed to send request body; method="
-                   << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
-                   << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
-      response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-      conn->Close();
-      return response;
-    }
-  }
 
   h2::response<h2::string_body> boost_resp;
   boost::beast::flat_buffer buf;
-  h2::read(adapter, buf, boost_resp, ec);
-  if (ec) {
+  h2::read(adapter, buf, boost_resp, bec);
+  if (bec) {
     LOG(WARNING) << "aws: http client: failed to read response; method="
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
-                 << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
+                 << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
     conn->Close();
     return response;
