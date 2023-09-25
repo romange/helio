@@ -461,10 +461,13 @@ void EpollProactor::PeriodicCb(PeriodicItem* item) {
   }
 
   item->task();
+
+#ifdef __linux__
   uint64_t res;
   if (read(item->val1, &res, sizeof(res)) == -1) {
     LOG(ERROR) << "Error reading from timer, errno " << errno;
   }
+#endif
 }
 
 void EpollProactor::DispatchCompletions(const void* cevents, unsigned count) {
