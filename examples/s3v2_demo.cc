@@ -56,17 +56,31 @@ void ListObjects(const std::string& bucket) {
   }
 
   std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
-  Aws::S3::Model::ListObjectsV2Request request;
-  request.SetBucket(bucket);
 
-  Aws::S3::Model::ListObjectsV2Outcome outcome = s3->ListObjectsV2(request);
-  if (outcome.IsSuccess()) {
-    std::cout << "objects in " << bucket << ":" << std::endl;
-    for (const auto& object : outcome.GetResult().GetContents()) {
-      std::cout << "* " << object.GetKey() << std::endl;
+  std::string continuation_token;
+  std::vector<std::string> keys;
+  do {
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(bucket);
+    if (continuation_token != "") {
+      request.SetContinuationToken(continuation_token);
     }
-  } else {
-    LOG(ERROR) << "failed to list objects: " << outcome.GetError().GetExceptionName();
+
+    Aws::S3::Model::ListObjectsV2Outcome outcome = s3->ListObjectsV2(request);
+    if (outcome.IsSuccess()) {
+      continuation_token = outcome.GetResult().GetNextContinuationToken();
+      for (const auto& object : outcome.GetResult().GetContents()) {
+        keys.push_back(object.GetKey());
+      }
+    } else {
+      LOG(ERROR) << "failed to list objects: " << outcome.GetError().GetExceptionName();
+      return;
+    }
+  } while (continuation_token != "");
+
+  std::cout << "objects in " << bucket << ":" << std::endl;
+  for (const std::string& key : keys) {
+    std::cout << "* " << key << std::endl;
   }
 }
 
