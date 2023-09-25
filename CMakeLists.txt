@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.16)
 
 set(PACKAGE_NAME    "helio")
 set(PROJECT_CONTACT romange@gmail.com)
