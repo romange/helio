@@ -321,5 +321,3 @@ ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len) {
 }
 
 }  // namespace io
-
-namespace std {}  // namespace std
