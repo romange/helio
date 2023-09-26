@@ -271,6 +271,13 @@ void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
     return fn(this);
   }
 
+  // We're in a random fiber but we want to execute in the context of `this`. We call
+  // `this->entry_.resume_with(L)`. Calling this method suspends the current fiber and executes `L`
+  // on top of the stack of `this->entry_`.
+  // It is similar to running an interrupt handler in the same stack as a suspended program.
+  // Inside `L`, we execute `fn` and then resume the original fiber that was suspended which is
+  // passed to us as the argument. When the other fiber will be resumed normally, it will execute
+  // the final `return` statement and go back to its original suspension state.
   entry_ = std::move(entry_).resume_with([fn = std::move(fn), this](ctx::fiber_context&& c) {
     fn(this);
 
