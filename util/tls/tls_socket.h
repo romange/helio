@@ -67,6 +67,9 @@ class TlsSocket : public FiberSocketBase {
 
   uint32_t CancelPoll(uint32_t id) override;
 
+  void RegisterOnErrorCb(std::function<void (uint32_t)> cb) override;
+  void CancelOnErrorCb() override;
+
   bool IsUDS() const override;
   bool IsDirect() const override;
 

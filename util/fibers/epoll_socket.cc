@@ -45,7 +45,7 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
 }
 
 #ifdef __linux__
-constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET;
+constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLHUP | EPOLLERR | EPOLLRDHUP;
 
 int AcceptSock(int fd) {
   sockaddr_in client_addr;
@@ -398,6 +398,16 @@ uint32_t EpollSocket::CancelPoll(uint32_t id) {
   return 0;
 }
 
+void EpollSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
+  DCHECK(!error_cb_);
+  error_cb_ = std::move(cb);
+}
+
+void EpollSocket::CancelOnErrorCb() {
+  DCHECK(error_cb_);
+  error_cb_ = {};
+}
+
 bool EpollSocket::SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec) {
   epoll_mask_ = 0;
   kev_error_ = 0;
@@ -426,7 +436,7 @@ bool EpollSocket::SuspendMyself(detail::FiberInterface* cntx, std::error_code* e
 void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask;
 #ifdef __linux__
-  constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP;
+  constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP | EPOLLRDHUP;
 #else
   constexpr uint32_t kErrMask = POLLERR | POLLHUP;
 #endif
@@ -454,6 +464,10 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
       DVSOCK(2) << "Wakey: Schedule write in " << write_context_->name();
       detail::FiberActive()->ActivateOther(write_context_);
     }
+  }
+
+  if (error_cb_ && (ev_mask & kErrMask)) {
+    error_cb_(ev_mask);
   }
 }
 
