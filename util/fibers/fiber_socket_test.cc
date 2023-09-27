@@ -234,7 +234,7 @@ TEST_P(FiberSocketTest, Poll) {
     EXPECT_TRUE(POLLERR & mask);
   };
 
-  proactor_->Await([&] { conn_socket_->PollEvent(POLLHUP | POLLERR, poll_cb); });
+  proactor_->Await([&] { conn_socket_->RegisterOnErrorCb(poll_cb); });
   LOG(INFO) << "Before close";
   proactor_->Await([&] {
     auto ec = sock->Close();

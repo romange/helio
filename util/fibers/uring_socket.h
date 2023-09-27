@@ -52,6 +52,9 @@ class UringSocket : public LinuxSocketBase {
   //! in process of completing.
   uint32_t CancelPoll(uint32_t id) final;
 
+  void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
+  void CancelOnErrorCb() final;
+
  private:
   Proactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
@@ -60,7 +63,9 @@ class UringSocket : public LinuxSocketBase {
   uint8_t register_flag() const {
     return fd_ & REGISTER_FD ? IOSQE_FIXED_FILE : 0;
   }
+
+  uint32_t error_cb_id_ = UINT32_MAX;
 };
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util

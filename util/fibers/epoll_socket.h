@@ -45,6 +45,9 @@ class EpollSocket : public LinuxSocketBase {
   //! in process of completing.
   uint32_t CancelPoll(uint32_t id) final;
 
+  void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
+  void CancelOnErrorCb() final;
+
   using FiberSocketBase::IsConnClosed;
 
  private:
@@ -65,6 +68,8 @@ class EpollSocket : public LinuxSocketBase {
   int32_t arm_index_ = -1;
   uint16_t epoll_mask_ = 0;
   uint16_t kev_error_ = 0;
+
+  std::function<void(uint32_t)> error_cb_;
 };
 
 constexpr size_t kSizeofEpollSocket = sizeof(EpollSocket);
