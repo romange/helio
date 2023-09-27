@@ -27,7 +27,7 @@ namespace {
 
 using FileResponse = ::boost::beast::http::response<::boost::beast::http::file_body>;
 
-inline std::string_view as_absl(::boost::string_view s) {
+inline std::string_view ToStd(::boost::string_view s) {
   return std::string_view(s.data(), s.size());
 }
 
@@ -245,7 +245,7 @@ HttpListenerBase::HttpListenerBase() {
 }
 
 bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx) const {
-  std::string_view target = as_absl(request.target());
+  std::string_view target = ToStd(request.target());
   if (target == "/favicon.ico") {
     h2::response<h2::string_body> resp = MakeStringResponse(h2::status::moved_permanently);
     resp.set(h2::field::location, favicon_url_);
@@ -296,7 +296,7 @@ bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
 }
 
 // Limit the parsing buffer to 4K.
-HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base), req_buffer_(4096)  {
+HttpConnection::HttpConnection(const HttpListenerBase* base) : owner_(base), req_buffer_(4096) {
 }
 
 error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
@@ -367,50 +367,54 @@ void HttpConnection::HandleRequests() {
   LOG_IF(INFO, !FiberSocketBase::IsConnClosed(ec)) << "Http error " << ec.message();
 }
 
-bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpContext* cntx) {
+bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpContext* cntx,
+                                               std::string_view path) {
   CHECK(owner_);
 
-  bool authenticated = false;
+  if (!owner_->auth_functor_)
+    return true;
+
+  string_view username, password;
+  string decoded;
+
   if (const boost::string_view header = req[h2::field::authorization]; !header.empty()) {
-    std::string_view header_stl{header.data(), header.size()};
+    string_view header_stl = ToStd(header);
     if (absl::StartsWith(header_stl, "Basic ")) {
-      std::string decoded;
       absl::Base64Unescape(header_stl.substr(6), &decoded);
       auto split_pos = decoded.find(':');
-      if (split_pos != std::string::npos) {
-        std::string username = decoded.substr(0, split_pos);
-        std::string password = decoded.substr(split_pos + 1, decoded.size());
-        if (username == "user" && password == owner_->password_) {
-          authenticated = true;
-        }
+      if (split_pos != string::npos) {
+        string_view decoded_sv(decoded);
+        username = decoded_sv.substr(0, split_pos);
+        password = decoded_sv.substr(split_pos + 1, decoded.size());
       }
     }
   }
 
-  if (!authenticated) {
-    h2::response<h2::string_body> resp{h2::status::unauthorized, req.version()};
-    resp.set(h2::field::content_type, "text/plain");
-    resp.set(h2::field::www_authenticate, "Basic realm=\"Restricted Area\"");
-    resp.body() = "Please authorize!";
-    cntx->Invoke(std::move(resp));
-    return false;
+  if (owner_->auth_functor_(path, username, password)) {
+    return true;
   }
 
-  return true;
+  h2::response<h2::string_body> resp{h2::status::unauthorized, req.version()};
+  resp.set(h2::field::content_type, "text/plain");
+  resp.set(h2::field::www_authenticate, "Basic realm=\"Restricted Area\"");
+  resp.body() = "Please authorize!";
+  cntx->Invoke(std::move(resp));
+
+  return false;
 }
 
 void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cntx) {
   CHECK(owner_);
 
-  if (!owner_->password_.empty() && !CheckRequestAuthorization(req, cntx))
+  std::string_view target = ToStd(req.target());
+  auto [path, query] = ParseQuery(target);
+
+  if (!CheckRequestAuthorization(req, cntx, path))
     return;
 
   if (owner_->HandleRoot(req, cntx)) {
     return;
   }
-  std::string_view target = as_absl(req.target());
-  std::string_view path, query;
-  tie(path, query) = ParseQuery(target);
   VLOG(2) << "Searching for " << path;
 
   auto it = owner_->cb_map_.find(path);
