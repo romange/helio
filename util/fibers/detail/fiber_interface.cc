@@ -8,7 +8,6 @@
 
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
-#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -267,24 +266,20 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   });
 }
 
-void FiberInterface::PrintStackTrace() {
-  std::string_view state = "sleeping";
-  if (list_hook.is_linked()) {
-    state = "ready";
-  } else if (FiberActive() == this) {
-    state = "active";
-  }
-
-  auto print = [this, state]() {
-    LOG(INFO) << "------------ Fiber " << this->name_ << " (" << state << ") ------------\n" << GetStacktrace();
-  };
-
+void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
   if (FiberActive() == this) {
-    return print();
+    return fn(this);
   }
 
-  entry_ = std::move(entry_).resume_with([print = std::move(print)](ctx::fiber_context&& c) {
-    print();
+  // We're in a random fiber but we want to execute in the context of `this`. We call
+  // `this->entry_.resume_with(L)`. Calling this method suspends the current fiber and executes `L`
+  // on top of the stack of `this->entry_`.
+  // It is similar to running an interrupt handler in the same stack as a suspended program.
+  // Inside `L`, we execute `fn` and then resume the original fiber that was suspended which is
+  // passed to us as the argument. When the other fiber will be resumed normally, it will execute
+  // the final `return` statement and go back to its original suspension state.
+  entry_ = std::move(entry_).resume_with([fn = std::move(fn), this](ctx::fiber_context&& c) {
+    fn(this);
 
     c = std::move(c).resume();
     return std::move(c);
@@ -305,6 +300,14 @@ void LeaveFiberAtomicSection() noexcept {
 
 bool IsFiberAtomicSection() noexcept {
   return FbInitializer().atomic_section > 0;
+}
+
+void PrintAllFiberStackTraces() {
+  FbInitializer().sched->PrintAllFiberStackTraces();
+}
+
+void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
+  FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
 }
 
 }  // namespace detail

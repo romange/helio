@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "base/logging.h"
+#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -677,11 +678,29 @@ void Scheduler::RunDeferred() {
 #endif
 }
 
-void Scheduler::PrintAllFiberStackTraces() {
+void Scheduler::ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   for (auto& fiber : fibers_) {
     DCHECK(fiber.scheduler() == this);
-    fiber.PrintStackTrace();
+    fiber.ExecuteOnFiberStack(fn);
   }
+}
+
+void Scheduler::PrintAllFiberStackTraces() {
+  auto* active = FiberActive();
+
+  auto print_fn = [active](FiberInterface* fb) {
+    std::string_view state = "sleeping";
+    if (fb->list_hook.is_linked()) {
+      state = "ready";
+    } else if (active == fb) {
+      state = "active";
+    }
+
+    LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
+              << GetStacktrace();
+  };
+
+  ExecuteOnAllFiberStacks(print_fn);
 }
 
 }  // namespace detail

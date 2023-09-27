@@ -90,6 +90,7 @@ class Scheduler {
   void RunDeferred();
 
   void PrintAllFiberStackTraces();
+  void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
 
  private:
   // I use cache_last<true> so that slist will have push_back support.

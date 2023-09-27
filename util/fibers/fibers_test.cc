@@ -715,8 +715,8 @@ TEST_P(ProactorTest, DumpFiberStacks) {
     ThisFiber::SleepFor(30ms);
   });
 
-  fb2::detail::FiberInterface::PrintAllFiberStackTraces();
-  pth.get()->Await([]() { fb2::detail::FiberInterface::PrintAllFiberStackTraces(); });
+  fb2::detail::PrintAllFiberStackTraces();
+  pth.get()->Await([]() { fb2::detail::PrintAllFiberStackTraces(); });
 
   fb.Join();
 }
