@@ -64,7 +64,7 @@ class UringSocket : public LinuxSocketBase {
     return fd_ & REGISTER_FD ? IOSQE_FIXED_FILE : 0;
   }
 
-  uint32_t error_cb_event_ = UINT32_MAX;
+  uint32_t error_cb_id_ = UINT32_MAX;
 };
 
 }  // namespace fb2

@@ -378,14 +378,15 @@ uint32_t UringSocket::CancelPoll(uint32_t id) {
 }
 
 void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
-  DCHECK(error_cb_event_ == UINT32_MAX);
-  error_cb_event_ = this->PollEvent(POLLERR | POLLHUP, std::move(cb));
+  DCHECK(error_cb_id_ == UINT32_MAX);
+  error_cb_id_ = this->PollEvent(POLLERR | POLLHUP, std::move(cb));
 }
 
 void UringSocket::CancelOnErrorCb() {
-  DCHECK(error_cb_event_ != UINT32_MAX);
-  this->CancelPoll(error_cb_event_);
-  error_cb_event_= UINT32_MAX;
+  if (error_cb_id_ != UINT32_MAX) {
+    this->CancelPoll(error_cb_id_);
+    error_cb_id_ = UINT32_MAX;
+  }
 }
 
 }  // namespace fb2

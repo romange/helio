@@ -45,7 +45,7 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
 }
 
 #ifdef __linux__
-constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLHUP | EPOLLERR | EPOLLRDHUP;
+constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 
 int AcceptSock(int fd) {
   sockaddr_in client_addr;
@@ -360,7 +360,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   }
 
   ec = std::error_code(res, std::system_category());
-  VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
+  VSOCK(1) << "Error on " << RemoteEndpoint() << ": " << ec.message();
 
   return nonstd::make_unexpected(std::move(ec));
 }
@@ -404,7 +404,6 @@ void EpollSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
 }
 
 void EpollSocket::CancelOnErrorCb() {
-  DCHECK(error_cb_);
   error_cb_ = {};
 }
 
