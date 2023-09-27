@@ -63,12 +63,12 @@ io::Result<size_t> S3ReadFile::Read(iovec v) {
     if (n == 0) {
       return read_n;
     }
-    if (n > end_idx_ - start_idx_) {
-      n = end_idx_ - start_idx_;
+    if (n > buf_.InputLen()) {
+      n = buf_.InputLen();
     }
     uint8_t* b = reinterpret_cast<uint8_t*>(v.iov_base);
-    memcpy(b + read_n, buf_.data() + start_idx_, n);
-    start_idx_ += n;
+    memcpy(b + read_n, buf_.InputBuffer().data(), n);
+    buf_.ConsumeInput(n);
     read_n += n;
     file_read_ += n;
 
@@ -98,10 +98,14 @@ std::error_code S3ReadFile::DownloadChunk() {
     VLOG(2) << "aws: s3 read file: downloaded chunk: length="
             << outcome.GetResult().GetContentLength();
 
-    outcome.GetResult().GetBody().read(reinterpret_cast<char*>(buf_.data()),
+    // Verify we've ready the full chunk before downloading another to ensure
+    // we have capacity.
+    CHECK_EQ(buf_.InputLen(), 0U);
+
+    io::MutableBytes append_buf = buf_.AppendBuffer();
+    outcome.GetResult().GetBody().read(reinterpret_cast<char*>(append_buf.data()),
                                        outcome.GetResult().GetContentLength());
-    start_idx_ = 0;
-    end_idx_ = outcome.GetResult().GetContentLength();
+    buf_.CommitWrite(outcome.GetResult().GetContentLength());
 
     // If this is the first download, read the file size.
     if (file_size_ == 0) {
@@ -119,7 +123,7 @@ std::error_code S3ReadFile::DownloadChunk() {
 }
 
 std::string S3ReadFile::NextByteRange() const {
-  return absl::StrFormat("bytes=%d-%d", file_read_, file_read_ + buf_.size() - 1);
+  return absl::StrFormat("bytes=%d-%d", file_read_, file_read_ + buf_.Capacity() - 1);
 }
 
 std::error_code S3ReadFile::ParseFileSize(const Aws::S3::Model::GetObjectResult& result) {

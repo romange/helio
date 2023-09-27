@@ -6,6 +6,7 @@
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/GetObjectResult.h>
 
+#include "base/io_buf.h"
 #include "io/file.h"
 #include "io/io.h"
 
@@ -46,15 +47,9 @@ class S3ReadFile final : public io::ReadonlyFile {
 
   std::string key_;
 
-  // Buffers the last downloaded chunk. Note may not fill buf_ if we're reading
-  // the last chunk, so uses start_idx_ and end_idx_ to indicate the remaining
-  // bytes to be consumed.
-  std::vector<uint8_t> buf_;
+  base::IoBuf buf_;
 
-  size_t start_idx_ = 0;
-
-  size_t end_idx_ = 0;
-
+  // Total bytes in the file read.
   size_t file_read_ = 0;
 
   // Size of the target file to read. Set on first download.
