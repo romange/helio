@@ -29,6 +29,7 @@ ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   Aws::S3::S3ClientConfiguration s3_conf{};
+  s3_conf.payloadSigningPolicy = Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::ForceNever;
   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
       std::make_shared<util::aws::CredentialsProviderChain>();
   std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
