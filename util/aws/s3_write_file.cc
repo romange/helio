@@ -117,6 +117,7 @@ std::error_code S3WriteFile::Flush() {
   request.SetKey(key_);
   request.SetPartNumber(parts_.size() + 1);
   request.SetUploadId(upload_id_);
+  request.SetChecksumAlgorithm(Aws::S3::Model::ChecksumAlgorithm::CRC32);
 
   // Avoid copying by creating a stream that directly references the underlying
   // buffer. This is ok since we won't modify buf_ until the request completes.
