@@ -9,6 +9,7 @@
 #include <boost/beast/core.hpp>  // for flat_buffer.
 #include <boost/beast/http/serializer.hpp>
 #include <boost/beast/http/write.hpp>
+#include <string_view>
 
 #include "util/asio_stream_adapter.h"
 #include "util/connection.h"
@@ -80,10 +81,11 @@ class HttpListenerBase : public ListenerInterface {
     enable_metrics_ = true;
   }
 
-  // Enforce authentication to this HTTP server with the user "user"
-  // and this password.
-  void SetPassword(std::string password) {
-    password_ = std::move(password);
+  // Functor that's used to setup authentication
+  void SetAuthFunctor(std::function<bool(std::string_view path, std::string_view username,
+                                         std::string_view password)>
+                          func) {
+    auth_functor_ = std::move(func);
   }
 
  private:
@@ -98,7 +100,8 @@ class HttpListenerBase : public ListenerInterface {
   std::string resource_prefix_;
   bool enable_metrics_ = false;
 
-  std::string password_;
+  std::function<bool(std::string_view path, std::string_view username, std::string_view password)>
+      auth_functor_;
 };
 
 class HttpConnection : public Connection {
@@ -119,7 +122,7 @@ class HttpConnection : public Connection {
   void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
 
   // Check request authorization and return whether we can proceed.
-  bool CheckRequestAuthorization(const RequestType& req, HttpContext* cntx);
+  bool CheckRequestAuthorization(const RequestType& req, HttpContext* cntx, std::string_view path);
 
  private:
   const HttpListenerBase* owner_;

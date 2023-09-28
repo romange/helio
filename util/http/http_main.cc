@@ -12,13 +12,12 @@
 
 #include "base/init.h"
 #include "util/accept_server.h"
+#include "util/fibers/pool.h"
 #include "util/html/sorted_table.h"
 #include "util/http/http_common.h"
 #include "util/http/http_handler.h"
 #include "util/metrics/metrics.h"
 #include "util/varz.h"
-
-#include "util/fibers/pool.h"
 
 ABSL_FLAG(uint32_t, port, 8080, "Port number.");
 ABSL_FLAG(bool, use_incoming_cpu, false,
@@ -64,7 +63,15 @@ void ServerRun(ProactorPool* pool) {
   http_req.Init(pool, {"type", "handle"});
 
   HttpListener<>* listener = new MyListener;
-  listener->SetPassword(absl::GetFlag(FLAGS_password));
+  std::string pass = absl::GetFlag(FLAGS_password);
+  listener->SetAuthFunctor([pass = std::move(pass)](std::string_view path,
+                                                    std::string_view username,
+                                                    std::string_view password) {
+    if (path == "/foo") {
+      return true;
+    }
+    return password == pass && username == "default";
+  });
   auto cb = [](const http::QueryArgs& args, HttpContext* send) {
     http::StringResponse resp = http::MakeStringResponse(h2::status::ok);
     resp.body() = "Bar";
