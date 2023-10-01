@@ -1,0 +1,106 @@
+diff --git a/src/aws-cpp-sdk-core/include/aws/core/auth/signer/AWSAuthV4Signer.h b/src/aws-cpp-sdk-core/include/aws/core/auth/signer/AWSAuthV4Signer.h
+index 62b9f91af..4c85d507a 100644
+--- a/src/aws-cpp-sdk-core/include/aws/core/auth/signer/AWSAuthV4Signer.h
++++ b/src/aws-cpp-sdk-core/include/aws/core/auth/signer/AWSAuthV4Signer.h
+@@ -66,7 +66,11 @@ namespace Aws
+                 /**
+                  * Never sign the body of the request
+                  */
+-                Never
++                Never,
++                /**
++                 * Never sign the body of the request, even over HTTP
++                 */
++                ForceNever,
+             };
+             /**
+              * credentialsProvider, source of AWS Credentials to sign requests with
+diff --git a/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h b/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
+index cb6e928e7..49eb87f6d 100644
+--- a/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
++++ b/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
+@@ -51,21 +51,21 @@ namespace Aws
+             /**
+              * Stops all requests in progress and prevents any others from initiating.
+              */
+-            void DisableRequestProcessing();
++            virtual void DisableRequestProcessing();
+             /**
+              * Enables/ReEnables request processing.
+              */
+-            void EnableRequestProcessing();
++            virtual void EnableRequestProcessing();
+             /**
+              * Returns true if request processing is enabled.
+              */
+-            bool IsRequestProcessingEnabled() const;
++            virtual bool IsRequestProcessingEnabled() const;
+             /**
+              * Sleeps current thread for sleepTime.
+              */
+-            void RetryRequestSleep(std::chrono::milliseconds sleepTime);
++            virtual void RetryRequestSleep(std::chrono::milliseconds sleepTime);
+ 
+-            bool ContinueRequest(const Aws::Http::HttpRequest&) const;
++            virtual bool ContinueRequest(const Aws::Http::HttpRequest&) const;
+ 
+             explicit operator bool() const
+             {
+diff --git a/src/aws-cpp-sdk-core/source/auth/signer/AWSAuthV4Signer.cpp b/src/aws-cpp-sdk-core/source/auth/signer/AWSAuthV4Signer.cpp
+index dfe0bfba3..580d83983 100644
+--- a/src/aws-cpp-sdk-core/source/auth/signer/AWSAuthV4Signer.cpp
++++ b/src/aws-cpp-sdk-core/source/auth/signer/AWSAuthV4Signer.cpp
+@@ -36,7 +36,6 @@ static const char* X_AMZ_SIGNED_HEADERS = "X-Amz-SignedHeaders";
+ static const char* X_AMZ_ALGORITHM = "X-Amz-Algorithm";
+ static const char* X_AMZ_CREDENTIAL = "X-Amz-Credential";
+ static const char* UNSIGNED_PAYLOAD = "UNSIGNED-PAYLOAD";
+-static const char* STREAMING_UNSIGNED_PAYLOAD_TRAILER = "STREAMING-UNSIGNED-PAYLOAD-TRAILER";
+ static const char* X_AMZ_SIGNATURE = "X-Amz-Signature";
+ static const char* USER_AGENT = "user-agent";
+ static const char* EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+@@ -201,6 +200,7 @@ bool AWSAuthV4Signer::SignRequest(Aws::Http::HttpRequest& request, const char* r
+     request.SetSigningAccessKey(credentials.GetAWSAccessKeyId());
+     request.SetSigningRegion(signingRegion);
+ 
++    bool signBodyOverHttp = true;
+     Aws::String payloadHash(UNSIGNED_PAYLOAD);
+     switch(m_payloadSigningPolicy)
+     {
+@@ -210,6 +210,10 @@ bool AWSAuthV4Signer::SignRequest(Aws::Http::HttpRequest& request, const char* r
+         case PayloadSigningPolicy::Never:
+             signBody = false;
+             break;
++        case PayloadSigningPolicy::ForceNever:
++            signBody = false;
++            signBodyOverHttp = false;
++            break;
+         case PayloadSigningPolicy::RequestDependent:
+             // respect the request setting
+         default:
+@@ -228,7 +232,7 @@ bool AWSAuthV4Signer::SignRequest(Aws::Http::HttpRequest& request, const char* r
+         request.SetAwsSessionToken(credentials.GetSessionToken());
+     }
+ 
+-    if(signBody || request.GetUri().GetScheme() != Http::Scheme::HTTPS)
++    if(signBody || (signBodyOverHttp && request.GetUri().GetScheme() != Http::Scheme::HTTPS))
+     {
+         payloadHash = ComputePayloadHash(request);
+         if (payloadHash.empty())
+@@ -249,13 +253,10 @@ bool AWSAuthV4Signer::SignRequest(Aws::Http::HttpRequest& request, const char* r
+                 << " http scheme=" << Http::SchemeMapper::ToString(request.GetUri().GetScheme()));
+         if (request.GetRequestHash().second != nullptr)
+         {
+-            payloadHash = STREAMING_UNSIGNED_PAYLOAD_TRAILER;
+-            Aws::String trailerHeaderValue = Aws::String("x-amz-checksum-") + request.GetRequestHash().first;
+-            request.SetHeaderValue(Http::AWS_TRAILER_HEADER, trailerHeaderValue);
+-            request.SetTransferEncoding(CHUNKED_VALUE);
+-            request.SetHeaderValue(Http::CONTENT_ENCODING_HEADER, Http::AWS_CHUNKED_VALUE);
+-            request.SetHeaderValue(Http::DECODED_CONTENT_LENGTH_HEADER, request.GetHeaderValue(Http::CONTENT_LENGTH_HEADER));
+-            request.DeleteHeader(Http::CONTENT_LENGTH_HEADER);
++            Aws::String checksumHeaderKey = Aws::String("x-amz-checksum-") + request.GetRequestHash().first;
++            Aws::String checksumHeaderValue = HashingUtils::Base64Encode(request.GetRequestHash().second->Calculate(*(request.GetContentBody())).GetResult());
++            request.SetHeaderValue(checksumHeaderKey, checksumHeaderValue);
++            request.SetRequestHash("", nullptr);
+         }
+     }
+ 
