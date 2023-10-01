@@ -57,8 +57,9 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
     return;
 
   absl::ParseCommandLine(*argc, *argv);
-  google::InitGoogleLogging((*argv)[0]);
-
+  if (!google::IsGoogleLoggingInitialized()) {
+    google::InitGoogleLogging((*argv)[0]);
+  }
   absl::InitializeSymbolizer((*argv)[0]);
   absl::FailureSignalHandlerOptions options;
   absl::InstallFailureSignalHandler(options);
