@@ -58,7 +58,8 @@ std::error_code S3WriteFile::Close() {
   for (size_t i = 0; i != parts_.size(); i++) {
     Aws::S3::Model::CompletedPart part;
     part.SetPartNumber(i + 1);
-    part.SetETag(parts_[i]);
+    part.SetETag(parts_[i].etag);
+    part.SetChecksumCRC32(parts_[i].crc32);
     completed_upload.AddParts(part);
   }
 
@@ -87,6 +88,7 @@ io::Result<S3WriteFile> S3WriteFile::Open(const std::string& bucket, const std::
   Aws::S3::Model::CreateMultipartUploadRequest request;
   request.SetBucket(bucket);
   request.SetKey(key);
+  request.SetChecksumAlgorithm(Aws::S3::Model::ChecksumAlgorithm::CRC32);
   Aws::Utils::Outcome<Aws::S3::Model::CreateMultipartUploadResult, Aws::S3::S3Error> outcome =
       client->CreateMultipartUpload(request);
   if (outcome.IsSuccess()) {
@@ -117,6 +119,7 @@ std::error_code S3WriteFile::Flush() {
   request.SetKey(key_);
   request.SetPartNumber(parts_.size() + 1);
   request.SetUploadId(upload_id_);
+  request.SetChecksumAlgorithm(Aws::S3::Model::ChecksumAlgorithm::CRC32);
 
   // Avoid copying by creating a stream that directly references the underlying
   // buffer. This is ok since we won't modify buf_ until the request completes.
@@ -128,7 +131,10 @@ std::error_code S3WriteFile::Flush() {
   if (outcome.IsSuccess()) {
     VLOG(2) << "aws: s3 write file: upload part; part_number=" << parts_.size() + 1;
 
-    parts_.push_back(outcome.GetResult().GetETag());
+    PartMetadata metadata;
+    metadata.etag = outcome.GetResult().GetETag();
+    metadata.crc32 = outcome.GetResult().GetChecksumCRC32();
+    parts_.push_back(metadata);
     offset_ = 0;
     return std::error_code{};
   } else {
