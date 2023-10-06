@@ -13,6 +13,11 @@ namespace aws {
 
 constexpr size_t kDefaultPartSize = 1ULL << 23;  // 8MB.
 
+struct PartMetadata {
+  std::string etag;
+  std::string crc32;
+};
+
 // File handle that writes to S3.
 //
 // This uses multipart uploads, where it will buffer upto the configured part
@@ -46,7 +51,7 @@ class S3WriteFile : public io::WriteFile {
   std::string upload_id_;
 
   // Etags of the uploaded parts.
-  std::vector<std::string> parts_;
+  std::vector<PartMetadata> parts_;
 
   // A buffer containing the pending bytes waiting to be uploaded. Only offset_
   // bytes have been written.
