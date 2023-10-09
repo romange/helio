@@ -73,6 +73,25 @@ std::error_code S3WriteFile::Close() {
       client_->CompleteMultipartUpload(request);
   if (outcome.IsSuccess()) {
     VLOG(2) << "aws: s3 write file: completed multipart upload; parts=" << parts_.size();
+  } else if (outcome.GetError().GetExceptionName() == "PermanentRedirect") {
+    LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: permanent redirect; "
+                  "ensure your configured AWS region matches the S3 bucket region";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::NO_SUCH_BUCKET) {
+    LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: bucket not found: " +
+                      bucket_;
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::INVALID_ACCESS_KEY_ID) {
+    LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: invalid access key id";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::SIGNATURE_DOES_NOT_MATCH) {
+    LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: invalid signature; "
+                  "check your credentials are correct";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetExceptionName() == "InvalidToken") {
+    LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: invalid token; check "
+                  "your credentials are correct";
+    return std::make_error_code(std::errc::io_error);
   } else {
     LOG(ERROR) << "aws: s3 write file: failed to complete multipart upload: "
                << outcome.GetError().GetExceptionName();
@@ -95,6 +114,25 @@ io::Result<S3WriteFile> S3WriteFile::Open(const std::string& bucket, const std::
     VLOG(2) << "aws: s3 write file: created multipart upload; upload_id="
             << outcome.GetResult().GetUploadId();
     return S3WriteFile{bucket, key, outcome.GetResult().GetUploadId(), client, part_size};
+  } else if (outcome.GetError().GetExceptionName() == "PermanentRedirect") {
+    LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: permanent redirect; "
+                  "ensure your configured AWS region matches the S3 bucket region";
+    return nonstd::make_unexpected(std::make_error_code(std::errc::io_error));
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::NO_SUCH_BUCKET) {
+    LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: bucket not found: " +
+                      bucket;
+    return nonstd::make_unexpected(std::make_error_code(std::errc::io_error));
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::INVALID_ACCESS_KEY_ID) {
+    LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: invalid access key id";
+    return nonstd::make_unexpected(std::make_error_code(std::errc::io_error));
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::SIGNATURE_DOES_NOT_MATCH) {
+    LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: invalid signature; check "
+                  "your credentials are correct";
+    return nonstd::make_unexpected(std::make_error_code(std::errc::io_error));
+  } else if (outcome.GetError().GetExceptionName() == "InvalidToken") {
+    LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: invalid token; check "
+                  "your credentials are correct";
+    return nonstd::make_unexpected(std::make_error_code(std::errc::io_error));
   } else {
     LOG(ERROR) << "aws: s3 write file: failed to create multipart upload: "
                << outcome.GetError().GetExceptionName();
@@ -137,6 +175,24 @@ std::error_code S3WriteFile::Flush() {
     parts_.push_back(metadata);
     offset_ = 0;
     return std::error_code{};
+  } else if (outcome.GetError().GetExceptionName() == "PermanentRedirect") {
+    LOG(ERROR) << "aws: s3 write file: failed to upload part: permanent redirect; ensure your "
+                  "configured AWS region matches the S3 bucket region";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::NO_SUCH_BUCKET) {
+    LOG(ERROR) << "aws: s3 write file: failed to upload part: bucket not found: " + bucket_;
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::INVALID_ACCESS_KEY_ID) {
+    LOG(ERROR) << "aws: s3 write file: failed to upload part: invalid access key id";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::SIGNATURE_DOES_NOT_MATCH) {
+    LOG(ERROR) << "aws: s3 write file: failed to upload part: invalid signature; check your "
+                  "credentials are correct";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetExceptionName() == "InvalidToken") {
+    LOG(ERROR) << "aws: s3 write file: failed to upload part: invalid token; check your "
+                  "credentials are correct";
+    return std::make_error_code(std::errc::io_error);
   } else {
     LOG(ERROR) << "aws: s3 write file: failed to upload part: "
                << outcome.GetError().GetExceptionName();

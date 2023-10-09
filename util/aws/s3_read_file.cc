@@ -115,8 +115,26 @@ std::error_code S3ReadFile::DownloadChunk() {
       }
     }
     return std::error_code{};
+  } else if (outcome.GetError().GetExceptionName() == "PermanentRedirect") {
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: permanent redirect; ensure your "
+                  "configured AWS region matches the S3 bucket region";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::NO_SUCH_BUCKET) {
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: bucket not found: " + bucket_;
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::INVALID_ACCESS_KEY_ID) {
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: invalid access key id";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetErrorType() == Aws::S3::S3Errors::SIGNATURE_DOES_NOT_MATCH) {
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: invalid signature; check your "
+                  "credentials are correct";
+    return std::make_error_code(std::errc::io_error);
+  } else if (outcome.GetError().GetExceptionName() == "InvalidToken") {
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: invalid token; check your credentials "
+                  "are correct";
+    return std::make_error_code(std::errc::io_error);
   } else {
-    LOG(ERROR) << "aws: s3 write file: failed to read chunk: "
+    LOG(ERROR) << "aws: s3 read file: failed to read chunk: "
                << outcome.GetError().GetExceptionName();
     return std::make_error_code(std::errc::io_error);
   }
