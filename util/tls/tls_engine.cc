@@ -117,6 +117,17 @@ auto Engine::PeekOutputBuf() -> BufResult {
 
 void Engine::ConsumeOutputBuf(unsigned sz) {
   int res = BIO_nread(external_bio_, NULL, sz);
+  if (res <= 0) {
+    unsigned long error = ::ERR_get_error();
+    char buf[256];
+    ERR_error_string_n(error, buf, sizeof(buf));
+    char* ebuf = nullptr;
+
+    long res = BIO_ctrl(external_bio_, BIO_C_NREAD0, 0, &ebuf);
+
+    LOG(FATAL) << "Unexpected error " << buf << " " << error << " when consuming " << sz
+               << " bytes from BIO, BIO_C_NREAD0 returns " << res;
+  }
   CHECK_GT(res, 0);
   CHECK_EQ(unsigned(res), sz);
 }
