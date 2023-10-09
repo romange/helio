@@ -44,16 +44,16 @@ void Logger::Log(Aws::Utils::Logging::LogLevel level, const char* tag, const cha
       DVLOG(2) << "aws: " << tag << ": " << ss.str();
       break;
     case Aws::Utils::Logging::LogLevel::Debug:
-      VLOG(1) << "aws: " << tag << ": " << ss.str();
+      VLOG(2) << "aws: " << tag << ": " << ss.str();
       break;
     case Aws::Utils::Logging::LogLevel::Info:
-      LOG(INFO) << "aws: " << tag << ": " << ss.str();
+      VLOG(1) << "aws: " << tag << ": " << ss.str();
       break;
     case Aws::Utils::Logging::LogLevel::Warn:
-      LOG(WARNING) << "aws: " << tag << ": " << ss.str();
+      VLOG(1) << "aws: " << tag << ": " << ss.str();
       break;
     case Aws::Utils::Logging::LogLevel::Error:
-      LOG(WARNING) << "aws: " << tag << ": " << ss.str();
+      VLOG(1) << "aws: " << tag << ": " << ss.str();
       break;
     case Aws::Utils::Logging::LogLevel::Fatal:
       LOG(FATAL) << "aws: " << tag << ": " << ss.str();
@@ -73,13 +73,13 @@ void Logger::LogStream(Aws::Utils::Logging::LogLevel level, const char* tag,
       VLOG(1) << "aws: " << tag << ": " << message_stream.str();
       break;
     case Aws::Utils::Logging::LogLevel::Info:
-      LOG(INFO) << "aws: " << tag << ": " << message_stream.str();
+      VLOG(1) << "aws: " << tag << ": " << message_stream.str();
       break;
     case Aws::Utils::Logging::LogLevel::Warn:
-      LOG(WARNING) << "aws: " << tag << ": " << message_stream.str();
+      VLOG(1) << "aws: " << tag << ": " << message_stream.str();
       break;
     case Aws::Utils::Logging::LogLevel::Error:
-      LOG(WARNING) << "aws: " << tag << ": " << message_stream.str();
+      VLOG(1) << "aws: " << tag << ": " << message_stream.str();
       break;
     case Aws::Utils::Logging::LogLevel::Fatal:
       LOG(FATAL) << "aws: " << tag << ": " << message_stream.str();
