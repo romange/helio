@@ -189,4 +189,7 @@ int main(int argc, char* argv[]) {
 
     util::aws::Shutdown();
   });
+
+  pp->Stop();
+  return 0;
 }
