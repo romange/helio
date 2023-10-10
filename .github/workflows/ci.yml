@@ -64,7 +64,7 @@ jobs:
       run: |
           cd ${{github.workspace}}/build
 
-          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli s3v2_demo
+          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli s3_demo
           ${SCCACHE_PATH} --show-stats
 
     - name: Test
@@ -109,5 +109,5 @@ jobs:
         run: |
           cd ${{github.workspace}}/build
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
-            https_client_cli s3v2_demo
+            https_client_cli s3_demo
           ctest -V -L CI

@@ -1,172 +1,195 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
-//
 
-#include <absl/strings/str_split.h>
-#include <absl/strings/strip.h>
-#include <absl/time/time.h>
+#include <aws/core/auth/AWSCredentialsProvider.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/PutObjectRequest.h>
 
+#include "base/flags.h"
 #include "base/init.h"
-#include "util/cloud/aws.h"
-#include "util/cloud/s3.h"
-#include "util/cloud/s3_file.h"
-
+#include "base/logging.h"
+#include "util/aws/aws.h"
+#include "util/aws/credentials_provider_chain.h"
+#include "util/aws/s3_endpoint_provider.h"
+#include "util/aws/s3_read_file.h"
+#include "util/aws/s3_write_file.h"
 #include "util/fibers/pool.h"
-#include "util/http/http_client.h"
 
-using namespace std;
-using namespace util;
-using cloud::AWS;
+ABSL_FLAG(std::string, cmd, "list-buckets", "Command to run");
+ABSL_FLAG(std::string, bucket, "", "S3 bucket name");
+ABSL_FLAG(std::string, key, "", "S3 file key");
+ABSL_FLAG(std::string, endpoint, "", "S3 endpoint");
+ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
+ABSL_FLAG(size_t, chunk_size, 1024, "File chunk size");
+ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
-ABSL_FLAG(string, cmd, "ls", "");
-ABSL_FLAG(string, region, "us-east-1", "");
-ABSL_FLAG(string, path, "", "s3://bucket/path");
-ABSL_FLAG(string, endpoint, "", "s3 endpoint");
-ABSL_FLAG(uint32_t, num_iters, 1, "Number of iterations");
-ABSL_FLAG(uint32_t, delay, 5, "Delay in seconds between each iteration");
-ABSL_FLAG(uint32_t, write_factor, 10000, "Number of 1K blocks to write");
-
-namespace h2 = boost::beast::http;
-using absl::GetFlag;
-
-#define CHECK_EC(x)                                                                 \
-  do {                                                                              \
-    auto __ec$ = (x);                                                               \
-    CHECK(!__ec$) << "Error: " << __ec$ << " " << __ec$.message() << " for " << #x; \
-  } while (false)
-
-template <typename Body> std::ostream& operator<<(std::ostream& os, const h2::request<Body>& msg) {
-  os << msg.method_string() << " " << msg.target() << endl;
-  for (const auto& f : msg) {
-    os << f.name_string() << " : " << f.value() << endl;
-  }
-  os << "-------------------------";
-
-  return os;
+std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
+  Aws::S3::S3ClientConfiguration s3_conf{};
+  s3_conf.payloadSigningPolicy = Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::ForceNever;
+  std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
+      std::make_shared<util::aws::CredentialsProviderChain>();
+  std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
+      std::make_shared<util::aws::S3EndpointProvider>(absl::GetFlag(FLAGS_endpoint));
+  return std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
 }
 
-void ListBuckets(AWS* aws, ProactorBase* proactor) {
-  string endpoint = GetFlag(FLAGS_endpoint);
-  if (endpoint.empty()) {
-    endpoint = "s3.amazonaws.com:80";
+void ListBuckets() {
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  Aws::S3::Model::ListBucketsOutcome outcome = s3->ListBuckets();
+  if (outcome.IsSuccess()) {
+    std::cout << "buckets:" << std::endl;
+    for (const Aws::S3::Model::Bucket& bucket : outcome.GetResult().GetBuckets()) {
+      std::cout << "* " << bucket.GetName() << std::endl;
+    }
+  } else {
+    LOG(ERROR) << "failed to list buckets: " << outcome.GetError().GetExceptionName();
   }
+}
 
-  vector<string> parts = absl::StrSplit(endpoint, ':');
-  CHECK_EQ(parts.size(), 2u);
-
-  http::Client http_client{proactor};
-
-  http_client.set_connect_timeout_ms(2000);
-  auto list_res = proactor->Await([&] {
-    CHECK_EC(http_client.Connect(parts[0], parts[1]));
-    return ListS3Buckets(aws, &http_client);
-  });
-
-  if (!list_res) {
-    cout << "Error: " << list_res.error() << endl;
+void ListObjects(const std::string& bucket) {
+  if (bucket == "") {
+    LOG(ERROR) << "missing bucket name";
     return;
   }
 
-  for (const auto& b : *list_res) {
-    cout << b << endl;
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+
+  std::string continuation_token;
+  std::vector<std::string> keys;
+  do {
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(bucket);
+    if (continuation_token != "") {
+      request.SetContinuationToken(continuation_token);
+    }
+
+    Aws::S3::Model::ListObjectsV2Outcome outcome = s3->ListObjectsV2(request);
+    if (outcome.IsSuccess()) {
+      continuation_token = outcome.GetResult().GetNextContinuationToken();
+      for (const auto& object : outcome.GetResult().GetContents()) {
+        keys.push_back(object.GetKey());
+      }
+    } else {
+      LOG(ERROR) << "failed to list objects: " << outcome.GetError().GetExceptionName();
+      return;
+    }
+  } while (continuation_token != "");
+
+  std::cout << "objects in " << bucket << ":" << std::endl;
+  for (const std::string& key : keys) {
+    std::cout << "* " << key << std::endl;
   }
-};
+}
+
+void Upload(const std::string& bucket, const std::string& key, size_t upload_size,
+            size_t chunk_size) {
+  if (bucket == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  io::Result<util::aws::S3WriteFile> file = util::aws::S3WriteFile::Open(bucket, key, s3);
+  if (!file) {
+    LOG(ERROR) << "failed to open s3 write file: " << file.error();
+    return;
+  }
+
+  size_t chunks = upload_size / chunk_size;
+
+  LOG(INFO) << "uploading s3 file; chunks=" << chunks << "; chunk_size=" << chunk_size;
+
+  std::vector<uint8_t> buf(chunk_size, 0xff);
+  for (size_t i = 0; i != chunks; i++) {
+    std::error_code ec = file->Write(io::Bytes(buf.data(), buf.size()));
+    if (ec) {
+      LOG(ERROR) << "failed to write to s3: " << file.error();
+      return;
+    }
+  }
+  std::error_code ec = file->Close();
+  if (ec) {
+    LOG(ERROR) << "failed to close s3 write file: " << file.error();
+    return;
+  }
+}
+
+void Download(const std::string& bucket, const std::string& key) {
+  if (bucket == "") {
+    LOG(ERROR) << "missing bucket name";
+    return;
+  }
+
+  if (key == "") {
+    LOG(ERROR) << "missing key name";
+    return;
+  }
+
+  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  std::unique_ptr<io::ReadonlyFile> file = std::make_unique<util::aws::S3ReadFile>(bucket, key, s3);
+
+  LOG(INFO) << "downloading s3 file";
+
+  std::vector<uint8_t> buf(1024, 0);
+  size_t read_n = 0;
+  while (true) {
+    io::Result<size_t> n = file->Read(read_n, io::MutableBytes(buf.data(), buf.size()));
+    if (!n) {
+      LOG(ERROR) << "failed to read from s3: " << n.error();
+      return;
+    }
+    if (*n == 0) {
+      LOG(INFO) << "finished download; read_n=" << read_n;
+      return;
+    }
+    read_n += *n;
+  }
+}
 
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
-  unique_ptr<ProactorPool> pp;
-  pp.reset(fb2::Pool::IOUring(256));
+  std::unique_ptr<util::ProactorPool> pp;
+
+#ifdef __linux__
+  if (absl::GetFlag(FLAGS_epoll)) {
+    pp.reset(util::fb2::Pool::Epoll());
+  } else {
+    pp.reset(util::fb2::Pool::IOUring(256));
+  }
+#else
+  pp.reset(util::fb2::Pool::Epoll());
+#endif
+
   pp->Run();
 
-  AWS aws{"s3", GetFlag(FLAGS_region)};
+  pp->GetNextProactor()->Await([&] {
+    util::aws::Init();
+    std::string cmd = absl::GetFlag(FLAGS_cmd);
+    LOG(INFO) << "s3v2_demo; cmd=" << cmd;
 
-  pp->GetNextProactor()->Await([&] { CHECK_EC(aws.Init()); });
-
-  string cmd = GetFlag(FLAGS_cmd);
-  string path = GetFlag(FLAGS_path);
-  string endpoint = GetFlag(FLAGS_endpoint);
-
-  if (path.empty()) {
-    CHECK(cmd == "ls");
-    ListBuckets(&aws, pp->GetNextProactor());
-  } else {
-    string_view clean = absl::StripPrefix(path, "s3://");
-    string_view obj_path;
-    size_t pos = clean.find('/');
-    string_view bucket_name = clean.substr(0, pos);
-    if (pos != string_view::npos) {
-      obj_path = clean.substr(pos + 1);
-    }
-    cloud::S3Bucket bucket = cloud::S3Bucket::FromEndpoint(aws, endpoint, bucket_name);
-
-    if (cmd == "ls") {
-      cloud::S3Bucket::ListObjectCb cb = [](size_t sz, string_view name) { CONSOLE_INFO << name; };
-
-      error_code ec = pp->GetNextProactor()->Await([&] {
-        auto ec = bucket.Connect(300);
-        if (ec)
-          return ec;
-        unsigned num_iters = GetFlag(FLAGS_num_iters);
-        for (unsigned i = 0; i < num_iters; ++i) {
-          ec = bucket.ListAllObjects(obj_path, cb);
-          if (ec)
-            return ec;
-
-          if (i + 1 < num_iters)
-            ThisFiber::SleepFor(chrono::seconds(GetFlag(FLAGS_delay)));
-        }
-        return ec;
-      });
-
-      CHECK(!ec) << ec;
-    } else if (cmd == "read") {
-      pp->GetNextProactor()->Await([&] {
-        auto ec = bucket.Connect(300);
-        CHECK(!ec);
-
-        io::Result<io::ReadonlyFile*> res = bucket.OpenReadFile(obj_path);
-        if (res) {
-          io::ReadonlyFile* file = *res;
-          std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
-          io::SizeOrError sz_res = file->Read(0, io::MutableBytes(buf.get(), 1024));
-          if (sz_res) {
-            CONSOLE_INFO << "File contents(first 1024) of " << obj_path << ":";
-            CONSOLE_INFO << string_view(reinterpret_cast<char*>(buf.get()), *sz_res);
-          } else {
-            LOG(ERROR) << "Error: " << sz_res.error();
-          }
-        } else {
-          LOG(ERROR) << "Read Error: " << res.error().message();
-        }
-      });
-    } else if (cmd == "write") {
-      pp->GetNextProactor()->Await([&] {
-        auto ec = bucket.Connect(300);
-        CHECK(!ec);
-
-        io::Result<io::WriteFile*> res = bucket.OpenWriteFile(obj_path);
-        if (res) {
-          unique_ptr<io::WriteFile> file{*res};
-          CHECK(file);
-          std::unique_ptr<uint8_t[]> buf(new uint8_t[1024]);
-          memset(buf.get(), 'R', 1024);
-          for (size_t i = 0; i < GetFlag(FLAGS_write_factor); ++i) {
-            ec = file->Write(io::Bytes(buf.get(), 1024));
-            CHECK(!ec);
-          }
-          ec = file->Close();
-          CHECK(!ec);
-        } else {
-          LOG(ERROR) << "Error: " << res.error();
-        }
-      });
+    if (cmd == "list-buckets") {
+      ListBuckets();
+    } else if (cmd == "list-objects") {
+      ListObjects(absl::GetFlag(FLAGS_bucket));
+    } else if (cmd == "upload") {
+      Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
+             absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
+    } else if (cmd == "download") {
+      Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
     } else {
-      LOG(ERROR) << "Unknown command " << cmd;
+      LOG(ERROR) << "unknown command: " << cmd;
     }
-  }
+
+    util::aws::Shutdown();
+  });
 
   pp->Stop();
-
   return 0;
 }

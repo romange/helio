@@ -19,6 +19,11 @@ namespace aws {
 class CredentialsProviderChain : public Aws::Auth::AWSCredentialsProviderChain {
  public:
   CredentialsProviderChain();
+
+  virtual Aws::Auth::AWSCredentials GetAWSCredentials() override;
+
+ private:
+  std::vector<std::pair<std::string, std::shared_ptr<AWSCredentialsProvider>>> providers_;
 };
 
 }  // namespace aws
