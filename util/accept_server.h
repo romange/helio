@@ -20,7 +20,8 @@ class AcceptServer {
   void operator=(const AcceptServer&) = delete;
 
  public:
-  explicit AcceptServer(ProactorPool* pool, bool break_on_int = true);
+  explicit AcceptServer(ProactorPool* pool, bool break_on_int = true,
+                        bool print_stack_on_sig = false);
   ~AcceptServer();
 
   void Run();

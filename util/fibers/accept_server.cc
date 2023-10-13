@@ -16,11 +16,19 @@ namespace util {
 using namespace boost;
 using namespace std;
 
-AcceptServer::AcceptServer(ProactorPool* pool, bool break_on_int) : pool_(pool), ref_bc_(0) {
+AcceptServer::AcceptServer(ProactorPool* pool, bool break_on_int, bool print_stack_on_sig)
+    : pool_(pool), ref_bc_(0) {
   if (break_on_int) {
     ProactorBase* proactor = pool_->GetNextProactor();
-    proactor->RegisterSignal({SIGINT, SIGTERM}, [this](int signal) {
+    proactor->RegisterSignal({SIGINT, SIGTERM}, [this, print_stack_on_sig](int signal) {
       LOG(INFO) << "Exiting on signal " << strsignal(signal);
+      if (print_stack_on_sig) {
+        util::fb2::Mutex m;
+        pool_->AwaitFiberOnAll([&m](unsigned index, util::ProactorBase* base) {
+          std::unique_lock lk(m);
+          util::fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+        });
+      }
       if (on_break_hook_) {
         on_break_hook_();
       }
@@ -44,7 +52,7 @@ void AcceptServer::Run() {
 
       // We must capture ref_bc_ by value because once it is decremented AcceptServer
       // instance can be destroyed before Dec returnes.
-      proactor->Dispatch([li = lw.get(), bc = ref_bc_] () mutable {
+      proactor->Dispatch([li = lw.get(), bc = ref_bc_]() mutable {
         li->RunAcceptLoop();
         bc.Dec();
       });
