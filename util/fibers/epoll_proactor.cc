@@ -249,7 +249,9 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       auto now = chrono::steady_clock::now();
       if (now < tp) {
         auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
-        timeout = ns / 1000'000;
+        // epoll_wait() uses millisecond precision. If we block for less than the precise deadline,
+        // we cause unnesessary spinning and an elevated CPU usage. Therefore, we round up.
+        timeout = (ns + 1000'000 - 1)/ 1000'000;
       } else {
         timeout = 0;
       }
