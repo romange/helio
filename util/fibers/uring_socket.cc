@@ -77,7 +77,7 @@ auto UringSocket::Accept() -> AcceptResult {
     int res = accept4(real_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
       UringSocket* fs = new UringSocket{nullptr};
-      fs->fd_ = res << kFdShift;
+      fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
       return fs;
     }
 

@@ -172,7 +172,7 @@ auto EpollSocket::Accept() -> AcceptResult {
     int res = AcceptSock(real_fd);
     if (res >= 0) {
       EpollSocket* fs = new EpollSocket;
-      fs->fd_ = res << kFdShift;  // we keep some flags in the first 3 bits of fd_.
+      fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
       return fs;
     }
 

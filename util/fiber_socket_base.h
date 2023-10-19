@@ -200,6 +200,9 @@ class LinuxSocketBase : public FiberSocketBase {
     REGISTER_FD = 0x4,
   };
 
+  // Flags which are passed on to peers produced by Accept()
+  const static int32_t kInheritedFlags = IS_UDS;
+
   // kFdShift low bits are used for masking the state of fd.
   // gives me 256M descriptors.
   int32_t fd_;
