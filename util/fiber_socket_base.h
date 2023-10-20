@@ -4,9 +4,9 @@
 
 #pragma once
 
-// for tcp::endpoint. Consider introducing our own.
 #include <absl/base/attributes.h>
 
+// for tcp::endpoint. Consider introducing our own.
 #include <boost/asio/ip/tcp.hpp>
 #include <functional>
 

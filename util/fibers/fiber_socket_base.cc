@@ -193,7 +193,7 @@ auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
   if (fd_ < 0)
     return endpoint;
 
-  DCHECK_EQ(0, fd_ & IS_UDS);
+  CHECK_EQ(0, fd_ & IS_UDS);
   DCHECK_EQ(0, fd_ & REGISTER_FD);
 
   socklen_t addr_len = endpoint.capacity();
