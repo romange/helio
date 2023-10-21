@@ -177,7 +177,10 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20230125.3.tar.gz
+  URL https://github.com/abseil/abseil-cpp/archive/20230802.1.tar.gz
+  # GIT_REPOSITORY https://github.com/abseil/abseil-cpp
+  # GIT_TAG 20230802.1
+  PATCH_COMMAND patch -p1 < "${CMAKE_SOURCE_DIR}/patches/abseil-20230802.1.patch"
 )
 
 FetchContent_GetProperties(abseil_cpp)
