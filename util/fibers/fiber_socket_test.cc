@@ -264,15 +264,16 @@ TEST_P(FiberSocketTest, AsyncWrite) {
 
 TEST_P(FiberSocketTest, UDS) {
   string path = base::GetTestTempPath("sock.uds");
+  unlink(path.c_str());
 
   unique_ptr<FiberSocketBase> sock;
   proactor_->Await([&] {
     sock.reset(proactor_->CreateSocket());
-    error_code ec = sock->Create(AF_UNIX);
-    EXPECT_FALSE(ec);
+    EXPECT_FALSE(sock->Create(AF_UNIX));
     LOG(INFO) << "Socket created " << sock->native_handle();
     mode_t permissions = 0777;
-    ec = sock->ListenUDS(path.c_str(), permissions, 1);
+
+    auto ec = sock->ListenUDS(path.c_str(), permissions, 1);
     EXPECT_FALSE(ec) << ec.message();
 
     // Get file permissions
@@ -284,9 +285,47 @@ TEST_P(FiberSocketTest, UDS) {
     EXPECT_EQ(file_permissions, permissions);
 
     LOG(INFO) << "Socket Listening";
-    unlink(path.c_str());
-    (void)sock->Close();
   });
+
+  bool got_connection = false;
+  auto uds_accept = proactor_->LaunchFiber("AcceptFb", [this, &sock, &got_connection] {
+    auto accept_res = sock->Accept();
+    EXPECT_TRUE(accept_res) << accept_res.error().message();
+    auto linux_sock = dynamic_cast<LinuxSocketBase*>(*accept_res);
+    EXPECT_NE(linux_sock, nullptr);
+    EXPECT_TRUE(linux_sock->IsUDS());
+    got_connection = true;
+  });
+
+  proactor_->Await([&] {
+    sockaddr_un addr;
+    addr.sun_family = AF_UNIX;
+
+    unique_ptr<FiberSocketBase> client_sock{proactor_->CreateSocket()};
+    EXPECT_FALSE(client_sock->Create(AF_UNIX));
+
+    auto client_path = (path + "-client");
+    unlink(client_path.c_str());
+
+    strcpy(addr.sun_path, client_path.c_str());
+    auto ec = client_sock->Bind((struct sockaddr*)&addr, sizeof(addr));
+    EXPECT_FALSE(ec) << ec.message();
+
+    // socket->Connect()'s interface is limited to tcp connections, so use manual connect
+    strcpy(addr.sun_path, path.c_str());
+    int res = connect(client_sock->native_handle(), (struct sockaddr*)&addr, sizeof(addr));
+    EXPECT_EQ(res, 0) << error_code{res, system_category()}.message();
+
+    // Epoll socket's destructor expects it to be at least armed (e.g. either Connect or Listen called),
+    // so clean up manually
+    close(client_sock->native_handle());
+    operator delete(client_sock.release());
+  });
+
+  uds_accept.JoinIfNeeded();
+  EXPECT_TRUE(got_connection);
+
+  proactor_->Await([&] { (void)sock->Close(); });
 
   LOG(INFO) << "Finished";
 }

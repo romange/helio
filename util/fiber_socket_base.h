@@ -4,9 +4,9 @@
 
 #pragma once
 
-// for tcp::endpoint. Consider introducing our own.
 #include <absl/base/attributes.h>
 
+// for tcp::endpoint. Consider introducing our own.
 #include <boost/asio/ip/tcp.hpp>
 #include <functional>
 
@@ -199,6 +199,9 @@ class LinuxSocketBase : public FiberSocketBase {
     IS_UDS = 0x2,
     REGISTER_FD = 0x4,
   };
+
+  // Flags which are passed on to peers produced by Accept()
+  const static int32_t kInheritedFlags = IS_UDS;
 
   // kFdShift low bits are used for masking the state of fd.
   // gives me 256M descriptors.

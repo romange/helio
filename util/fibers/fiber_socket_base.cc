@@ -190,10 +190,9 @@ auto LinuxSocketBase::Shutdown(int how) -> error_code {
 auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
   endpoint_type endpoint;
 
-  if (fd_ < 0)
+  if (fd_ < 0 || IsUDS())
     return endpoint;
 
-  DCHECK_EQ(0, fd_ & IS_UDS);
   DCHECK_EQ(0, fd_ & REGISTER_FD);
 
   socklen_t addr_len = endpoint.capacity();
@@ -209,8 +208,10 @@ auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
 
 auto LinuxSocketBase::RemoteEndpoint() const -> endpoint_type {
   endpoint_type endpoint;
-  DCHECK_GE(fd_, 0);
-  DCHECK_EQ(0, fd_ & IS_UDS);
+  
+  if (fd_ < 0 || IsUDS())
+    return endpoint;
+  
   DCHECK_EQ(0, fd_ & REGISTER_FD);
 
   socklen_t addr_len = endpoint.capacity();
