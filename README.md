@@ -46,7 +46,7 @@ Please see [http_main.cc](https://github.com/romange/async/blob/master/util/http
 
 ### Self-profiling
 Every http-powered backend has integrated CPU profiling capabilities using [gperf-tools](https://github.com/gperftools/gperftools) and [pprof](https://github.com/google/pprof)
-Profiling can be trigerred in prod using magic-url commands. Enabled profiling usually has very minimal impact on cpu performance of the running backend.
+Profiling can be triggered in prod using magic-url commands. Enabled profiling usually has very minimal impact on cpu performance of the running backend.
 
 ### Logging
 Logging is based on Google's [glog library](https://github.com/google/glog). The library is very reliable, performant and solid. It has many features that allow resilient backend development.
