@@ -16,6 +16,8 @@
 #include "base/logging.h"
 #include "util/asio_stream_adapter.h"
 #include "util/fibers/dns_resolve.h"
+#include "util/http/http_client.h"
+#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace aws {
@@ -50,6 +52,11 @@ h2::verb BoostMethod(Aws::Http::HttpMethod method) {
 
 HttpClient::HttpClient(const Aws::Client::ClientConfiguration& client_conf)
     : client_conf_{client_conf} {
+  ctx_ = util::http::TlsClient::CreateSslContext();
+}
+
+HttpClient::~HttpClient() {
+  SSL_CTX_free(ctx_);
 }
 
 std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
@@ -108,7 +115,29 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     response->SetClientErrorMessage("Failed to connect to host");
     return response;
   }
+
   std::unique_ptr<FiberSocketBase> conn = std::move(*connect_res);
+  if (request->GetUri().GetScheme() == Aws::Http::Scheme::HTTPS) {
+    std::unique_ptr<util::tls::TlsSocket> tls_conn(
+        std::make_unique<util::tls::TlsSocket>(conn.release()));
+    tls_conn->InitSSL(ctx_);
+
+    const std::string& hn = request->GetUri().GetAuthority();
+    const char* host = hn.c_str();
+    SSL* ssl_handle = tls_conn->ssl_handle();
+    // Add SNI.
+    SSL_set_tlsext_host_name(ssl_handle, host);
+    // Verify server cert using server hostname.
+    SSL_dane_enable(ssl_handle, host);
+    std::error_code ec = tls_conn->Connect(FiberSocketBase::endpoint_type{});
+    if (ec) {
+      LOG(WARNING) << "aws: http clent: tls connect failed; error=" << ec;
+      response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
+      tls_conn->Close();
+      return response;
+    }
+    conn.reset(tls_conn.release());
+  }
 
   boost::system::error_code bec;
   AsioStreamAdapter<> adapter(*conn);
