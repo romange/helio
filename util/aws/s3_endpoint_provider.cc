@@ -8,7 +8,8 @@
 namespace util {
 namespace aws {
 
-S3EndpointProvider::S3EndpointProvider(const std::string& endpoint) : endpoint_{endpoint} {
+S3EndpointProvider::S3EndpointProvider(const std::string& endpoint, bool https)
+    : endpoint_{endpoint}, https_{https} {
 }
 
 Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
@@ -18,9 +19,8 @@ Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
     Aws::Endpoint::ResolveEndpointOutcome outcome =
         Aws::S3::S3EndpointProvider::ResolveEndpoint(endpoint_params);
     if (outcome.IsSuccess()) {
-      // We currently only support HTTP.
       Aws::Http::URI uri = outcome.GetResult().GetURI();
-      uri.SetScheme(Aws::Http::Scheme::HTTP);
+      uri.SetScheme((https_) ? Aws::Http::Scheme::HTTPS : Aws::Http::Scheme::HTTP);
       outcome.GetResult().SetURI(uri);
     }
     return outcome;
@@ -38,11 +38,11 @@ Aws::Endpoint::ResolveEndpointOutcome S3EndpointProvider::ResolveEndpoint(
   }
 
   Aws::Endpoint::AWSEndpoint endpoint;
-  // We currently only support HTTP.
+  const std::string scheme = (https_) ? "https://" : "http://";
   if (bucket != "") {
-    endpoint.SetURL("http://" + endpoint_ + "/" + bucket);
+    endpoint.SetURL(scheme + endpoint_ + "/" + bucket);
   } else {
-    endpoint.SetURL("http://" + endpoint_);
+    endpoint.SetURL(scheme + endpoint_);
   }
   return Aws::Endpoint::ResolveEndpointOutcome(std::move(endpoint));
 }

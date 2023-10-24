@@ -17,13 +17,15 @@ namespace aws {
 class S3EndpointProvider : public Aws::S3::S3EndpointProvider {
  public:
   // Configure a non-empty endpoint string to configure a custom endpoint.
-  S3EndpointProvider(const std::string& endpoint = "");
+  S3EndpointProvider(const std::string& endpoint = "", bool https = true);
 
   Aws::Endpoint::ResolveEndpointOutcome ResolveEndpoint(
       const Aws::Endpoint::EndpointParameters& endpoint_params) const override;
 
  private:
   std::string endpoint_;
+
+  bool https_;
 };
 
 }  // namespace aws

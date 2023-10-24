@@ -22,6 +22,7 @@ ABSL_FLAG(std::string, key, "", "S3 file key");
 ABSL_FLAG(std::string, endpoint, "", "S3 endpoint");
 ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
 ABSL_FLAG(size_t, chunk_size, 1024, "File chunk size");
+ABSL_FLAG(bool, https, false, "Whether to use HTTPS");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
@@ -30,7 +31,8 @@ std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
       std::make_shared<util::aws::CredentialsProviderChain>();
   std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
-      std::make_shared<util::aws::S3EndpointProvider>(absl::GetFlag(FLAGS_endpoint));
+      std::make_shared<util::aws::S3EndpointProvider>(absl::GetFlag(FLAGS_endpoint),
+                                                      absl::GetFlag(FLAGS_https));
   return std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
 }
 

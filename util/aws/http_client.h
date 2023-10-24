@@ -5,6 +5,7 @@
 
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/core/http/HttpClient.h>
+#include <openssl/ssl.h>
 
 #include <boost/beast/core/flat_buffer.hpp>
 
@@ -19,6 +20,14 @@ namespace aws {
 class HttpClient : public Aws::Http::HttpClient {
  public:
   HttpClient(const Aws::Client::ClientConfiguration& client_conf);
+
+  ~HttpClient();
+
+  HttpClient(const HttpClient&) = delete;
+  HttpClient& operator=(const HttpClient&) = delete;
+
+  HttpClient(HttpClient&&) = delete;
+  HttpClient& operator=(HttpClient&&) = delete;
 
   // Sends the given HTTP request to the server and returns a response.
   //
@@ -46,6 +55,8 @@ class HttpClient : public Aws::Http::HttpClient {
   std::error_code EnableKeepAlive(int fd) const;
 
   Aws::Client::ClientConfiguration client_conf_;
+
+  SSL_CTX* ctx_;
 };
 
 }  // namespace aws

@@ -136,7 +136,7 @@ SSL_CTX* TlsClient::CreateSslContext() {
     // Use the default locations for certificates. This means that any trusted
     // remote host by this local host, will be trusted as well.
     // see https://www.openssl.org/docs/man3.0/man1/openssl-verification-options.html
-    SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
 
     if (tls::SslProbeSetDefaultCALocation(ctx) != 0) {
       if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
