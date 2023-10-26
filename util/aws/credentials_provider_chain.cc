@@ -3,6 +3,7 @@
 
 #include "util/aws/credentials_provider_chain.h"
 
+#include <aws/core/auth/STSCredentialsProvider.h>
 #include <aws/core/platform/Environment.h>
 
 #include "base/logging.h"
@@ -16,6 +17,8 @@ CredentialsProviderChain::CredentialsProviderChain() {
   providers_.push_back(
       std::make_pair("profile config file",
                      std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>()));
+  providers_.push_back(std::make_pair(
+      "web-identity", std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>()));
 
   const auto ec2_metadata_disabled = Aws::Environment::GetEnv("AWS_EC2_METADATA_DISABLED");
   if (Aws::Utils::StringUtils::ToLower(ec2_metadata_disabled.c_str()) != "true") {
