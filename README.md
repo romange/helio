@@ -28,7 +28,7 @@ I will gradually add explanations for the most crucial blocks in this library.
    > cd build-opt && ninja -j4 echo_server
 
    ```
-   *third_party* folder is checked out under build directories.
+   **Third_party** folder is checked out under build directories.
 
    Then, from 2 tabs run:
 
