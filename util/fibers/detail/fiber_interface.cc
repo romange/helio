@@ -3,6 +3,7 @@
 //
 #include "util/fibers/detail/fiber_interface.h"
 
+#include <absl/time/clock.h>
 #include <condition_variable>
 #include <mutex>
 
@@ -64,7 +65,7 @@ struct TL_FiberInitializer {
   // Allows overriding the main dispatch loop
   Scheduler* sched;
   uint64_t epoch = 0;
-
+  uint64_t switch_delay = 0;  // switch delay in nanoseconds.
   uint32_t atomic_section = 0;
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
@@ -123,6 +124,10 @@ uint64_t FiberEpoch() noexcept {
   return FbInitializer().epoch;
 }
 
+uint64_t FiberSwitchDelay() noexcept {
+  return FbInitializer().switch_delay;
+}
+
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), flags_(0), type_(type) {
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
@@ -131,6 +136,7 @@ FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
   if (len) {
     memcpy(name_, nm.data(), len);
   }
+  ready_ts_ = absl::GetCurrentTimeNanos();
 }
 
 FiberInterface::~FiberInterface() {
@@ -180,15 +186,18 @@ ctx::fiber_context FiberInterface::Terminate() {
 void FiberInterface::Start(Launch launch) {
   auto& fb_init = detail::FbInitializer();
   fb_init.sched->Attach(this);
+  uint64_t now = absl::GetCurrentTimeNanos();
 
   switch (launch) {
     case Launch::post:
-      fb_init.sched->AddReady(this);
+      // Activate but do not switch to it.
+      fb_init.sched->AddReady(now, this);
       break;
     case Launch::dispatch:
-      fb_init.sched->AddReady(fb_init.active);
+      // Add the active fiber to the ready queue and switch to the new fiber.
+      fb_init.sched->AddReady(now, fb_init.active);
       {
-        auto fc = SwitchTo();
+        auto fc = SwitchTo(now);
         DCHECK(!fc);
       }
       break;
@@ -223,6 +232,11 @@ void FiberInterface::Join() {
   active->Suspend();
 }
 
+void FiberInterface::Yield() {
+  scheduler_->AddReady(absl::GetCurrentTimeNanos(), this);
+  scheduler_->Preempt();
+}
+
 void FiberInterface::ActivateOther(FiberInterface* other) {
   DVLOG(1) << "Activating " << other->name() << " from " << this->name();
   DCHECK(other->scheduler_);
@@ -232,7 +246,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked())
-      scheduler_->AddReady(other);
+      scheduler_->AddReady(absl::GetCurrentTimeNanos(), other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
   }
@@ -248,7 +262,7 @@ void FiberInterface::AttachThread() {
   scheduler_->Attach(this);
 }
 
-ctx::fiber_context FiberInterface::SwitchTo() {
+ctx::fiber_context FiberInterface::SwitchTo(uint64_t now) {
   // We can not assert !wait_hook.is_linked() here, because for timeout operations,
   // the fiber can be activated with the wait_hook still linked.
   FiberInterface* prev = this;
@@ -256,6 +270,8 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   auto& fb_initializer = FbInitializer();
   std::swap(fb_initializer.active, prev);
   ++fb_initializer.epoch;
+  DCHECK_GE(now, ready_ts_);
+  fb_initializer.switch_delay += (now - ready_ts_);
 
   // pass pointer to the context that resumes `this`
   return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {

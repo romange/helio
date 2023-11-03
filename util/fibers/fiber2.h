@@ -88,6 +88,10 @@ inline uint64_t FiberSwitchEpoch() noexcept {
   return detail::FiberEpoch();
 }
 
+inline uint64_t FiberSwitchDelay() noexcept {
+  return detail::FiberSwitchDelay();
+}
+
 }  // namespace fb2
 
 template <typename Fn, typename... Arg> fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {

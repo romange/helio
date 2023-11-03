@@ -562,11 +562,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
-      scheduler->AddReady(dispatcher);
+      tl_info_.monotonic_time = GetClockNanos();
+      scheduler->AddReady(tl_info_.monotonic_time, dispatcher);
 
       DVLOG(2) << "Switching to " << fi->name();
-
-      fi->SwitchTo();
+      fi->SwitchTo(tl_info_.monotonic_time);
     }
 
     if (cqe_count) {
@@ -592,7 +592,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       scheduler->DestroyTerminated();
       scheduler->RunDeferred();
 
-      // Pause(spin_loops);
       continue;
     }
 
