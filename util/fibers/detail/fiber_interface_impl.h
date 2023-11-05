@@ -9,11 +9,6 @@ namespace util {
 namespace fb2 {
 namespace detail {
 
-inline void FiberInterface::Yield() {
-  scheduler_->AddReady(this);
-  scheduler_->Preempt();
-}
-
 inline bool FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) {
   return scheduler_->WaitUntil(tp, this);
 }

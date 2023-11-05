@@ -64,7 +64,7 @@ class FiberInterface {
 
   FI_ListHook fibers_hook;  // For a list of all fibers in the thread
 
-  ::boost::context::fiber_context SwitchTo();
+  ::boost::context::fiber_context SwitchTo(uint64_t now);
 
   using PrintFn = std::function<void(FiberInterface*)>;
 
@@ -79,7 +79,6 @@ class FiberInterface {
 
   void Join();
 
-  // inline
   void Yield();
 
   // inline
@@ -193,6 +192,9 @@ class FiberInterface {
   std::atomic<FiberInterface*> remote_next_{nullptr};
   std::chrono::steady_clock::time_point tp_;
 
+  // A timestamp of when this fiber becames ready or becomes active (in ns).
+  uint64_t ts_ns_ = 0;
+
   char name_[24];
 };
 
@@ -260,7 +262,6 @@ FiberInterface* FiberActive() noexcept;
 void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
-uint64_t FiberEpoch() noexcept;
 
 void PrintAllFiberStackTraces();
 
