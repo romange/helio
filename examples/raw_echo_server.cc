@@ -333,9 +333,10 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     if (sched->HasReady()) {
       do {
         FiberInterface* fi = sched->PopReady();
-        sched->AddReady(dispatcher);
+        uint64_t now = absl::GetCurrentTimeNanos();
+        sched->AddReady(now, dispatcher);
 
-        auto fc = fi->SwitchTo();
+        auto fc = fi->SwitchTo(now);
         DCHECK(!fc);
       } while (sched->HasReady());
       continue;
