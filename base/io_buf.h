@@ -62,7 +62,7 @@ class IoBuf {
 
   // ============== OUTPUT ============
 
-  size_t AppendLen() {
+  size_t AppendLen() const {
     return capacity_ - size_;
   }
 
@@ -99,6 +99,29 @@ class IoBuf {
   // Return capacity of whole buffer.
   size_t Capacity() const {
     return capacity_;
+  }
+
+  struct MemoryUsage {
+    size_t consumed = 0;
+    size_t input_length = 0;
+    size_t append_length = 0;
+
+    size_t GetTotalSize() const { return consumed + input_length + append_length; }
+
+    MemoryUsage& operator+=(const MemoryUsage& o) {
+      consumed += o.consumed;
+      input_length += o.input_length;
+      append_length += o.append_length;
+      return *this;
+    }
+  };
+
+  MemoryUsage GetMemoryUsage() const {
+    return {
+      .consumed = offs_,
+      .input_length = InputLen(),
+      .append_length = AppendLen(),
+    };
   }
 
  private:
