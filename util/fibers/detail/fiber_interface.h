@@ -190,6 +190,8 @@ class FiberInterface {
   Scheduler* scheduler_ = nullptr;
 
   std::atomic<FiberInterface*> remote_next_{nullptr};
+
+  // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;
 
   // A timestamp of when this fiber becames ready or becomes active (in ns).
