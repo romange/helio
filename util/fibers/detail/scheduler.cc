@@ -3,7 +3,9 @@
 //
 #include "util/fibers/detail/scheduler.h"
 
+#include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
+
 #include <condition_variable>
 #include <mutex>
 
@@ -694,13 +696,18 @@ void Scheduler::ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
 
 void Scheduler::PrintAllFiberStackTraces() {
   auto* active = FiberActive();
-
+  if (!sleep_queue_.empty()) {
+    LOG(INFO) << "Sleep queue size " << sleep_queue_.size();
+  }
   auto print_fn = [active](FiberInterface* fb) {
-    std::string_view state = "sleeping";
+    string state = "suspended";
     if (fb->list_hook.is_linked()) {
       state = "ready";
     } else if (active == fb) {
       state = "active";
+    } else if (fb->sleep_hook.is_linked()) {
+      state = absl::StrCat("sleeping until ", fb->tp_.time_since_epoch().count(), " now is ",
+                           chrono::steady_clock::now().time_since_epoch().count());
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
