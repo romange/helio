@@ -293,11 +293,24 @@ SSL* TlsSocket::ssl_handle() {
 }
 
 auto TlsSocket::MaybeSendOutput() -> error_code {
+  // this function is present in both read and write paths.
+  // meaning that both of them can be called concurrently from differrent fibers and then
+  // race over flushing the output buffer. We use state_ to prevent that.
+  if (state_ & WRITE_IN_PROGRESS) {
+    return error_code{};
+  }
+
   auto buf_result = engine_->PeekOutputBuf();
   CHECK(buf_result);
 
   if (!buf_result->empty()) {
+    // we do not allow concurrent writes from multiple fibers.
+    state_ |= WRITE_IN_PROGRESS;
     io::Result<size_t> write_result = next_sock_->WriteSome(*buf_result);
+
+    // Safe to clear here since the code below is atomic fiber-wise.
+    state_ &= ~WRITE_IN_PROGRESS;
+
     if (!write_result) {
       return write_result.error();
     }
@@ -309,33 +322,21 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 }
 
 auto TlsSocket::HandleRead() -> error_code {
-  auto mut_buf = engine_->PeekInputBuf();
-  io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
-  if (!esz) {
-    return esz.error();
+  if (state_ & READ_IN_PROGRESS) {
+    return error_code{};
   }
 
-  if (cache_) {
-    PlaceBufferInCache(mut_buf, *esz);
-    cache_ = false;
+  auto mut_buf = engine_->PeekInputBuf();
+  state_ |= READ_IN_PROGRESS;
+  io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
+  state_ &= ~READ_IN_PROGRESS;
+  if (!esz) {
+    return esz.error();
   }
 
   engine_->CommitInput(*esz);
 
   return error_code{};
-}
-
-void TlsSocket::CacheOnce() {
-  cache_ = true;
-}
-
-TlsSocket::Buffer TlsSocket::GetCachedBuffer() const {
-  return {cached_bytes_.data(), n_bytes_};
-}
-
-void TlsSocket::PlaceBufferInCache(Buffer buffer, size_t n_bytes) {
-  cached_bytes_ = buffer;
-  n_bytes_ = n_bytes;
 }
 
 TlsSocket::endpoint_type TlsSocket::LocalEndpoint() const {

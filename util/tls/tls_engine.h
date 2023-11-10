@@ -69,18 +69,24 @@ class Engine {
   //! See OutputPending() for checking if there is a output buffer to consume.
   BufResult FetchOutputBuf();
 
-  //! Returns output (read) buffer. This operation is not destructive and
-  // following ConsumeOutputBuf should be called.
+  //! Returns output buffer which is the read buffer of tls engine.
+  //! This operation is not destructive.
   BufResult PeekOutputBuf();
 
-  // sz should be not greater than the buffer size from the last PeekOutputBuf() call.
+  //! Tells the engine that sz bytes were consumed from the output buffer.
+  //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
   void ConsumeOutputBuf(unsigned sz);
 
   //! Writes the buffer into input ssl buffer.
   //! Returns number of written bytes or the error.
   OpResult WriteBuf(const Buffer& buf);
 
+  // We usually use this function to write from the raw socket to SSL engine.
+  // Returns direct reference to the input (write) buffer. This operation is not destructive.
   MutableBuffer PeekInputBuf() const;
+
+  // Commits the input buffer. sz should be not greater
+  // than the buffer size from PeekInputBuf() call
   void CommitInput(unsigned sz);
 
   // Returns size of pending data that needs to be flushed out from SSL to I/O.
