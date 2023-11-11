@@ -102,7 +102,7 @@ class TlsSocket : public FiberSocketBase {
   std::unique_ptr<Engine> engine_;
 
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2};
-  uint8_t state_;
+  uint8_t state_{0};
 };
 
 }  // namespace tls
