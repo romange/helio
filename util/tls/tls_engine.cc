@@ -146,7 +146,7 @@ auto Engine::WriteBuf(const Buffer& buf) -> OpResult {
 auto Engine::PeekInputBuf() const -> MutableBuffer {
   char* buf = nullptr;
 
-  // Does nto really write anything, just returns the pointer to the internal write buffer.
+  // Does not really write anything, just returns the pointer to the internal write buffer.
   int res = BIO_nwrite0(external_bio_, &buf);
   CHECK_GT(res, 0);
 
