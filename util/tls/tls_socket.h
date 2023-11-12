@@ -94,16 +94,15 @@ class TlsSocket : public FiberSocketBase {
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
+
   /// Read encrypted data from the network socket and feed it into the TLS engine.
   error_code HandleRead();
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
 
-  // Used to signal HandleRead() to cache the first n_bytes
-  bool cache_{false};
-  size_t n_bytes_{0};
-  Buffer cached_bytes_;
+  enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2};
+  uint8_t state_{0};
 };
 
 }  // namespace tls

@@ -121,12 +121,9 @@ void Engine::ConsumeOutputBuf(unsigned sz) {
     unsigned long error = ::ERR_get_error();
     char buf[256];
     ERR_error_string_n(error, buf, sizeof(buf));
-    char* ebuf = nullptr;
-
-    long res = BIO_ctrl(external_bio_, BIO_C_NREAD0, 0, &ebuf);
-
+    int retry = BIO_should_retry(external_bio_);
     LOG(FATAL) << "Unexpected error " << buf << " " << error << " when consuming " << sz
-               << " bytes from BIO, BIO_C_NREAD0 returns " << res;
+               << " bytes from BIO, retry is " << retry;
   }
   CHECK_GT(res, 0);
   CHECK_EQ(unsigned(res), sz);
@@ -149,6 +146,7 @@ auto Engine::WriteBuf(const Buffer& buf) -> OpResult {
 auto Engine::PeekInputBuf() const -> MutableBuffer {
   char* buf = nullptr;
 
+  // Does not really write anything, just returns the pointer to the internal write buffer.
   int res = BIO_nwrite0(external_bio_, &buf);
   CHECK_GT(res, 0);
 
