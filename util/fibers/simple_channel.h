@@ -77,6 +77,10 @@ template <typename T, typename Queue = folly::ProducerConsumerQueue<T>> class Si
     return is_closing_.load(std::memory_order_relaxed) >= num_producers_;
   }
 
+  size_t Capacity() const {
+    return q_.capacity();
+  }
+
  private:
   Queue q_;
   unsigned throttled_pushes_ = 0;
