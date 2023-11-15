@@ -5,7 +5,6 @@
 #pragma once
 
 #include <condition_variable>  // for cv_status
-#include <optional>
 
 #include "base/spinlock.h"
 #include "util/fibers/detail/scheduler.h"
@@ -407,14 +406,24 @@ class BlockingCounter {
       }
     }
 
+    auto WaitCondition(uint64_t* cnt) {
+      return [this, cnt]() -> bool {
+        *cnt = count_.load(std::memory_order_acquire);
+        return *cnt == 0 || (*cnt & kCancelFlag);
+      };
+    }
+
     // I suspect all memory order accesses here could be "relaxed" but I do not bother.
     bool Wait() {
       uint64_t cnt;
-      ec_.await([this, &cnt] {
-        cnt = count_.load(std::memory_order_acquire);
-        return cnt == 0 || (cnt & kCancelFlag);
-      });
+      ec_.await(WaitCondition(&cnt));
       return (cnt & kCancelFlag) == 0;
+    }
+
+    bool WaitUntil(const std::chrono::steady_clock::time_point& tp) {
+      uint64_t cnt;
+      std::cv_status status = ec_.await_until(WaitCondition(&cnt), tp);
+      return status == std::cv_status::no_timeout && (cnt & kCancelFlag) == 0;
     }
 
     void Cancel() {
@@ -425,12 +434,6 @@ class BlockingCounter {
     void Dec() {
       if (1 == count_.fetch_sub(1, std::memory_order_acq_rel))
         ec_.notifyAll();
-    }
-
-    std::optional<bool> IsReady() const {
-      auto cnt = count_.load(std::memory_order_acquire);
-      return (cnt == 0 || (cnt & kCancelFlag)) ? std::make_optional((cnt & kCancelFlag) == 0)
-                                               : std::nullopt;
     }
 
    private:
@@ -462,16 +465,17 @@ class BlockingCounter {
     impl_->Cancel();
   }
 
-  // Blocks while the blocking counter is pending. 
+  // Blocks while the blocking counter is pending.
   // Returns true on success (reaching 0), false when cancelled.
   bool Wait() {
     return impl_->Wait();
   }
 
-  // Returns nullopt if the counter is still pending.
-  // Returns true on succes (count = 0), false when cancelled.
-  std::optional<bool> IsReady() {
-    return impl_->IsReady();
+  // Blocks while the blocking counter is pending our timeout is reached.
+  // Returns true on success (reaching 0), false when cancelled or timed out.
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    auto tp = std::chrono::steady_clock::now() + duration;
+    return impl_->WaitUntil(tp);
   }
 
  private:
