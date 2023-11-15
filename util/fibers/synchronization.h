@@ -387,6 +387,8 @@ class Done {
 // ec_.notify was called, the object may be destroyed before ec_.notify is called.
 class BlockingCounter {
   class Impl {
+    const uint64_t kCancelFlag = (1ULL << 63);
+
    public:
     Impl(unsigned count) : count_{count} {
     }
@@ -404,16 +406,28 @@ class BlockingCounter {
       }
     }
 
+    auto WaitCondition(uint64_t* cnt) {
+      return [this, cnt]() -> bool {
+        *cnt = count_.load(std::memory_order_acquire);
+        return *cnt == 0 || (*cnt & kCancelFlag);
+      };
+    }
+
     // I suspect all memory order accesses here could be "relaxed" but I do not bother.
-    void Wait() {
-      ec_.await([this] {
-        auto cnt = count_.load(std::memory_order_acquire);
-        return cnt == 0 || (cnt & (1ULL << 63));
-      });
+    bool Wait() {
+      uint64_t cnt;
+      ec_.await(WaitCondition(&cnt));
+      return (cnt & kCancelFlag) == 0;
+    }
+
+    bool WaitUntil(const std::chrono::steady_clock::time_point& tp) {
+      uint64_t cnt;
+      std::cv_status status = ec_.await_until(WaitCondition(&cnt), tp);
+      return status == std::cv_status::no_timeout && (cnt & kCancelFlag) == 0;
     }
 
     void Cancel() {
-      count_.fetch_or(1ULL << 63, std::memory_order_acquire);
+      count_.fetch_or(kCancelFlag, std::memory_order_acq_rel);
       ec_.notifyAll();
     }
 
@@ -428,6 +442,7 @@ class BlockingCounter {
     std::atomic<std::uint32_t> use_count_{0};
     std::atomic<uint64_t> count_;
   };
+
   using ptr_t = ::boost::intrusive_ptr<Impl>;
 
  public:
@@ -450,8 +465,17 @@ class BlockingCounter {
     impl_->Cancel();
   }
 
-  void Wait() {
-    impl_->Wait();
+  // Blocks while the blocking counter is pending.
+  // Returns true on success (reaching 0), false when cancelled.
+  bool Wait() {
+    return impl_->Wait();
+  }
+
+  // Blocks while the blocking counter is pending our timeout is reached.
+  // Returns true on success (reaching 0), false when cancelled or timed out.
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    auto tp = std::chrono::steady_clock::now() + duration;
+    return impl_->WaitUntil(tp);
   }
 
  private:

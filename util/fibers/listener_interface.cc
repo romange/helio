@@ -217,13 +217,19 @@ fb2::ProactorBase* ListenerInterface::PickConnectionProactor(FiberSocketBase* so
 
 void ListenerInterface::TraverseConnections(TraverseCB cb) {
   pool_->Await([&](unsigned index, auto* pb) {
-    auto it = conn_list.find(this);
-    FiberAtomicGuard fg;
-
-    for (auto& conn : it->second->list) {
-      cb(index, &conn);
-    }
+    TraverseConnectionsOnThread(cb);
   });
+}
+
+void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
+  DCHECK(ProactorBase::IsProactorThread());
+  unsigned index = ProactorBase::GetIndex();
+
+  FiberAtomicGuard fg;
+  auto it = conn_list.find(this);
+  for (auto& conn : it->second->list) {
+    cb(index, &conn);
+  }
 }
 
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
