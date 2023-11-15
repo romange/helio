@@ -61,6 +61,10 @@ class ListenerInterface {
   // Connection* are valid only during the call to cb.
   void TraverseConnections(TraverseCB cb);
 
+  // traverses all client connection in current thread. cb must adhere to rules from
+  // `TraverseConnections`;
+  void TraverseConnectionsOnThread(TraverseCB cb);
+
   // Must be called from the connection fiber (that runs HandleRequests() function).
   // Moves the calling fiber from its thread to to dest proactor thread.
   // Updates socket_ and listener interface bookeepings.
