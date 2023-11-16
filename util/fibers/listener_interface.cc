@@ -184,11 +184,17 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
     LOG(ERROR) << "Uncaught exception " << e.what();
   }
 
-  // Our connection could migrate, hence we should find it again
   OnConnectionClose(conn);
+  CHECK(conn->socket() != nullptr);
   LOG_IF(ERROR, conn->socket()->Close());
 
-  clist = conn_list.find(this)->second;
+  // Our connection could migrate, hence we should find it again
+  auto it = conn_list.find(this);
+  CHECK(it != conn_list.end());
+  clist = it->second;
+
+  VSOCK(1, *conn) << "Unlinking connection";
+
   clist->Unlink(conn);
 
   guard.reset();
