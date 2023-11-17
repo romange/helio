@@ -7,7 +7,7 @@
 #include <atomic>
 #include <boost/context/fiber.hpp>
 #include <boost/intrusive/set.hpp>
-#include <boost/intrusive/slist.hpp>
+#include <boost/intrusive/list.hpp>
 #include <chrono>
 
 #include "base/mpsc_intrusive_queue.h"
@@ -24,7 +24,7 @@ enum class Launch {
 namespace detail {
 
 using FI_ListHook =
-    boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
+    boost::intrusive::list_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
 using FI_SleepHook =
     boost::intrusive::set_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
