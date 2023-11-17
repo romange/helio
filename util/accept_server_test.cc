@@ -26,8 +26,16 @@ using fb2::Pool;
 #endif
 
 class TestConnection : public Connection {
+ public:
+  TestConnection(ProactorPool* pp) : pp_(pp) {
+  }
+
+  unsigned migrations = 0;
  protected:
   void HandleRequests() final;
+
+ private:
+  ProactorPool* pp_;
 };
 
 void TestConnection::HandleRequests() {
@@ -37,13 +45,20 @@ void TestConnection::HandleRequests() {
   AsioStreamAdapter<FiberSocketBase> asa(*socket_);
 
   while (true) {
-    asa.read_some(boost::asio::buffer(buf), ec);
+    size_t res = asa.read_some(boost::asio::buffer(buf), ec);
     if (ec == std::errc::connection_aborted)
       break;
 
     CHECK(!ec) << ec << "/" << ec.message();
-
-    asa.write_some(boost::asio::buffer(buf), ec);
+    string_view sv(buf, res);
+    if (sv == "migrate") {
+      ++migrations;
+      ProactorBase* other = (pp_->at(0) == socket_->proactor()) ? pp_->at(1) : pp_->at(0);
+      CHECK(socket_->proactor() != other);
+      listener()->Migrate(this, other);
+      CHECK(socket_->proactor() == other);
+    }
+    asa.write_some(boost::asio::buffer(buf, res), ec);
 
     if (FiberSocketBase::IsConnClosed(ec))
       break;
@@ -58,7 +73,7 @@ const char* kMaxConnectionsError = "max connections received";
 class TestListener : public ListenerInterface {
  public:
   virtual Connection* NewConnection(ProactorBase* context) final {
-    return new TestConnection;
+    return new TestConnection(pool());
   }
 
   virtual void OnMaxConnectionsReached(FiberSocketBase* sock) override {
@@ -92,7 +107,7 @@ void AcceptServerTest::SetUp() {
 #if USE_URING
   ProactorPool* up = Pool::IOUring(16, 2);
 #else
-  ProactorPool* up = Pool::Epoll();
+  ProactorPool* up = Pool::Epoll(2);
 #endif
   pp_.reset(up);
   pp_->Run();
@@ -125,7 +140,7 @@ void RunClient(FiberSocketBase* fs) {
   req.prepare_payload();
   h2::write(asa, req);
   uint8_t buf[128];
-  fs->Read(io::MutableBytes(buf));
+  fs->Recv(io::MutableBytes(buf));
   LOG(INFO) << ": echo-client stopped";
 }
 
@@ -173,8 +188,8 @@ TEST_F(AcceptServerTest, ConnectionsLimit) {
 
 TEST_F(AcceptServerTest, UDS) {
 #ifdef __APPLE__
-    GTEST_SKIP() << "Skipped AcceptServerTest.UDS test on MacOS";
-    return;
+  GTEST_SKIP() << "Skipped AcceptServerTest.UDS test on MacOS";
+  return;
 #endif
   AcceptServer as{pp_.get(), false};
   const char kSockPath[] = "/tmp/uds.sock";
@@ -183,6 +198,32 @@ TEST_F(AcceptServerTest, UDS) {
   ASSERT_FALSE(ec) << ec;
   as.Run();
   as.Stop(true);
+}
+
+TEST_F(AcceptServerTest, Migrate) {
+  // Make sure the connection is active.
+  client_sock_->proactor()->Await([&] { RunClient(client_sock_.get()); });
+
+  // Find the server connection.
+  vector<pair<unsigned, Connection*>> conns;
+  listener_->TraverseConnections([&](unsigned tid, Connection* c) {
+    conns.emplace_back(tid, c);
+  });
+  ASSERT_EQ(1, conns.size());
+  TestConnection* conn = (TestConnection*)conns[0].second;
+  ASSERT_EQ(0, conn->migrations);
+
+  uint8_t buf[32];
+
+  client_sock_->proactor()->Await([&] {
+    for (unsigned i = 0; i < 200; ++i) {
+      auto ec = client_sock_->Write(io::Buffer("migrate"));
+      ASSERT_TRUE(!ec);
+      auto res = client_sock_->Read(io::MutableBytes(buf, 7));
+      ASSERT_TRUE(res && *res == 7);
+    }
+  });
+  ASSERT_EQ(200, conn->migrations);
 }
 
 }  // namespace util

@@ -93,16 +93,17 @@ class Scheduler {
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
 
  private:
-  // I use cache_last<true> so that slist will have push_back support.
-  using FI_Queue = boost::intrusive::slist<
+  // We use intrusive::list and not slist because slist has O(N) complexity for some operations
+  // which may be time consuming for long lists.
+  using FI_Queue = boost::intrusive::list<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::list_hook>,
-      boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+      boost::intrusive::constant_time_size<false>>;
 
-  using FI_List = boost::intrusive::slist<
+  using FI_List = boost::intrusive::list<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_ListHook, &FiberInterface::fibers_hook>,
-      boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+      boost::intrusive::constant_time_size<false>>;
 
   struct TpLess {
     bool operator()(const FiberInterface& l, const FiberInterface& r) const noexcept {

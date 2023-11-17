@@ -3,7 +3,7 @@
 //
 #pragma once
 
-#include <boost/intrusive/slist.hpp>
+#include <boost/intrusive/list.hpp>
 #include <functional>
 #include <memory>
 
@@ -14,7 +14,7 @@ namespace util {
 class ListenerInterface;
 
 class Connection {
-  using connection_hook_t = ::boost::intrusive::slist_member_hook<
+  using connection_hook_t = ::boost::intrusive::list_member_hook<
       ::boost::intrusive::link_mode<::boost::intrusive::safe_link>>;
 
   connection_hook_t hook_;
@@ -46,6 +46,7 @@ class Connection {
   // calls OnShutdown().
   void Shutdown();
 
+  pthread_t DEBUG_connlist_pthread_id = -1;
  protected:
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;
@@ -58,14 +59,19 @@ class Connection {
   virtual void OnPostMigrateThread() {
   }
 
+  [[deprecated]]
   ListenerInterface* owner() const {
-    return owner_;
+    return listener_;
+  }
+
+  ListenerInterface* listener() const {
+    return listener_;
   }
 
   std::unique_ptr<FiberSocketBase> socket_;
 
  private:
-  ListenerInterface* owner_ = nullptr;
+  ListenerInterface* listener_ = nullptr;
   friend class ListenerInterface;
 };
 

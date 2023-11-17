@@ -29,9 +29,10 @@ auto native_handle(const Connection& conn) {
   return conn.socket()->native_handle();
 }
 
-using ListType =
-    intrusive::slist<Connection, Connection::member_hook_t, intrusive::constant_time_size<true>,
-                     intrusive::cache_last<false>>;
+// We set intrusive::constant_time_size<true> because we use ListType::size()
+// for introspection purposes.
+using ListType = intrusive::list<Connection, Connection::member_hook_t,
+                                 intrusive::constant_time_size<true>>;
 
 }  // namespace
 
@@ -41,13 +42,18 @@ struct ListenerInterface::TLConnList {
 
   void Link(Connection* c) {
     DCHECK(!c->hook_.is_linked());
-
+    c->DEBUG_connlist_pthread_id = pthread_self();
     list.push_front(*c);
     DVLOG(3) << "List size " << list.size();
   }
 
   void Unlink(Connection* c) {
-    DCHECK(c->hook_.is_linked());
+    CHECK(c->hook_.is_linked());
+
+    if (c->DEBUG_connlist_pthread_id != pthread_self()) {
+      LOG(FATAL) << "inconsistent connection thread id " << c->DEBUG_connlist_pthread_id << " vs "
+                 << pthread_self();
+    }
     DCHECK(!list.empty());
 
     auto it = ListType::s_iterator_to(*c);
@@ -57,6 +63,7 @@ struct ListenerInterface::TLConnList {
     if (list.empty()) {
       empty_cv.notify_one();
     }
+    c->DEBUG_connlist_pthread_id = -1;
   }
 
   void AwaitEmpty() {
@@ -119,7 +126,7 @@ void ListenerInterface::RunAcceptLoop() {
     peer->SetProactor(next);
     Connection* conn = NewConnection(next);
     conn->SetSocket(peer.release());
-    conn->owner_ = this;
+    conn->listener_ = this;
 
     // Run cb in its Proactor thread.
     next->Dispatch([this, conn] { RunSingleConnection(conn); });
@@ -186,14 +193,15 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
 
   OnConnectionClose(conn);
   CHECK(conn->socket() != nullptr);
+
+  VSOCK(1, *conn) << "Closing connection";
+
   LOG_IF(ERROR, conn->socket()->Close());
 
   // Our connection could migrate, hence we should find it again
   auto it = conn_list.find(this);
   CHECK(it != conn_list.end());
   clist = it->second;
-
-  VSOCK(1, *conn) << "Unlinking connection";
 
   clist->Unlink(conn);
 
@@ -222,9 +230,7 @@ fb2::ProactorBase* ListenerInterface::PickConnectionProactor(FiberSocketBase* so
 }
 
 void ListenerInterface::TraverseConnections(TraverseCB cb) {
-  pool_->Await([&](unsigned index, auto* pb) {
-    TraverseConnectionsOnThread(cb);
-  });
+  pool_->Await([&](unsigned index, auto* pb) { TraverseConnectionsOnThread(cb); });
 }
 
 void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
@@ -241,7 +247,8 @@ void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   fb2::ProactorBase* src_proactor = conn->socket()->proactor();
   CHECK(src_proactor->InMyThread());
-  CHECK(conn->owner() == this);
+  CHECK(conn->listener() == this);
+  CHECK_EQ(conn->DEBUG_connlist_pthread_id, pthread_self());
 
   if (src_proactor == dest)
     return;
@@ -262,6 +269,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   clist2->Link(conn);
   conn->OnPostMigrateThread();
+  CHECK_EQ(conn->DEBUG_connlist_pthread_id, pthread_self());
 }
 
 void ListenerInterface::SetMaxClients(uint32_t max_clients) {
