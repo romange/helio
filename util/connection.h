@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "util/fiber_socket_base.h"
+#include "util/fibers/proactor_base.h"
 
 namespace util {
 
@@ -46,7 +47,7 @@ class Connection {
   // calls OnShutdown().
   void Shutdown();
 
-  pthread_t DEBUG_connlist_pthread_id = -1;
+  util::ProactorBase* DEBUG_proactor = nullptr;
  protected:
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;

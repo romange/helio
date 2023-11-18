@@ -31,10 +31,13 @@ auto native_handle(const Connection& conn) {
 
 // We set intrusive::constant_time_size<true> because we use ListType::size()
 // for introspection purposes.
-using ListType = intrusive::list<Connection, Connection::member_hook_t,
-                                 intrusive::constant_time_size<true>>;
+using ListType =
+    intrusive::list<Connection, Connection::member_hook_t, intrusive::constant_time_size<true>>;
 
 }  // namespace
+
+thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
+    ListenerInterface::conn_list;
 
 struct ListenerInterface::TLConnList {
   ListType list;
@@ -42,28 +45,54 @@ struct ListenerInterface::TLConnList {
 
   void Link(Connection* c) {
     DCHECK(!c->hook_.is_linked());
-    c->DEBUG_connlist_pthread_id = pthread_self();
+    c->DEBUG_proactor = ProactorBase::me();
     list.push_front(*c);
     DVLOG(3) << "List size " << list.size();
   }
 
-  void Unlink(Connection* c) {
+  void Unlink(Connection* c, ListenerInterface* l) {
     CHECK(c->hook_.is_linked());
 
-    if (c->DEBUG_connlist_pthread_id != pthread_self()) {
-      LOG(FATAL) << "inconsistent connection thread id " << c->DEBUG_connlist_pthread_id << " vs "
-                 << pthread_self();
-    }
-    DCHECK(!list.empty());
-
     auto it = ListType::s_iterator_to(*c);
+
+    {
+      util::ProactorBase *left = nullptr, *right = nullptr;
+      if (auto lit = it; it != list.begin())
+        left = (--lit)->DEBUG_proactor;
+      if (auto rit = it; ++rit != list.end())
+        right = rit->DEBUG_proactor;
+
+      util::ProactorBase* exchanged = nullptr;
+      if (left != nullptr && left != c->DEBUG_proactor) {
+        if (right == nullptr || right == left)
+          exchanged = left;
+        else
+          LOG(ERROR) << "Mixmatched proactors " << left << " " << right;
+      }
+
+      if (right != nullptr && right != c->DEBUG_proactor) {
+        if (left == nullptr || left == right)
+          exchanged = right;
+        else
+          LOG(ERROR) << "Mixmatched proactors " << left << " " << right;
+      }
+
+      if (exchanged != nullptr) {
+        LOG(ERROR) << "Neighbors on same proactor: " << exchanged->GetIndex();
+        exchanged->Await([c, l, it]() { conn_list[l]->Unlink(c, l); });
+        return;
+      }
+    }
+
+    DCHECK(!list.empty());
     list.erase(it);
 
     DVLOG(2) << "Unlink conn, new list size: " << list.size();
     if (list.empty()) {
       empty_cv.notify_one();
     }
-    c->DEBUG_connlist_pthread_id = -1;
+
+    c->DEBUG_proactor = nullptr;
   }
 
   void AwaitEmpty() {
@@ -76,9 +105,6 @@ struct ListenerInterface::TLConnList {
     DVLOG(1) << "AwaitEmpty finished ";
   }
 };
-
-thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
-    ListenerInterface::conn_list;
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
@@ -203,7 +229,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   CHECK(it != conn_list.end());
   clist = it->second;
 
-  clist->Unlink(conn);
+  clist->Unlink(conn, this);
 
   guard.reset();
   open_connections_.fetch_sub(1, std::memory_order_release);
@@ -248,7 +274,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   fb2::ProactorBase* src_proactor = conn->socket()->proactor();
   CHECK(src_proactor->InMyThread());
   CHECK(conn->listener() == this);
-  CHECK_EQ(conn->DEBUG_connlist_pthread_id, pthread_self());
+  CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
 
   if (src_proactor == dest)
     return;
@@ -257,7 +283,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   conn->OnPreMigrateThread();
   auto* clist = conn_list.find(this)->second;
-  clist->Unlink(conn);
+  clist->Unlink(conn, this);
 
   src_proactor->Migrate(dest);
 
@@ -269,7 +295,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   clist2->Link(conn);
   conn->OnPostMigrateThread();
-  CHECK_EQ(conn->DEBUG_connlist_pthread_id, pthread_self());
+  CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
 }
 
 void ListenerInterface::SetMaxClients(uint32_t max_clients) {
