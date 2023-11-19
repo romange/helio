@@ -226,11 +226,14 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
 
   // Our connection could migrate, hence we should find it again
   auto it = conn_list.find(this);
-  CHECK(it != conn_list.end());
-  clist = it->second;
 
-  clist->Unlink(conn, this);
+  // If the listener was destroyed (when we are in the middle of migration)
+  // we do not need to unlink the connection.
+  if (it != conn_list.end()) {
+    clist = it->second;
 
+    clist->Unlink(conn, this);
+  }
   guard.reset();
   open_connections_.fetch_sub(1, std::memory_order_release);
 }
@@ -290,12 +293,18 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   DCHECK(dest->InMyThread());  // We are running in the updated thread.
   conn->socket()->SetProactor(dest);
 
-  auto* clist2 = conn_list.find(this)->second;
-  DCHECK(clist2 != clist);
+  auto it = conn_list.find(this);
 
-  clist2->Link(conn);
+  // If the listener is being destroyed but the connection is in the middle of thread migration,
+  // we do not need to link it again.
+  if (it != conn_list.end()) {
+    auto* clist2 = it->second;
+    DCHECK(clist2 != clist);
+
+    clist2->Link(conn);
+    CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
+  }
   conn->OnPostMigrateThread();
-  CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
 }
 
 void ListenerInterface::SetMaxClients(uint32_t max_clients) {
