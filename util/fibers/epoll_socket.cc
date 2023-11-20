@@ -390,14 +390,6 @@ auto EpollSocket::Shutdown(int how) -> error_code {
   return ec;
 }
 
-uint32_t EpollSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
-  return 0;
-}
-
-uint32_t EpollSocket::CancelPoll(uint32_t id) {
-  return 0;
-}
-
 void EpollSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   DCHECK(!error_cb_);
   error_cb_ = std::move(cb);

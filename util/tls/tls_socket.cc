@@ -347,14 +347,6 @@ TlsSocket::endpoint_type TlsSocket::RemoteEndpoint() const {
   return next_sock_->RemoteEndpoint();
 }
 
-uint32_t TlsSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
-  return next_sock_->PollEvent(event_mask, std::move(cb));
-}
-
-uint32_t TlsSocket::CancelPoll(uint32_t id) {
-  return next_sock_->CancelPoll(id);
-}
-
 void TlsSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   return next_sock_->RegisterOnErrorCb(std::move(cb));
 }

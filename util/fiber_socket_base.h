@@ -81,19 +81,6 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   virtual endpoint_type LocalEndpoint() const = 0;
   virtual endpoint_type RemoteEndpoint() const = 0;
 
-  //! Subscribes to one-shot poll. event_mask is a mask of POLLXXX values.
-  //! When and an event occurs, the cb will be called with the mask of actual events
-  //! that triggered it.
-  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
-  //! DEPRECATED: Use RegisterOnErrorCb instead.
-  virtual uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) = 0;
-
-  //! Cancels the poll event. id must be the id returned by PollEvent function.
-  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
-  //! in process of completing.
-  //! DEPRECATED: Use RegisterOnErrorCb instead.
-  virtual uint32_t CancelPoll(uint32_t id) = 0;
-
   //! Registers a callback that will be called if the socket is closed or has an error.
   //! Should not be called if a callback is already registered.
   virtual void RegisterOnErrorCb(std::function<void(uint32_t)> cb) = 0;

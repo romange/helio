@@ -353,7 +353,10 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
   return make_unexpected(std::move(ec));
 }
 
-uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) {
+void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
+  DCHECK_EQ(error_cb_id_, UINT32_MAX) << fd_;
+  uint32_t event_mask = POLLERR | POLLHUP;
+
   int fd = native_handle();
   Proactor* p = GetProactor();
 
@@ -363,30 +366,21 @@ uint32_t UringSocket::PollEvent(uint32_t event_mask, std::function<void(uint32_t
   se.PrepPollAdd(fd, event_mask);
   se.sqe()->flags |= register_flag();
 
-  return se.sqe()->user_data;
-}
-
-uint32_t UringSocket::CancelPoll(uint32_t id) {
-  FiberCall fc(GetProactor());
-  fc->PrepPollRemove(id);
-
-  IoResult io_res = fc.Get();
-  if (io_res < 0)
-    io_res = -io_res;
-
-  return io_res;
-}
-
-void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
-  DCHECK_EQ(error_cb_id_, UINT32_MAX) << fd_;
-  error_cb_id_ = this->PollEvent(POLLERR | POLLHUP, std::move(cb));
+  error_cb_id_ = se.sqe()->user_data;
 }
 
 void UringSocket::CancelOnErrorCb() {
-  if (error_cb_id_ != UINT32_MAX) {
-    this->CancelPoll(error_cb_id_);
-    error_cb_id_ = UINT32_MAX;
+  if (error_cb_id_ == UINT32_MAX)
+    return;
+  FiberCall fc(GetProactor());
+  fc->PrepPollRemove(error_cb_id_);
+
+  IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    io_res = -io_res;
+    LOG(WARNING) << "Error canceling error cb " << io_res;
   }
+  error_cb_id_ = UINT32_MAX;
 }
 
 }  // namespace fb2

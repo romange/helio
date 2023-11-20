@@ -41,17 +41,6 @@ class UringSocket : public LinuxSocketBase {
 
   using FiberSocketBase::IsConnClosed;
 
-  //! Subsribes to one-shot poll. event_mask is a mask of POLLXXX values.
-  //! When and an event occurs, the cb will be called with the mask of actual events
-  //! that trigerred it.
-  //! Returns: handle id that can be used to cancel the poll request (see CancelPoll below).
-  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) final;
-
-  //! Cancels the poll event. id must be the id returned by PollEvent function.
-  //! Returns 0 if cancellation ocurred, or ENOENT, EALREADY if poll has not been found or
-  //! in process of completing.
-  uint32_t CancelPoll(uint32_t id) final;
-
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
   void CancelOnErrorCb() final;
 

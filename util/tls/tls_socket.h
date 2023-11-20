@@ -63,10 +63,6 @@ class TlsSocket : public FiberSocketBase {
   endpoint_type LocalEndpoint() const override;
   endpoint_type RemoteEndpoint() const override;
 
-  uint32_t PollEvent(uint32_t event_mask, std::function<void(uint32_t)> cb) override;
-
-  uint32_t CancelPoll(uint32_t id) override;
-
   void RegisterOnErrorCb(std::function<void (uint32_t)> cb) override;
   void CancelOnErrorCb() override;
 
