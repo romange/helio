@@ -57,6 +57,7 @@ class FiberSocketTest : public testing::TestWithParam<string_view> {
   Fiber accept_fb_;
   std::error_code accept_ec_;
   FiberSocketBase::endpoint_type listen_ep_;
+  uint32_t conn_sock_err_mask_ = 0;
 };
 
 INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
@@ -110,6 +111,10 @@ void FiberSocketTest::SetUp() {
       FiberSocketBase* sock = *accept_res;
       conn_socket_.reset(sock);
       conn_socket_->SetProactor(proactor_.get());
+      conn_socket_->RegisterOnErrorCb([this](uint32_t mask) {
+        LOG(INFO) << "Error mask: " << mask;
+        conn_sock_err_mask_ = mask;
+      });
     } else {
       accept_ec_ = accept_res.error();
     }
@@ -159,8 +164,8 @@ TEST_P(FiberSocketTest, Basic) {
 
 TEST_P(FiberSocketTest, Timeout) {
 #ifdef __APPLE__
-    GTEST_SKIP() << "Skipped FiberSocketTest.Timeout test on MacOS";
-    return;
+  GTEST_SKIP() << "Skipped FiberSocketTest.Timeout test on MacOS";
+  return;
 #endif
   constexpr unsigned kNumSocks = 2;
 
@@ -223,24 +228,38 @@ TEST_P(FiberSocketTest, Poll) {
   });
   accept_fb_.Join();
 
-  auto poll_cb = [](uint32_t mask) {
-    LOG(INFO) << "Res: " << mask;
-    // POLLRDHUP is linux specific
-    #ifdef __linux__
-    EXPECT_TRUE((POLLRDHUP) & mask);
-    #endif
-
-    EXPECT_TRUE((POLLHUP) & mask);
-    EXPECT_TRUE(POLLERR & mask);
-  };
-
-  proactor_->Await([&] { conn_socket_->RegisterOnErrorCb(poll_cb); });
   LOG(INFO) << "Before close";
   proactor_->Await([&] {
     auto ec = sock->Close();
     (void)ec;
   });
   usleep(100);
+
+  // POLLRDHUP is linux specific
+#ifdef __linux__
+  EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_);
+#endif
+
+  EXPECT_TRUE(POLLHUP & conn_sock_err_mask_);
+  EXPECT_TRUE(POLLERR & conn_sock_err_mask_);
+}
+
+TEST_P(FiberSocketTest, PollCancel) {
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+  proactor_->Await([&] {
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+  });
+  accept_fb_.Join();
+  proactor_->Await([&] {
+    conn_socket_->CancelOnErrorCb();
+    auto ec = sock->Close();
+    (void)ec;
+  });
+  usleep(100);
+
+  // Should not be updated due to cancellation.
+  EXPECT_EQ(0, conn_sock_err_mask_);
 }
 
 TEST_P(FiberSocketTest, AsyncWrite) {
@@ -316,8 +335,8 @@ TEST_P(FiberSocketTest, UDS) {
     int res = connect(client_sock->native_handle(), (struct sockaddr*)&addr, sizeof(addr));
     EXPECT_EQ(res, 0) << error_code{res, system_category()}.message();
 
-    // Epoll socket's destructor expects it to be at least armed (e.g. either Connect or Listen called),
-    // so clean up manually
+    // Epoll socket's destructor expects it to be at least armed (e.g. either Connect or Listen
+    // called), so clean up manually
     close(client_sock->native_handle());
     operator delete(client_sock.release());
   });
