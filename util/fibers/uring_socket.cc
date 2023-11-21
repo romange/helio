@@ -361,7 +361,14 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   Proactor* p = GetProactor();
 
   auto se_cb = [cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
-                                    uint32_t flags) { cb(res); };
+                                    uint32_t flags) {
+    if (res < 0) {
+      res = -res;
+      LOG_IF(WARNING, res != ECANCELED) << "Unexpected error result " << res;
+    } else {
+      cb(res);
+    }
+  };
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
   se.PrepPollAdd(fd, event_mask);
   se.sqe()->flags |= register_flag();
