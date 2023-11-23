@@ -46,7 +46,11 @@ struct ListenerInterface::TLConnList {
   void Link(Connection* c) {
     DCHECK(!c->hook_.is_linked());
     c->DEBUG_proactor = ProactorBase::me();
-    list.push_front(*c);
+    if (!list.empty()) {
+      CHECK_EQ(c->DEBUG_proactor, list.front().DEBUG_proactor);
+      CHECK_EQ(c->DEBUG_proactor, list.back().DEBUG_proactor);
+    }
+    list.push_back(*c);
     DVLOG(3) << "List size " << list.size();
   }
 
@@ -67,14 +71,16 @@ struct ListenerInterface::TLConnList {
         if (right == nullptr || right == left)
           exchanged = left;
         else
-          LOG(ERROR) << "Mixmatched proactors " << left << " " << right;
+          LOG(ERROR) << "Mixmatched proactors " << left << " " << right << ", mine "
+                     << c->DEBUG_proactor << ", me() " << ProactorBase::me();
       }
 
       if (right != nullptr && right != c->DEBUG_proactor) {
         if (left == nullptr || left == right)
           exchanged = right;
         else
-          LOG(ERROR) << "Mixmatched proactors " << left << " " << right;
+          LOG(ERROR) << "Mixmatched proactors " << left << " " << right << ", mine "
+                     << c->DEBUG_proactor << ", me() " << ProactorBase::me();
       }
 
       if (exchanged != nullptr) {
@@ -86,13 +92,12 @@ struct ListenerInterface::TLConnList {
 
     DCHECK(!list.empty());
     list.erase(it);
+    c->DEBUG_proactor = nullptr;
 
     DVLOG(2) << "Unlink conn, new list size: " << list.size();
     if (list.empty()) {
       empty_cv.notify_one();
     }
-
-    c->DEBUG_proactor = nullptr;
   }
 
   void AwaitEmpty() {
@@ -119,7 +124,7 @@ void ListenerInterface::RunAcceptLoop() {
   PreAcceptLoop(sock_->proactor());
 
   pool_->Await([this](auto*) {
-    DVLOG(1) << "Emplacing " << this;
+    DVLOG(1) << "Emplacing listener " << this;
     conn_list.emplace(this, new TLConnList{});
   });
 
@@ -282,18 +287,24 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   if (src_proactor == dest)
     return;
 
-  VLOG(1) << "Migrating from " << src_proactor->thread_id() << " to " << dest->thread_id();
+  VLOG(1) << "Migrating from " << src_proactor->sys_tid() << "(" << src_proactor->GetIndex()
+          << ") to " << dest->sys_tid() << "(" << dest->GetIndex() << ")";
 
   conn->OnPreMigrateThread();
+
+  auto* src_conn_list = &conn_list;
   auto* clist = conn_list.find(this)->second;
   clist->Unlink(conn, this);
 
   src_proactor->Migrate(dest);
 
-  DCHECK(dest->InMyThread());  // We are running in the updated thread.
+  CHECK(dest->InMyThread());  // We are running in the updated thread.
   conn->socket()->SetProactor(dest);
 
+  auto* dest_conn_list = &conn_list;
   auto it = conn_list.find(this);
+
+  CHECK(dest_conn_list != src_conn_list);
 
   // If the listener is being destroyed but the connection is in the middle of thread migration,
   // we do not need to link it again.
