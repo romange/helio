@@ -11,6 +11,7 @@
 #ifdef __linux__
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
+#include <sys/syscall.h>
 #endif
 
 #include "base/logging.h"
@@ -154,6 +155,13 @@ void EpollProactor::Init() {
   }
 
   thread_id_ = pthread_self();
+
+#ifdef __linux__
+  sys_thread_id_ = syscall(SYS_gettid);
+#elif defined(__FreeBSD__)
+  sys_thread_id_ = pthread_getthreadid_np();
+#endif
+
   tl_info_.owner = this;
 
 #ifdef __linux__

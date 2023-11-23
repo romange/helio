@@ -71,8 +71,12 @@ class ProactorBase {
   }
 
   // pthread id.
-  auto thread_id() const {
+  pthread_t thread_id() const {
     return thread_id_;
+  }
+
+  int sys_tid() const {
+    return sys_thread_id_;
   }
 
   static bool IsProactorThread() {
@@ -226,6 +230,8 @@ class ProactorBase {
   void ProcessSleepFibers(detail::Scheduler* scheduler);
 
   pthread_t thread_id_ = 0U;
+  int sys_thread_id_ = 0;
+
   int wake_fd_ = -1;
   bool is_stopped_ = true;
 

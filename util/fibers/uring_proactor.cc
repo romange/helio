@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/syscall.h>
 
 #include "base/flags.h"
 #include "base/histogram.h"
@@ -166,6 +167,8 @@ void UringProactor::Init(size_t ring_size, int wq_fd) {
   }
 
   thread_id_ = pthread_self();
+  sys_thread_id_ = syscall(SYS_gettid);
+
   tl_info_.owner = this;
 }
 
