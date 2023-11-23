@@ -96,13 +96,16 @@ class ListenerInterface {
   }
 
  private:
+  struct TLConnList;  // threadlocal connection list. contains connections for that thread.
+  using ListenerConnMap = std::unordered_map<ListenerInterface*, TLConnList*>;
+
   void RunAcceptLoop();
 
   void RunSingleConnection(Connection* conn);
 
-  struct TLConnList;  // threadlocal connection list. contains connections for that thread.
+  static ListenerConnMap* GetSafeTlsConnMap();
 
-  static thread_local std::unordered_map<ListenerInterface*, TLConnList*> conn_list;
+  static thread_local ListenerConnMap conn_list;
 
   std::unique_ptr<FiberSocketBase> sock_;
   // Number of max connections. Unlimited by default.

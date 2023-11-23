@@ -107,6 +107,16 @@ void ProactorBase::Stop() {
   VLOG(1) << "Proactor::StopFinish";
 }
 
+bool ProactorBase::InMyThread() const {
+  // This function should not be inline by design.
+  // Together with this barrier, it makes sure that pthread_self() is not cached even when
+  // the caller stack migrates between threads.
+  // See: https://stackoverflow.com/a/75622732
+  asm volatile("");
+
+  return pthread_self() == thread_id_;
+}
+
 uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f) {
   DCHECK(InMyThread());
 
