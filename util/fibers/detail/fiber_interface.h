@@ -64,7 +64,7 @@ class FiberInterface {
 
   FI_ListHook fibers_hook;  // For a list of all fibers in the thread
 
-  ::boost::context::fiber_context SwitchTo(uint64_t now);
+  ::boost::context::fiber_context SwitchTo();
 
   using PrintFn = std::function<void(FiberInterface*)>;
 
@@ -194,8 +194,8 @@ class FiberInterface {
   // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;
 
-  // A timestamp of when this fiber becames ready or becomes active (in ns).
-  uint64_t ts_ns_ = 0;
+  // A tsc of when this fiber becames ready or becomes active (in cycles).
+  uint64_t cpu_tsc_ = 0;
 
   char name_[24];
 };

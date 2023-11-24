@@ -303,13 +303,12 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
-      tl_info_.monotonic_time = GetClockNanos();
 
-      scheduler->AddReady(tl_info_.monotonic_time, dispatcher);
+      scheduler->AddReady(dispatcher);
 
       DVLOG(2) << "Switching to " << fi->name();
-
-      fi->SwitchTo(tl_info_.monotonic_time);
+      tl_info_.monotonic_time = GetClockNanos();
+      fi->SwitchTo();
       cqe_count = 1;
     }
 
