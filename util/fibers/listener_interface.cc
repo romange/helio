@@ -36,8 +36,7 @@ using ListType =
 
 }  // namespace
 
-thread_local unordered_map<ListenerInterface*, ListenerInterface::TLConnList*>
-    ListenerInterface::conn_list;
+thread_local ListenerInterface::ListenerConnMap ListenerInterface::conn_list;
 
 struct ListenerInterface::TLConnList {
   ListType list;
@@ -110,6 +109,15 @@ struct ListenerInterface::TLConnList {
     DVLOG(1) << "AwaitEmpty finished ";
   }
 };
+
+auto __attribute__((noinline)) ListenerInterface::GetSafeTlsConnMap() -> ListenerConnMap* {
+  // Prevents conn_list being cached when a function being migrated between threads.
+  // See: https://stackoverflow.com/a/75622732 and also https://godbolt.org/z/acrozfMW8
+  // for why we need this.
+
+  asm volatile("");
+  return &ListenerInterface::conn_list;
+}
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
@@ -280,40 +288,43 @@ void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
 
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   fb2::ProactorBase* src_proactor = conn->socket()->proactor();
-  CHECK(src_proactor->InMyThread());
+  DCHECK(src_proactor->InMyThread());
   CHECK(conn->listener() == this);
-  CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
+  DCHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
 
   if (src_proactor == dest)
     return;
 
-  VLOG(1) << "Migrating from " << src_proactor->sys_tid() << "(" << src_proactor->GetIndex()
-          << ") to " << dest->sys_tid() << "(" << dest->GetIndex() << ")";
+  unsigned src_index = ProactorBase::GetIndex();
+
+  ListenerConnMap* src_conn_map = GetSafeTlsConnMap();
+  VLOG(1) << "Migrating from " << src_proactor->sys_tid() << "(" << src_index << ") "
+          << src_conn_map << " to " << dest->sys_tid();
 
   conn->OnPreMigrateThread();
 
-  auto* src_conn_list = &conn_list;
-  auto* clist = conn_list.find(this)->second;
-  clist->Unlink(conn, this);
+  auto* src_clist = src_conn_map->find(this)->second;
+  src_clist->Unlink(conn, this);
 
   src_proactor->Migrate(dest);
 
   CHECK(dest->InMyThread());  // We are running in the updated thread.
   conn->socket()->SetProactor(dest);
 
-  auto* dest_conn_list = &conn_list;
-  auto it = conn_list.find(this);
+  ListenerConnMap* dest_conn_map = GetSafeTlsConnMap();
+  VLOG(1) << "Migrated from " << src_index << " to " << ProactorBase::GetIndex() << " "
+          << dest_conn_map;
 
-  CHECK(dest_conn_list != src_conn_list);
+  CHECK_NE(dest_conn_map, src_conn_map);
+  auto it = dest_conn_map->find(this);
 
   // If the listener is being destroyed but the connection is in the middle of thread migration,
   // we do not need to link it again.
-  if (it != conn_list.end()) {
-    auto* clist2 = it->second;
-    DCHECK(clist2 != clist);
+  if (it != dest_conn_map->end()) {
+    auto* dst_clist = it->second;
+    CHECK(dst_clist != src_clist);
 
-    clist2->Link(conn);
-    CHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
+    dst_clist->Link(conn);
   }
   conn->OnPostMigrateThread();
 }

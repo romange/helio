@@ -66,9 +66,7 @@ class ProactorBase {
    * @return true
    * @return false
    */
-  bool InMyThread() const {
-    return pthread_self() == thread_id_;
-  }
+  bool InMyThread() const;
 
   // pthread id.
   pthread_t thread_id() const {
