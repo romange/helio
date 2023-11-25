@@ -4,11 +4,11 @@
 #include "util/fibers/detail/fiber_interface.h"
 
 #include <absl/time/clock.h>
-#include <condition_variable>
-#include <mutex>
+#include <mutex>  // for g_scheduler_lock
 
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/detail/utils.h"
 
 namespace util {
 namespace fb2 {
@@ -17,19 +17,9 @@ using namespace std;
 namespace detail {
 namespace ctx = boost::context;
 
-namespace {
+struct TL_FiberInitializer;
 
-inline void CpuPause() {
-#if defined(__i386__) || defined(__amd64__)
-  __asm__ __volatile__("pause");
-#elif defined(__aarch64__)
-  /* Use an isb here as we've found it's much closer in duration to
-   * the x86 pause instruction vs. yield which is a nop and thus the
-   * loop count is lower and the interconnect gets a lot more traffic
-   * from loading the ticket above. */
-  __asm__ __volatile__("isb");
-#endif
-}
+namespace {
 
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
@@ -49,10 +39,11 @@ class MainFiberImpl final : public FiberInterface {
 
 mutex g_scheduler_lock;
 
+TL_FiberInitializer* g_fiber_thread_list = nullptr;
+uint64_t g_tsc_cycles_per_ms = 0;
+
 }  // namespace
 
-struct TL_FiberInitializer;
-TL_FiberInitializer* g_fiber_thread_list = nullptr;
 
 // Per thread initialization structure.
 struct TL_FiberInitializer {
@@ -65,11 +56,11 @@ struct TL_FiberInitializer {
   // Allows overriding the main dispatch loop
   Scheduler* sched;
   uint64_t epoch = 0;
-  uint64_t switch_delay = 0;  // switch delay in nanoseconds.
+  uint64_t switch_delay_cycles = 0;  // switch delay in cycles.
 
   // Tracks fiber runtimes that took longer than 1ms.
   uint64_t long_runtime_cnt = 0;
-  uint64_t long_runtime_ns = 0;
+  uint64_t long_runtime_usec = 0;
 
   uint32_t atomic_section = 0;
 
@@ -88,12 +79,15 @@ TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
   FiberInterface* main_ctx = new MainFiberImpl{};
   active = main_ctx;
   sched = new Scheduler(main_ctx);
+
   unique_lock lk(g_scheduler_lock);
-  /*if (g_parking_ht == nullptr) {
-    g_parking_ht = new ParkingHT{};
-  }*/
+
   next = g_fiber_thread_list;
   g_fiber_thread_list = this;
+  if (g_tsc_cycles_per_ms == 0) {
+    g_tsc_cycles_per_ms = CycleClock::FrequencyUsec() * 1000;
+    VLOG(1) << "TSC Frequency : " << g_tsc_cycles_per_ms << "/ms";
+  }
 }
 
 TL_FiberInitializer::~TL_FiberInitializer() {
@@ -133,7 +127,7 @@ FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
   if (len) {
     memcpy(name_, nm.data(), len);
   }
-  ts_ns_ = absl::GetCurrentTimeNanos();
+  cpu_tsc_ = CycleClock::Now();
 }
 
 FiberInterface::~FiberInterface() {
@@ -183,18 +177,17 @@ ctx::fiber_context FiberInterface::Terminate() {
 void FiberInterface::Start(Launch launch) {
   auto& fb_init = detail::FbInitializer();
   fb_init.sched->Attach(this);
-  uint64_t now = absl::GetCurrentTimeNanos();
 
   switch (launch) {
     case Launch::post:
       // Activate but do not switch to it.
-      fb_init.sched->AddReady(now, this);
+      fb_init.sched->AddReady(this);
       break;
     case Launch::dispatch:
       // Add the active fiber to the ready queue and switch to the new fiber.
-      fb_init.sched->AddReady(now, fb_init.active);
+      fb_init.sched->AddReady(fb_init.active);
       {
-        auto fc = SwitchTo(now);
+        auto fc = SwitchTo();
         DCHECK(!fc);
       }
       break;
@@ -230,7 +223,7 @@ void FiberInterface::Join() {
 }
 
 void FiberInterface::Yield() {
-  scheduler_->AddReady(absl::GetCurrentTimeNanos(), this);
+  scheduler_->AddReady(this);
   scheduler_->Preempt();
 }
 
@@ -243,7 +236,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked())
-      scheduler_->AddReady(absl::GetCurrentTimeNanos(), other);
+      scheduler_->AddReady(other);
   } else {
     other->scheduler_->ScheduleFromRemote(other);
   }
@@ -259,7 +252,7 @@ void FiberInterface::AttachThread() {
   scheduler_->Attach(this);
 }
 
-ctx::fiber_context FiberInterface::SwitchTo(uint64_t now) {
+ctx::fiber_context FiberInterface::SwitchTo() {
   // We can not assert !wait_hook.is_linked() here, because for timeout operations,
   // the fiber can be activated with the wait_hook still linked.
   FiberInterface* prev = this;
@@ -267,18 +260,21 @@ ctx::fiber_context FiberInterface::SwitchTo(uint64_t now) {
   auto& fb_initializer = FbInitializer();
   std::swap(fb_initializer.active, prev);
   ++fb_initializer.epoch;
+  uint64_t tsc = CycleClock::Now();
 
-  DCHECK_GE(now, ts_ns_);
-  DCHECK_GE(now, prev->ts_ns_);
+  DCHECK_GE(tsc, cpu_tsc_);
+  DCHECK_GE(tsc, prev->cpu_tsc_);
 
-  fb_initializer.switch_delay += (now - ts_ns_);
-  ts_ns_ = now;
+  fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
+  cpu_tsc_ = tsc;
 
-  // prev now points to the fiber that was active before this call.
-  uint64_t run_time = now - prev->ts_ns_;
-  if (run_time > 1000000) {
+  // prev tsc points to the fiber that was active before this call.
+  uint64_t delta_cycles = tsc - prev->cpu_tsc_;
+  if (delta_cycles > g_tsc_cycles_per_ms) {
     fb_initializer.long_runtime_cnt++;
-    fb_initializer.long_runtime_ns += run_time;
+
+    // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
+    fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
   }
   // pass pointer to the context that resumes `this`
   return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
@@ -344,16 +340,17 @@ uint64_t FiberSwitchEpoch() noexcept {
   return detail::FbInitializer().epoch;
 }
 
-uint64_t FiberSwitchDelay() noexcept {
-  return detail::FbInitializer().switch_delay;
+uint64_t FiberSwitchDelayUsec() noexcept {
+  // in nanoseconds, so lets convert from cycles
+  return detail::FbInitializer().switch_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
 }
 
 uint64_t FiberLongRunCnt() noexcept {
   return detail::FbInitializer().long_runtime_cnt;
 }
 
-uint64_t FiberLongRunSum() noexcept {
-  return detail::FbInitializer().long_runtime_ns;
+uint64_t FiberLongRunSumUsec() noexcept {
+  return detail::FbInitializer().long_runtime_usec;
 }
 
 }  // namespace fb2

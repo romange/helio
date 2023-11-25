@@ -87,14 +87,14 @@ class Fiber {
 uint64_t FiberSwitchEpoch() noexcept;
 
 // Returns the aggregated delay between activation of fibers and
-// the time they were switched to.
-uint64_t FiberSwitchDelay() noexcept;
+// the time they were switched to in microseconds.
+uint64_t FiberSwitchDelayUsec() noexcept;
 
 // Exposes the number of times fiber were running for a "long" time (longer than 1ms).
 uint64_t FiberLongRunCnt() noexcept;
 
 // Exposes total duration of fibers running for a "long" time (longer than 1ms).
-uint64_t FiberLongRunSum() noexcept;
+uint64_t FiberLongRunSumUsec() noexcept;
 
 }  // namespace fb2
 

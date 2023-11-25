@@ -11,6 +11,7 @@
 
 #include "base/logging.h"
 #include "util/fibers/stacktrace.h"
+#include "util/fibers/detail/utils.h"
 
 namespace util {
 namespace fb2 {
@@ -399,7 +400,7 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
   // Like with worker fibers, we switch to another fiber, but in this case to the main fiber.
   // We will come back here during the deallocation of DispatcherImpl from intrusive_ptr_release
   // in order to return from Run() and come back to main context.
-  auto fc = scheduler_->main_context()->SwitchTo(absl::GetCurrentTimeNanos());
+  auto fc = scheduler_->main_context()->SwitchTo();
 
   DCHECK(fc);  // Should bring us back to main, into intrusive_ptr_release.
   return fc;
@@ -419,20 +420,17 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
-    uint64_t now = absl::GetCurrentTimeNanos();
-
     if (sched->HasReady()) {
       FiberInterface* fi = sched->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
-      sched->AddReady(now, this);
+      sched->AddReady(this);
 
       DVLOG(2) << "Switching to " << fi->name();
-      // qsbr_worker_fiber_online();
-      fi->SwitchTo(now);
+
+      fi->SwitchTo();
       DCHECK(!list_hook.is_linked());
       DCHECK(FiberActive() == this);
-      // qsbr_worker_fiber_offline();
     } else {
       sched->DestroyTerminated();
 
@@ -471,13 +469,13 @@ Scheduler::~Scheduler() {
   while (HasReady()) {
     FiberInterface* fi = PopReady();
     DCHECK(!fi->sleep_hook.is_linked());
-    fi->SwitchTo(absl::GetCurrentTimeNanos());
+    fi->SwitchTo();
   }
 
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
   if (!dimpl->is_terminating()) {
     DVLOG(1) << "~Scheduler switching to dispatch " << dispatch_cntx_->IsDefined();
-    auto fc = dispatch_cntx_->SwitchTo(absl::GetCurrentTimeNanos());
+    auto fc = dispatch_cntx_->SwitchTo();
     CHECK(!fc);
     CHECK(dimpl->is_terminating());
   }
@@ -500,21 +498,21 @@ ctx::fiber_context Scheduler::Preempt() {
 
   if (ready_queue_.empty()) {
     // All user fibers are inactive, we should switch back to the dispatcher.
-    return dispatch_cntx_->SwitchTo(absl::GetCurrentTimeNanos());
+    return dispatch_cntx_->SwitchTo();
   }
 
   DCHECK(!ready_queue_.empty());
   FiberInterface* fi = &ready_queue_.front();
   ready_queue_.pop_front();
 
-  return fi->SwitchTo(absl::GetCurrentTimeNanos());
+  return fi->SwitchTo();
 }
 
-void Scheduler::AddReady(uint64_t now_ns, FiberInterface* fibi) {
+void Scheduler::AddReady(FiberInterface* fibi) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(1) << "Adding " << fibi->name() << " to ready_queue_";
 
-  fibi->ts_ns_ = now_ns;
+  fibi->cpu_tsc_ = CycleClock::Now();
   ready_queue_.push_back(*fibi);
 
   // Case of notifications coming to a sleeping fiber.
@@ -612,8 +610,6 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 }
 
 void Scheduler::ProcessRemoteReady() {
-  uint64_t now = absl::GetCurrentTimeNanos();
-
   while (true) {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
@@ -630,7 +626,7 @@ void Scheduler::ProcessRemoteReady() {
     // fiber to ready_queue.
     if (!fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
-      AddReady(now, fi);
+      AddReady(fi);
     }
 
     // When we push fi to remote_ready_queue_ we increase the reference count.
@@ -654,7 +650,7 @@ void Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     DVLOG(2) << "timeout for " << fi.name();
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
-    fi.ts_ns_ = absl::GetCurrentTimeNanos();
+    fi.cpu_tsc_ = CycleClock::Now();
     ready_queue_.push_back(fi);
   } while (!sleep_queue_.empty());
 }

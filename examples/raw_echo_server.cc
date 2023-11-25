@@ -18,6 +18,7 @@
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
 #include "util/fibers/fibers.h"
+#include "util/fibers/detail/utils.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");
@@ -333,10 +334,9 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     if (sched->HasReady()) {
       do {
         FiberInterface* fi = sched->PopReady();
-        uint64_t now = absl::GetCurrentTimeNanos();
-        sched->AddReady(now, dispatcher);
+        sched->AddReady(dispatcher);
 
-        auto fc = fi->SwitchTo(now);
+        auto fc = fi->SwitchTo();
         DCHECK(!fc);
       } while (sched->HasReady());
       continue;
