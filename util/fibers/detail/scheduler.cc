@@ -415,7 +415,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
         break;
     }
 
-    sched->ProcessRemoteReady();
+    sched->ProcessRemoteReady(nullptr);
     if (sched->HasSleepingFibers()) {
       sched->ProcessSleep();
     }
@@ -527,9 +527,10 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   DCHECK(cntx->scheduler_ == this);
 
   // If someone else holds the bit - give up on scheduling by this call.
+  // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
        FiberInterface::kScheduleRemote) == 1) {
-    DVLOG(1) << "Already scheduled remotely " << cntx->name();
+    LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
     return;
   }
 
@@ -539,12 +540,11 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // a spinlock when pulling it from the WaitQueue. However, there are ActivateOther calls
     // that happen due to I/O events that might break this assumption. To see if this happens,
     // I log the case and will investigate if it happens.
-    LOG(WARNING) << "Fiber " << cntx->name() << " is already scheduled remotely";
+    LOG(ERROR) << "Fiber " << cntx->name() << " is already scheduled remotely";
 
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
   } else {
-    intrusive_ptr_add_ref(cntx);
     remote_ready_queue_.Push(cntx);
 
     // clear the bit after we pushed to the queue.
@@ -609,7 +609,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
-void Scheduler::ProcessRemoteReady() {
+void Scheduler::ProcessRemoteReady(FiberInterface* active) {
   while (true) {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
@@ -620,17 +620,19 @@ void Scheduler::ProcessRemoteReady() {
 
     DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
-    // It could be that we pulled a fiber from remote_ready_queue_ and added it to ready_queue_,
-    // but meanwhile a remote thread adds the same fiber again to the remote_ready_queue_,
-    // even before ready_queue_ has even been processed. We should not push the already added
-    // fiber to ready_queue.
-    if (!fi->list_hook.is_linked()) {
+    DCHECK(fi->scheduler_ == this);
+
+    // Remote thread can add the same fiber exactly once to the remote_ready_queue.
+    // This is why each fiber is removed from it's waitqueue and added to the remote queue
+    // under the same lock.
+    DCHECK(!fi->list_hook.is_linked());
+
+    // ProcessRemoteReady can be called by a FiberIterface::PullMyselfFromRemoteReadyQueue
+    // i.e. it is already active. In that case we should not add it to the ready queue.
+    if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
       AddReady(fi);
     }
-
-    // When we push fi to remote_ready_queue_ we increase the reference count.
-    intrusive_ptr_release(fi);
   }
 }
 

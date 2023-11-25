@@ -25,7 +25,7 @@
 int my_gettid() {
   return syscall(SYS_gettid);
 }
-
+  
 #endif
 
 #if defined(__FreeBSD__)

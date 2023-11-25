@@ -36,7 +36,7 @@ class Waiter {
   FiberInterface* cntx_;
 };
 
-// All WaitQueue are not thread safe and must be run under a spinlock.
+// All WaitQueue are not thread safe and must be run under a lock.
 
 class WaitQueue {
  public:

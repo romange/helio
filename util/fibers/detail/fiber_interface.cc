@@ -158,8 +158,10 @@ ctx::fiber_context FiberInterface::Terminate() {
   DVLOG(2) << "Terminating " << name_;
 
   while (true) {
+    // We signal that the fiber is being terminated by setting the kTerminatedBit flag.
+    // We also set the kBusyBit flag to try to acquire the lock.
     uint16_t fprev = flags_.fetch_or(kTerminatedBit | kBusyBit, memory_order_acquire);
-    if ((fprev & kBusyBit) == 0) {
+    if ((fprev & kBusyBit) == 0) {  // has been acquired
       break;
     }
     CpuPause();
@@ -197,11 +199,12 @@ void FiberInterface::Start(Launch launch) {
 void FiberInterface::Join() {
   FiberInterface* active = FiberActive();
 
+  // We suspend the current fiber and add it to the wait queue of the fiber we are joining on.
   CHECK(active != this);
 
   while (true) {
     uint16_t fprev = flags_.fetch_or(kBusyBit, memory_order_acquire);
-    if (fprev & kTerminatedBit) {
+    if (fprev & kTerminatedBit) {  // The fiber is in process of being terminated.
       if ((fprev & kBusyBit) == 0) {                        // Caller became the owner.
         flags_.fetch_and(~kBusyBit, memory_order_relaxed);  // release the lock
       }
@@ -238,6 +241,10 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     if (!other->list_hook.is_linked())
       scheduler_->AddReady(other);
   } else {
+    // The fiber belongs to another thread. We need to schedule it on that thread.
+    // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
+    // that is under a lock, and it's guaranteed that `other` is alive during the
+    // ScheduleFromRemote() call.
     other->scheduler_->ScheduleFromRemote(other);
   }
 }
@@ -284,6 +291,18 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     return ctx::fiber_context{};
   });
 }
+
+void FiberInterface::PullMyselfFromRemoteReadyQueue() {
+  if (!IsScheduledRemotely())
+    return;
+  // We can not just remove ourselves from the middle of the queue.
+  // Therefore we process all the items and since this function is called after the fiber
+  // was pulled from the wait queue, it is guaranteed that other threads won't add this object
+  // back to the remote_ready_queue.
+  scheduler_->ProcessRemoteReady(this);
+  CHECK(!IsScheduledRemotely());
+}
+
 
 void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
   if (FiberActive() == this) {

@@ -44,12 +44,8 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
     lk.unlock();
 
     // We must pull ourselves from the scheduler's remote_ready_queue in case we are there.
-    // We can not just remove ourselves from the middle of the queue.
-    if (clear_remote && active->IsScheduledRemotely()) {
-      // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
-      // will clear the remote_next pointer.
-      active->Yield();
-      CHECK(!active->IsScheduledRemotely());
+    if (clear_remote) {
+      active->PullMyselfFromRemoteReadyQueue();
     }
   }
   return status;

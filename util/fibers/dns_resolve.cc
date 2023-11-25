@@ -84,7 +84,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
         EpollProactor* epoll = (EpollProactor*)state->proactor;
         auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
           if (state->fiber_ctx) {
-            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+            ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
           }
         };
         socket_state.arm_index = epoll->Arm(socket_fd, std::move(cb), mask);
@@ -94,7 +94,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
         UringProactor* uring = (UringProactor*)state->proactor;
         auto cb = [state](uint32_t event_mask) {
           if (state->fiber_ctx) {
-            detail::FiberActive()->ActivateOther(state->fiber_ctx);
+            ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
           }
         };
         socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);

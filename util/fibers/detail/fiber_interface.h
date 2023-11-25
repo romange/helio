@@ -6,8 +6,8 @@
 
 #include <atomic>
 #include <boost/context/fiber.hpp>
-#include <boost/intrusive/set.hpp>
 #include <boost/intrusive/list.hpp>
+#include <boost/intrusive/set.hpp>
 #include <chrono>
 
 #include "base/mpsc_intrusive_queue.h"
@@ -166,11 +166,13 @@ class FiberInterface {
     return Waiter{this};
   }
 
+  void PullMyselfFromRemoteReadyQueue();
+
+ protected:
   bool IsScheduledRemotely() const {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
   }
 
- protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
 
@@ -269,6 +271,11 @@ void PrintAllFiberStackTraces();
 
 // Runs fn on all fibers in the thread. See FiberInterface::ExecuteOnFiberStack for details.
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
+
+// A convenience function to improve the readability of the code.
+inline void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
+  active->ActivateOther(other);
+}
 
 }  // namespace detail
 }  // namespace fb2

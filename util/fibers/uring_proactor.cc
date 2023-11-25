@@ -408,7 +408,7 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
 void UringProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
   auto* me = detail::FiberActive();
   auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags) {
-    current->ActivateOther(me);
+    ActivateSameThread(current, me);
   };
   SubmitEntry se = GetSubmitEntry(std::move(cb));
 
@@ -553,7 +553,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       sqe_avail_.notifyAll();
     }
 
-    scheduler->ProcessRemoteReady();
+    scheduler->ProcessRemoteReady(nullptr);
 
     if (scheduler->HasSleepingFibers()) {
       ProcessSleepFibers(scheduler);
@@ -713,7 +713,7 @@ FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detai
                       uint32_t flags) {
     io_res_ = res;
     res_flags_ = flags;
-    current->ActivateOther(me_);
+    ActivateSameThread(current, me_);
   };
 
   if (timeout_msec != UINT32_MAX) {
