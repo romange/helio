@@ -29,7 +29,7 @@ ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file des
     }                                                                         \
   } while (false)
 
-#define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
+#define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
 using namespace std;
 
@@ -73,10 +73,12 @@ UringProactor::~UringProactor() {
   VLOG(1) << "Closing wake_fd " << wake_fd_ << " ring fd: " << ring_.ring_fd;
 }
 
-void UringProactor::Init(size_t ring_size, int wq_fd) {
+void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   CHECK_EQ(0U, ring_size & (ring_size - 1));
   CHECK_GE(ring_size, 8U);
   CHECK_EQ(0U, thread_id_) << "Init was already called";
+
+  pool_index_ = pool_index;
 
   base::sys::KernelVersion kver;
   base::sys::GetKernelVersion(&kver);
@@ -217,7 +219,7 @@ void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_
   if (user_data == kWakeIndex) {
     // We were woken up. Need to rearm wakeup poller.
     DCHECK_EQ(cqe.res, 8);
-    DVLOG(2) << "PRO[" << tl_info_.proactor_index << "] Wakeup " << cqe.res << "/" << cqe.flags;
+    DVLOG(2) << "PRO[" << GetPoolIndex() << "] Wakeup " << cqe.res << "/" << cqe.flags;
 
     // TODO: to move io_uring_get_sqe call from here to before we stall.
     ArmWakeupEvent();

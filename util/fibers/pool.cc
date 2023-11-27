@@ -41,18 +41,18 @@ ProactorBase* Pool::CreateProactor() {
   return nullptr;
 }
 
-void Pool::InitInThread(unsigned index) {
+void Pool::InitInThread(unsigned pool_index) {
   switch (kind_) {
     case ProactorBase::Kind::EPOLL: {
-      EpollProactor* p = static_cast<EpollProactor*>(proactor_[index]);
-      p->Init();
+      EpollProactor* p = static_cast<EpollProactor*>(proactor_[pool_index]);
+      p->Init(pool_index);
       break;
     }
 
     case ProactorBase::Kind::IOURING: {
 #ifdef __linux__
-      UringProactor* p = static_cast<UringProactor*>(proactor_[index]);
-      p->Init(ring_depth_);
+      UringProactor* p = static_cast<UringProactor*>(proactor_[pool_index]);
+      p->Init(pool_index, ring_depth_);
 #else
       CHECK(false);
 #endif

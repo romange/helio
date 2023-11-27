@@ -27,7 +27,7 @@
     }                                                                         \
   } while (false)
 
-#define VPRO(verbosity) VLOG(verbosity) << "PRO[" << tl_info_.proactor_index << "] "
+#define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
 using namespace std;
 
@@ -143,7 +143,8 @@ EpollProactor::~EpollProactor() {
   DVLOG(1) << "~EpollProactor";
 }
 
-void EpollProactor::Init() {
+void EpollProactor::Init(unsigned pool_index) {
+  pool_index_ = pool_index;
   if (thread_id_ != 0) {
     LOG(FATAL) << "Init was already called";
   }

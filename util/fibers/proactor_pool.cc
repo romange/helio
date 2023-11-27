@@ -134,14 +134,13 @@ void ProactorPool::CheckRunningState() {
 void ProactorPool::Run() {
   SetupProactors();
 
-  Await([](unsigned index, auto*) {
+  Await([](unsigned index, ProactorBase* proactor) {
   // It seems to simplify things in kernel for io_uring.
   // https://github.com/axboe/liburing/issues/218
   // I am not sure what's how it impacts higher application levels.
 #ifdef __linux__
     unshare(CLONE_FS);
 #endif
-    ProactorBase::SetIndex(index);
   });
 
   LOG(INFO) << "Running " << pool_size_ << " io threads";

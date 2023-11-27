@@ -47,7 +47,6 @@ class Connection {
   // calls OnShutdown().
   void Shutdown();
 
-  util::ProactorBase* DEBUG_proactor = nullptr;
  protected:
   // The main loop for a connection. Runs in the same proactor thread as of socket_.
   virtual void HandleRequests() = 0;

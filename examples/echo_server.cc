@@ -511,7 +511,7 @@ size_t TLocalClient::Run() {
   ThisFiber::SetName("RunClient");
   base::Histogram hist;
 
-  LOG(INFO) << "RunClient " << p_->GetIndex();
+  LOG(INFO) << "RunClient " << p_->GetPoolIndex();
 
   vector<Fiber> fbs(drivers_.size());
   size_t res = 0;

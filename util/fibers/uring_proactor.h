@@ -25,7 +25,7 @@ class UringProactor : public ProactorBase {
   UringProactor();
   ~UringProactor();
 
-  void Init(size_t ring_size, int wq_fd = -1);
+  void Init(unsigned pool_index, size_t ring_size, int wq_fd = -1);
 
   using IoResult = int;
 
