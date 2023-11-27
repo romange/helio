@@ -41,63 +41,11 @@ thread_local ListenerInterface::ListenerConnMap ListenerInterface::conn_list;
 struct ListenerInterface::TLConnList {
   ListType list;
   fb2::CondVarAny empty_cv;
+  int pool_index = -1;
 
-  void Link(Connection* c) {
-    DCHECK(!c->hook_.is_linked());
-    c->DEBUG_proactor = ProactorBase::me();
-    if (!list.empty()) {
-      CHECK_EQ(c->DEBUG_proactor, list.front().DEBUG_proactor);
-      CHECK_EQ(c->DEBUG_proactor, list.back().DEBUG_proactor);
-    }
-    list.push_back(*c);
-    DVLOG(3) << "List size " << list.size();
-  }
+  void Link(Connection* c);
 
-  void Unlink(Connection* c, ListenerInterface* l) {
-    CHECK(c->hook_.is_linked());
-
-    auto it = ListType::s_iterator_to(*c);
-
-    {
-      util::ProactorBase *left = nullptr, *right = nullptr;
-      if (auto lit = it; it != list.begin())
-        left = (--lit)->DEBUG_proactor;
-      if (auto rit = it; ++rit != list.end())
-        right = rit->DEBUG_proactor;
-
-      util::ProactorBase* exchanged = nullptr;
-      if (left != nullptr && left != c->DEBUG_proactor) {
-        if (right == nullptr || right == left)
-          exchanged = left;
-        else
-          LOG(ERROR) << "Mixmatched proactors " << left << " " << right << ", mine "
-                     << c->DEBUG_proactor << ", me() " << ProactorBase::me();
-      }
-
-      if (right != nullptr && right != c->DEBUG_proactor) {
-        if (left == nullptr || left == right)
-          exchanged = right;
-        else
-          LOG(ERROR) << "Mixmatched proactors " << left << " " << right << ", mine "
-                     << c->DEBUG_proactor << ", me() " << ProactorBase::me();
-      }
-
-      if (exchanged != nullptr) {
-        LOG(ERROR) << "Neighbors on same proactor: " << exchanged->GetIndex();
-        exchanged->Await([c, l, it]() { conn_list[l]->Unlink(c, l); });
-        return;
-      }
-    }
-
-    DCHECK(!list.empty());
-    list.erase(it);
-    c->DEBUG_proactor = nullptr;
-
-    DVLOG(2) << "Unlink conn, new list size: " << list.size();
-    if (list.empty()) {
-      empty_cv.notify_one();
-    }
-  }
+  void Unlink(Connection* c, ListenerInterface* l);
 
   void AwaitEmpty() {
     if (list.empty())
@@ -109,6 +57,30 @@ struct ListenerInterface::TLConnList {
     DVLOG(1) << "AwaitEmpty finished ";
   }
 };
+
+void ListenerInterface::TLConnList::Link(Connection* c) {
+  DCHECK(!c->hook_.is_linked());
+  list.push_back(*c);
+  CHECK_EQ(c->socket()->proactor()->GetPoolIndex(), this->pool_index);
+
+  DVLOG(3) << "List size " << list.size();
+}
+
+void ListenerInterface::TLConnList::Unlink(Connection* c, ListenerInterface* l) {
+  DCHECK(c->hook_.is_linked());
+
+  auto it = ListType::s_iterator_to(*c);
+  util::ProactorBase* conn_proactor = c->socket()->proactor();
+  CHECK_EQ(pool_index, conn_proactor->GetPoolIndex());
+
+  DCHECK(!list.empty());
+  list.erase(it);
+
+  DVLOG(2) << "Unlink conn, new list size: " << list.size();
+  if (list.empty()) {
+    empty_cv.notify_one();
+  }
+}
 
 auto __attribute__((noinline)) ListenerInterface::GetSafeTlsConnMap() -> ListenerConnMap* {
   // Prevents conn_list being cached when a function being migrated between threads.
@@ -131,9 +103,11 @@ void ListenerInterface::RunAcceptLoop() {
 
   PreAcceptLoop(sock_->proactor());
 
-  pool_->Await([this](auto*) {
+  pool_->Await([this](unsigned index, auto*) {
     DVLOG(1) << "Emplacing listener " << this;
-    conn_list.emplace(this, new TLConnList{});
+    auto res = conn_list.emplace(this, new TLConnList{});
+    CHECK(res.second);
+    res.first->second->pool_index = index;
   });
 
   while (true) {
@@ -218,7 +192,9 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   VSOCK(2, *conn) << "Running connection ";
 
   unique_ptr<Connection> guard(conn);
-  auto* clist = conn_list.find(this)->second;
+
+  ListenerConnMap* conn_map = GetSafeTlsConnMap();
+  TLConnList* clist = conn_map->find(this)->second;
   clist->Link(conn);
   OnConnectionStart(conn);
 
@@ -234,15 +210,16 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   CHECK(conn->socket() != nullptr);
 
   VSOCK(1, *conn) << "Closing connection";
-
   LOG_IF(ERROR, conn->socket()->Close());
 
   // Our connection could migrate, hence we should find it again
-  auto it = conn_list.find(this);
+  conn_map = GetSafeTlsConnMap();
+
+  auto it = conn_map->find(this);
 
   // If the listener was destroyed (when we are in the middle of migration)
   // we do not need to unlink the connection.
-  if (it != conn_list.end()) {
+  if (it != conn_map->end()) {
     clist = it->second;
 
     clist->Unlink(conn, this);
@@ -277,7 +254,7 @@ void ListenerInterface::TraverseConnections(TraverseCB cb) {
 
 void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
   DCHECK(ProactorBase::IsProactorThread());
-  unsigned index = ProactorBase::GetIndex();
+  unsigned index = ProactorBase::me()->GetPoolIndex();
 
   FiberAtomicGuard fg;
   auto it = conn_list.find(this);
@@ -290,12 +267,14 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   fb2::ProactorBase* src_proactor = conn->socket()->proactor();
   DCHECK(src_proactor->InMyThread());
   CHECK(conn->listener() == this);
-  DCHECK_EQ(conn->DEBUG_proactor, ProactorBase::me());
+  DCHECK_EQ(src_proactor, ProactorBase::me());
 
   if (src_proactor == dest)
     return;
 
-  unsigned src_index = ProactorBase::GetIndex();
+  // We are careful to avoid accessing tls data structures if possible and use stack variables
+  // instead.
+  unsigned src_index = src_proactor->GetPoolIndex();
 
   ListenerConnMap* src_conn_map = GetSafeTlsConnMap();
   VLOG(1) << "Migrating from " << src_proactor->sys_tid() << "(" << src_index << ") "
@@ -303,7 +282,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   conn->OnPreMigrateThread();
 
-  auto* src_clist = src_conn_map->find(this)->second;
+  TLConnList* src_clist = src_conn_map->find(this)->second;
   src_clist->Unlink(conn, this);
 
   src_proactor->Migrate(dest);
@@ -312,8 +291,8 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   conn->socket()->SetProactor(dest);
 
   ListenerConnMap* dest_conn_map = GetSafeTlsConnMap();
-  VLOG(1) << "Migrated from " << src_index << " to " << ProactorBase::GetIndex() << " "
-          << dest_conn_map;
+  int dest_index = dest->GetPoolIndex();
+  VLOG(1) << "Migrated from " << src_index << " to " << dest_index << " " << dest_conn_map;
 
   CHECK_NE(dest_conn_map, src_conn_map);
   auto it = dest_conn_map->find(this);
@@ -321,9 +300,9 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   // If the listener is being destroyed but the connection is in the middle of thread migration,
   // we do not need to link it again.
   if (it != dest_conn_map->end()) {
-    auto* dst_clist = it->second;
+    TLConnList* dst_clist = it->second;
     CHECK(dst_clist != src_clist);
-
+    CHECK_EQ(dst_clist->pool_index, dest_index);
     dst_clist->Link(conn);
   }
   conn->OnPostMigrateThread();

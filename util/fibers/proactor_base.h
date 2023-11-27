@@ -100,14 +100,10 @@ class ProactorBase {
   }
 
   // Returns an 0 <= index < N, where N is the number of proactor threads in the pool of called
-  // from Proactor thread. Returns -1 if called from some other thread.
-  static int32_t GetIndex() {
-    return tl_info_.proactor_index;
-  }
-
-  // Internal, used by ProactorPool
-  static void SetIndex(uint32_t index) {
-    tl_info_.proactor_index = index;
+  // from Proactor thread. Returns -1 if Proactor is not part of the pool.
+  // Can be accessed from any thread.
+  int32_t GetPoolIndex() const {
+    return pool_index_;
   }
 
   bool IsTaskQueueFull() const {
@@ -229,7 +225,7 @@ class ProactorBase {
 
   pthread_t thread_id_ = 0U;
   int sys_thread_id_ = 0;
-
+  int32_t pool_index_ = -1;
   int wake_fd_ = -1;
   bool is_stopped_ = true;
 
@@ -265,7 +261,6 @@ class ProactorBase {
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
 
   struct TLInfo {
-    int32_t proactor_index = -1;
     uint64_t monotonic_time = 0;  // in nanoseconds
     ProactorBase* owner = nullptr;
   };

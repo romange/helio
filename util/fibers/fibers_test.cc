@@ -96,14 +96,13 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
   }
 
   proactor_thread = thread{[this, kind, index] {
-    proactor->SetIndex(index);
     switch (kind) {
       case ProactorBase::Kind::EPOLL:
-        static_cast<EpollProactor*>(proactor.get())->Init();
+        static_cast<EpollProactor*>(proactor.get())->Init(index);
         break;
       case ProactorBase::Kind::IOURING:
 #ifdef __linux__
-        static_cast<UringProactor*>(proactor.get())->Init(kRingDepth);
+        static_cast<UringProactor*>(proactor.get())->Init(index, kRingDepth);
 #endif
         break;
     }
@@ -431,7 +430,6 @@ TEST_F(FiberTest, AtomicGuard) {
 
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(ProactorBase::IsProactorThread());
-  ASSERT_EQ(-1, ProactorBase::GetIndex());
 
   for (unsigned i = 0; i < ProactorBase::kTaskQueueLen * 2; ++i) {
     VLOG(1) << "Dispatch: " << i;

@@ -37,7 +37,7 @@ void VarzMapAverage::Shutdown() {
 unsigned VarzMapAverage::ProactorThreadIndex() const {
   unsigned tnum = CHECK_NOTNULL(pp_)->size();
 
-  int32_t indx = ProactorBase::GetIndex();
+  int32_t indx = ProactorBase::me()->GetPoolIndex();
   CHECK_GE(indx, 0) << "Must be called from proactor thread!";
   CHECK_LT(unsigned(indx), tnum) << "Invalid thread index " << indx;
 
@@ -46,7 +46,7 @@ unsigned VarzMapAverage::ProactorThreadIndex() const {
 
 auto VarzMapAverage::FindSlow(string_view key) -> Map::iterator {
   auto str = pp_->GetString(key);
-  auto& map = avg_map_[ProactorBase::GetIndex()];
+  auto& map = avg_map_[ProactorBase::me()->GetPoolIndex()];
   auto res = map.emplace(str, SumCnt{});
 
   CHECK(res.second);

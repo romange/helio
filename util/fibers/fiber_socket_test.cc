@@ -23,9 +23,9 @@ constexpr uint32_t kRingDepth = 8;
 #ifdef __linux__
 void InitProactor(ProactorBase* p) {
   if (p->GetKind() == ProactorBase::IOURING) {
-    static_cast<UringProactor*>(p)->Init(kRingDepth);
+    static_cast<UringProactor*>(p)->Init(0, kRingDepth);
   } else {
-    static_cast<EpollProactor*>(p)->Init();
+    static_cast<EpollProactor*>(p)->Init(0);
   }
 }
 #else

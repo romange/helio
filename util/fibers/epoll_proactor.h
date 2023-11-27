@@ -19,7 +19,7 @@ class EpollProactor : public ProactorBase {
   ~EpollProactor();
 
   // should be called from the thread that owns this EpollProactor before calling Run.
-  void Init();
+  void Init(unsigned pool_index);
 
   using IoResult = int;
 

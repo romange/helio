@@ -33,7 +33,7 @@ void SingleFamily::Shutdown() {
 
 void SingleFamily::IncBy(absl::Span<const std::string_view> labels, double val) {
   CHECK_EQ(label_names_.size(), labels.size());
-  int32_t index = ProactorBase::GetIndex();
+  int32_t index = ProactorBase::me()->GetPoolIndex();
   if (index < 0)  // not in proactor thread, silently exit.
     return;
 
@@ -74,7 +74,7 @@ auto SingleFamily::GetDenseId(unsigned thread_index,
 
 void GaugeFamily::Set(absl::Span<const std::string_view> label_values, double val) {
   CHECK_EQ(label_names_.size(), label_values.size());
-  int32_t index = ProactorBase::GetIndex();
+  int32_t index = ProactorBase::me()->GetPoolIndex();
   if (index < 0)  // not in proactor thread, silently exit.
     return;
 
