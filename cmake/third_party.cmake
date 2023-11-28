@@ -257,22 +257,24 @@ endif()
 
 add_third_party(
   gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.10.tar.gz
+  URL https://github.com/gperftools/gperftools/archive/gperftools-2.13.tar.gz
 
-  GIT_SHALLOW TRUE
+  # GIT_SHALLOW TRUE
   PATCH_COMMAND autoreconf -i   # update runs every time for some reason
   # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
-  #                   -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
-  #                   -Dgperftools_build_benchmark=OFF"
+  #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
+  #                  -Dgperftools_build_benchmark=OFF"
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers --enable-static=yes
-                      "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}"
-                      --disable-heap-checker --disable-debugalloc --disable-heap-profiler
-                      --disable-deprecated-pprof --enable-aggressive-decommit-by-default
-                      --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
-                      MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
-  # skip build step
+                     "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}"
+                     --disable-heap-checker --disable-debugalloc --disable-heap-profiler
+                     --disable-deprecated-pprof --enable-aggressive-decommit-by-default
+                     --disable-dependency-tracking --disable-shared --enable-static
+                     --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
+                     MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
   BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
-  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
+  
+  # install-data required by fedora
+  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data 
   LIB libprofiler.a
 )
 
@@ -321,7 +323,7 @@ add_third_party(
 add_third_party(
   uring
   URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.4.tar.gz
-  
+
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_IN_SOURCE 1
 )
