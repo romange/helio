@@ -228,7 +228,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     // We process remote fibers inside tq_seq section and also before we check for HasReady().
-    scheduler->ProcessRemoteReady();
+    scheduler->ProcessRemoteReady(nullptr);
 
     int timeout = 0;  // By default we do not block on epoll_wait.
 

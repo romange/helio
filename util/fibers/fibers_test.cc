@@ -542,6 +542,29 @@ TEST_P(ProactorTest, MultiParking) {
     th.reset();
 }
 
+TEST_P(ProactorTest, NotifyMyself) {
+  unique_ptr<ProactorThread> ths[2];
+
+  for (unsigned i = 0; i < 2; ++i) {
+    ths[i] = CreateProactorThread();
+  }
+
+  Fiber fbs[2];
+  for (unsigned i = 0; i < 2; ++i) {
+    fbs[i] = ths[i]->proactor->LaunchFiber(StrCat("test", i), [other = ths[1 - i]->proactor.get()] {
+      for (unsigned iter = 0; iter < 200; ++iter) {
+        Fiber([other] { other->AwaitBrief([] {}); }).Detach();
+      }
+    });
+  }
+
+  for (auto& fb : fbs)
+    fb.Join();
+
+  for (auto& th : ths)
+    th.reset();
+}
+
 TEST_P(ProactorTest, Migrate) {
   ProactorThread pth(0, proactor()->GetKind());
 
@@ -670,8 +693,8 @@ TEST_P(ProactorTest, DragonflyBug1591) {
       ThisFiber::SleepFor(1ms);
     }
 
-    a_res.value()->Close();
-    sock->Close();
+    ec = a_res.value()->Close();
+    ec = sock->Close();
 
     m1.unlock();
     end_step();
@@ -697,7 +720,7 @@ TEST_P(ProactorTest, DragonflyBug1591) {
     // this will stall. Make sure that we don't get spurios wakeups because of the socket.
     m1.lock();
     m1.unlock();
-    sock2->Close();
+    ec = sock2->Close();
   });
 
   fb_client.Join();

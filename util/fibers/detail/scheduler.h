@@ -74,7 +74,7 @@ class Scheduler {
   }
 
   void DestroyTerminated();
-  void ProcessRemoteReady();
+  void ProcessRemoteReady(FiberInterface* active);
   void ProcessSleep();
 
   void AttachCustomPolicy(DispatchPolicy* policy);

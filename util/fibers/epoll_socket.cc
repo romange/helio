@@ -442,7 +442,7 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
     // Meanwhile a new event has arrived that triggered this callback again.
     if (read_context_ && !read_context_->list_hook.is_linked()) {
       DVSOCK(2) << "Wakey: Schedule read in " << read_context_->name();
-      detail::FiberActive()->ActivateOther(read_context_);
+      ActivateSameThread(detail::FiberActive(), read_context_);
     }
   }
 
@@ -453,7 +453,7 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
     // Meanwhile a new event has arrived that triggered this callback again.
     if (write_context_ && !write_context_->list_hook.is_linked()) {
       DVSOCK(2) << "Wakey: Schedule write in " << write_context_->name();
-      detail::FiberActive()->ActivateOther(write_context_);
+      ActivateSameThread(detail::FiberActive(), write_context_);
     }
   }
 

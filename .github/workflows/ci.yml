@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
+  schedule:
+    - cron: "0 0/3 * * *"
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
@@ -70,10 +72,27 @@ jobs:
     - name: Test
       run: |
           cd ${{github.workspace}}/build
-          GLOG_logtostderr=1 gdb -batch -ex "run" -ex "thread apply all bt" \
-             ./accept_server_test || true
-          GLOG_logtostderr=1 GLOG_vmodule=proactor=1 ctest -V -L CI
-          # ./proactor_test --gtest_filter=*Migrate --logtostderr --vmodule=proactor=2,uring_fiber_algo=1
+
+          # Create a rule that automatically prints stacktrace upon segfault
+          cat > ./init.gdb <<EOF
+          catch signal SIGSEGV
+          command
+          bt
+          end
+          EOF
+
+          gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
+          GLOG_logtostderr=1 ctest -V -L CI
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: binaries
+        path: |
+          ${{github.workspace}}/build/fibers_test
+          ${{github.workspace}}/build/fiber_socket_test
+          ${{github.workspace}}/build/accept_server_test
+
     - name: Coverage
       if: matrix.container == 'ubuntu-dev:20'
       run: |

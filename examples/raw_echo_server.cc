@@ -144,7 +144,7 @@ CqeResult SuspendMyself(io_uring_sqe* sqe) {
   auto* fi = fb2::detail::FiberActive();
   rp.cb = [&cqe_result, fi](fb2::detail::FiberInterface* current, CqeResult res) {
     cqe_result = res;
-    current->ActivateOther(fi);
+    ActivateSameThread(current, fi);
   };
 
   fi->Suspend();

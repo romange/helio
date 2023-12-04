@@ -209,10 +209,8 @@ class CondVarAny {
     }
     wait_queue_splk_.unlock();
 
-    if (clear_remote && active->IsScheduledRemotely()) {
-      // will eventually switch to the dispatcher loop, which will call ProcessRemoteReady, which
-      // will clear the remote_next pointer.
-      active->Yield();
+    if (clear_remote) {
+      active->PullMyselfFromRemoteReadyQueue();
     }
 
     lt.lock();
