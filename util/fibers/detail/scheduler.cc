@@ -627,7 +627,7 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // under the same lock.
     DCHECK(!fi->list_hook.is_linked());
 
-    // ProcessRemoteReady can be called by a FiberIterface::PullMyselfFromRemoteReadyQueue
+    // ProcessRemoteReady can be called by a FiberInterface::PullMyselfFromRemoteReadyQueue
     // i.e. it is already active. In that case we should not add it to the ready queue.
     if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
