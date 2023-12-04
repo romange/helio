@@ -274,6 +274,7 @@ void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
 
 // A convenience function to improve the readability of the code.
 inline void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
+  assert(active->scheduler() == other->scheduler());
   active->ActivateOther(other);
 }
 

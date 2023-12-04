@@ -623,7 +623,7 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
     DCHECK(fi->scheduler_ == this);
 
     // Remote thread can add the same fiber exactly once to the remote_ready_queue.
-    // This is why each fiber is removed from it's waitqueue and added to the remote queue
+    // This is why each fiber is removed from its waitqueue and added to the remote queue
     // under the same lock.
     DCHECK(!fi->list_hook.is_linked());
 
