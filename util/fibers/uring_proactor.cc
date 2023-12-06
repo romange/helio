@@ -649,7 +649,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
           << cqe_fetches << "/" << num_submits;
   VPRO(1) << "Tasks/loop: " << double(num_task_runs) / loop_cnt;
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
-          << tq_wakeup_save_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
+          << tq_wakeup_prevent_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
           << get_entry_await_ << "/" << pending_cb_cnt_;

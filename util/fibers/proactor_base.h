@@ -175,13 +175,6 @@ class ProactorBase {
   // Calling fiber must belong to this proactor.
   void Migrate(ProactorBase* dest);
 
-  // returns seqnum in the Proactor.
-  // if it equals to WAIT_SECTION_STATE it means proactor is going to block on
-  // IO.
-  uint32_t RequestDispatcher() {
-    return tq_seq_.fetch_or(1, std::memory_order_relaxed);
-  }
-
   virtual Kind GetKind() const = 0;
 
  protected:
@@ -229,8 +222,10 @@ class ProactorBase {
   int wake_fd_ = -1;
   bool is_stopped_ = true;
 
-  std::atomic_uint32_t tq_seq_{0}, tq_full_ev_{0};
-  std::atomic_uint32_t tq_wakeup_ev_{0}, tq_wakeup_save_ev_{0};
+  std::atomic_uint32_t tq_seq_{0};
+  std::atomic_uint32_t tq_full_ev_{0};   // task queue full events.
+  std::atomic_uint32_t tq_wakeup_ev_{0};  // task queue wakeup events.
+  std::atomic_uint32_t tq_wakeup_prevent_ev_{0};  // task queue wakeup prevented events.
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
@@ -304,7 +299,7 @@ inline void ProactorBase::WakeupIfNeeded() {
     std::atomic_thread_fence(std::memory_order_acquire);
     WakeRing();
   } else {
-    tq_wakeup_save_ev_.fetch_add(1, std::memory_order_relaxed);
+    tq_wakeup_prevent_ev_.fetch_add(1, std::memory_order_relaxed);
   }
 }
 

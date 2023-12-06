@@ -4,6 +4,7 @@
 #include "util/fibers/detail/fiber_interface.h"
 
 #include <absl/time/clock.h>
+
 #include <mutex>  // for g_scheduler_lock
 
 #include "base/logging.h"
@@ -204,8 +205,8 @@ void FiberInterface::Join() {
 
   while (true) {
     uint16_t fprev = flags_.fetch_or(kBusyBit, memory_order_acquire);
-    if (fprev & kTerminatedBit) {  // The fiber is in process of being terminated.
-      if ((fprev & kBusyBit) == 0) {                        // Caller became the owner.
+    if (fprev & kTerminatedBit) {     // The fiber is in process of being terminated.
+      if ((fprev & kBusyBit) == 0) {  // Caller became the owner.
         flags_.fetch_and(~kBusyBit, memory_order_relaxed);  // release the lock
       }
       return;
@@ -267,23 +268,28 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 
   auto& fb_initializer = FbInitializer();
   std::swap(fb_initializer.active, prev);
-  ++fb_initializer.epoch;
+
   uint64_t tsc = CycleClock::Now();
 
-  DCHECK_GE(tsc, cpu_tsc_);
-  DCHECK_GE(tsc, prev->cpu_tsc_);
+  // When a kernel suspends we may get a negative delta because TSC is reset.
+  // We ignore such cases (and they are very rare).
+  if (tsc > cpu_tsc_) {
+    ++fb_initializer.epoch;
+    DCHECK_GE(tsc, prev->cpu_tsc_);
+    fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
 
-  fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
+    // prev tsc points to the fiber that was active before this call.
+    uint64_t delta_cycles = tsc - prev->cpu_tsc_;
+    if (delta_cycles > g_tsc_cycles_per_ms) {
+      fb_initializer.long_runtime_cnt++;
+
+      // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
+      fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
+    }
+  }
+
   cpu_tsc_ = tsc;
 
-  // prev tsc points to the fiber that was active before this call.
-  uint64_t delta_cycles = tsc - prev->cpu_tsc_;
-  if (delta_cycles > g_tsc_cycles_per_ms) {
-    fb_initializer.long_runtime_cnt++;
-
-    // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
-    fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
-  }
   // pass pointer to the context that resumes `this`
   return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
@@ -303,7 +309,6 @@ void FiberInterface::PullMyselfFromRemoteReadyQueue() {
   scheduler_->ProcessRemoteReady(this);
   CHECK(!IsScheduledRemotely());
 }
-
 
 void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
   if (FiberActive() == this) {

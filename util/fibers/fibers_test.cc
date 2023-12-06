@@ -550,16 +550,24 @@ TEST_P(ProactorTest, NotifyMyself) {
   }
 
   Fiber fbs[2];
+  EventCount ec;
+  atomic_uint num_ended{0};
   for (unsigned i = 0; i < 2; ++i) {
-    fbs[i] = ths[i]->proactor->LaunchFiber(StrCat("test", i), [other = ths[1 - i]->proactor.get()] {
-      for (unsigned iter = 0; iter < 200; ++iter) {
-        Fiber([other] { other->AwaitBrief([] {}); }).Detach();
-      }
-    });
+    fbs[i] =
+        ths[i]->proactor->LaunchFiber(StrCat("test", i), [&, other = ths[1 - i]->proactor.get()] {
+          for (unsigned iter = 0; iter < 200; ++iter) {
+            Fiber([&, other] {
+              other->AwaitBrief([] {});
+              num_ended.fetch_add(1, std::memory_order_relaxed);
+              ec.notify();
+            }).Detach();
+          }
+        });
   }
 
   for (auto& fb : fbs)
     fb.Join();
+  ec.await([&] { return num_ended == 400; });
 
   for (auto& th : ths)
     th.reset();
