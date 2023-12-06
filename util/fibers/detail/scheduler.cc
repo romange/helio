@@ -482,7 +482,11 @@ Scheduler::~Scheduler() {
   delete custom_policy_;
   custom_policy_ = nullptr;
 
-  CHECK_EQ(0u, num_worker_fibers_);
+  if (num_worker_fibers_ != 0) {
+    PrintAllFiberStackTraces();
+    LOG(FATAL) << "Scheduler is destroyed with " << num_worker_fibers_ << " worker fibers";
+  }
+
 
   fibers_.erase(fibers_.iterator_to(*dispatch_cntx_));
   fibers_.erase(fibers_.iterator_to(*main_cntx_));

@@ -144,7 +144,7 @@ template <typename T> class mpmc_bounded_queue {
   bool empty() const {
     size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     cell_t* cell = &buffer_[pos & buffer_mask_];
-    size_t seq = cell->sequence.load(std::memory_order_relaxed);
+    size_t seq = cell->sequence.load(std::memory_order_acquire);
     intptr_t dif = (intptr_t)seq - (intptr_t)(pos + 1);
     return dif < 0;
   }

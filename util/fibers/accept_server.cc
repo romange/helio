@@ -186,8 +186,10 @@ void AcceptServer::BreakListeners() {
   for (auto& lw : list_interface_) {
     ProactorBase* proactor = lw->socket()->proactor();
     proactor->Dispatch([sock = lw->socket()] {
-      if (sock->IsOpen())
-        sock->Shutdown(SHUT_RDWR);
+      if (sock->IsOpen()) {
+        auto ec = sock->Shutdown(SHUT_RDWR);
+        LOG_IF(WARNING, ec) << "Error shutting down a socket " << ec.message();
+      }
     });
   }
   VLOG(1) << "AcceptServer::BreakListeners finished";

@@ -327,7 +327,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
   VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << loop_cnt << "/" << num_stalls << "/"
           << cqe_fetches << "/" << num_suspends;
 
-  VPRO(1) << "wakeups/stalls: " << tq_wakeup_ev_.load() << "/" << num_stalls;
+  VPRO(1) << "wakeups/stalls/task_int: " << tq_wakeup_ev_.load() << "/" << num_stalls << "/"
+          << task_interrupts;
   VPRO(1) << "centries size: " << centries_.size();
 }
 
