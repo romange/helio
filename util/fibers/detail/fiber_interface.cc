@@ -45,7 +45,6 @@ uint64_t g_tsc_cycles_per_ms = 0;
 
 }  // namespace
 
-
 // Per thread initialization structure.
 struct TL_FiberInitializer {
   TL_FiberInitializer* next = nullptr;
@@ -251,50 +250,38 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
   }
 }
 
-void FiberInterface::DetachThread() {
+void FiberInterface::DetachScheduler() {
   scheduler_->DetachWorker(this);
   scheduler_ = nullptr;
 }
 
-void FiberInterface::AttachThread() {
+void FiberInterface::AttachScheduler() {
   scheduler_ = detail::FbInitializer().sched;
   scheduler_->Attach(this);
+  scheduler_->AddReady(this);
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {
-  // We can not assert !wait_hook.is_linked() here, because for timeout operations,
-  // the fiber can be activated with the wait_hook still linked.
-  FiberInterface* prev = this;
-
-  auto& fb_initializer = FbInitializer();
-  std::swap(fb_initializer.active, prev);
-
-  uint64_t tsc = CycleClock::Now();
-
-  // When a kernel suspends we may get a negative delta because TSC is reset.
-  // We ignore such cases (and they are very rare).
-  if (tsc > cpu_tsc_) {
-    ++fb_initializer.epoch;
-    DCHECK_GE(tsc, prev->cpu_tsc_);
-    fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
-
-    // prev tsc points to the fiber that was active before this call.
-    uint64_t delta_cycles = tsc - prev->cpu_tsc_;
-    if (delta_cycles > g_tsc_cycles_per_ms) {
-      fb_initializer.long_runtime_cnt++;
-
-      // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
-      fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
-    }
-  }
-
-  cpu_tsc_ = tsc;
+  FiberInterface* prev = SwitchSetup();
 
   // pass pointer to the context that resumes `this`
   return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    return ctx::fiber_context{};
+  });
+}
+
+void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
+  FiberInterface* prev = SwitchSetup();
+
+  // pass pointer to the context that resumes `this`
+  entry_ = std::move(entry_).resume_with([prev, fn = std::move(fn)](ctx::fiber_context&& c) {
+    DCHECK(!prev->entry_);
+    prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    fn();
+
     return ctx::fiber_context{};
   });
 }
@@ -328,6 +315,35 @@ void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
     c = std::move(c).resume();
     return std::move(c);
   });
+}
+
+FiberInterface* FiberInterface::SwitchSetup() {
+  FiberInterface* prev = this;
+
+  auto& fb_initializer = FbInitializer();
+  std::swap(fb_initializer.active, prev);
+
+  uint64_t tsc = CycleClock::Now();
+
+  // When a kernel suspends we may get a negative delta because TSC is reset.
+  // We ignore such cases (and they are very rare).
+  if (tsc > cpu_tsc_) {
+    ++fb_initializer.epoch;
+    DCHECK_GE(tsc, prev->cpu_tsc_);
+    fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
+
+    // prev tsc points to the fiber that was active before this call.
+    uint64_t delta_cycles = tsc - prev->cpu_tsc_;
+    if (delta_cycles > g_tsc_cycles_per_ms) {
+      fb_initializer.long_runtime_cnt++;
+
+      // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
+      fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
+    }
+  }
+
+  cpu_tsc_ = tsc;
+  return prev;
 }
 
 void FiberInterface::PrintAllFiberStackTraces() {

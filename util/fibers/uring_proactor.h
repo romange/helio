@@ -61,10 +61,6 @@ class UringProactor : public ProactorBase {
     return sqe_avail_.await([&] { return GetSubmitRingAvailability() >= threshold; });
   }
 
-  bool HasSqPoll() const {
-    return sqpoll_f_;
-  }
-
   bool HasRegisterFd() const {
     return register_fd_;
   }

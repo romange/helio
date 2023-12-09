@@ -83,14 +83,9 @@ class Scheduler {
     return custom_policy_;
   }
 
-  void Defer(uint64_t epoch, std::function<void()> fn) {
-    deferred_cb_.emplace_back(epoch, std::move(fn));
-  }
-
-  void RunDeferred();
-
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
+  void SuspendAndExecuteOnDispatcher(std::function<void()> fn);
 
  private:
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
@@ -125,7 +120,6 @@ class Scheduler {
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
-  std::vector<std::pair<uint64_t, std::function<void()>>> deferred_cb_;
 
   // A list of all fibers in the thread.
   FI_List fibers_;

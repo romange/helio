@@ -31,6 +31,7 @@ class TestConnection : public Connection {
   }
 
   unsigned migrations = 0;
+
  protected:
   void HandleRequests() final;
 
@@ -39,6 +40,8 @@ class TestConnection : public Connection {
 };
 
 void TestConnection::HandleRequests() {
+  ThisFiber::SetName("ServerConnection");
+
   char buf[128];
   boost::system::error_code ec;
 
@@ -88,6 +91,8 @@ class AcceptServerTest : public testing::Test {
   void TearDown() override {
     client_sock_->proactor()->Await([&] { client_sock_->Close(); });
     as_->Stop(true);
+    watchdog_done_.Notify();
+    watchdog_fiber_.Join();
     pp_->Stop();
   }
 
@@ -100,6 +105,8 @@ class AcceptServerTest : public testing::Test {
   std::unique_ptr<AcceptServer> as_;
   std::unique_ptr<FiberSocketBase> client_sock_;
   TestListener* listener_;
+  fb2::Fiber watchdog_fiber_;
+  fb2::Done watchdog_done_;
 };
 
 void AcceptServerTest::SetUp() {
@@ -126,6 +133,23 @@ void AcceptServerTest::SetUp() {
   pb->Await([&] {
     FiberSocketBase::error_code ec = client_sock_->Connect(ep);
     CHECK(!ec) << ec;
+  });
+
+  watchdog_fiber_ = pp_->GetNextProactor()->LaunchFiber([this] {
+    ThisFiber::SetName("Watchdog");
+
+    if (!watchdog_done_.WaitFor(10s)) {
+      LOG(ERROR) << "Deadlock detected!!!!";
+
+      fb2::Mutex m;
+      pp_->AwaitFiberOnAll([&m](unsigned index, ProactorBase* base) {
+        std::unique_lock lk(m);
+        LOG(ERROR) << "Proactor ------------------------" << index << " ---------------:\n";
+        fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+        LOG(ERROR) << "Proactor ------------------------" << index << " end---------------\n";
+      });
+      LOG(FATAL) << "Deadlock detected!!!!";
+    }
   });
 }
 
@@ -206,21 +230,24 @@ TEST_F(AcceptServerTest, Migrate) {
 
   // Find the server connection.
   vector<pair<unsigned, Connection*>> conns;
-  listener_->TraverseConnections([&](unsigned tid, Connection* c) {
-    conns.emplace_back(tid, c);
-  });
+  listener_->TraverseConnections([&](unsigned tid, Connection* c) { conns.emplace_back(tid, c); });
   ASSERT_EQ(1, conns.size());
   TestConnection* conn = (TestConnection*)conns[0].second;
   ASSERT_EQ(0, conn->migrations);
 
   uint8_t buf[32];
 
+  LOG(INFO) << "Before migration loop";
+
   client_sock_->proactor()->Await([&] {
+    ThisFiber::SetName("Client");
     for (unsigned i = 0; i < 200; ++i) {
       auto ec = client_sock_->Write(io::Buffer("migrate"));
       ASSERT_TRUE(!ec);
+      VLOG(1) << "Write done " << i;
       auto res = client_sock_->Read(io::MutableBytes(buf, 7));
       ASSERT_TRUE(res && *res == 7);
+      VLOG(1) << "Read done " << i;
     }
   });
   ASSERT_EQ(200, conn->migrations);

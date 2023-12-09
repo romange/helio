@@ -37,16 +37,6 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    - name: Run sccache-cache
-      uses: mozilla-actions/sccache-action@v0.0.3
-
-    - name: Configure Cache Env
-      uses: actions/github-script@v6
-      with:
-        script: |
-          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
-
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
@@ -61,15 +51,16 @@ jobs:
             -DCMAKE_C_COMPILER="${{matrix.compiler.c}}" \
             -DCMAKE_CXX_COMPILER="${{matrix.compiler.cxx}}" \
             -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.cxx_flags}}" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_C_COMPILER_LAUNCHER=sccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
+
     - name: Build
       run: |
           cd ${{github.workspace}}/build
 
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli s3_demo
-          ${SCCACHE_PATH} --show-stats
 
     - name: Test
+      timeout-minutes: 2
       run: |
           cd ${{github.workspace}}/build
 
