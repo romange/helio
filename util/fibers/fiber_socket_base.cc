@@ -193,8 +193,6 @@ auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
   if (fd_ < 0 || IsUDS())
     return endpoint;
 
-  DCHECK_EQ(0, fd_ & REGISTER_FD);
-
   socklen_t addr_len = endpoint.capacity();
   error_code ec;
 
@@ -208,11 +206,9 @@ auto LinuxSocketBase::LocalEndpoint() const -> endpoint_type {
 
 auto LinuxSocketBase::RemoteEndpoint() const -> endpoint_type {
   endpoint_type endpoint;
-  
+
   if (fd_ < 0 || IsUDS())
     return endpoint;
-  
-  DCHECK_EQ(0, fd_ & REGISTER_FD);
 
   socklen_t addr_len = endpoint.capacity();
   error_code ec;

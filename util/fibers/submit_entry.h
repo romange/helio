@@ -47,6 +47,13 @@ class SubmitEntry {
     sqe_->addr = uid;
   }
 
+  void PrepAccept(int listen_fd, struct sockaddr* addr, unsigned addrlen, unsigned flags) {
+    PrepFd(IORING_OP_ACCEPT, listen_fd);
+    sqe_->addr = (unsigned long)addr;
+    sqe_->len = addrlen;
+    sqe_->accept_flags = flags;
+  }
+
   void PrepRecv(int fd, void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_RECV, fd);
     sqe_->addr = (unsigned long)buf;

@@ -132,7 +132,7 @@ void AcceptServerTest::SetUp() {
 
   pb->Await([&] {
     FiberSocketBase::error_code ec = client_sock_->Connect(ep);
-    CHECK(!ec) << ec;
+    CHECK(!ec) << ec.message();
   });
 
   watchdog_fiber_ = pp_->GetNextProactor()->LaunchFiber([this] {

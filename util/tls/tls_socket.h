@@ -67,7 +67,6 @@ class TlsSocket : public FiberSocketBase {
   void CancelOnErrorCb() override;
 
   bool IsUDS() const override;
-  bool IsDirect() const override;
 
   using FiberSocketBase::native_handle_type;
   native_handle_type native_handle() const override;

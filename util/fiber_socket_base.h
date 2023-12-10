@@ -67,6 +67,10 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
     return proactor_;
   }
 
+  const ProactorBase* proactor() const {
+    return proactor_;
+  }
+
   // UINT32_MAX to disable timeout.
   void set_timeout(uint32_t msec) {
     timeout_ = msec;
@@ -89,7 +93,6 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   virtual void CancelOnErrorCb() = 0;
 
   virtual bool IsUDS() const = 0;
-  virtual bool IsDirect() const = 0;
 
   using native_handle_type = int;
   virtual native_handle_type native_handle() const = 0;
@@ -133,7 +136,7 @@ class LinuxSocketBase : public FiberSocketBase {
   native_handle_type native_handle() const override {
     static_assert(int32_t(-1) >> kFdShift == -1);
 
-    return fd_ >> kFdShift;
+    return ShiftedFd();
   }
 
   /// Creates a socket. By default with AF_INET family (2).
@@ -171,20 +174,18 @@ class LinuxSocketBase : public FiberSocketBase {
     return fd_ & IS_UDS;
   }
 
-  // Whether it was registered with io_uring engine.
-  bool IsDirect() const override {
-    return fd_ & REGISTER_FD;
-  }
-
  protected:
   LinuxSocketBase(int fd, ProactorBase* pb)
       : FiberSocketBase(pb), fd_(fd > 0 ? fd << kFdShift : fd) {
   }
 
+  int ShiftedFd() const {
+    return fd_ >> kFdShift;
+  }
+
   enum {
     IS_SHUTDOWN = 0x1,
     IS_UDS = 0x2,
-    REGISTER_FD = 0x4,
   };
 
   // Flags which are passed on to peers produced by Accept()
@@ -198,20 +199,5 @@ class LinuxSocketBase : public FiberSocketBase {
 void SetNonBlocking(int fd);
 
 void SetCloexec(int fd);
-
-#if 0
-class SocketSource : public io::Source {
- public:
-  SocketSource(FiberSocketBase* sock) : sock_(sock) {
-  }
-
-  io::Result<size_t> ReadSome(const iovec* v, uint32_t len) final {
-    return sock_->Recv(v, len);
-  }
-
- private:
-  FiberSocketBase* sock_;
-};
-#endif
 
 }  // namespace util

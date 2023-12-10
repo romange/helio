@@ -44,7 +44,7 @@ void AcceptServer::Run() {
 
       // We must capture ref_bc_ by value because once it is decremented AcceptServer
       // instance can be destroyed before Dec returnes.
-      proactor->Dispatch([li = lw.get(), bc = ref_bc_] () mutable {
+      proactor->Dispatch([li = lw.get(), bc = ref_bc_]() mutable {
         li->RunAcceptLoop();
         bc.Dec();
       });
@@ -120,7 +120,8 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
       if (p->ai_family != family_pref[j])
         continue;
 
-      ec = fs->Create(p->ai_family);
+      ec = next->AwaitBrief(
+          [sock = fs.get(), family = p->ai_family] { return sock->Create(family); });
       if (ec)
         continue;
 
