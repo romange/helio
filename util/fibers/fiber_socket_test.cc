@@ -88,16 +88,16 @@ void FiberSocketTest::SetUp() {
     proactor->Run();
   }};
 
-  // hack to wait until proactor thread crosses init.
-  while (!init_done.load()) {
-    usleep(1000);
-  }
   proactor_.reset(proactor);
 
-  listen_socket_.reset(proactor_->CreateSocket());
-  auto ec = listen_socket_->Listen(0, 0);
+  error_code ec = proactor_->AwaitBrief([&] {
+    listen_socket_.reset(proactor_->CreateSocket());
+    return listen_socket_->Listen(0, 0);
+  });
+
   CHECK(!ec);
   listen_port_ = listen_socket_->LocalEndpoint().port();
+  DCHECK_GT(listen_port_, 0);
 
   auto address = boost::asio::ip::make_address("127.0.0.1");
   listen_ep_ = FiberSocketBase::endpoint_type{address, listen_port_};
@@ -337,8 +337,9 @@ TEST_P(FiberSocketTest, UDS) {
 
     // Epoll socket's destructor expects it to be at least armed (e.g. either Connect or Listen
     // called), so clean up manually
-    close(client_sock->native_handle());
-    operator delete(client_sock.release());
+    client_sock->Close();
+    // close(client_sock->native_handle());
+    // operator delete(client_sock.release());
   });
 
   uds_accept.JoinIfNeeded();

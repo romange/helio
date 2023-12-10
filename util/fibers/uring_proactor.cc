@@ -18,7 +18,7 @@
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
-ABSL_FLAG(bool, proactor_register_fd, false, "If true tries to register file descriptors");
+ABSL_FLAG(bool, enable_direct_fd, true, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                        \
   do {                                                                        \
@@ -89,23 +89,25 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   io_uring_params params;
   memset(&params, 0, sizeof(params));
 
-#if 0
-  if (FLAGS_proactor_register_fd && geteuid() == 0) {
-    params.flags |= IORING_SETUP_SQPOLL;
-    LOG_FIRST_N(INFO, 1) << "Root permissions - setting SQPOLL flag";
-  }
+  msgring_f_ = 0;
+  poll_first_ = 0;
+  direct_fd_ = 0;
 
-  // Optionally reuse the already created work-queue from another uring.
-  if (wq_fd > 0) {
-    params.flags |= IORING_SETUP_ATTACH_WQ;
-    params.wq_fd = wq_fd;
+  if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 15)) {
+    direct_fd_ = absl::GetFlag(FLAGS_enable_direct_fd);  // failswitch to disable direct fds.
   }
-#endif
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
-    params.flags |= IORING_SETUP_SUBMIT_ALL | IORING_SETUP_COOP_TASKRUN;
+    params.flags |= IORING_SETUP_SUBMIT_ALL;
+    // we can notify kernel that it can skip send/receive operations and do polling first.
+    poll_first_ = 1;
   }
+
+  if (kver.kernel >=6) {
+    params.flags |= (IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
+  }
+
 
   // it seems that SQPOLL requires registering each fd, including sockets fds.
   // need to check if its worth pursuing.
@@ -142,24 +144,16 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   int res = io_uring_register_ring_fd(&ring_);
   VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
 
-  wake_fixed_fd_ = wake_fd_;
-  register_fd_ = absl::GetFlag(FLAGS_proactor_register_fd);
-  if (register_fd_) {
-    register_fds_.resize(64, -1);
-    register_fds_[0] = wake_fd_;
-    wake_fixed_fd_ = 0;
-
-    absl::Time start = absl::Now();
+  if (direct_fd_) {
+    // TODO: to make it configurable.
+    register_fds_.resize(512, -1);
     int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
-    absl::Duration duration = absl::Now() - start;
-    VLOG(1) << "io_uring_register_files took " << absl::ToInt64Microseconds(duration) << " usec";
     CHECK_EQ(0, res);
   }
 
   size_t sz = ring_.sq.ring_sz + params.sq_entries * sizeof(struct io_uring_sqe);
   LOG_FIRST_N(INFO, 1) << "IORing with " << params.sq_entries << " entries, allocated " << sz
                        << " bytes, cq_entries is " << *ring_.cq.kring_entries;
-  CHECK_EQ(ring_size, params.sq_entries);  // Sanity.
 
   ArmWakeupEvent();
   centries_.resize(params.sq_entries);  // .val = -1
@@ -361,8 +355,8 @@ void UringProactor::ArmWakeupEvent() {
   struct io_uring_sqe* sqe = io_uring_get_sqe(&ring_);
   CHECK_NOTNULL(sqe);
 
-  io_uring_prep_poll_add(sqe, wake_fixed_fd_, POLLIN);
-  uint8_t flag = register_fd_ ? IOSQE_FIXED_FILE : 0;
+  io_uring_prep_poll_add(sqe, wake_fd_, POLLIN);
+  uint8_t flag = 0;
   sqe->user_data = kIgnoreIndex;
   sqe->flags |= (flag | IOSQE_IO_LINK);
   sqe = io_uring_get_sqe(&ring_);
@@ -371,7 +365,7 @@ void UringProactor::ArmWakeupEvent() {
   // we do not have to use threadlocal but we use it for performance reasons
   // to reduce cache thrashing.
   static thread_local uint64_t donot_care;
-  io_uring_prep_read(sqe, wake_fixed_fd_, &donot_care, 8, 0);
+  io_uring_prep_read(sqe, wake_fd_, &donot_care, 8, 0);
   sqe->user_data = kWakeIndex;
   sqe->flags |= flag;
 }
@@ -418,45 +412,73 @@ void UringProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
 }
 
 unsigned UringProactor::RegisterFd(int source_fd) {
-  DCHECK(register_fd_);
+  if (!direct_fd_)
+    return kInvalidDirectFd;
 
-  if (!register_fd_)
-    return source_fd;
-
-  auto next = std::find(register_fds_.begin() + next_free_fd_, register_fds_.end(), -1);
+  // TODO: to create a linked list from free fds.
+  auto next = std::find(register_fds_.begin() + next_free_index_, register_fds_.end(), -1);
   if (next == register_fds_.end()) {
     size_t prev_sz = register_fds_.size();
+    // enlarge direct fds table.
     register_fds_.resize(prev_sz * 2, -1);
-    register_fds_[prev_sz] = source_fd;
-    next_free_fd_ = prev_sz + 1;
+    register_fds_[prev_sz] = source_fd;  // source fd will map to prev_sz index.
+    next_free_index_ = prev_sz + 1;
 
-    CHECK_EQ(0, io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size()));
+    int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
+    if (res < 0) {
+      LOG(ERROR) << "Error registering files: " << -res << " " << SafeErrorMessage(-res);
+      register_fds_.resize(prev_sz);
+      next_free_index_ = prev_sz;
+      return kInvalidDirectFd;
+    }
+    ++direct_fds_cnt_;
 
     return prev_sz;
   }
 
   *next = source_fd;
-  next_free_fd_ = next - register_fds_.begin();
-  CHECK_EQ(1, io_uring_register_files_update(&ring_, next_free_fd_, &source_fd, 1));
-  ++next_free_fd_;
+  next_free_index_ = next - register_fds_.begin();
+  int res = io_uring_register_files_update(&ring_, next_free_index_, &source_fd, 1);
+  if (res < 0) {
+    LOG(ERROR) << "Error updating direct fds: " << -res << " " << SafeErrorMessage(-res);
+    return kInvalidDirectFd;
+  }
+  ++next_free_index_;
+  ++direct_fds_cnt_;
 
-  return next_free_fd_ - 1;
+  return next_free_index_ - 1;
 }
 
-void UringProactor::UnregisterFd(unsigned fixed_fd) {
-  DCHECK(register_fd_);
+int UringProactor::TranslateDirectFd(unsigned fixed_fd) const {
+  DCHECK(direct_fd_);
+  DCHECK_LT(fixed_fd, register_fds_.size());
+  DCHECK_GE(register_fds_[fixed_fd], 0);
 
-  if (!register_fd_)
-    return;
+  return register_fds_[fixed_fd];
+}
 
-  CHECK_LT(fixed_fd, register_fds_.size());
-  CHECK_GE(register_fds_[fixed_fd], 0);
+int UringProactor::UnregisterFd(unsigned fixed_fd) {
+  DCHECK(direct_fd_);
+
+  if (!direct_fd_)
+    return -1;
+
+  DCHECK_LT(fixed_fd, register_fds_.size());
+
+  int fd = register_fds_[fixed_fd];
+  DCHECK_GE(fd, 0);
+
   register_fds_[fixed_fd] = -1;
 
-  CHECK_EQ(1, io_uring_register_files_update(&ring_, fixed_fd, &register_fds_[fixed_fd], 1));
-  if (fixed_fd < next_free_fd_) {
-    next_free_fd_ = fixed_fd;
+  int res = io_uring_register_files_update(&ring_, fixed_fd, &register_fds_[fixed_fd], 1);
+  if (res <= 0) {
+    LOG(FATAL) << "Error updating direct fds: " << -res << " " << SafeErrorMessage(-res);
   }
+  --direct_fds_cnt_;
+  if (fixed_fd < next_free_index_) {
+    next_free_index_ = fixed_fd;
+  }
+  return fd;
 }
 
 LinuxSocketBase* UringProactor::CreateSocket() {
@@ -655,6 +677,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
   VPRO(1) << "centries size: " << centries_.size();
   centries_.clear();
+  DCHECK_EQ(0u, direct_fds_cnt_);
 }
 
 const static uint64_t wake_val = 1;
