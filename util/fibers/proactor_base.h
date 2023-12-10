@@ -129,7 +129,7 @@ class ProactorBase {
   //! Similarly to DispatchBrief but waits 'f' to return.
   template <typename Func> auto AwaitBrief(Func&& brief) -> decltype(brief());
 
-  // Runs possibly awating function 'f' safely in Proactor thread and waits for it to finish,
+  // Runs possibly awaiting function 'f' safely in Proactor thread and waits for it to finish,
   // If we are in his thread already, runs 'f' directly, otherwise
   // runs it wrapped in a fiber. Should be used instead of 'AwaitBrief' when 'f' itself
   // awaits on something.
