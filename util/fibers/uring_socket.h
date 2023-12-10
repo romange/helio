@@ -12,16 +12,15 @@
 namespace util {
 
 namespace fb2 {
-using Proactor = UringProactor;
 
 class UringSocket : public LinuxSocketBase {
  public:
+  using Proactor = UringProactor;
   using FiberSocketBase::AsyncWriteCb;
 
   template <typename T> using Result = io::Result<T>;
 
-  UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p) {
-  }
+  UringSocket(int fd, Proactor* p);
 
   UringSocket(Proactor* p = nullptr) : UringSocket(-1, p) {
   }

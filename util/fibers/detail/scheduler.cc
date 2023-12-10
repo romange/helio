@@ -23,306 +23,6 @@ using namespace std;
 
 namespace {
 
-#if PARKING_ENABLED
-template <typename T> void WriteOnce(T src, T* dest) {
-  std::atomic_store_explicit(reinterpret_cast<std::atomic<T>*>(dest), src,
-                             std::memory_order_relaxed);
-}
-
-template <typename T> T ReadOnce(T* src) {
-  return std::atomic_load_explicit(reinterpret_cast<std::atomic<T>*>(src),
-                                   std::memory_order_relaxed);
-}
-
-// Thomas Wang's 64 bit Mix Function.
-inline uint64_t MixHash(uint64_t key) {
-  key += ~(key << 32);
-  key ^= (key >> 22);
-  key += ~(key << 13);
-  key ^= (key >> 8);
-  key += (key << 3);
-  key ^= (key >> 15);
-  key += ~(key << 27);
-  key ^= (key >> 31);
-  return key;
-}
-
-using WaitQueue = boost::intrusive::slist<
-    detail::FiberInterface,
-    boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
-                                  &detail::FiberInterface::list_hook>,
-    boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
-
-struct ParkingBucket {
-  SpinLockType lock;
-  WaitQueue waiters;
-  bool was_rehashed = 0;
-};
-
-constexpr size_t kSzPB = sizeof(ParkingBucket);
-
-class ParkingHT {
-  struct SizedBuckets {
-    unsigned num_buckets;
-    ParkingBucket* arr;
-
-    SizedBuckets(unsigned shift) : num_buckets(1 << shift) {
-      arr = new ParkingBucket[num_buckets];
-    }
-
-    unsigned GetBucket(uint64_t hash) const {
-      return hash & bucket_mask();
-    }
-
-    unsigned bucket_mask() const {
-      return num_buckets - 1;
-    }
-  };
-
- public:
-  ParkingHT();
-  ~ParkingHT();
-
-  // if validate returns true, the fiber is not added to the queue.
-  bool Emplace(uint64_t token, FiberInterface* fi, absl::FunctionRef<bool()> validate);
-
-  FiberInterface* Remove(uint64_t token, absl::FunctionRef<void(FiberInterface*)> on_hit,
-                         absl::FunctionRef<void()> on_miss);
-  void RemoveAll(uint64_t token, WaitQueue* wq);
-
- private:
-  void TryRehash(SizedBuckets* cur_sb);
-
-  atomic<SizedBuckets*> buckets_;
-  atomic_uint32_t num_entries_{0};
-  atomic_bool rehashing_{false};
-};
-
-#endif
-
-// ParkingHT* g_parking_ht = nullptr;
-
-using QsbrEpoch = uint32_t;
-
-#if PARKING_ENABLED
-constexpr QsbrEpoch kEpochInc = 2;
-atomic<QsbrEpoch> qsbr_global_epoch{1};  // global is always non-zero.
-
-// TODO: we could move this checkpoint to the proactor loop.
-void qsbr_checkpoint() {
-  atomic_thread_fence(memory_order_seq_cst);
-
-  // syncs the local_epoch with the global_epoch.
-  WriteOnce(qsbr_global_epoch.load(memory_order_relaxed), &FbInitializer().local_epoch);
-}
-
-void qsbr_worker_fiber_offline() {
-  atomic_thread_fence(memory_order_release);
-  WriteOnce(0U, &FbInitializer().local_epoch);
-}
-
-void qsbr_worker_fiber_online() {
-  WriteOnce(qsbr_global_epoch.load(memory_order_relaxed), &FbInitializer().local_epoch);
-  atomic_thread_fence(memory_order_seq_cst);
-}
-
-bool qsbr_sync(uint64_t target) {
-  unique_lock lk(g_scheduler_lock, try_to_lock);
-
-  if (!lk)
-    return false;
-
-  FbInitializer().local_epoch = target;
-  for (TL_FiberInitializer* p = g_fiber_thread_list; p != nullptr; p = p->next) {
-    auto local_epoch = ReadOnce(&p->local_epoch);
-    if (local_epoch && local_epoch != target) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-ParkingHT::ParkingHT() {
-  SizedBuckets* sb = new SizedBuckets(6);
-  buckets_.store(sb, memory_order_release);
-}
-
-ParkingHT::~ParkingHT() {
-  SizedBuckets* sb = buckets_.load(memory_order_relaxed);
-
-  DVLOG(1) << "Destroying ParkingHT with " << sb->num_buckets << " buckets";
-
-  for (unsigned i = 0; i < sb->num_buckets; ++i) {
-    ParkingBucket* pb = sb->arr + i;
-    SpinLockHolder h(&pb->lock);
-    CHECK(pb->waiters.empty());
-  }
-  delete[] sb->arr;
-  delete sb;
-}
-
-// if validate returns true we do not park
-bool ParkingHT::Emplace(uint64_t token, FiberInterface* fi, absl::FunctionRef<bool()> validate) {
-  uint32_t num_items = 0;
-  unsigned bucket = 0;
-  SizedBuckets* sb = nullptr;
-  uint64_t hash = MixHash(token);
-  bool res = false;
-
-  while (true) {
-    sb = buckets_.load(memory_order_acquire);
-    DCHECK(sb);
-    bucket = sb->GetBucket(hash);
-    VLOG(1) << "Emplace: token=" << token << " bucket=" << bucket;
-
-    ParkingBucket* pb = sb->arr + bucket;
-    {
-      SpinLockHolder h(&pb->lock);
-
-      if (!pb->was_rehashed) {  // has grown
-        if (validate()) {
-          break;
-        }
-
-        fi->set_park_token(token);
-        pb->waiters.push_front(*fi);
-        num_items = num_entries_.fetch_add(1, memory_order_relaxed);
-        res = true;
-        break;
-      }
-    }
-  }
-
-  if (res) {
-    DVLOG(2) << "EmplaceEnd: token=" << token << " bucket=" << bucket;
-
-    if (num_items > sb->num_buckets) {
-      TryRehash(sb);
-    }
-  } else {
-    qsbr_checkpoint();
-  }
-
-  // we do not call qsbr_checkpoint here because we are going to park
-  // and call qsbr_worker_fiber_offline.
-  return res;
-}
-
-FiberInterface* ParkingHT::Remove(uint64_t token, absl::FunctionRef<void(FiberInterface*)> on_hit,
-                                  absl::FunctionRef<void()> on_miss) {
-  uint64_t hash = MixHash(token);
-  SizedBuckets* sb = nullptr;
-  while (true) {
-    sb = buckets_.load(memory_order_acquire);
-    unsigned bucket = sb->GetBucket(hash);
-    ParkingBucket* pb = sb->arr + bucket;
-    {
-      SpinLockHolder h(&pb->lock);
-      VLOG(1) << "Remove: token=" << token << " bucket=" << bucket;
-
-      if (!pb->was_rehashed) {
-        for (auto it = pb->waiters.begin(); it != pb->waiters.end(); ++it) {
-          if (it->park_token() == token) {
-            FiberInterface* fi = &*it;
-            pb->waiters.erase(it);
-            auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
-            DCHECK_GT(prev, 0u);
-            on_hit(fi);
-            // qsbr_checkpoint();
-
-            return fi;
-          }
-        }
-        on_miss();
-        return nullptr;
-      }
-    }
-  }
-
-  qsbr_checkpoint();
-  return nullptr;
-}
-
-void ParkingHT::RemoveAll(uint64_t token, WaitQueue* wq) {
-  uint64_t hash = MixHash(token);
-  SizedBuckets* sb = nullptr;
-
-  while (true) {
-    sb = buckets_.load(memory_order_acquire);
-    unsigned bucket = sb->GetBucket(hash);
-    ParkingBucket* pb = sb->arr + bucket;
-    {
-      SpinLockHolder h(&pb->lock);
-      if (!pb->was_rehashed) {
-        auto it = pb->waiters.begin();
-        while (it != pb->waiters.end()) {
-          if (it->park_token() != token) {
-            ++it;
-            continue;
-          }
-          FiberInterface* fi = &*it;
-          it = pb->waiters.erase(it);
-          wq->push_back(*fi);
-          auto prev = num_entries_.fetch_sub(1, memory_order_relaxed);
-          DCHECK_GT(prev, 0u);
-        }
-        break;
-      }
-    }
-  }
-  qsbr_checkpoint();
-}
-
-void ParkingHT::TryRehash(SizedBuckets* cur_sb) {
-  if (rehashing_.exchange(true, memory_order_acquire)) {
-    return;
-  }
-
-  SizedBuckets* sb = buckets_.load(memory_order_relaxed);
-  if (sb != cur_sb) {
-    rehashing_.store(false, memory_order_release);
-    return;
-  }
-
-  DVLOG(1) << "Rehashing parking hash table from " << sb->num_buckets;
-
-  // log2(x)
-  static_assert(__builtin_ctz(32) == 5);
-
-  SizedBuckets* new_sb = new SizedBuckets(__builtin_ctz(sb->num_buckets) + 2);
-  for (unsigned i = 0; i < sb->num_buckets; ++i) {
-    sb->arr[i].lock.Lock();
-  }
-  for (unsigned i = 0; i < sb->num_buckets; ++i) {
-    ParkingBucket* pb = sb->arr + i;
-    pb->was_rehashed = true;
-    while (!pb->waiters.empty()) {
-      FiberInterface* fi = &pb->waiters.front();
-      pb->waiters.pop_front();
-      uint64_t hash = MixHash(fi->park_token());
-      unsigned bucket = new_sb->GetBucket(hash);
-      ParkingBucket* new_pb = new_sb->arr + bucket;
-      new_pb->waiters.push_back(*fi);
-    }
-  }
-  buckets_.store(new_sb, memory_order_release);
-
-  for (unsigned i = 0; i < sb->num_buckets; ++i) {
-    sb->arr[i].lock.Unlock();
-  }
-
-  uint64_t next_epoch = qsbr_global_epoch.fetch_add(kEpochInc, memory_order_relaxed) + kEpochInc;
-
-  FbInitializer().sched->Defer(next_epoch, [sb] {
-    DVLOG(1) << "Destroying old SizedBuckets with " << sb->num_buckets << " buckets";
-    delete sb;
-  });
-
-  rehashing_.store(false, memory_order_release);
-}
-#endif
-
 class DispatcherImpl final : public FiberInterface {
  public:
   DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_stack&& salloc,
@@ -446,7 +146,6 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       }
       wake_suspend_ = false;
     }
-    sched->RunDeferred();
   }
   sched->DestroyTerminated();
 }
@@ -666,34 +365,26 @@ void Scheduler::AttachCustomPolicy(DispatchPolicy* policy) {
   custom_policy_ = policy;
 }
 
-void Scheduler::RunDeferred() {
-#if PARKING_ENABLED
-  bool skip_validation = false;
-
-  while (!deferred_cb_.empty()) {
-    const auto& k_v = deferred_cb_.back();
-    if (skip_validation) {
-      k_v.second();
-      deferred_cb_.pop_back();
-
-      continue;
-    }
-
-    if (!qsbr_sync(k_v.first))
-      break;
-
-    k_v.second();
-    skip_validation = true;
-    deferred_cb_.pop_back();
-  }
-#endif
-}
-
 void Scheduler::ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   for (auto& fiber : fibers_) {
     DCHECK(fiber.scheduler() == this);
     fiber.ExecuteOnFiberStack(fn);
   }
+}
+
+void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
+  CHECK(FiberActive() != dispatch_cntx_.get());
+
+  // All our dispatch policies add dispatcher to ready queue, hence it must be there.
+  CHECK(dispatch_cntx_->list_hook.is_linked());
+
+  // We must erase it from the ready queue because we switch to dispatcher "abnormally",
+  // not through Preempt().
+  ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
+
+  dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] {
+    fn();
+  });
 }
 
 void Scheduler::PrintAllFiberStackTraces() {

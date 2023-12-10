@@ -211,13 +211,13 @@ void ProactorBase::CancelPeriodic(uint32_t id) {
 void ProactorBase::Migrate(ProactorBase* dest) {
   CHECK(dest != this);
   detail::FiberInterface* me = detail::FiberActive();
-  Fiber tmp = LaunchFiber([me, dest] {
-    me->DetachThread();
-    VLOG(1) << "After me detach";
-    dest->AwaitBrief([me] { me->AttachThread(); });
-    VLOG(1) << "After Migrate/AwaitBrief";
+  me->scheduler()->SuspendAndExecuteOnDispatcher([me, dest] {
+    me->DetachScheduler();
+
+    dest->DispatchBrief([me] {
+      me->AttachScheduler();
+    });
   });
-  tmp.Join();
 }
 
 void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> cb) {

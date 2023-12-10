@@ -319,7 +319,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     // TODO: to handle idle tasks.
     scheduler->DestroyTerminated();
-    scheduler->RunDeferred();
     Pause(spin_loops);
     ++spin_loops;
   }

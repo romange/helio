@@ -17,7 +17,7 @@ namespace util {
 namespace fb2 {
 
 using namespace std;
-using IoResult = Proactor::IoResult;
+using IoResult = UringProactor::IoResult;
 using nonstd::make_unexpected;
 
 namespace {
@@ -36,6 +36,9 @@ auto Unexpected(std::errc e) {
 }
 
 }  // namespace
+
+UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p) {
+}
 
 UringSocket::~UringSocket() {
   DCHECK_LT(fd_, 0) << "Socket must have been closed explicitly.";
@@ -115,7 +118,6 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   VSOCK(1) << "Connect [" << fd << "] " << ep.address().to_string() << ":" << ep.port();
 
   Proactor* p = GetProactor();
-  CHECK(!p->HasSqPoll()) << "Not supported with SQPOLL, TBD";
 
   unsigned dense_id = fd;
 
