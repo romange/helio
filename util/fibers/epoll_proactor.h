@@ -43,7 +43,7 @@ class EpollProactor : public ProactorBase {
   void DispatchCompletions(const void* cevents, unsigned count);
 
   void MainLoop(detail::Scheduler* sched) final;
-  LinuxSocketBase* CreateSocket(int fd = -1) final;
+  LinuxSocketBase* CreateSocket() final;
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
   void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
   void WakeRing() final;

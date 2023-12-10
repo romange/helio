@@ -364,10 +364,6 @@ TlsSocket::native_handle_type TlsSocket::native_handle() const {
   return next_sock_->native_handle();
 }
 
-bool TlsSocket::IsDirect() const {
-  return next_sock_->IsDirect();
-}
-
 error_code TlsSocket::Create(unsigned short protocol_family) {
   return next_sock_->Create(protocol_family);
 }

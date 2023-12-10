@@ -45,12 +45,16 @@ class UringSocket : public LinuxSocketBase {
   void CancelOnErrorCb() final;
 
  private:
-  Proactor* GetProactor() {
+  UringProactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
   }
 
+  const UringProactor* GetProactor() const {
+    return static_cast<const UringProactor*>(proactor());
+  }
+
   uint8_t register_flag() const {
-    return fd_ & REGISTER_FD ? IOSQE_FIXED_FILE : 0;
+    return false ? IOSQE_FIXED_FILE : 0;
   }
 
   uint32_t error_cb_id_ = UINT32_MAX;

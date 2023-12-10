@@ -61,10 +61,6 @@ class UringProactor : public ProactorBase {
     return sqe_avail_.await([&] { return GetSubmitRingAvailability() >= threshold; });
   }
 
-  bool HasSqPoll() const {
-    return sqpoll_f_;
-  }
-
   bool HasRegisterFd() const {
     return register_fd_;
   }
@@ -80,7 +76,7 @@ class UringProactor : public ProactorBase {
   }
 
   void UnregisterFd(unsigned fixed_fd);
-  LinuxSocketBase* CreateSocket(int fd = -1) final;
+  LinuxSocketBase* CreateSocket() final;
 
   Kind GetKind() const final {
     return IOURING;
@@ -107,6 +103,8 @@ class UringProactor : public ProactorBase {
   void DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe);
 
   void RegrowCentries();
+
+  // Used with older kernels with msgring_f_ == 0.
   void ArmWakeupEvent();
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
   void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
@@ -122,9 +120,9 @@ class UringProactor : public ProactorBase {
 
   int wake_fixed_fd_;
 
-  uint8_t sqpoll_f_ : 1;
   uint8_t register_fd_ : 1;
   uint8_t msgring_f_ : 1;
+  uint8_t poll_first_ : 1;
   uint8_t : 5;
 
   EventCount sqe_avail_;

@@ -96,7 +96,7 @@ void ListenerInterface::RunAcceptLoop() {
   ThisFiber::SetName("AcceptLoop");
   FiberSocketBase::endpoint_type ep;
 
-  if (!sock_->IsUDS() && !sock_->IsDirect()) {
+  if (!sock_->IsUDS()) {
     ep = sock_->LocalEndpoint();
     VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
   }

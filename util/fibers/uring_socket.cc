@@ -52,12 +52,6 @@ auto UringSocket::Close() -> error_code {
     DVSOCK(1) << "Closing socket";
 
     int fd = native_handle();
-    Proactor* p = GetProactor();
-    if ((fd_ & REGISTER_FD) && p) {
-      unsigned fixed_fd = fd;
-      fd = p->TranslateFixedFd(fixed_fd);
-      p->UnregisterFd(fixed_fd);
-    }
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
   }
@@ -69,8 +63,7 @@ auto UringSocket::Accept() -> AcceptResult {
 
   error_code ec;
 
-  int fd = native_handle();
-  int real_fd = (fd_ & REGISTER_FD) ? GetProactor()->TranslateFixedFd(fd) : fd;
+  int real_fd = native_handle();
   VSOCK(2) << "Accept [" << real_fd << "]";
 
   while (true) {
@@ -84,9 +77,10 @@ auto UringSocket::Accept() -> AcceptResult {
     DCHECK_EQ(-1, res);
 
     if (errno == EAGAIN) {
+      // TODO: to add support for iouring direct file descriptors.
       FiberCall fc(GetProactor());
-      fc->PrepPollAdd(fd, POLLIN);
-      fc->sqe()->flags |= register_flag();
+      fc->PrepPollAdd(real_fd, POLLIN);
+
       IoResult io_res = fc.Get();
 
       // tcp sockets set POLLERR but UDS set POLLHUP.
@@ -115,23 +109,17 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   VSOCK(1) << "Connect [" << fd << "] " << ep.address().to_string() << ":" << ep.port();
 
   Proactor* p = GetProactor();
-  CHECK(!p->HasSqPoll()) << "Not supported with SQPOLL, TBD";
 
+  // TODO: to add support for iouring direct file descriptors.
   unsigned dense_id = fd;
 
-  if (p->HasRegisterFd()) {
-    dense_id = p->RegisterFd(fd);
-    fd_ = (dense_id << kFdShift) | REGISTER_FD;
-  } else {
-    fd_ = (dense_id << kFdShift);
-  }
+  fd_ = (dense_id << kFdShift);
 
   IoResult io_res;
   ep.data();
 
   FiberCall fc(p, timeout());
   fc->PrepConnect(dense_id, (const sockaddr*)ep.data(), ep.size());
-  fc->sqe()->flags |= register_flag();
   io_res = fc.Get();
 
   if (io_res < 0) {  // In that case connect returns -errno.
@@ -357,7 +345,6 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   DCHECK_EQ(error_cb_id_, UINT32_MAX) << fd_;
   uint32_t event_mask = POLLERR | POLLHUP;
 
-  int fd = native_handle();
   Proactor* p = GetProactor();
 
   auto se_cb = [cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
@@ -370,7 +357,7 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
     }
   };
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
-  se.PrepPollAdd(fd, event_mask);
+  se.PrepPollAdd(ShiftedFd(), event_mask);
   se.sqe()->flags |= register_flag();
 
   error_cb_id_ = se.sqe()->user_data;

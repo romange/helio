@@ -127,7 +127,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
                << SafeErrorMessage(init_res);
   }
-  sqpoll_f_ = (params.flags & IORING_SETUP_SQPOLL) != 0;
+
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
@@ -459,8 +459,8 @@ void UringProactor::UnregisterFd(unsigned fixed_fd) {
   }
 }
 
-LinuxSocketBase* UringProactor::CreateSocket(int fd) {
-  return new UringSocket{fd, this};
+LinuxSocketBase* UringProactor::CreateSocket() {
+  return new UringSocket{-1, this};
 }
 
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {

@@ -383,8 +383,8 @@ void EpollProactor::Disarm(int fd, unsigned arm_index) {
   EpollDel(epoll_fd_, fd);
 }
 
-LinuxSocketBase* EpollProactor::CreateSocket(int fd) {
-  EpollSocket* res = new EpollSocket(fd);
+LinuxSocketBase* EpollProactor::CreateSocket() {
+  EpollSocket* res = new EpollSocket(-1);
   res->SetProactor(this);
 
   return res;
