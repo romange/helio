@@ -50,13 +50,12 @@ jobs:
             -GNinja \
             -DCMAKE_C_COMPILER="${{matrix.compiler.c}}" \
             -DCMAKE_CXX_COMPILER="${{matrix.compiler.cxx}}" \
-            -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.cxx_flags}}" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.cxx_flags}}"
 
     - name: Build
       run: |
           cd ${{github.workspace}}/build
-
+          ninja gperf_project
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli s3_demo
 
     - name: Test
