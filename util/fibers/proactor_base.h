@@ -129,7 +129,7 @@ class ProactorBase {
   //! Similarly to DispatchBrief but waits 'f' to return.
   template <typename Func> auto AwaitBrief(Func&& brief) -> decltype(brief());
 
-  // Runs possibly awating function 'f' safely in Proactor thread and waits for it to finish,
+  // Runs possibly awaiting function 'f' safely in Proactor thread and waits for it to finish,
   // If we are in his thread already, runs 'f' directly, otherwise
   // runs it wrapped in a fiber. Should be used instead of 'AwaitBrief' when 'f' itself
   // awaits on something.
@@ -332,28 +332,23 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
     // TODO:
   }
 
-  // auto* active = detail::FiberActive();
   using ResultType = decltype(f());
   util::detail::ResultMover<ResultType> mover;
   Done done;
 
-  // active->StartParking();
-
   // Store done-ptr by value to increase the refcount while lambda is running.
   DispatchBrief([&mover, f = std::forward<Func>(f), done]() mutable {
     mover.Apply(f);
-    // detail::FiberActive()->NotifyParked(active);
     done.Notify();
   });
 
-  // active->SuspendUntilWakeup();
   done.Wait();
 
   return std::move(mover).get();
 }
 
-// Runs possibly awating function 'f' safely in ContextThread and waits for it to finish,
-// If we are in the context thread already, runs 'f' directly, otherwise
+// Runs possibly awating function 'f' safely in proactor thread and waits for it to finish,
+// If we are in proactor thread already, runs 'f' directly, otherwise
 // runs it wrapped in a fiber. Should be used instead of 'Await' when 'f' itself
 // awaits on something.
 // To summarize: 'f' should not block its thread, but allowed to block its fiber.

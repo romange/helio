@@ -212,9 +212,9 @@ void ProactorBase::Migrate(ProactorBase* dest) {
   CHECK(dest != this);
   detail::FiberInterface* me = detail::FiberActive();
   Fiber tmp = LaunchFiber([me, dest] {
-    me->DetachThread();
+    me->DetachScheduler();
     VLOG(1) << "After me detach";
-    dest->AwaitBrief([me] { me->AttachThread(); });
+    dest->AwaitBrief([me] { me->AttachScheduler(); });
     VLOG(1) << "After Migrate/AwaitBrief";
   });
   tmp.Join();

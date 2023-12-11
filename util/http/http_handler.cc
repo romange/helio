@@ -310,7 +310,7 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
   HttpContext cntx(asa);
 
   while (!buf.empty()) {
-    ParserType parser{move(request)};
+    ParserType parser{std::move(request)};
     parser.eager(true);
 
     size_t consumed = parser.put(boost::asio::const_buffer{buf.data(), buf.size()}, ec);
@@ -348,7 +348,7 @@ void HttpConnection::HandleRequests() {
   RequestType request;
 
   while (true) {
-    ParserType parser{move(request)};
+    ParserType parser{std::move(request)};
     parser.eager(true);
 
     h2::read(asa, req_buffer_, parser, ec);

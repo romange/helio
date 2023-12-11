@@ -595,7 +595,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
-      scheduler->RunDeferred();
 
       continue;
     }

@@ -48,6 +48,7 @@ class Scheduler {
 
   // Assumes HasReady() is true.
   FiberInterface* PopReady() {
+    assert(!ready_queue_.empty());
     FiberInterface* res = &ready_queue_.front();
     ready_queue_.pop_front();
     return res;
@@ -82,12 +83,6 @@ class Scheduler {
   DispatchPolicy* policy() {
     return custom_policy_;
   }
-
-  void Defer(uint64_t epoch, std::function<void()> fn) {
-    deferred_cb_.emplace_back(epoch, std::move(fn));
-  }
-
-  void RunDeferred();
 
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
@@ -125,7 +120,6 @@ class Scheduler {
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
-  std::vector<std::pair<uint64_t, std::function<void()>>> deferred_cb_;
 
   // A list of all fibers in the thread.
   FI_List fibers_;

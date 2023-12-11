@@ -133,7 +133,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     if (ec) {
       LOG(WARNING) << "aws: http clent: tls connect failed; error=" << ec;
       response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-      tls_conn->Close();
+      (void)tls_conn->Close();
       return response;
     }
     conn.reset(tls_conn.release());
@@ -147,7 +147,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-    conn->Close();
+    (void)conn->Close();
     return response;
   }
 
@@ -162,7 +162,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                    << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                    << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
       response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-      conn->Close();
+      (void)conn->Close();
       return response;
     }
   }
@@ -175,7 +175,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-    conn->Close();
+    (void)conn->Close();
     return response;
   }
 
