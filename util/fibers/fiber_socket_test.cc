@@ -335,11 +335,8 @@ TEST_P(FiberSocketTest, UDS) {
     int res = connect(client_sock->native_handle(), (struct sockaddr*)&addr, sizeof(addr));
     EXPECT_EQ(res, 0) << error_code{res, system_category()}.message();
 
-    // Epoll socket's destructor expects it to be at least armed (e.g. either Connect or Listen
-    // called), so clean up manually
-    client_sock->Close();
-    // close(client_sock->native_handle());
-    // operator delete(client_sock.release());
+    ec = client_sock->Close();
+    EXPECT_FALSE(ec) << ec.message();
   });
 
   uds_accept.JoinIfNeeded();

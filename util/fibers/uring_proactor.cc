@@ -419,6 +419,8 @@ unsigned UringProactor::RegisterFd(int source_fd) {
   auto next = std::find(register_fds_.begin() + next_free_index_, register_fds_.end(), -1);
   if (next == register_fds_.end()) {
     size_t prev_sz = register_fds_.size();
+    DCHECK_GT(prev_sz, 0u);
+
     // enlarge direct fds table.
     register_fds_.resize(prev_sz * 2, -1);
     register_fds_[prev_sz] = source_fd;  // source fd will map to prev_sz index.
