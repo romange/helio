@@ -22,6 +22,8 @@ class UringProactor : public ProactorBase {
   void operator=(const UringProactor&) = delete;
 
  public:
+  static constexpr unsigned kInvalidDirectFd = -1;
+
   UringProactor();
   ~UringProactor();
 
@@ -61,21 +63,27 @@ class UringProactor : public ProactorBase {
     return sqe_avail_.await([&] { return GetSubmitRingAvailability() >= threshold; });
   }
 
-  bool HasRegisterFd() const {
-    return register_fd_;
+  bool HasPollFirst() const {
+    return poll_first_;
+  }
+
+  bool HasDirectFD() const {
+    return direct_fd_;
   }
 
   int ring_fd() const {
     return ring_.ring_fd;
   }
 
+  // Returns direct fd or kInvalidDirectFd if it did not succeed.
   unsigned RegisterFd(int source_fd);
 
-  int TranslateFixedFd(int fixed_fd) const {
-    return register_fd_ && fixed_fd >= 0 ? register_fds_[fixed_fd] : fixed_fd;
-  }
+  // Returns a linux file descriptor given a valid fixed fd.
+  int TranslateDirectFd(unsigned fixed_fd) const;
 
-  void UnregisterFd(unsigned fixed_fd);
+  // Unregisters a fixed fd. Returns linux fd or -1 if it did not succeed.
+  int UnregisterFd(unsigned fixed_fd);
+
   LinuxSocketBase* CreateSocket() final;
 
   Kind GetKind() const final {
@@ -118,11 +126,9 @@ class UringProactor : public ProactorBase {
 
   io_uring ring_;
 
-  int wake_fixed_fd_;
-
-  uint8_t register_fd_ : 1;
-  uint8_t msgring_f_ : 1;
+  uint8_t msgring_f_  : 1;
   uint8_t poll_first_ : 1;
+  uint8_t direct_fd_  : 1;
   uint8_t : 5;
 
   EventCount sqe_avail_;
@@ -144,7 +150,8 @@ class UringProactor : public ProactorBase {
 
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;
-  uint32_t next_free_fd_ = 0;  // next available fd for register files.
+  uint32_t next_free_index_ = 0;  // next available fd for register files.
+  uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_submit_fail_ = 0, get_entry_await_ = 0;
 
   int32_t free_req_buf_id_ = -1;

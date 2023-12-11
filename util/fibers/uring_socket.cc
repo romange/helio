@@ -37,7 +37,10 @@ auto Unexpected(std::errc e) {
 
 }  // namespace
 
-UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p) {
+UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
+  if (p) {
+    has_pollfirst_ = p->HasPollFirst();
+  }
 }
 
 UringSocket::~UringSocket() {
@@ -47,17 +50,52 @@ UringSocket::~UringSocket() {
   LOG_IF(WARNING, ec) << "Error closing socket " << ec << "/" << ec.message();
 }
 
+error_code UringSocket::Create(unsigned short protocol_family) {
+  error_code ec = LinuxSocketBase::Create(protocol_family);
+  if (ec) {
+    return ec;
+  }
+
+  UringProactor* proactor = GetProactor();
+  CHECK(proactor && is_direct_fd_ == 0);
+  DCHECK(proactor->InMyThread());
+
+  if (proactor->HasDirectFD()) {
+    int source_fd = ShiftedFd();  // linux fd.
+    unsigned direct_fd = proactor->RegisterFd(source_fd);
+    if (direct_fd != UringProactor::kInvalidDirectFd) {
+      // encode back the id we got.
+      fd_ = (direct_fd << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
+      is_direct_fd_ = 1;
+    }
+  }
+  return ec;
+}
+
 auto UringSocket::Close() -> error_code {
   error_code ec;
-  if (fd_ >= 0) {
-    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+  if (fd_ < 0)
+    return ec;
 
-    DVSOCK(1) << "Closing socket";
+  DCHECK(proactor()->InMyThread());
+  DVSOCK(1) << "Closing socket";
 
-    int fd = native_handle();
-    posix_err_wrap(::close(fd), &ec);
-    fd_ = -1;
+  int fd;
+  if (is_direct_fd_) {
+    UringProactor* proactor = GetProactor();
+    unsigned direct_fd = ShiftedFd();
+    fd = proactor->UnregisterFd(direct_fd);
+    if (fd < 0) {
+      LOG(WARNING) << "Error unregistering fd " << direct_fd;
+      return ec;
+    }
+  } else {
+    fd = native_handle();
   }
+
+  posix_err_wrap(::close(fd), &ec);
+  fd_ = -1;
+
   return ec;
 }
 
@@ -66,15 +104,14 @@ auto UringSocket::Accept() -> AcceptResult {
 
   error_code ec;
 
-  int real_fd = native_handle();
-  VSOCK(2) << "Accept [" << real_fd << "]";
+  int fd = native_handle();
+  VSOCK(2) << "Accept";
 
+  int res = -1;
   while (true) {
-    int res = accept4(real_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    res = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
     if (res >= 0) {
-      UringSocket* fs = new UringSocket{nullptr};
-      fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
-      return fs;
+      break;
     }
 
     DCHECK_EQ(-1, res);
@@ -82,8 +119,8 @@ auto UringSocket::Accept() -> AcceptResult {
     if (errno == EAGAIN) {
       // TODO: to add support for iouring direct file descriptors.
       FiberCall fc(GetProactor());
-      fc->PrepPollAdd(real_fd, POLLIN);
-
+      fc->PrepPollAdd(ShiftedFd(), POLLIN);
+      fc->sqe()->flags |= register_flag();
       IoResult io_res = fc.Get();
 
       // tcp sockets set POLLERR but UDS set POLLHUP.
@@ -97,6 +134,12 @@ auto UringSocket::Accept() -> AcceptResult {
     posix_err_wrap(res, &ec);
     return make_unexpected(ec);
   }
+
+  UringSocket* fs = new UringSocket{nullptr};
+  fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
+  fs->has_pollfirst_ = has_pollfirst_;
+
+  return fs;
 }
 
 auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
@@ -111,18 +154,17 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   VSOCK(1) << "Connect [" << fd << "] " << ep.address().to_string() << ":" << ep.port();
 
-  Proactor* p = GetProactor();
+  UringProactor* proactor = GetProactor();
 
-  // TODO: to add support for iouring direct file descriptors.
-  unsigned dense_id = fd;
-
-  fd_ = (dense_id << kFdShift);
+  // TODO: support direct descriptors. For now client sockets always use regular linux fds.
+  fd_ = fd << kFdShift;
 
   IoResult io_res;
   ep.data();
 
-  FiberCall fc(p, timeout());
-  fc->PrepConnect(dense_id, (const sockaddr*)ep.data(), ep.size());
+  FiberCall fc(proactor, timeout());
+  fc->PrepConnect(fd, (const sockaddr*)ep.data(), ep.size());
+  // fc->sqe()->flags |= register_flag();
   io_res = fc.Get();
 
   if (io_res < 0) {  // In that case connect returns -errno.
@@ -378,6 +420,15 @@ void UringSocket::CancelOnErrorCb() {
     LOG(WARNING) << "Error canceling error cb " << io_res;
   }
   error_cb_id_ = UINT32_MAX;
+}
+
+auto UringSocket::native_handle() const -> native_handle_type {
+  int fd = ShiftedFd();
+
+  if (is_direct_fd_) {
+    fd = GetProactor()->TranslateDirectFd(fd);
+  }
+  return fd;
 }
 
 }  // namespace fb2

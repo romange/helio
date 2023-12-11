@@ -27,6 +27,10 @@ class UringSocket : public LinuxSocketBase {
 
   virtual ~UringSocket();
 
+  // Creates a socket. Prerequisite: the socket has not been opened before
+  // using Connect or created via Accept.
+  error_code Create(unsigned short protocol_family = 2) final;
+
   ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
   ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
@@ -43,6 +47,13 @@ class UringSocket : public LinuxSocketBase {
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
   void CancelOnErrorCb() final;
 
+  // Returns the native linux fd even for direct-fd iouring mode.
+  native_handle_type native_handle() const final;
+
+  bool HasRecvData() const {
+    return has_recv_data_;
+  }
+
  private:
   UringProactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
@@ -53,10 +64,18 @@ class UringSocket : public LinuxSocketBase {
   }
 
   uint8_t register_flag() const {
-    return false ? IOSQE_FIXED_FILE : 0;
+    return is_direct_fd_ ? IOSQE_FIXED_FILE : 0;
   }
 
   uint32_t error_cb_id_ = UINT32_MAX;
+  union {
+    uint32_t flags_;
+    struct {
+      uint32_t has_pollfirst_ : 1;
+      uint32_t has_recv_data_ : 1;
+      uint32_t is_direct_fd_ : 1;
+    };
+  };
 };
 
 }  // namespace fb2

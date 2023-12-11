@@ -124,7 +124,8 @@ auto EpollSocket::Close() -> error_code {
 
     int fd = native_handle();
     DVSOCK(1) << "Closing socket";
-    GetProactor()->Disarm(fd, arm_index_);
+    if (arm_index_ >= 0)
+      GetProactor()->Disarm(fd, arm_index_);
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
     arm_index_ = -1;
