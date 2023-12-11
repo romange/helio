@@ -104,7 +104,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     poll_first_ = 1;
   }
 
-  if (kver.kernel >=6) {
+  if (kver.kernel >= 6) {
     params.flags |= (IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
   }
 
