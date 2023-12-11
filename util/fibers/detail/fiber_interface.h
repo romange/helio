@@ -54,15 +54,16 @@ class FiberInterface {
  public:
   enum Type : uint8_t { MAIN, DISPATCH, WORKER };
 
+  // public hooks for intrusive data structures.
+  FI_ListHook list_hook;  // used to add to ready/terminate queues.
+  FI_SleepHook sleep_hook;
+  FI_ListHook fibers_hook;  // For a list of all fibers in the thread
+
   // init_count is the initial use_count of the fiber.
   FiberInterface(Type type, uint32_t init_count, std::string_view nm = std::string_view{});
 
   virtual ~FiberInterface();
 
-  FI_ListHook list_hook;  // used to add to ready queue.
-  FI_SleepHook sleep_hook;
-
-  FI_ListHook fibers_hook;  // For a list of all fibers in the thread
 
   ::boost::context::fiber_context SwitchTo();
 
@@ -91,11 +92,11 @@ class FiberInterface {
   void Suspend();
 
   // Detaches itself from the thread scheduler.
-  void DetachThread();
+  void DetachScheduler();
 
-  // Attaches itself to a thread scheduler.
+  // Attaches itself to a thread scheduler and makes it ready to run.
   // Must be detached first.
-  void AttachThread();
+  void AttachScheduler();
 
   bool IsDefined() const {
     return bool(entry_);
@@ -200,6 +201,11 @@ class FiberInterface {
   uint64_t cpu_tsc_ = 0;
 
   char name_[24];
+
+private:
+  // Handles all the stats and also updates the involved data structure before actually switching
+  // the fiber context. Returns the active fiber before the context switch.
+  FiberInterface* SwitchSetup();
 };
 
 template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {

@@ -156,7 +156,7 @@ Result<SelfStat> ReadSelfStat() {
   if (btime == 0) {
     auto cb = [&](string_view key, string_view value) {
       if (key == "btime") {
-        absl::SimpleAtoi(value, &btime);
+        CHECK(absl::SimpleAtoi(value, &btime));
         boot_time.store(btime, std::memory_order_release);
       }
     };
