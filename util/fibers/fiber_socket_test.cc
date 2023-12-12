@@ -359,7 +359,7 @@ TEST_P(FiberSocketTest, NotEmpty) {
   }
 
   if (!has_poll_first) {
-    GTEST_SKIP() << "NotEmpty test is supported only on uring with ";
+    GTEST_SKIP() << "NotEmpty test is supported only on uring with poll first";
     return;
   }
 
