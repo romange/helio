@@ -66,6 +66,7 @@ class FiberInterface {
 
 
   ::boost::context::fiber_context SwitchTo();
+  void SwitchToAndExecute(std::function<void()> fn);
 
   using PrintFn = std::function<void(FiberInterface*)>;
 

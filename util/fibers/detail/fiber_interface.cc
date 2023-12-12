@@ -45,7 +45,6 @@ uint64_t g_tsc_cycles_per_ms = 0;
 
 }  // namespace
 
-
 // Per thread initialization structure.
 struct TL_FiberInitializer {
   TL_FiberInitializer* next = nullptr;
@@ -259,6 +258,7 @@ void FiberInterface::DetachScheduler() {
 void FiberInterface::AttachScheduler() {
   scheduler_ = detail::FbInitializer().sched;
   scheduler_->Attach(this);
+  scheduler_->AddReady(this);
 }
 
 ctx::fiber_context FiberInterface::SwitchTo() {
@@ -272,6 +272,23 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
+}
+
+void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
+  FiberInterface* prev = SwitchSetup();
+
+  // pass pointer to the context that resumes `this`
+  std::move(entry_).resume_with([prev, fn = std::move(fn)](ctx::fiber_context&& c) {
+    DCHECK(!prev->entry_ && c);
+    prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    fn();
+
+    return ctx::fiber_context{};
+  });
+
+  // We resumed.
+  DCHECK(FiberActive() == prev);
+  DCHECK(!prev->entry_);
 }
 
 void FiberInterface::PullMyselfFromRemoteReadyQueue() {

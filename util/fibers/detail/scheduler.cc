@@ -372,6 +372,21 @@ void Scheduler::ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   }
 }
 
+void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
+  CHECK(FiberActive() != dispatch_cntx_.get());
+
+  // All our dispatch policies add dispatcher to ready queue, hence it must be there.
+  CHECK(dispatch_cntx_->list_hook.is_linked());
+
+  // We must erase it from the ready queue because we switch to dispatcher "abnormally",
+  // not through Preempt().
+  ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
+
+  dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] {
+    fn();
+  });
+}
+
 void Scheduler::PrintAllFiberStackTraces() {
   auto* active = FiberActive();
   if (!sleep_queue_.empty()) {
