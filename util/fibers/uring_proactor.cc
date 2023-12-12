@@ -105,8 +105,10 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     poll_first_ = 1;
   }
 
-  if (kver.kernel >= 6) {
-    params.flags |= (IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
+  if (kver.kernel >= 6 && kver.major >= 1) {
+    // This has a positive effect on CPU usage, latency and throughput.
+    params.flags |=
+        (IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SINGLE_ISSUER);
   }
 
   // it seems that SQPOLL requires registering each fd, including sockets fds.
@@ -521,10 +523,30 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
   FiberInterface* dispatcher = detail::FiberActive();
 
+  // The loop must follow these rules:
+  // 1. if we task-queue is not empty or if we have ready fibers, then we should
+  //    not stall in wait_for_cqe(.., 1, ...).
+  //
+  //
+  // 2. Specifically, yielding fibers will cause that scheduler->HasReady() will return true.
+  //    We still should not stall in wait_for_cqe if we have yielding fibers but we also
+  //    should give a chance to reap completions.
+  // 3. we should batch reaping of cqes if possible to improve performance of the IRQ handling.
+  // 4. ProcessSleep does not have to be called every loop cycle since it does not really
+  //    expect usec precision.
+  // 6. ProcessSleep and ProcessRemoteReady may introduce ready fibers.
+
   while (true) {
     ++loop_cnt;
+    bool has_cpu_work = false;
 
-    int num_submitted = io_uring_submit(&ring_);
+    // io_uring_submit should be more performant in some case than io_uring_submit_and_get_events
+    // because when there no sqes to flush io_submit may save
+    // a syscall, while io_uring_submit_and_get_events will always do a syscall.
+    // Unfortunately I did not see the impact of it.
+    // Another observation:
+    // AvgCqe/ReapCall goes up if we call here io_uring_submit_and_get_events.
+    int num_submitted = io_uring_submit_and_get_events(&ring_);
     bool ring_busy = false;
 
     if (num_submitted >= 0) {
@@ -541,7 +563,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       URING_CHECK(num_submitted);
     }
 
-  spin_start:
     tq_seq = tq_seq_.load(memory_order_acquire);
 
     // This should handle wait-free and "brief" CPU-only tasks enqued using Async/Await
@@ -560,14 +581,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
           ++task_interrupts;
+          has_cpu_work = true;
           break;
-        }
-
-        if (cnt == 32) {
-          // we notify threads if we unloaded a bunch of tasks.
-          // if in parallel they start pushing we may unload them in parallel
-          // via this loop thus increasing its efficiency.
-          task_queue_avail_.notifyAll();
         }
       } while (task_queue_.try_dequeue(task));
       num_task_runs += cnt;
@@ -578,23 +593,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       task_queue_avail_.notifyAll();
     }
 
-    uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
-    if (cqe_count) {
-      ++cqe_fetches;
-      ReapCompletions(cqe_count, cqes, dispatcher);
-    }
-
     scheduler->ProcessRemoteReady(nullptr);
 
-    if (scheduler->HasSleepingFibers()) {
-      ProcessSleepFibers(scheduler);
-    }
-
-    // must be if and not while (or at most k iterations for while) because
-    // otherwise fibers that yield won't allow dispatcher to grab i/o events since it will be
-    // stuck here.
+    // Traverses one or more fibers because a worker fiber does not necessarily returns
+    // straight back to the dispatcher. Instead it chooses the next ready worker fiber
+    // from the ready queue.
+    //
+    // We can not iterate in while loop here because fibers that yield will make the loop
+    // never ending.
     if (scheduler->HasReady()) {
-      cqe_count = 1;
       FiberInterface* fi = scheduler->PopReady();
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
@@ -603,25 +610,55 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       DVLOG(2) << "Switching to " << fi->name();
       tl_info_.monotonic_time = GetClockNanos();
       fi->SwitchTo();
+
+      if (scheduler->HasReady()) {
+        has_cpu_work = true;
+      } else {
+        // all our ready fibers have been processed. Lets try to submit more sqes.
+        continue;
+      }
     }
 
+    uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
     if (cqe_count) {
+      ++cqe_fetches;
+
+      // cqe tail (ring->cq.ktail) can be updated asynchronously by the kernel even if we
+      // do now execute any syscalls. Therefore we count how many completions we handled
+      // and reap the same amount.
+      ReapCompletions(cqe_count, cqes, dispatcher);
       continue;
     }
 
+    if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
+      continue;
+    }
+
+    ///
+    /// End of the tight loop that processes tasks, ready fibers, and submits sqes.
+    ///
+    if (scheduler->HasSleepingFibers()) {
+      unsigned activated = ProcessSleepFibers(scheduler);
+      if (activated > 0) {  // If we have ready fibers - restart the loop.
+        continue;
+      }
+    }
+
+    DCHECK(!scheduler->HasReady());
+    DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
+
+    // DCHECK_EQ(io_uring_cq_ready(&ring_), 0u) does not hold because completions
+    // can be updated asynchronously by the kernel (unless IORING_SETUP_DEFER_TASKRUN is set).
+
     bool should_spin = RunOnIdleTasks();
     if (should_spin) {
-      // if on_idle_map_ is not empty we should not block on WAIT_SECTION_STATE.
-      // Instead we use the cpu time on doing on_idle work.
-      wait_for_cqe(&ring_, 0, nullptr);  // a dip into kernel to fetch more cqes.
-
       continue;  // continue spinning until on_idle_map_ is empty.
     }
 
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 15) {
+    if (!ring_busy && spin_loops++ < 10) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
@@ -632,6 +669,21 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
     spin_loops = 0;  // Reset the spinning.
 
+    __kernel_timespec ts{0, 0};
+    __kernel_timespec* ts_arg = nullptr;
+
+    if (scheduler->HasSleepingFibers()) {
+      constexpr uint64_t kNsFreq = 1000000000ULL;
+      auto tp = scheduler->NextSleepPoint();
+      auto now = chrono::steady_clock::now();
+      if (now < tp) {
+        auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
+        ts.tv_sec = ns / kNsFreq;
+        ts.tv_nsec = ns % kNsFreq;
+      }
+      ts_arg = &ts;
+    }
+
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then
      * EmplaceTaskQueue succeeded and we might have more tasks to execute - lets
@@ -639,7 +691,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      * we are going to stall now. Other threads will need to wake-up the ring
      * (see WakeRing()) but only one will actually call the syscall.
      */
-    if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
+    if (task_queue_.empty() &&
+        tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
       if (is_stopped_) {
         tq_seq_.store(0, std::memory_order_release);  // clear WAIT section
         break;
@@ -647,31 +700,14 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       DCHECK(!scheduler->HasReady());
 
-      if (task_queue_.empty()) {
-        VPRO(2) << "wait_for_cqe " << loop_cnt;
-        __kernel_timespec ts{0, 0};
-        __kernel_timespec* ts_arg = nullptr;
+      VPRO(2) << "wait_for_cqe " << loop_cnt;
 
-        if (scheduler->HasSleepingFibers()) {
-          constexpr uint64_t kNsFreq = 1000000000ULL;
-          auto tp = scheduler->NextSleepPoint();
-          auto now = chrono::steady_clock::now();
-          if (now < tp) {
-            auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
-            ts.tv_sec = ns / kNsFreq;
-            ts.tv_nsec = ns % kNsFreq;
-          }
-          ts_arg = &ts;
-        }
-        wait_for_cqe(&ring_, 1, ts_arg);
-        VPRO(2) << "Woke up after wait_for_cqe ";
+      wait_for_cqe(&ring_, 1, ts_arg);
+      VPRO(2) << "Woke up after wait_for_cqe ";
 
-        ++num_stalls;
-      }
-
+      ++num_stalls;
       tq_seq = 0;
       tq_seq_.store(0, std::memory_order_release);
-      goto spin_start;
     }
   }
 
