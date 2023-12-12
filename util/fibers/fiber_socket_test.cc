@@ -353,9 +353,8 @@ TEST_P(FiberSocketTest, NotEmpty) {
   bool use_uring = GetParam() == "uring";
   bool has_poll_first = false;
 
-
   if (use_uring) {
-    has_poll_first = reinterpret_cast<UringProactor*>(proactor_.get())->HasPollFirst();
+    has_poll_first = static_cast<UringProactor*>(proactor_.get())->HasPollFirst();
   }
 
   if (!has_poll_first) {
