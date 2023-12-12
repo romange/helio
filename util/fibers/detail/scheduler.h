@@ -86,6 +86,7 @@ class Scheduler {
 
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
+  void SuspendAndExecuteOnDispatcher(std::function<void()> fn);
 
  private:
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations

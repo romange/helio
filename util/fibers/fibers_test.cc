@@ -409,6 +409,40 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
+TEST_F(FiberTest, SwitchAndExecute) {
+  Promise<detail::FiberInterface*> first, second;
+  unsigned cnt1 = 0, cnt2 = 0;
+
+  Fiber fb1("fb1", [&]() mutable {
+    first.set_value(detail::FiberActive());
+    Future<detail::FiberInterface*> f2 = second.get_future();
+
+    detail::FiberInterface* other = f2.get();
+    for (unsigned i = 0; i < 10; ++i) {
+      other->SwitchToAndExecute([&] { ++cnt1; });
+    }
+    while (cnt2  < 10)
+      ThisFiber::Yield();
+  });
+
+
+  Fiber fb2("fb2", [&] {
+    second.set_value(detail::FiberActive());
+    Future<detail::FiberInterface*> f1 = first.get_future();
+    detail::FiberInterface* other = f1.get();
+
+    for (unsigned i = 0; i < 10; ++i) {
+      other->SwitchTo();
+      ++cnt2;
+    }
+
+    do { ThisFiber::Yield(); } while (cnt1 < 10);
+  });
+
+  fb1.Join();
+  fb2.Join();
+}
+
 TEST_F(FiberTest, CleanExit) {
   ASSERT_EXIT(
       {
