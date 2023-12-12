@@ -327,6 +327,12 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
     FiberCall fc(p, timeout());
     fc->PrepRecvMsg(fd, &msg, flags);
     fc->sqe()->flags |= register_flag();
+
+    // As described in "io_uring_prep_recv(3)"
+    if (has_pollfirst_ && !has_recv_data_) {
+      fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
+    }
+
     res = fc.Get();
 
     if (res > 0) {
@@ -362,9 +368,14 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
     FiberCall fc(p, timeout());
     fc->PrepRecv(fd, mb.data(), mb.size(), flags);
     fc->sqe()->flags |= register_flag();
+    if (has_pollfirst_ && !has_recv_data_) {
+      fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
+    }
     res = fc.Get();
 
     if (res > 0) {
+      has_recv_data_ = (fc.flags() & IORING_CQE_F_SOCK_NONEMPTY) ? 1 : 0;
+      DVSOCK(2) << "Received " << res << " bytes";
       return res;
     }
     DVSOCK(2) << "Got " << res;

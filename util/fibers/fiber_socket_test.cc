@@ -12,6 +12,7 @@
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
+#include "util/fibers/uring_socket.h"
 #endif
 #include "util/fibers/epoll_proactor.h"
 
@@ -346,6 +347,46 @@ TEST_P(FiberSocketTest, UDS) {
 
   LOG(INFO) << "Finished";
 }
+
+#ifdef __linux__
+TEST_P(FiberSocketTest, NotEmpty) {
+  bool use_uring = GetParam() == "uring";
+  bool has_poll_first = false;
+
+
+  if (use_uring) {
+    has_poll_first = reinterpret_cast<UringProactor*>(proactor_.get())->HasPollFirst();
+  }
+
+  if (!has_poll_first) {
+    GTEST_SKIP() << "NotEmpty test is supported only on uring with ";
+    return;
+  }
+
+  unique_ptr<FiberSocketBase> sock;
+  error_code ec;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    ec = sock->Connect(listen_ep_);
+  });
+  ASSERT_FALSE(ec);
+  constexpr size_t kBufSize = 8192;
+  unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
+
+  proactor_->Await([&] {
+    ec = sock->Write(io::Bytes(buf.get(), kBufSize));
+    io::Result<size_t> res = conn_socket_->Recv(io::MutableBytes(buf.get(), 16));
+    ASSERT_EQ(16, res.value_or(0));
+  });
+
+  ASSERT_FALSE(ec);
+
+  UringSocket* uring_sock = static_cast<UringSocket*>(conn_socket_.get());
+  EXPECT_TRUE(uring_sock->HasRecvData());   // we have more pending data to read.
+
+  proactor_->Await([&] { (void)sock->Close(); });
+}
+#endif
 
 }  // namespace fb2
 }  // namespace util
