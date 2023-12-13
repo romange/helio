@@ -64,7 +64,7 @@ class FiberInterface {
 
   virtual ~FiberInterface();
 
-
+  // Switch functions
   ::boost::context::fiber_context SwitchTo();
   void SwitchToAndExecute(std::function<void()> fn);
 
@@ -184,9 +184,17 @@ class FiberInterface {
   ::boost::context::fiber_context Terminate();
 
   std::atomic<uint32_t> use_count_;  // used for intrusive_ptr refcounting.
-  std::atomic<uint16_t> flags_;
 
+  // trace_ variable - used only for debugging purposes.
+  enum TraceState : uint8_t {
+    TRACE_NONE,
+    TRACE_SLEEP_WAKE,
+    TRACE_TERMINATE,
+    TRACE_READY
+  } trace_ = TRACE_NONE;
   Type type_;
+
+  std::atomic<uint16_t> flags_{0};
 
   // FiberInterfaces that join on this fiber to terminate are added here.
   WaitQueue wait_queue_;
@@ -203,7 +211,7 @@ class FiberInterface {
 
   char name_[24];
 
-private:
+ private:
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();

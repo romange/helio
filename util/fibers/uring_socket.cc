@@ -89,6 +89,7 @@ auto UringSocket::Close() -> error_code {
       LOG(WARNING) << "Error unregistering fd " << direct_fd;
       return ec;
     }
+    is_direct_fd_ = 0;
   } else {
     fd = native_handle();
   }

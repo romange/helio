@@ -111,41 +111,45 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   DCHECK(fs);
 
   error_code ec;
-  bool success = false;
+
   int family_pref[2] = {AF_INET, AF_INET6};
+  auto sock_create_cb = [&] {
+    // Try ip4 first
+    for (unsigned j = 0; j < 2; ++j) {
+      for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
+        if (p->ai_family != family_pref[j])
+          continue;
+        ec = fs->Create(p->ai_family);
+        if (ec)
+          continue;
 
-  // Try ip4 first
-  for (unsigned j = 0; j < 2 && !success; ++j) {
-    for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-      if (p->ai_family != family_pref[j])
-        continue;
+        ec = listener->ConfigureServerSocket(fs->native_handle());
+        if (ec)
+          break;
 
-      ec = next->AwaitBrief(
-          [sock = fs.get(), family = p->ai_family] { return sock->Create(family); });
-      if (ec)
-        continue;
-
-      ec = listener->ConfigureServerSocket(fs->native_handle());
-      if (ec)
-        break;
-
-      ec = fs->Bind(p->ai_addr, p->ai_addrlen);
-      if (ec)
-        break;
-      ec = fs->Listen(backlog_);
-      if (!ec) {
-        const char* safe_bind = bind_addr ? bind_addr : "";
-        VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << p->ai_family << " "
-                << safe_bind << ":" << port;
-        success = true;
-        break;
+        ec = fs->Bind(p->ai_addr, p->ai_addrlen);
+        if (ec)
+          break;
+        ec = fs->Listen(backlog_);
+        if (!ec) {
+          const char* safe_bind = bind_addr ? bind_addr : "";
+          VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << p->ai_family << " "
+                  << safe_bind << ":" << port;
+          return true;
+        }
       }
+      (void)fs->Close();
     }
-  }
+    return false;
+  };
+
+  bool success = next->Await(std::move(sock_create_cb));
 
   freeaddrinfo(servinfo);
 
   if (success) {
+    DCHECK(fs->IsOpen());
+
     listener->RegisterPool(pool_);
     listener->sock_ = std::move(fs);
     list_interface_.emplace_back(listener);

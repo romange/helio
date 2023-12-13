@@ -76,7 +76,9 @@ class Scheduler {
 
   void DestroyTerminated();
   void ProcessRemoteReady(FiberInterface* active);
-  void ProcessSleep();
+
+  // Returns number of sleeping fibers being activated from sleep.
+  unsigned ProcessSleep();
 
   void AttachCustomPolicy(DispatchPolicy* policy);
 

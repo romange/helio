@@ -120,7 +120,7 @@ FiberInterface* FiberActive() noexcept {
 }
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
-    : use_count_(cnt), flags_(0), type_(type) {
+    : use_count_(cnt), type_(type) {
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
@@ -166,7 +166,7 @@ ctx::fiber_context FiberInterface::Terminate() {
     }
     CpuPause();
   }
-
+  trace_ = TRACE_TERMINATE;
   wait_queue_.NotifyAll(this);
 
   flags_.fetch_and(~kBusyBit, memory_order_release);

@@ -62,6 +62,8 @@ LinuxSocketBase::~LinuxSocketBase() {
 
   if (fd > -1) {
     LOG(WARNING) << "Socket was not closed properly, closing file descriptor";
+
+    // We can not call virtual Close() from the d-tor, so we are doing the next best thing.
     int res = close(fd);
     LOG_IF(WARNING, res == -1) << "Error closing socket " << strerror(errno);
   }
@@ -123,11 +125,9 @@ error_code LinuxSocketBase::ListenUDS(const char* path, mode_t permissions, unsi
     return ec;
 
   // Set permissions for the socket file
-  int fd = native_handle();
   int res = chmod(path, permissions);
   if (posix_err_wrap(res, &ec) < 0) {
-    close(fd);
-    fd_ = -1;
+    (void)Close();
     return ec;
   }
 
@@ -146,8 +146,7 @@ error_code LinuxSocketBase::Bind(const struct sockaddr* bind_addr, unsigned addr
 
   int res = bind(fd, bind_addr, addr_len);
   if (posix_err_wrap(res, &ec) < 0) {
-    close(fd);
-    fd_ = -1;
+    (void)Close();
     return ec;
   }
   return ec;
@@ -161,8 +160,7 @@ error_code LinuxSocketBase::Listen(unsigned backlog) {
 
   int res = posix_err_wrap(listen(fd, backlog), &ec);
   if (posix_err_wrap(res, &ec) < 0) {
-    close(fd);
-    fd_ = -1;
+    (void)Close();
     return ec;
   }
 

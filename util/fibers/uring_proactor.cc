@@ -59,6 +59,7 @@ constexpr uint64_t kWakeIndex = 1;
 constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr uint16_t kMsgRingSubmitTag = 1;
 constexpr uint16_t kTimeoutSubmitTag = 2;
+constexpr uint16_t kCqeBatchLen = 128;
 
 }  // namespace
 
@@ -108,7 +109,6 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     params.flags |= (IORING_SETUP_COOP_TASKRUN | IORING_SETUP_SINGLE_ISSUER);
   }
 
-
   // it seems that SQPOLL requires registering each fd, including sockets fds.
   // need to check if its worth pursuing.
   // For sure not in short-term.
@@ -129,7 +129,6 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
                << SafeErrorMessage(init_res);
   }
-
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
@@ -168,58 +167,82 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   tl_info_.owner = this;
 }
 
-void UringProactor::DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe) {
-  uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
-  if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
-    if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
-      base::sys::KernelVersion kver;
-      base::sys::GetKernelVersion(&kver);
+void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
+                                    detail::FiberInterface* current) {
+  for (unsigned i = 0; i < count; ++i) {
+    const io_uring_cqe& cqe = *cqes[i];
 
-      LOG(ERROR) << "Fatal error that is most likely caused by a bug in kernel.";
+    uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
+    if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
+      if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
+        base::sys::KernelVersion kver;
+        base::sys::GetKernelVersion(&kver);
 
-      LOG(ERROR) << "Kernel version: " << kver.kernel << "." << kver.major << "." << kver.minor;
-      LOG(ERROR) << "If you are running on WSL2 or using Docker Desktop, try upgrading it "
-                    "to kernel 5.15 or later.";
-      LOG(ERROR) << "If you are running dragonfly - you can workaround the bug "
-                    "with `--force_epoll` flag. Exiting...";
-      exit(1);
+        LOG(ERROR) << "Fatal error that is most likely caused by a bug in kernel.";
+
+        LOG(ERROR) << "Kernel version: " << kver.kernel << "." << kver.major << "." << kver.minor;
+        LOG(ERROR) << "If you are running on WSL2 or using Docker Desktop, try upgrading it "
+                      "to kernel 5.15 or later.";
+        LOG(ERROR) << "If you are running dragonfly - you can workaround the bug "
+                      "with `--force_epoll` flag. Exiting...";
+        exit(1);
+      }
+
+      size_t index = user_data - kUserDataCbIndex;
+      DCHECK_LT(index, centries_.size());
+      auto& e = centries_[index];
+      DCHECK(e.cb) << index;
+
+      CbType func = std::move(e.cb);
+
+      // Set e to be the head of free-list.
+      e.index = next_free_ce_;
+      next_free_ce_ = index;
+      --pending_cb_cnt_;
+      func(current, cqe.res, cqe.flags);
+      continue;
     }
 
-    size_t index = user_data - kUserDataCbIndex;
-    DCHECK_LT(index, centries_.size());
-    auto& e = centries_[index];
-    DCHECK(e.cb) << index;
+    // We ignore ECANCELED because submissions with link_timeout that finish successfully generate
+    // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
+    // ETIME is when a timer cqe fully completes.
+    if (cqe.res < 0 && cqe.res != -ECANCELED && cqe.res != -ETIME) {
+      LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
+    }
 
-    CbType func = std::move(e.cb);
+    if (user_data == kIgnoreIndex)
+      continue;
 
-    // Set e to be the head of free-list.
-    e.index = next_free_ce_;
-    next_free_ce_ = index;
-    --pending_cb_cnt_;
-    func(current, cqe.res, cqe.flags);
-    return;
+    if (user_data == kWakeIndex) {
+      // Path relevant only for older kernels. For new kernels we use MSG_RING.
+      // We were woken up. Need to rearm wakeup poller.
+      DCHECK_EQ(cqe.res, 8);
+      DVLOG(2) << "PRO[" << GetPoolIndex() << "] Wakeup " << cqe.res << "/" << cqe.flags;
+
+      ArmWakeupEvent();
+      continue;
+    }
+    LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
+  }
+}
+
+void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
+                                    detail::FiberInterface* current) {
+  unsigned batch_count = init_count;
+  while (batch_count > 0) {
+    ProcessCqeBatch(batch_count, cqes, current);
+    io_uring_cq_advance(&ring_, batch_count);
+    if (batch_count < kCqeBatchLen)
+      break;
+    batch_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
   }
 
-  // We ignore ECANCELED because submissions with link_timeout that finish successfully generate
-  // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
-  // ETIME is when a timer cqe fully completes.
-  if (cqe.res < 0 && cqe.res != -ECANCELED && cqe.res != -ETIME) {
-    LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
+  // In case some of the timer completions filled schedule_periodic_list_.
+  for (auto& task_pair : schedule_periodic_list_) {
+    SchedulePeriodic(task_pair.first, task_pair.second);
   }
-
-  if (user_data == kIgnoreIndex)
-    return;
-
-  if (user_data == kWakeIndex) {
-    // We were woken up. Need to rearm wakeup poller.
-    DCHECK_EQ(cqe.res, 8);
-    DVLOG(2) << "PRO[" << GetPoolIndex() << "] Wakeup " << cqe.res << "/" << cqe.flags;
-
-    // TODO: to move io_uring_get_sqe call from here to before we stall.
-    ArmWakeupEvent();
-    return;
-  }
-  LOG(ERROR) << "Unrecognized user_data " << cqe.user_data;
+  schedule_periodic_list_.clear();
+  sqe_avail_.notifyAll();
 }
 
 SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
@@ -488,9 +511,7 @@ LinuxSocketBase* UringProactor::CreateSocket() {
 }
 
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {
-  constexpr size_t kBatchSize = 128;
-  struct io_uring_cqe cqes[kBatchSize];
-  static_assert(sizeof(cqes) == 2048);
+  struct io_uring_cqe* cqes[kCqeBatchLen];
 
   uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_submits = 0;
   uint32_t tq_seq = 0;
@@ -557,24 +578,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       task_queue_avail_.notifyAll();
     }
 
-    uint32_t cqe_count = 0;
-    unsigned ring_head;
-    struct io_uring_cqe* cqe;
-    io_uring_for_each_cqe(&ring_, ring_head, cqe) {
-      ++cqe_count;
-      DispatchCqe(dispatcher, *cqe);
-    }
-
+    uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
     if (cqe_count) {
       ++cqe_fetches;
-      io_uring_cq_advance(&ring_, cqe_count);
-
-      // In case some of the timer completions filled schedule_periodic_list_.
-      for (auto& task_pair : schedule_periodic_list_) {
-        SchedulePeriodic(task_pair.first, task_pair.second);
-      }
-      schedule_periodic_list_.clear();
-      sqe_avail_.notifyAll();
+      ReapCompletions(cqe_count, cqes, dispatcher);
     }
 
     scheduler->ProcessRemoteReady(nullptr);

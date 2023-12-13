@@ -10,8 +10,8 @@
 #include <mutex>
 
 #include "base/logging.h"
-#include "util/fibers/stacktrace.h"
 #include "util/fibers/detail/utils.h"
+#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -186,7 +186,6 @@ Scheduler::~Scheduler() {
     LOG(FATAL) << "Scheduler is destroyed with " << num_worker_fibers_ << " worker fibers";
   }
 
-
   fibers_.erase(fibers_.iterator_to(*dispatch_cntx_));
   fibers_.erase(fibers_.iterator_to(*main_cntx_));
 
@@ -217,6 +216,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 
   fibi->cpu_tsc_ = CycleClock::Now();
   ready_queue_.push_back(*fibi);
+  fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
   if (fibi->sleep_hook.is_linked()) {
@@ -325,13 +325,21 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     DCHECK(fi->scheduler_ == this);
 
-    // Remote thread can add the same fiber exactly once to the remote_ready_queue.
-    // This is why each fiber is removed from its waitqueue and added to the remote queue
-    // under the same lock.
-    DCHECK(!fi->list_hook.is_linked());
-
-    // ProcessRemoteReady can be called by a FiberInterface::PullMyselfFromRemoteReadyQueue
-    // i.e. it is already active. In that case we should not add it to the ready queue.
+    // Generally, fi should not be in the ready queue if it's still in the remote queue.
+    // Because being in the remote queue means fi is still registered in the wait_queue of
+    // some event. However, in case fi is waiting with timeout, ProcessSleep below can not
+    // remove fi from the wait_queue and from the remote queue. In that case fi will be put
+    // into special transisitional state by adding it to ready_queue even though it's still
+    // blocked on the wait queue. When fi runs, it first unregisters itself from the
+    // wait queue atomically and pulls itself from the remote queue.
+    // There is a race condition between ProcessSleep and ProcessRemoteReady,
+    // where we can process remote notification before fi run,
+    // but after it was added to ready_queue. It's fine though, all we need to check is that
+    // fi->list_hook is not already linked.
+    //
+    // Another corner-case is that ProcessRemoteReady can be called
+    // by a FiberInterface::PullMyselfFromRemoteReadyQueue
+    // i.e. when fi is already active. In that case we should not add it to the ready queue.
     if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
       AddReady(fi);
@@ -339,11 +347,12 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
   }
 }
 
-void Scheduler::ProcessSleep() {
+unsigned Scheduler::ProcessSleep() {
   DCHECK(!sleep_queue_.empty());
   std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
   DVLOG(3) << "now " << now.time_since_epoch().count();
 
+  unsigned result = 0;
   do {
     auto it = sleep_queue_.begin();
     if (it->tp_ > now)
@@ -353,11 +362,14 @@ void Scheduler::ProcessSleep() {
     sleep_queue_.erase(it);
 
     DCHECK(!fi.list_hook.is_linked());
-    DVLOG(2) << "timeout for " << fi.name();
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
     ready_queue_.push_back(fi);
+    fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
+    ++result;
   } while (!sleep_queue_.empty());
+
+  return result;
 }
 
 void Scheduler::AttachCustomPolicy(DispatchPolicy* policy) {
@@ -382,9 +394,7 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   // not through Preempt().
   ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
 
-  dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] {
-    fn();
-  });
+  dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
 }
 
 void Scheduler::PrintAllFiberStackTraces() {
