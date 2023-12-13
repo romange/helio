@@ -20,6 +20,30 @@ in c++17 on Linux systems. The focus is mostly on backend development, data proc
 
 I will gradually add explanations for the most crucial blocks in this library.
 
+## Acknowledgments
+Helio has utilized [Boost.Fiber](https://github.com/boostorg/fiber) until May 2023.
+After this period, the fibers functionality
+was integrated directly into Helio code. This transition involved adapting and reworking
+portions of the original Boost.Fiber code to align with Helio's coding conventions
+and architecture.
+
+The design and implementation of Helio fibers draw significant inspiration from Boost.Fiber.
+Certain segments of the Boost.Fiber code were selectively adopted and modified for
+seamless incorporation into Helio. We extend our deepest gratitude and recognition to @olk
+and all the contributors of Boost.Fiber for their foundational work.
+
+The decision to replicate and modify the original code was driven by the necessity
+for greater flexibility. Specifically, it was easier to evolve Helio's polling mechanism
+when we had full control over the fibers internal interfaces.
+
+## Differrences between Boost.Fiber and helio fb2 fibers.
+Helio fb2 library adopts similar non-intrusive, shared nothing design similarly to Boost.Fiber.
+However, helio's fb2 library is more opinionated and also provides full networking support
+for asynchronous multi-threaded execution. helio fibers allows injecting a custom dispatch
+policy "util::fb2::DispatchPolicy" directly into a dispatching fiber,
+while Boost.Fiber requires using a separate fiber to handle the I/O polling.
+In addition, Boost.Fiber inter-thread notification mechanism (aka remote ready queue)
+required locking while helio fibers use a lockless queue.
 
 ## Setting Up & Building
    ```bash
