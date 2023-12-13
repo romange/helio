@@ -325,8 +325,8 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     DCHECK(fi->scheduler_ == this);
 
-    // Generally, fi should not be in the ready queue if it's still in the remote queue.
-    // Because being in the remote queue means fi is still registered in the wait_queue of
+    // Generally, fi should not be in the ready queue if it's still in the remote queue,
+    // because being in the remote queue means fi is still registered in the wait_queue of
     // some event. However, in case fi is waiting with timeout, ProcessSleep below can not
     // remove fi from the wait_queue and from the remote queue. In that case fi will be put
     // into special transisitional state by adding it to ready_queue even though it's still
