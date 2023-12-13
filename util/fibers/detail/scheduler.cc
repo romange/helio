@@ -329,7 +329,7 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // because being in the remote queue means fi is still registered in the wait_queue of
     // some event. However, in case fi is waiting with timeout, ProcessSleep below can not
     // remove fi from the wait_queue and from the remote queue. In that case fi will be put
-    // into special transisitional state by adding it to ready_queue even though it's still
+    // into special transitional state by adding it to ready_queue even though it's still
     // blocked on the wait queue. When fi runs, it first unregisters itself from the
     // wait queue atomically and pulls itself from the remote queue.
     // There is a race condition between ProcessSleep and ProcessRemoteReady,
