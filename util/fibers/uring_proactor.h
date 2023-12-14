@@ -108,7 +108,8 @@ class UringProactor : public ProactorBase {
   void EpollDel(EpollIndex id);
 
  private:
-  void DispatchCqe(detail::FiberInterface* current, const io_uring_cqe& cqe);
+  void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
+  void ReapCompletions(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
 
   void RegrowCentries();
 

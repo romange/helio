@@ -250,7 +250,7 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
   }
 }
 
-void ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
+unsigned ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
   // avoid calling steady_clock::now() too much.
   // Cycles count can reset, for example when CPU is suspended, therefore we also allow
   // "returning  into past". False positive is possible but it's not a big deal.
@@ -262,10 +262,12 @@ void ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
     now = last_sleep_cycle_ + cycles_per_10us;
   }
 
+  unsigned result = 0;
   if (now >= last_sleep_cycle_ + cycles_per_10us) {
     last_sleep_cycle_ = now;
-    scheduler->ProcessSleep();
+    result = scheduler->ProcessSleep();
   }
+  return result;
 }
 
 void ProactorBase::Pause(unsigned count) {

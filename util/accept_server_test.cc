@@ -131,6 +131,7 @@ void AcceptServerTest::SetUp() {
   ep = FiberSocketBase::endpoint_type{address, kPort};
 
   pb->Await([&] {
+    ThisFiber::SetName("ClientConnect");
     FiberSocketBase::error_code ec = client_sock_->Connect(ep);
     CHECK(!ec) << ec.message();
   });

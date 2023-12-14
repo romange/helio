@@ -214,7 +214,8 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
-  void ProcessSleepFibers(detail::Scheduler* scheduler);
+  // Returns number of sleeping fibers being activated.
+  unsigned ProcessSleepFibers(detail::Scheduler* scheduler);
 
   pthread_t thread_id_ = 0U;
   int sys_thread_id_ = 0;
