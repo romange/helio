@@ -172,7 +172,8 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
 void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
                                     detail::FiberInterface* current) {
   for (unsigned i = 0; i < count; ++i) {
-    const io_uring_cqe& cqe = *cqes[i];
+    // copy cqe (16 bytes) because it helps when debugging, gdb can not access memory in kernel space.
+    io_uring_cqe cqe = *cqes[i];  
 
     uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
     if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
@@ -234,6 +235,7 @@ void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
   while (batch_count > 0) {
     ProcessCqeBatch(batch_count, cqes, current);
     io_uring_cq_advance(&ring_, batch_count);
+    reaped_cqe_cnt_ += batch_count;
     if (batch_count < kCqeBatchLen)
       break;
     batch_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
@@ -255,7 +257,6 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
     if (submitted > 0) {
       res = io_uring_get_sqe(&ring_);
     } else {
-      ++get_entry_submit_fail_;
       LOG(FATAL) << "Fatal error submitting to iouring: " << -submitted;
     }
   }
@@ -555,7 +556,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         DVLOG(3) << "Submitted " << num_submitted;
       }
     } else if (num_submitted == -EBUSY) {
-      VLOG(2) << "EBUSY " << io_uring_sq_ready(&ring_);
+      VLOG(1) << "EBUSY " << io_uring_sq_ready(&ring_);
       ring_busy = true;
       num_submitted = 0;
       ++busy_sq_cnt;
@@ -713,11 +714,12 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
   VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << loop_cnt << "/" << num_stalls << "/"
           << cqe_fetches << "/" << num_submits;
-  VPRO(1) << "Tasks/loop: " << double(num_task_runs) / loop_cnt;
+  if (cqe_fetches > 0)
+    VPRO(1) << "AvgCqe/ReapCall: " << double(reaped_cqe_cnt_) / cqe_fetches;
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
           << tq_wakeup_prevent_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
-          << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_submit_fail_ << "/"
+          << busy_sq_cnt << "/" << get_entry_sq_full_ << "/"
           << get_entry_await_ << "/" << pending_cb_cnt_;
 
   VPRO(1) << "centries size: " << centries_.size();

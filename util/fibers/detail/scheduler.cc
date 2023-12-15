@@ -159,6 +159,7 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
 
   fibers_.push_back(*main_cntx);
   fibers_.push_back(*dispatch_cntx_);
+  AddReady(dispatch_cntx_.get());
 }
 
 Scheduler::~Scheduler() {
@@ -197,11 +198,7 @@ Scheduler::~Scheduler() {
 ctx::fiber_context Scheduler::Preempt() {
   DCHECK(FiberActive() != dispatch_cntx_.get()) << "Should not preempt dispatcher";
   DCHECK(!IsFiberAtomicSection()) << "Preempting inside of atomic section";
-
-  if (ready_queue_.empty()) {
-    // All user fibers are inactive, we should switch back to the dispatcher.
-    return dispatch_cntx_->SwitchTo();
-  }
+  DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
 
   DCHECK(!ready_queue_.empty());
   FiberInterface* fi = &ready_queue_.front();
