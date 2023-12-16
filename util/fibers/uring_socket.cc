@@ -186,9 +186,25 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     return Unexpected(errc::connection_aborted);
   }
 
-  int fd = ShiftedFd();
+  int fd = native_handle();
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_iov = const_cast<iovec*>(ptr);
+  msg.msg_iovlen = len;
+
+  ssize_t res = sendmsg(fd, &msg, MSG_NOSIGNAL);
+  if (res >= 0) {
+    return res;
+  }
+
+  res = errno;
+  if (res != EAGAIN && res != EWOULDBLOCK) {
+    return make_unexpected(error_code{int(res), generic_category()});
+  }
+
+  fd = ShiftedFd();
   Proactor* p = GetProactor();
-  ssize_t res = 0;
+  res = 0;
   size_t short_len = 0;
   uint8_t* reg_buf = nullptr;
 
