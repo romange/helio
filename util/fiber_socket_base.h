@@ -129,7 +129,6 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 class LinuxSocketBase : public FiberSocketBase {
  public:
   using FiberSocketBase::native_handle_type;
-  constexpr static unsigned kFdShift = 4;
 
   virtual ~LinuxSocketBase();
 
@@ -175,6 +174,8 @@ class LinuxSocketBase : public FiberSocketBase {
   }
 
  protected:
+  constexpr static unsigned kFdShift = 4;
+
   LinuxSocketBase(int fd, ProactorBase* pb)
       : FiberSocketBase(pb), fd_(fd > 0 ? fd << kFdShift : fd) {
   }

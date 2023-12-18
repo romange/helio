@@ -39,6 +39,9 @@ auto Unexpected(std::errc e) {
 
 UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
   if (p) {
+    // This flag has a clear positive impact of the CPU usage for server side sockets.
+    // It also has a negative impact on client side sockets - not sure what the reason is but
+    // it was consistently reproducible with echo_server.
     has_pollfirst_ = p->HasPollFirst();
   }
 }
@@ -65,7 +68,7 @@ error_code UringSocket::Create(unsigned short protocol_family) {
     unsigned direct_fd = proactor->RegisterFd(source_fd);
     if (direct_fd != UringProactor::kInvalidDirectFd) {
       // encode back the id we got.
-      fd_ = (direct_fd << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
+      UpdateDfVal(direct_fd);
       is_direct_fd_ = 1;
     }
   }
@@ -183,7 +186,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     return Unexpected(errc::connection_aborted);
   }
 
-  int fd = native_handle();
+  int fd = ShiftedFd();
   Proactor* p = GetProactor();
   ssize_t res = 0;
   size_t short_len = 0;
@@ -317,7 +320,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   if (fd_ & IS_SHUTDOWN) {
     return Unexpected(errc::connection_aborted);
   }
-  int fd = native_handle();
+  int fd = ShiftedFd();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
 
@@ -359,7 +362,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 }
 
 io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
-  int fd = native_handle();
+  int fd = ShiftedFd();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
 
@@ -399,6 +402,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
+  DCHECK(IsOpen());
   DCHECK_EQ(error_cb_id_, UINT32_MAX) << fd_;
   uint32_t event_mask = POLLERR | POLLHUP;
 
@@ -441,6 +445,36 @@ auto UringSocket::native_handle() const -> native_handle_type {
     fd = GetProactor()->TranslateDirectFd(fd);
   }
   return fd;
+}
+
+void UringSocket::OnSetProactor() {
+  UringProactor* proactor = GetProactor();
+
+  if (proactor->HasDirectFD() && is_direct_fd_ == 0 && fd_ >= 0) {
+    // Using direct descriptors has consistent positive impact on CPU usage of the server.
+    // Checked with echo_server with server side sockets.
+    int source_fd = ShiftedFd();  // linux fd.
+    unsigned direct_fd = proactor->RegisterFd(source_fd);
+    if (direct_fd != UringProactor::kInvalidDirectFd) {
+      // encode back the id we got.
+      UpdateDfVal(direct_fd);
+      is_direct_fd_ = 1;
+    }
+  }
+}
+
+void UringSocket::OnResetProactor() {
+  DCHECK(proactor()->InMyThread());
+  if (is_direct_fd_) {
+    UringProactor* proactor = GetProactor();
+    unsigned direct_fd = ShiftedFd();
+    int fd = proactor->UnregisterFd(direct_fd);
+    if (fd < 0) {
+      LOG(WARNING) << "Error unregistering fd " << direct_fd;
+    }
+    UpdateDfVal(fd);
+    is_direct_fd_ = 0;
+  }
 }
 
 }  // namespace fb2

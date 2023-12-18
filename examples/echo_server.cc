@@ -45,6 +45,7 @@ ABSL_FLAG(string, connect, "", "hostname or ip address to connect to in client m
 ABSL_FLAG(string, write_file, "", "");
 ABSL_FLAG(uint32, write_num, 1000, "");
 ABSL_FLAG(uint32, max_pending_writes, 300, "");
+ABSL_FLAG(uint32, max_clients, 1 << 16, "");
 ABSL_FLAG(bool, sqe_async, false, "");
 ABSL_FLAG(bool, o_direct, true, "");
 ABSL_FLAG(bool, raw, true,
@@ -54,6 +55,8 @@ ABSL_FLAG(bool, tcp_nodelay, false, "if true - use tcp_nodelay option for server
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
+
+const char kMaxConnectionsError[] = "max connections reached\r\n";
 
 namespace {
 
@@ -250,8 +253,15 @@ void EchoConnection::HandleRequests() {
 
 class EchoListener : public ListenerInterface {
  public:
+  EchoListener() {
+    SetMaxClients(GetFlag(FLAGS_max_clients));
+  }
   virtual Connection* NewConnection(ProactorBase* context) final {
     return new EchoConnection;
+  }
+
+  void OnMaxConnectionsReached(FiberSocketBase* sock) override {
+    sock->Write(io::Buffer(kMaxConnectionsError));
   }
 };
 

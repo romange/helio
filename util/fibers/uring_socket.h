@@ -63,8 +63,15 @@ class UringSocket : public LinuxSocketBase {
     return static_cast<const UringProactor*>(proactor());
   }
 
+  void OnSetProactor() final;
+  void OnResetProactor();
+
   uint8_t register_flag() const {
     return is_direct_fd_ ? IOSQE_FIXED_FILE : 0;
+  }
+
+  void UpdateDfVal(unsigned val) {
+    fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
 
   uint32_t error_cb_id_ = UINT32_MAX;

@@ -126,6 +126,16 @@ void ListenerInterface::RunAcceptLoop() {
 
     uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_acquire);
     if (prev_connections >= max_clients_) {
+      // In general, we do not handle max client limit correctly for case where we experience
+      // connection storms. The reason is that we immediately close the just-accepted socket,
+      // which causes clients just to retry again and again, and increases the load on the server.
+      // What we need to do is to start throttling the accept queue by NOT handling
+      // the accept requests. Then the accept queue overflows and the linux OS
+      // starts blocking connection requests by dropping SYN packets, effectively stalling
+      // the connecting clients.
+      // Here is the great article explaining the dynamics of the connection storms:
+      // https://veithen.io/2014/01/01/how-tcp-backlog-works-in-linux.html
+      // There is this one as well: https://blog.cloudflare.com/when-tcp-sockets-refuse-to-die/
       peer->SetProactor(sock_->proactor());
       OnMaxConnectionsReached(peer.get());
       (void)peer->Close();
@@ -136,13 +146,15 @@ void ListenerInterface::RunAcceptLoop() {
     // Most probably next is in another thread.
     fb2::ProactorBase* next = PickConnectionProactor(peer.get());
 
-    peer->SetProactor(next);
     Connection* conn = NewConnection(next);
-    conn->SetSocket(peer.release());
     conn->listener_ = this;
+    conn->SetSocket(peer.release());
 
     // Run cb in its Proactor thread.
-    next->Dispatch([this, conn] { RunSingleConnection(conn); });
+    next->Dispatch([this, conn, next] {
+      conn->socket()->SetProactor(fb2::ProactorBase::me());
+      RunSingleConnection(conn);
+    });
   }
 
   sock_->Shutdown(SHUT_RDWR);
@@ -284,7 +296,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   TLConnList* src_clist = src_conn_map->find(this)->second;
   src_clist->Unlink(conn, this);
-
+  conn->socket()->SetProactor(nullptr);
   src_proactor->Migrate(dest);
 
   CHECK(dest->InMyThread());  // We are running in the updated thread.

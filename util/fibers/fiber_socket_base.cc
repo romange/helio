@@ -42,8 +42,8 @@ void FiberSocketBase::SetProactor(ProactorBase* p) {
     proactor_ = nullptr;
   }
   proactor_ = p;
-
-  OnSetProactor();
+  if (p)
+    OnSetProactor();
 }
 
 Result<size_t> FiberSocketBase::Recv(const iovec* ptr, size_t len) {
