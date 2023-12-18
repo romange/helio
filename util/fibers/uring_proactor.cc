@@ -84,7 +84,7 @@ UringProactor::~UringProactor() {
       if (group.ring != nullptr) {
         io_uring_free_buf_ring(&ring_, group.ring, group.nentries, i);
         delete[] group.buf;
-      }
+    }
     }
 
     if (!register_fds_.empty()) {
@@ -336,7 +336,7 @@ int UringProactor::RegisterBuffers(size_t size) {
     LOG(ERROR) << "Error calling io_uring_register_buffers: " << SafeErrorMessage(-res);
     munmap(ptr, size);
     return res;
-  }
+}
 
   buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
   buf_pool_.segments.Grow(size / UringBuf::kAlign);
@@ -580,7 +580,7 @@ unsigned UringProactor::RegisterFd(int source_fd) {
   // TODO: to create a linked list from free fds.
   auto next = std::find(register_fds_.begin() + next_free_index_, register_fds_.end(), -1);
   if (next == register_fds_.end())  // it is not possible to resize this table.
-    return kInvalidDirectFd;
+      return kInvalidDirectFd;
 
   *next = source_fd;
   next_free_index_ = next - register_fds_.begin();
@@ -760,8 +760,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ///
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
-      continue;
-    }
+        continue;
+      }
 
     DCHECK(!has_cpu_work);
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);

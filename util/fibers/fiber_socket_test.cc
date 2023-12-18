@@ -380,7 +380,7 @@ TEST_P(FiberSocketTest, NotEmpty) {
   ASSERT_FALSE(ec);
 
   UringSocket* uring_sock = static_cast<UringSocket*>(conn_socket_.get());
-  EXPECT_TRUE(uring_sock->HasRecvData());  // we have more pending data to read.
+  EXPECT_TRUE(uring_sock->HasRecvData());   // we have more pending data to read.
 
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
@@ -402,6 +402,45 @@ TEST_P(FiberSocketTest, OpenMany) {
       ASSERT_FALSE(ec);
       usleep(100);
     }
+  });
+}
+
+TEST_P(FiberSocketTest, ReceiveMultiShot) {
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "ReceiveMultiShot test is supported only on uring";
+    return;
+  }
+
+  proactor_->Await([&] {
+    UringProactor* uring_proactor = static_cast<UringProactor*>(proactor_.get());
+    int err = uring_proactor->RegisterBufferRing();
+    if (err != 0) {
+      LOG(ERROR) << "RegisterBufferRing failed: " << strerror(err);
+      return;
+    }
+    unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+    UringSocket* uring_sock = static_cast<UringSocket*>(sock.get());
+
+    ThisFiber::SleepFor(100us);
+    ASSERT_TRUE(conn_socket_);
+    MultiShotReceiver receiver;
+    uring_sock->SetupReceiveMultiShot(&receiver);
+    ec = conn_socket_->Write(io::Buffer("HELLO1"));
+    ASSERT_FALSE(ec);
+    ec = conn_socket_->Write(io::Buffer("HELLO2"));
+    ASSERT_FALSE(ec);
+    uring_sock->CancelRequests();
+
+    iovec iov[8];
+    int res = receiver.Next(iov, 8);
+    ASSERT_EQ(2, res);
+    receiver.Consume(res);
+    res = receiver.Next(iov, 8);
+    EXPECT_EQ(ECONNABORTED, -res);
+    (void)sock->Close();
   });
 }
 

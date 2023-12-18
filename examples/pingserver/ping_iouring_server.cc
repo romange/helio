@@ -15,6 +15,10 @@
 #include "util/tls/tls_socket.h"
 #include "util/varz.h"
 
+#ifdef __linux__
+#include "util/fibers/uring_socket.h"
+#endif
+
 using namespace boost;
 using namespace std;
 using namespace util;
@@ -32,6 +36,7 @@ ABSL_FLAG(bool, tls_verify_peer, false,
           "server certificates (not sure why).");
 ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses incoming cpu of a socket in order to distribute incoming connections");
+ABSL_FLAG(bool, multishot, false, "Use multishot read");
 ABSL_FLAG(string, tls_cert, "", "");
 ABSL_FLAG(string, tls_key, "", "");
 ABSL_FLAG(string, unixsocket, "", "");
@@ -59,6 +64,10 @@ class PingConnection : public Connection {
   void HandleRequests() final;
 
   SSL_CTX* ctx_ = nullptr;
+
+#ifdef __linux__
+  fb2::MultiShotReceiver msr_;
+#endif
 };
 
 atomic_int conn_id{1};
@@ -83,6 +92,13 @@ void PingConnection::HandleRequests() {
   }
   FiberSocketBase* peer = tls_sock ? (FiberSocketBase*)tls_sock.get() : socket_.get();
 
+#ifdef __linux__
+  if (GetFlag(FLAGS_multishot)) {
+    fb2::UringSocket* usock = static_cast<fb2::UringSocket*>(socket_.get());
+    usock->SetupReceiveMultiShot(&msr_);
+  }
+#endif
+
   AsioStreamAdapter<FiberSocketBase> asa(*peer);
   base::IoBuf io_buf{1024};
   RespParser resp_parser;
@@ -91,11 +107,33 @@ void PingConnection::HandleRequests() {
   while (true) {
     auto dest = io_buf.AppendBuffer();
     asio::mutable_buffer mb(dest.data(), dest.size());
+    size_t res = 0;
 
-    size_t res = asa.read_some(mb, ec);
-    if (FiberSocketBase::IsConnClosed(ec))
-      break;
+#ifdef __linux__
+    if (msr_.Armed()) {
+      iovec vec[2];
+      int buf_cnt = msr_.Next(vec, 2);
+      if (buf_cnt < 0) {
+        break;
+      }
 
+      size_t len = 0;
+      uint8_t* ptr = reinterpret_cast<uint8_t*>(mb.data());
+      for (int i = 0; i < buf_cnt; ++i) {
+        CHECK(vec[i].iov_len > 0);
+
+        memcpy(ptr + len, vec[i].iov_base, vec[i].iov_len);
+        len += vec[i].iov_len;
+      }
+      msr_.Consume(buf_cnt);
+      res = len;
+    }
+#endif
+    if (res == 0) {
+      res = asa.read_some(mb, ec);
+      if (FiberSocketBase::IsConnClosed(ec))
+        break;
+    }
     CHECK(!ec) << ec << "/" << ec.message();
     VLOG(1) << "Read " << res << " bytes";
     io_buf.CommitWrite(res);
@@ -242,6 +280,16 @@ int main(int argc, char* argv[]) {
 
   pp->Run();
   ping_qps.Init(pp.get());
+
+#ifdef __linux__
+  if (GetFlag(FLAGS_multishot)) {
+    LOG(INFO) << "Using multishot mode";
+    pp->Await([](auto* pb) {
+      fb2::UringProactor* uring = static_cast<fb2::UringProactor*>(pb);
+      uring->RegisterBufferRing(0);
+    });
+  }
+#endif
 
   AcceptServer acceptor(pp.get());
   PingListener* listener = new PingListener(ctx);

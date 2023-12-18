@@ -21,6 +21,10 @@
 #include "util/http/http_handler.h"
 #include "util/varz.h"
 
+#ifdef __linux__
+#include "util/fibers/uring_socket.h"
+#endif
+
 using namespace util;
 
 using fb2::DnsResolve;
@@ -48,6 +52,7 @@ ABSL_FLAG(uint32, max_clients, 1 << 16, "");
 ABSL_FLAG(bool, raw, true,
           "If true, does not send/receive size parameter during "
           "the connection handshake");
+ABSL_FLAG(bool, multishot, false, "If true, uses multishot mode for reads");
 ABSL_FLAG(bool, tcp_nodelay, false, "if true - use tcp_nodelay option for server sockets");
 
 VarzQps ping_qps("ping-qps");
@@ -67,9 +72,31 @@ class EchoConnection : public Connection {
 
   std::unique_ptr<uint8_t[]> work_buf_;
   size_t req_len_ = 0;
+
+#ifdef __linux__
+  fb2::MultiShotReceiver msr_;
+#endif
 };
 
 std::error_code EchoConnection::ReadMsg(size_t* sz) {
+#ifdef __linux__
+  if (msr_.Armed()) {
+    iovec vec[2];
+    int res = msr_.Next(vec, 2);
+    if (res < 0)
+      return std::error_code(-res, std::system_category());
+    size_t len = 0;
+    for (int i = 0; i < res; ++i) {
+      CHECK(vec[i].iov_len > 0);
+
+      memcpy(work_buf_.get() + len, vec[i].iov_base, vec[i].iov_len);
+      len += vec[i].iov_len;
+    }
+    msr_.Consume(res);
+    *sz = len;
+    return std::error_code{};
+  }
+#endif
   io::MutableBytes mb(work_buf_.get(), req_len_);
 
   auto res = socket_->Recv(mb, 0);
@@ -131,6 +158,13 @@ void EchoConnection::HandleRequests() {
   CHECK_LE(req_len_, 1UL << 26);
   work_buf_.reset(new uint8_t[req_len_]);
 
+#ifdef __linux__
+  if (GetFlag(FLAGS_multishot)) {
+    fb2::UringSocket* usock = static_cast<fb2::UringSocket*>(socket_.get());
+    usock->SetupReceiveMultiShot(&msr_);
+  }
+#endif
+
   // after the handshake.
   while (true) {
     ec = ReadMsg(&sz);
@@ -160,7 +194,12 @@ void EchoConnection::HandleRequests() {
     if (ec)
       break;
   }
-
+#ifdef __linux__
+  if (msr_.Armed()) {
+    fb2::UringSocket* usock = static_cast<fb2::UringSocket*>(socket_.get());
+    usock->CancelRequests();
+  }
+#endif
   VLOG(1) << "Connection ended " << ep;
   connections.IncBy(-1);
 }
@@ -186,6 +225,16 @@ void RunServer(ProactorPool* pp) {
 
   AcceptServer acceptor(pp);
   acceptor.set_back_log(GetFlag(FLAGS_backlog));
+
+#ifdef __linux__
+  if (GetFlag(FLAGS_multishot)) {
+    LOG(INFO) << "Using multishot mode";
+    pp->Await([](auto* pb) {
+      fb2::UringProactor* uring = static_cast<fb2::UringProactor*>(pb);
+      uring->RegisterBufferRing(0);
+    });
+  }
+#endif
 
   acceptor.AddListener(GetFlag(FLAGS_port), new EchoListener);
   if (GetFlag(FLAGS_http_port) >= 0) {
@@ -428,6 +477,9 @@ int main(int argc, char* argv[]) {
 #ifdef __linux__
   if (absl::GetFlag(FLAGS_epoll)) {
     pp.reset(fb2::Pool::Epoll());
+    if (GetFlag(FLAGS_multishot)) {
+      LOG(FATAL) << "Multishot is only supported for io_uring";
+    }
   } else {
     pp.reset(fb2::Pool::IOUring(256));
   }
