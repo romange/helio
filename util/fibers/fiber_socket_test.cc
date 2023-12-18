@@ -238,7 +238,7 @@ TEST_P(FiberSocketTest, Poll) {
 
   // POLLRDHUP is linux specific
 #ifdef __linux__
-  EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_);
+  EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_) << conn_sock_err_mask_;
 #endif
 
   EXPECT_TRUE(POLLHUP & conn_sock_err_mask_);
@@ -385,6 +385,27 @@ TEST_P(FiberSocketTest, NotEmpty) {
 
   proactor_->Await([&] { (void)sock->Close(); });
 }
+
+TEST_P(FiberSocketTest, ReceiveMultiShot) {
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "ReceiveMultiShot test is supported only on uring";
+    return;
+  }
+
+  proactor_->Await([&] {
+    UringProactor* uring_proactor = static_cast<UringProactor*>(proactor_.get());
+    int err = uring_proactor->RegisterBufferRing();
+    if (err != 0) {
+      LOG(ERROR) << "RegisterBufferRing failed: " << strerror(err);
+      return;
+    }
+    unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+  });
+}
+
 #endif
 
 }  // namespace fb2

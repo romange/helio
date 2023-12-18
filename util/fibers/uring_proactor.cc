@@ -347,6 +347,28 @@ void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
   free_req_buf_id_ = buf_id;
 }
 
+int UringProactor::RegisterBufferRing() {
+  if (buf_ring_ == 0)
+    return EOPNOTSUPP;
+
+  int err = 0;
+  constexpr size_t kEntriesCnt = 16384;
+  io_uring_buf_ring* bring = io_uring_setup_buf_ring(&ring_, kEntriesCnt, 0, 0, &err);
+  if (bring == nullptr)
+    return -err;
+  int mask = kEntriesCnt - 1;
+
+  // TODO: this is a known memory leak. good enough for experiments.
+  uint8_t* buf = new uint8_t[kEntriesCnt * 64];
+  uint8_t* next = buf;
+  for (unsigned i = 0; i < kEntriesCnt; ++i) {
+    io_uring_buf_ring_add(bring, next, 64, i, mask, i);
+    next += 64;
+  }
+
+  return 0;
+}
+
 int UringProactor::RegisterBufferRing(unsigned group_id) {
   if (buf_ring_f_ == 0)
     return EOPNOTSUPP;
