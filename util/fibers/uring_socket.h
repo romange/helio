@@ -24,7 +24,7 @@ public:
 
   // Blocks until one or more slices are available.
   // Returns number slices (strictly positive) copied if succeeded,
-  // or -errno on error, or 0 if the socket has been closed.
+  // or -errno on error, or 0 if multishot state has concluded.
   // Must be followed up by Consume when finished accessing the slices.
   int Next(iovec* dest, unsigned len);
 
@@ -33,6 +33,9 @@ public:
   // Never blocks.
   void Consume(unsigned len);
 
+  bool Armed() const {
+    return proactor_ != nullptr;
+  }
 private:
   friend class UringSocket;
 

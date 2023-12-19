@@ -451,7 +451,7 @@ void UringSocket::SetupReceiveMultiShot(MultiShotReceiver* receiver) {
         uint16_t buf_id = flags >> 16;
         flags = flags & 0xFFFF;
         receiver->slices_.emplace(res, buf_id);
-        LOG(INFO) << "Got " << res << " bytes with flags " << flags << " buf_id " << buf_id;
+        DVLOG(2) << "Got " << res << " bytes with flags " << flags << " buf_id " << buf_id;
         if (receiver->waiter_) {
           detail::ActivateSameThread(active, receiver->waiter_);
           receiver->waiter_ = nullptr;
@@ -534,7 +534,7 @@ int MultiShotReceiver::Next(iovec* dest, unsigned len) {
   int res = 0;
 
   while (!slices_.empty()) {
-    if (slices_.front().len < 0) {
+    if (slices_.front().len <= 0) {  // len 0, socket was shutdown.
       if (res > 0)
         return res;
 
@@ -547,7 +547,7 @@ int MultiShotReceiver::Next(iovec* dest, unsigned len) {
       DCHECK(slices_.empty());
       proactor_ = nullptr;   // reset the receive so it will always return 0 after this.
 
-      if (res == -ECONNRESET || res == -ECANCELED)
+      if (res == -ECONNRESET || res == -ECANCELED || res == 0)
         res = -ECONNABORTED;
 
       return res;
