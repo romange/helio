@@ -348,13 +348,16 @@ void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
 }
 
 int UringProactor::RegisterBufferRing() {
-  if (buf_ring_ == 0)
+  if (buf_ring_f_ == 0)
     return EOPNOTSUPP;
+
+  CHECK(buf_ring_ == nullptr);
 
   int err = 0;
   constexpr size_t kEntriesCnt = 16384;
-  io_uring_buf_ring* bring = io_uring_setup_buf_ring(&ring_, kEntriesCnt, 0, 0, &err);
-  if (bring == nullptr)
+  constexpr unsigned kBgId = 7;
+  buf_ring_ = io_uring_setup_buf_ring(&ring_, kEntriesCnt, kBgId, 0, &err);
+  if (buf_ring_ == nullptr)
     return -err;
   int mask = kEntriesCnt - 1;
 
@@ -362,10 +365,10 @@ int UringProactor::RegisterBufferRing() {
   uint8_t* buf = new uint8_t[kEntriesCnt * 64];
   uint8_t* next = buf;
   for (unsigned i = 0; i < kEntriesCnt; ++i) {
-    io_uring_buf_ring_add(bring, next, 64, i, mask, i);
+    io_uring_buf_ring_add(buf_ring_, next, 64, i, mask, i);
     next += 64;
   }
-
+  io_uring_buf_ring_advance(buf_ring_, kEntriesCnt);
   return 0;
 }
 

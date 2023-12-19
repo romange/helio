@@ -403,6 +403,20 @@ TEST_P(FiberSocketTest, ReceiveMultiShot) {
     unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
+    UringSocket* uring_sock = static_cast<UringSocket*>(sock.get());
+
+    MultiShotReceiver receiver;
+    uring_sock->SetupReceiveMultiShot(&receiver);
+    ThisFiber::SleepFor(100us);
+    ASSERT_TRUE(conn_socket_);
+    ec = conn_socket_->Write(io::Buffer("HELLO1"));
+    ASSERT_FALSE(ec);
+    ec = conn_socket_->Write(io::Buffer("HELLO2"));
+    ASSERT_FALSE(ec);
+
+    // uring_sock->CancelRequests();
+    (void)sock->Close();
+    ThisFiber::SleepFor(100us);
   });
 }
 
