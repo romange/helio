@@ -166,7 +166,6 @@ class UringProactor : public ProactorBase {
   // For epoll, periodic timers are refreshed automatically.
   // TODO: start using IORING_TIMEOUT_MULTISHOT (see io_uring_prep_timeout(3)).
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
-  io_uring_buf_ring* buf_ring_ = nullptr;
 
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;

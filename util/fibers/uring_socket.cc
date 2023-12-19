@@ -516,14 +516,59 @@ void UringSocket::OnResetProactor() {
   }
 }
 
-int MultiShotReceiver::Next() {
-  LOG(FATAL) << "Not implemented";
-  return 0;
+int MultiShotReceiver::Next(iovec* dest, unsigned len) {
+  DCHECK_GT(len, 0u);
+  DCHECK(waiter_ == nullptr);
+
+  if (proactor_ == nullptr)
+    return 0;
+
+  if (slices_.empty()) {
+    auto* active = detail::FiberActive();
+    waiter_ = active;
+    active->Suspend();
+  }
+  DCHECK(!slices_.empty());
+
+  waiter_ = nullptr;
+  int res = 0;
+
+  while (!slices_.empty()) {
+    if (slices_.front().len < 0) {
+      if (res > 0)
+        return res;
+
+      DCHECK_EQ(res, 0);  // we have not filled any buffers yet. Return the error code.
+
+      res = slices_.front().len;
+      slices_.pop();
+
+      // we should not have any completions in the queue after the one with the error
+      DCHECK(slices_.empty());
+      proactor_ = nullptr;   // reset the receive so it will always return 0 after this.
+
+      if (res == -ECONNRESET || res == -ECANCELED)
+        res = -ECONNABORTED;
+
+      return res;
+    }
+
+    DCHECK_GT(slices_.front().len, 0);
+    dest[res].iov_base = proactor_->GetBufRingPtr(slices_.front().index);
+    dest[res].iov_len = slices_.front().len;
+    slices_.pop();
+    ++res;
+    if (unsigned(res) == len)
+      break;
+  }
+
+  return res;
 }
 
-int MultiShotReceiver::Consume(iovec* dest, unsigned len) {
-  LOG(FATAL) << "Not implemented";
-  return 0;
+void MultiShotReceiver::Consume(unsigned len) {
+  DCHECK(proactor_);
+  DCHECK(waiter_ == nullptr);
+  proactor_->ConsumeBufRing(len);
 }
 
 }  // namespace fb2

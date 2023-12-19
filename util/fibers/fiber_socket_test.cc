@@ -405,18 +405,23 @@ TEST_P(FiberSocketTest, ReceiveMultiShot) {
     EXPECT_FALSE(ec);
     UringSocket* uring_sock = static_cast<UringSocket*>(sock.get());
 
-    MultiShotReceiver receiver;
-    uring_sock->SetupReceiveMultiShot(&receiver);
     ThisFiber::SleepFor(100us);
     ASSERT_TRUE(conn_socket_);
+    MultiShotReceiver receiver;
+    uring_sock->SetupReceiveMultiShot(&receiver);
     ec = conn_socket_->Write(io::Buffer("HELLO1"));
     ASSERT_FALSE(ec);
     ec = conn_socket_->Write(io::Buffer("HELLO2"));
     ASSERT_FALSE(ec);
+    uring_sock->CancelRequests();
 
-    // uring_sock->CancelRequests();
+    iovec iov[8];
+    int res = receiver.Next(iov, 8);
+    ASSERT_EQ(2, res);
+    receiver.Consume(res);
+    res = receiver.Next(iov, 8);
+    EXPECT_EQ(ECONNABORTED, -res);
     (void)sock->Close();
-    ThisFiber::SleepFor(100us);
   });
 }
 

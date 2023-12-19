@@ -23,13 +23,15 @@ public:
   MultiShotReceiver() = default;
 
   // Blocks until one or more slices are available.
-  // Returns number slices or -errno on error.
-  int Next();
+  // Returns number slices (strictly positive) copied if succeeded,
+  // or -errno on error, or 0 if the socket has been closed.
+  // Must be followed up by Consume when finished accessing the slices.
+  int Next(iovec* dest, unsigned len);
 
   // Follows up on the previous Next call.
   // Returns number of slices copied to dest.
-  // Or -errno on error. Does not block.
-  int Consume(iovec* dest, unsigned len);
+  // Never blocks.
+  void Consume(unsigned len);
 
 private:
   friend class UringSocket;
@@ -37,7 +39,10 @@ private:
   struct Slice {
     int32_t len;  // positive len, negative errno.
     uint16_t index;
+
+    Slice(int32_t l, uint16_t i) : len(l), index(i) {}
   } __attribute__((packed));
+
   std::queue<Slice> slices_;
   UringProactor* proactor_;
   detail::FiberInterface* waiter_ = nullptr;
