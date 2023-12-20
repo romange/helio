@@ -61,6 +61,9 @@ constexpr uint16_t kMsgRingSubmitTag = 1;
 constexpr uint16_t kTimeoutSubmitTag = 2;
 constexpr uint16_t kCqeBatchLen = 128;
 
+constexpr size_t kBufRingEntriesCnt = 8192;
+constexpr size_t kBufRingEntrySize = 64;  // TODO: should be configurable.
+
 }  // namespace
 
 UringProactor::UringProactor() : ProactorBase() {
@@ -69,6 +72,14 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
+    for (size_t i = 0; i < bufring_groups_.size(); ++i) {
+      const auto& group = bufring_groups_[i];
+      if (group.ring != nullptr) {
+        io_uring_free_buf_ring(&ring_, group.ring, kBufRingEntriesCnt, i);
+        delete group.buf;
+      }
+    }
+
     io_uring_queue_exit(&ring_);
   }
   VLOG(1) << "Closing wake_fd " << wake_fd_ << " ring fd: " << ring_.ring_fd;
@@ -93,6 +104,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   msgring_f_ = 0;
   poll_first_ = 0;
   direct_fd_ = 0;
+  buf_ring_f_ = 0;
 
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 15)) {
     direct_fd_ = absl::GetFlag(FLAGS_enable_direct_fd);  // failswitch to disable direct fds.
@@ -103,6 +115,9 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     params.flags |= IORING_SETUP_SUBMIT_ALL;
     // we can notify kernel that it can skip send/receive operations and do polling first.
     poll_first_ = 1;
+
+    // io_uring_register_buf_ring is supported since 5.19.
+    buf_ring_f_ = 1;
   }
 
   if (kver.kernel >= 6 && kver.major >= 1) {
@@ -172,8 +187,9 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
 void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
                                     detail::FiberInterface* current) {
   for (unsigned i = 0; i < count; ++i) {
-    // copy cqe (16 bytes) because it helps when debugging, gdb can not access memory in kernel space.
-    io_uring_cqe cqe = *cqes[i];  
+    // copy cqe (16 bytes) because it helps when debugging, gdb can not access memory in kernel
+    // space.
+    io_uring_cqe cqe = *cqes[i];
 
     uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
     if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
@@ -194,15 +210,21 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
       size_t index = user_data - kUserDataCbIndex;
       DCHECK_LT(index, centries_.size());
       auto& e = centries_[index];
+
       DCHECK(e.cb) << index;
 
-      CbType func = std::move(e.cb);
+      if (cqe.flags & IORING_CQE_F_MORE) {
+        // multishot operation. we keep the callback intact.
+        e.cb(current, cqe.res, cqe.flags);
+      } else {
+        CbType func = std::move(e.cb);
 
-      // Set e to be the head of free-list.
-      e.index = next_free_ce_;
-      next_free_ce_ = index;
-      --pending_cb_cnt_;
-      func(current, cqe.res, cqe.flags);
+        // Set e to be the head of free-list.
+        e.index = next_free_ce_;
+        next_free_ce_ = index;
+        --pending_cb_cnt_;
+        func(current, cqe.res, cqe.flags);
+      }
       continue;
     }
 
@@ -323,6 +345,62 @@ void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
   unsigned buf_id = offs / 64;
   absl::little_endian::Store16(&registered_buf_[buf_id * 64], free_req_buf_id_);
   free_req_buf_id_ = buf_id;
+}
+
+int UringProactor::RegisterBufferRing(unsigned group_id) {
+  if (buf_ring_f_ == 0)
+    return EOPNOTSUPP;
+
+  if (bufring_groups_.size() <= group_id) {
+    bufring_groups_.resize(group_id + 1);
+  }
+
+  auto& ring_group = bufring_groups_[group_id];
+  CHECK(ring_group.ring == nullptr);
+
+  int err = 0;
+
+  ring_group.ring = io_uring_setup_buf_ring(&ring_, kBufRingEntriesCnt, group_id, 0, &err);
+  if (ring_group.ring == nullptr) {
+    return -err;  // err is negative.
+  }
+
+  unsigned mask = kBufRingEntriesCnt - 1;
+  ring_group.buf = new uint8_t[kBufRingEntriesCnt * kBufRingEntrySize];
+  uint8_t* next = ring_group.buf;
+  for (unsigned i = 0; i < kBufRingEntriesCnt; ++i) {
+    io_uring_buf_ring_add(ring_group.ring, next, kBufRingEntrySize, i, mask, i);
+    next += 64;
+  }
+  io_uring_buf_ring_advance(ring_group.ring, kBufRingEntriesCnt);
+
+  return 0;
+}
+
+uint8_t* UringProactor::GetBufRingPtr(unsigned group_id, unsigned bufid) {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  DCHECK_LT(bufid, kBufRingEntriesCnt);
+  DCHECK(bufring_groups_[group_id].buf);
+  return bufring_groups_[group_id].buf + bufid * kBufRingEntrySize;
+}
+
+void UringProactor::ConsumeBufRing(unsigned group_id, unsigned len) {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  DCHECK_LE(len, kBufRingEntriesCnt);
+  DCHECK(bufring_groups_[group_id].ring);
+
+  io_uring_buf_ring_advance(bufring_groups_[group_id].ring, len);
+}
+
+int UringProactor::CancelRequests(int fd, unsigned flags) {
+  io_uring_sync_cancel_reg reg_arg;
+  memset(&reg_arg, 0, sizeof(reg_arg));
+  reg_arg.timeout.tv_nsec = -1;
+  reg_arg.timeout.tv_sec = -1;
+  reg_arg.flags = flags;
+  reg_arg.fd = fd;
+
+  return io_uring_register_sync_cancel(&ring_, &reg_arg);
 }
 
 UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask) {
@@ -719,8 +797,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
           << tq_wakeup_prevent_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
-          << busy_sq_cnt << "/" << get_entry_sq_full_ << "/"
-          << get_entry_await_ << "/" << pending_cb_cnt_;
+          << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_await_ << "/"
+          << pending_cb_cnt_;
 
   VPRO(1) << "centries size: " << centries_.size();
   centries_.clear();

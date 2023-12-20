@@ -102,6 +102,18 @@ class UringProactor : public ProactorBase {
   uint8_t* ProvideRegisteredBuffer();
   void ReturnRegisteredBuffer(uint8_t* addr);
 
+  // Experimental. should not be called in production.
+  // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
+  // Registers a predefined 16K buffer ring with specified buffer group_id.
+  // Returns 0 on success, errno on failure.
+  int RegisterBufferRing(unsigned group_id);
+  uint8_t* GetBufRingPtr(unsigned group_id, unsigned bufid);
+  void ConsumeBufRing(unsigned group_id, unsigned len);
+
+  // Returns 0 on success, errno on failure.
+  // See io_uring_prep_cancel(3) for flags.
+  int CancelRequests(int fd, unsigned flags);
+
   using EpollCB = std::function<void(uint32_t)>;
   using EpollIndex = unsigned;
   EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
@@ -130,7 +142,8 @@ class UringProactor : public ProactorBase {
   uint8_t msgring_f_  : 1;
   uint8_t poll_first_ : 1;
   uint8_t direct_fd_  : 1;
-  uint8_t : 5;
+  uint8_t buf_ring_f_ : 1;
+  uint8_t : 4;
 
   EventCount sqe_avail_;
 
@@ -147,7 +160,15 @@ class UringProactor : public ProactorBase {
 
   // we keep this vector only for iouring because its timers are one shot.
   // For epoll, periodic timers are refreshed automatically.
+  // TODO: start using IORING_TIMEOUT_MULTISHOT (see io_uring_prep_timeout(3)).
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
+
+  struct BufRingGroup {
+    io_uring_buf_ring* ring = nullptr;
+    uint8_t* buf = nullptr;
+  };
+
+  std::vector<BufRingGroup> bufring_groups_;
 
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;
