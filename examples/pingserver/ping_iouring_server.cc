@@ -133,7 +133,7 @@ void PingConnection::HandleRequests() {
 
   VLOG(1) << "Connection shutting down";
   error_code err = socket_->Shutdown(SHUT_RDWR);
-  LOG_IF(WARNING, !err) << "Shutdown failed: " << err.message();
+  LOG_IF(WARNING, err) << "Shutdown failed: " << err.message();
 }
 
 class PingListener : public ListenerInterface {

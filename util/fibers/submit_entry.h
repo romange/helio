@@ -189,6 +189,11 @@ class SubmitEntry {
     sqe_->rw_flags = 0;
   }
 
+  void PrepCancel(int fd, unsigned flags) {
+    PrepFd(IORING_OP_ASYNC_CANCEL, fd);
+    sqe_->cancel_flags = flags;
+  }
+
   io_uring_sqe* sqe() {
     return sqe_;
   }

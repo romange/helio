@@ -14,14 +14,13 @@
 #include "base/init.h"
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
+#include "util/fibers/dns_resolve.h"
+#include "util/fibers/pool.h"
+#include "util/fibers/synchronization.h"
 #include "util/http/http_handler.h"
 #include "util/varz.h"
 
 using namespace util;
-
-#include "util/fibers/dns_resolve.h"
-#include "util/fibers/pool.h"
-#include "util/fibers/synchronization.h"
 
 using fb2::DnsResolve;
 using fb2::Fiber;
@@ -42,12 +41,9 @@ ABSL_FLAG(uint32, size, 1, "Message size, 0 for hardcoded 4 byte pings");
 ABSL_FLAG(uint32, backlog, 1024, "Accept queue length");
 ABSL_FLAG(uint32, p, 1, "pipelining factor");
 ABSL_FLAG(string, connect, "", "hostname or ip address to connect to in client mode");
-ABSL_FLAG(string, write_file, "", "");
 ABSL_FLAG(uint32, write_num, 1000, "");
 ABSL_FLAG(uint32, max_pending_writes, 300, "");
 ABSL_FLAG(uint32, max_clients, 1 << 16, "");
-ABSL_FLAG(bool, sqe_async, false, "");
-ABSL_FLAG(bool, o_direct, true, "");
 ABSL_FLAG(bool, raw, true,
           "If true, does not send/receive size parameter during "
           "the connection handshake");
@@ -57,74 +53,6 @@ VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
 
 const char kMaxConnectionsError[] = "max connections reached\r\n";
-
-namespace {
-
-[[maybe_unused]] constexpr size_t kInitialSize = 1UL << 20;
-#if 0
-struct TL {
-  std::unique_ptr<util::uring::LinuxFile> file;
-
-  void Open(const string& path) {
-    CHECK(!file);
-
-    // | O_DIRECT
-    int flags = O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC;
-    if (GetFlag(FLAGS_o_direct))
-      flags |= O_DIRECT;
-
-    auto res = uring::OpenLinux(path, flags, 0666);
-    CHECK(res);
-    file = std::move(res.value());
-#if 0
-    Proactor* proactor = (Proactor*)ProactorBase::me();
-    uring::FiberCall fc(proactor);
-    fc->PrepFallocate(file->fd(), 0, 0, kInitialSize);
-    uring::FiberCall::IoResult io_res = fc.Get();
-    CHECK_EQ(0, io_res);
-#endif
-  }
-
-  void WriteToFile();
-
-  uint32_t pending_write_reqs = 0;
-  uint32_t max_pending_reqs = 1024;
-  fibers_ext::EventCount evc;
-};
-
-void TL::WriteToFile() {
-  static void* blob = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-  auto ring_cb = [this](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
-    if (res < 0)
-      LOG(ERROR) << "Error writing to file";
-
-    if (this->pending_write_reqs == GetFlag(FLAGS_max_pending_writes)) {
-      this->evc.notifyAll();
-    }
-    --this->pending_write_reqs;
-  };
-
-  evc.await([this] { return pending_write_reqs < GetFlag(FLAGS_max_pending_writes); });
-
-  ++pending_write_reqs;
-  uring::Proactor* proactor = (uring::Proactor*)ProactorBase::me();
-
-  uring::SubmitEntry se = proactor->GetSubmitEntry(std::move(ring_cb), 0);
-  se.PrepWrite(file->fd(), blob, 4096, 0);
-  if (GetFlag(FLAGS_sqe_async))
-    se.sqe()->flags |= IOSQE_ASYNC;
-
-  if (pending_write_reqs > max_pending_reqs) {
-    LOG(INFO) << "Pending write reqs: " << pending_write_reqs;
-    max_pending_reqs = pending_write_reqs * 1.2;
-  }
-}
-
-static thread_local TL* tl = nullptr;
-#endif
-
-}  // namespace
 
 class EchoConnection : public Connection {
  public:
@@ -143,16 +71,7 @@ class EchoConnection : public Connection {
 std::error_code EchoConnection::ReadMsg(size_t* sz) {
   io::MutableBytes mb(work_buf_.get(), req_len_);
 
-  /*LinuxSocketBase* sock = (LinuxSocketBase*)socket_.get();
-  fb2::UringProactor* p = (fb2::UringProactor*)sock->proactor();
-  fb2::FiberCall fc(p);
-  // io_uring_prep_recv(sqe, fd, buf + offs, len, 0);
-
-  fc->PrepRecv(sock->native_handle(), mb.data(), mb.size(), 0);
-  fc.Get();
-  *sz = req_len_;*/
   auto res = socket_->Recv(mb, 0);
-#if 1
   if (res) {
     *sz = *res;
     CHECK_EQ(*sz, req_len_);
@@ -160,8 +79,6 @@ std::error_code EchoConnection::ReadMsg(size_t* sz) {
   }
 
   return res.error();
-#endif
-  return error_code{};
 }
 
 static thread_local base::Histogram send_hist;
@@ -180,6 +97,7 @@ void EchoConnection::HandleRequests() {
   }
 
   connections.IncBy(1);
+
   vec[0].iov_base = buf;
   vec[0].iov_len = 8;
 
@@ -205,7 +123,6 @@ void EchoConnection::HandleRequests() {
       socket_->WriteSome(io::Bytes(&ack, 1));  // Send ACK
     }
 
-    // size_t bs = asio::read(asa, asio::buffer(buf), ec);
     CHECK(es.has_value() && es.value() == sizeof(buf));
     req_len_ = absl::little_endian::Load64(buf);
   }
@@ -229,10 +146,6 @@ void EchoConnection::HandleRequests() {
     vec[1].iov_base = work_buf_.get();
     vec[1].iov_len = sz;
 
-#if 0
-    if (tl)
-      tl->WriteToFile();
-#endif
     if (is_raw) {
       auto prev = absl::GetCurrentTimeNanos();
       // send(sock->native_handle(), work_buf_.get(), sz, 0);
@@ -257,6 +170,7 @@ class EchoListener : public ListenerInterface {
     SetMaxClients(GetFlag(FLAGS_max_clients));
   }
   virtual Connection* NewConnection(ProactorBase* context) final {
+    VLOG(1) << "thread_id " << context->GetPoolIndex();
     return new EchoConnection;
   }
 
@@ -277,43 +191,6 @@ void RunServer(ProactorPool* pp) {
     uint16_t port = acceptor.AddListener(GetFlag(FLAGS_http_port), new HttpListener<>);
     LOG(INFO) << "Started http server on port " << port;
   }
-
-#if 0
-  if (!GetFlag(FLAGS_write_file).empty()) {
-    static void* blob =
-        mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(MAP_FAILED != blob);
-
-    auto write_file = [](unsigned index, ProactorBase* pb) {
-      string file = absl::StrCat(GetFlag(FLAGS_write_file), "-",
-                                 absl::Dec(pb->GetIndex(), absl::kZeroPad4), ".bin");
-      tl = new TL;
-      tl->Open(file);
-
-#if 0
-      Proactor* proactor = (Proactor*)pb;
-
-      for (unsigned i = 0; i < FLAGS_write_num; ++i) {
-        auto ring_cb = [](uring::Proactor::IoResult res, uint32_t flags, int64_t payload) {
-          if (res < 0)
-            LOG(ERROR) << "Error writing to file " << -res;
-        };
-
-        uring::SubmitEntry se = proactor->GetSubmitEntry(std::move(ring_cb), 0);
-        se.PrepWrite(tl->file->fd(), blob, 4096, 0);
-        se.sqe()->flags |= IOSQE_ASYNC;
-        if (i % 1000 == 0) {
-          fibers_ext::Yield();
-        }
-      }
-      LOG(INFO) << "Write file finished " << index;
-#endif
-    };
-
-    pp->AwaitFiberOnAll(write_file);
-    LOG(INFO) << "All Writes finished ";
-  }
-#endif
 
   acceptor.Run();
   acceptor.Wait();
