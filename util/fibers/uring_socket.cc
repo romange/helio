@@ -442,6 +442,43 @@ void UringSocket::CancelOnErrorCb() {
   error_cb_id_ = UINT32_MAX;
 }
 
+void UringSocket::SetupReceiveMultiShot(unsigned group_id, MultiShotReceiver* receiver) {
+  DCHECK(proactor()->InMyThread());
+  DCHECK(receiver->proactor_ == nullptr);
+
+  UringProactor* proactor = GetProactor();
+
+  receiver->proactor_ = proactor;
+  receiver->group_id_ = group_id;
+
+  SubmitEntry se = proactor->GetSubmitEntry(
+      [receiver](detail::FiberInterface* active, Proactor::IoResult res, uint32_t flags) {
+        uint16_t buf_id = flags >> 16;
+        flags = flags & 0xFFFF;
+        receiver->slices_.emplace(res, buf_id);
+        DVLOG(2) << "Got " << res << " bytes with flags " << flags << " buf_id " << buf_id;
+        if (receiver->waiter_) {
+          detail::ActivateSameThread(active, receiver->waiter_);
+          receiver->waiter_ = nullptr;
+        }
+      });
+
+  se.PrepRecv(ShiftedFd(), nullptr, 0, 0);
+  se.sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+  se.sqe()->ioprio |= IORING_RECV_MULTISHOT;
+  se.sqe()->buf_index = group_id;
+}
+
+void UringSocket::CancelRequests() {
+  DCHECK(proactor()->InMyThread());
+  UringProactor* proactor = GetProactor();
+  int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
+  int res = proactor->CancelRequests(ShiftedFd(), flags);
+  if (res != 0) {
+    LOG(ERROR) << "Error canceling requests for fd " << ShiftedFd() << " " << strerror(res);
+  }
+}
+
 auto UringSocket::native_handle() const -> native_handle_type {
   int fd = ShiftedFd();
 
@@ -479,6 +516,61 @@ void UringSocket::OnResetProactor() {
     UpdateDfVal(fd);
     is_direct_fd_ = 0;
   }
+}
+
+int MultiShotReceiver::Next(iovec* dest, unsigned len) {
+  DCHECK_GT(len, 0u);
+  DCHECK(waiter_ == nullptr);
+
+  if (proactor_ == nullptr)
+    return 0;
+
+  if (slices_.empty()) {
+    auto* active = detail::FiberActive();
+    waiter_ = active;
+    active->Suspend();
+  }
+  DCHECK(!slices_.empty());
+
+  waiter_ = nullptr;
+  int res = 0;
+
+  while (!slices_.empty()) {
+    if (slices_.front().len <= 0) {  // len 0, socket was shutdown.
+      if (res > 0)
+        return res;
+
+      DCHECK_EQ(res, 0);  // we have not filled any buffers yet. Return the error code.
+
+      res = slices_.front().len;
+      slices_.pop();
+
+      // we should not have any completions in the queue after the one with the error
+      DCHECK(slices_.empty());
+      proactor_ = nullptr;   // reset the receive so it will always return 0 after this.
+
+      if (res == -ECONNRESET || res == -ECANCELED || res == 0)
+        res = -ECONNABORTED;
+
+      return res;
+    }
+
+    DCHECK_GT(slices_.front().len, 0);
+    dest[res].iov_base = proactor_->GetBufRingPtr(group_id_, slices_.front().index);
+    dest[res].iov_len = slices_.front().len;
+    slices_.pop();
+    ++res;
+    if (unsigned(res) == len)
+      break;
+  }
+
+  return res;
+}
+
+void MultiShotReceiver::Consume(unsigned len) {
+  DCHECK(proactor_);
+  DCHECK(waiter_ == nullptr);
+  proactor_->ConsumeBufRing(group_id_, len);
 }
 
 }  // namespace fb2

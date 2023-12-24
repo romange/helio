@@ -6,12 +6,51 @@
 
 #include <liburing.h>
 
+#include <queue>
+
 #include "util/fiber_socket_base.h"
 #include "util/fibers/uring_proactor.h"
 
 namespace util {
 
 namespace fb2 {
+
+class UringSocket;
+
+class MultiShotReceiver {
+
+public:
+  MultiShotReceiver() = default;
+
+  // Blocks until one or more slices are available.
+  // Returns number slices (strictly positive) copied if succeeded,
+  // or -errno on error, or 0 if multishot state has concluded.
+  // Must be followed up by Consume when finished accessing the slices.
+  int Next(iovec* dest, unsigned len);
+
+  // Follows up on the previous Next call.
+  // Returns number of slices copied to dest.
+  // Never blocks.
+  void Consume(unsigned len);
+
+  bool Armed() const {
+    return proactor_ != nullptr;
+  }
+private:
+  friend class UringSocket;
+
+  struct Slice {
+    int32_t len;  // positive len, negative errno.
+    uint16_t index;
+
+    Slice(int32_t l, uint16_t i) : len(l), index(i) {}
+  } __attribute__((packed));
+
+  std::queue<Slice> slices_;
+  UringProactor* proactor_;
+  detail::FiberInterface* waiter_ = nullptr;
+  unsigned group_id_ = 0;
+};
 
 class UringSocket : public LinuxSocketBase {
  public:
@@ -53,6 +92,9 @@ class UringSocket : public LinuxSocketBase {
   bool HasRecvData() const {
     return has_recv_data_;
   }
+
+  void SetupReceiveMultiShot(unsigned group_id, MultiShotReceiver* receiver);
+  void CancelRequests();
 
  private:
   UringProactor* GetProactor() {
