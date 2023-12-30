@@ -554,7 +554,7 @@ int MultiShotReceiver::Next(iovec* dest, unsigned len) {
     }
 
     DCHECK_GT(slices_.front().len, 0);
-    dest[res].iov_base = proactor_->GetBufRingPtr(slices_.front().index);
+    dest[res].iov_base = proactor_->GetBufRingPtr(0, slices_.front().index);
     dest[res].iov_len = slices_.front().len;
     slices_.pop();
     ++res;
@@ -568,7 +568,7 @@ int MultiShotReceiver::Next(iovec* dest, unsigned len) {
 void MultiShotReceiver::Consume(unsigned len) {
   DCHECK(proactor_);
   DCHECK(waiter_ == nullptr);
-  proactor_->ConsumeBufRing(len);
+  proactor_->ConsumeBufRing(0, len);
 }
 
 }  // namespace fb2

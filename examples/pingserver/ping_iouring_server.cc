@@ -286,7 +286,7 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "Using multishot mode";
     pp->Await([](auto* pb) {
       fb2::UringProactor* uring = static_cast<fb2::UringProactor*>(pb);
-      uring->RegisterBufferRing();
+      uring->RegisterBufferRing(0);
     });
   }
 #endif

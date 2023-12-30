@@ -61,11 +61,10 @@ constexpr uint16_t kMsgRingSubmitTag = 1;
 constexpr uint16_t kTimeoutSubmitTag = 2;
 constexpr uint16_t kCqeBatchLen = 128;
 
-constexpr size_t kBufRingEntriesCnt = 16384;
-constexpr unsigned kBufRingBgId = 7;
+constexpr size_t kBufRingEntriesCnt = 8192;
+constexpr size_t kBufRingEntrySize = 64;  // TODO: should be configurable.
 
 }  // namespace
-
 
 UringProactor::UringProactor() : ProactorBase() {
 }
@@ -73,10 +72,14 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
-    if (bufring_g_ != nullptr) {
-      io_uring_free_buf_ring(&ring_, bufring_g_->ring, kBufRingEntriesCnt, kBufRingBgId);
-      delete bufring_g_;
+    for (size_t i = 0; i < bufring_groups_.size(); ++i) {
+      const auto& group = bufring_groups_[i];
+      if (group.ring != nullptr) {
+        io_uring_free_buf_ring(&ring_, group.ring, kBufRingEntriesCnt, i);
+        delete group.buf;
+      }
     }
+
     io_uring_queue_exit(&ring_);
   }
   VLOG(1) << "Closing wake_fd " << wake_fd_ << " ring fd: " << ring_.ring_fd;
@@ -342,44 +345,6 @@ void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
   unsigned buf_id = offs / 64;
   absl::little_endian::Store16(&registered_buf_[buf_id * 64], free_req_buf_id_);
   free_req_buf_id_ = buf_id;
-}
-
-int UringProactor::RegisterBufferRing() {
-  if (buf_ring_f_ == 0)
-    return EOPNOTSUPP;
-
-  CHECK(bufring_g_ == nullptr);
-
-  int err = 0;
-  bufring_g_ = new BufRingGroup;
-  bufring_g_->ring = io_uring_setup_buf_ring(&ring_, kBufRingEntriesCnt, kBufRingBgId, 0, &err);
-  if (bufring_g_->ring == nullptr) {
-    delete bufring_g_;
-    return -err;
-  }
-
-  int mask = kBufRingEntriesCnt - 1;
-  bufring_g_->buf = new uint8_t[kBufRingEntriesCnt * 64];
-  uint8_t* next = bufring_g_->buf;
-  for (unsigned i = 0; i < kBufRingEntriesCnt; ++i) {
-    io_uring_buf_ring_add(bufring_g_->ring, next, 64, i, mask, i);
-    next += 64;
-  }
-  io_uring_buf_ring_advance(bufring_g_->ring, kBufRingEntriesCnt);
-  return 0;
-}
-
-uint8_t* UringProactor::GetBufRingPtr(unsigned bufid) {
-  DCHECK(bufring_g_);
-  DCHECK_LT(bufid, kBufRingEntriesCnt);
-  return bufring_g_->buf + bufid * 64;
-}
-
-void UringProactor::ConsumeBufRing(unsigned len) {
-  DCHECK(bufring_g_);
-  DCHECK_LE(len, kBufRingEntriesCnt);
-
-  io_uring_buf_ring_advance(bufring_g_->ring, len);
 }
 
 int UringProactor::RegisterBufferRing(unsigned group_id) {

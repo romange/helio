@@ -114,10 +114,6 @@ class UringProactor : public ProactorBase {
   // See io_uring_prep_cancel(3) for flags.
   int CancelRequests(int fd, unsigned flags);
 
-  // Experimental. should not be called in production.
-  // Returns 0 on success, errno on failure.
-  int CancelRequests(int fd, unsigned flags);
-
   using EpollCB = std::function<void(uint32_t)>;
   using EpollIndex = unsigned;
   EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
