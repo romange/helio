@@ -427,13 +427,17 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
 void UringSocket::CancelOnErrorCb() {
   if (error_cb_id_ == UINT32_MAX)
     return;
+
   FiberCall fc(GetProactor());
   fc->PrepPollRemove(error_cb_id_);
 
   IoResult io_res = fc.Get();
   if (io_res < 0) {
     io_res = -io_res;
-    LOG(WARNING) << "Error canceling error cb " << io_res;
+
+    // The callback could have been already called or being in process of calling.
+    LOG_IF(WARNING, io_res != ENOENT && io_res != EALREADY)
+        << "Error canceling error cb " << io_res;
   }
   error_cb_id_ = UINT32_MAX;
 }
