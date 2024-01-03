@@ -242,6 +242,10 @@ class StringSink final : public Sink {
     return str_;
   }
 
+  std::string str() && {
+    return std::move(str_);
+  }
+
   void Clear() {
     str_.clear();
   }
