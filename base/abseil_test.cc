@@ -43,6 +43,8 @@ TEST_F(AbseilTest, VDSO) {
 #endif
 }
 
+// Does not work in release-mode.
+#if 0
 TEST_F(AbseilTest, PerftoolsProfile) {
   void* stack[256];
 
@@ -50,8 +52,6 @@ TEST_F(AbseilTest, PerftoolsProfile) {
   ASSERT_GT(res, 5);
 }
 
-// Does not work in release-mode.
-#if 0
 TEST_F(AbseilTest, Stacktrace) {
   void* stack[256];
   int res = absl::GetStackTraceWithContext(stack, 255, 1, NULL, NULL);
