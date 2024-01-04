@@ -238,7 +238,7 @@ class StringSink final : public Sink {
  public:
   Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
 
-  const std::string& str() const {
+  const std::string& str() const & {
     return str_;
   }
 
