@@ -64,7 +64,6 @@ class WriteFileImpl final : public WriteFile {
  protected:
   int fd_ = -1;
   Proactor* proactor_;
-  off_t offs_ = 0;
 };
 
 class LinuxFileImpl : public LinuxFile {
@@ -255,10 +254,7 @@ error_code WriteFileImpl::Close() {
 }
 
 Result<size_t> WriteFileImpl::WriteSome(const iovec* v, uint32_t len) {
-  Result<size_t> res = WriteSomeInternal(fd_, v, len, offs_, 0, proactor_);
-  if (res) {
-    offs_ += *res;
-  }
+  Result<size_t> res = WriteSomeInternal(fd_, v, len, -1, 0, proactor_);
   return res;
 }
 
