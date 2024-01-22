@@ -234,11 +234,11 @@ TEST_P(FiberSocketTest, Poll) {
     auto ec = sock->Close();
     (void)ec;
   });
-  usleep(100);
+  usleep(1000);
 
   // POLLRDHUP is linux specific
 #ifdef __linux__
-  EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_);
+  EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_) << conn_sock_err_mask_;
 #endif
 
   EXPECT_TRUE(POLLHUP & conn_sock_err_mask_);

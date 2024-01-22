@@ -307,44 +307,12 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
   return SubmitEntry{res};
 }
 
-int UringProactor::RegisterBuffers() {
-  unique_ptr<uint8_t[]> reg_buf(new uint8_t[1U << 16]);
-  iovec vec[1];
-  vec[0].iov_base = reg_buf.get();
-  vec[0].iov_len = 1U << 16;
-  int res = io_uring_register_buffers(&ring_, vec, 1);
-  if (res < 0) {
-    return -res;
-  }
-
-  free_req_buf_id_ = 0;
-  for (int i = 0; i < 1024; ++i) {
-    uint8_t* next = reg_buf.get() + i * 64;
-    absl::little_endian::Store16(next, i + 1);
-  }
-
-  registered_buf_ = std::move(reg_buf);
-  return 0;
+int UringProactor::RegisterBuffers(const struct iovec *iovecs, unsigned nr_vecs) {
+  return io_uring_register_buffers(&ring_, iovecs, nr_vecs);
 }
 
-uint8_t* UringProactor::ProvideRegisteredBuffer() {
-  if (free_req_buf_id_ < 0 || free_req_buf_id_ >= 1024)
-    return nullptr;
-
-  int res = free_req_buf_id_;
-  free_req_buf_id_ = absl::little_endian::Load16(&registered_buf_[free_req_buf_id_ * 64]);
-  return registered_buf_.get() + res * 64;
-}
-
-void UringProactor::ReturnRegisteredBuffer(uint8_t* addr) {
-  DCHECK(registered_buf_);
-  intptr_t offs = addr - registered_buf_.get();
-  DCHECK_GE(offs, 0);
-  DCHECK_LT(offs, 1 << 16);
-
-  unsigned buf_id = offs / 64;
-  absl::little_endian::Store16(&registered_buf_[buf_id * 64], free_req_buf_id_);
-  free_req_buf_id_ = buf_id;
+int UringProactor::UnregisterBuffers() {
+  return io_uring_unregister_buffers(&ring_);
 }
 
 int UringProactor::RegisterBufferRing(unsigned group_id) {
