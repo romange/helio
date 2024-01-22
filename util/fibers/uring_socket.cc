@@ -189,39 +189,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
   ssize_t res = 0;
-  size_t short_len = 0;
-  uint8_t* reg_buf = nullptr;
-
   VSOCK(2) << "WriteSome [" << fd << "] " << len;
-
-  // WARNING: raw, experimental code.
-  if (p->HasRegisteredBuffers() && len < 16) {
-    for (uint32_t i = 0; i < len; ++i) {
-      short_len += ptr[i].iov_len;
-    }
-
-    if (short_len <= 64) {
-      reg_buf = p->ProvideRegisteredBuffer();
-    }
-  }
-
-  if (reg_buf) {
-    uint8_t* next = reg_buf;
-    for (uint32_t i = 0; i < len; ++i) {
-      memcpy(next, ptr[i].iov_base, ptr[i].iov_len);
-      next += ptr[i].iov_len;
-    }
-    auto cb = [p, reg_buf](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags) {
-      p->ReturnRegisteredBuffer(reg_buf);
-      CHECK_GT(res, 0);  // TODO - handle errors.
-    };
-
-    SubmitEntry se = p->GetSubmitEntry(std::move(cb));
-    se.PrepWriteFixed(fd, reg_buf, short_len, 0, 0);
-    se.sqe()->flags |= register_flag();
-
-    return short_len;  // optimistic
-  }
 
   if (len == 1) {
     while (true) {

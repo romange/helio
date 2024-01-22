@@ -90,17 +90,10 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
-  // Currently only a single bin of 1024 buffers of size 64 bytes (total 64K) is supported.
-  // Returns 0 on success, errno on failure.
-  int RegisterBuffers();
-
-  bool HasRegisteredBuffers() const {
-    return bool(registered_buf_);
-  }
-
-  // Returns a buffer of size 64 or null if no buffers are found.
-  uint8_t* ProvideRegisteredBuffer();
-  void ReturnRegisteredBuffer(uint8_t* addr);
+  // Wrapper interface around io_uring_(un)register_buffers.
+  // Returns 0 on success, -errno on failure.
+  int RegisterBuffers(const struct iovec *iovecs, unsigned nr_vecs);
+  int UnregisterBuffers();
 
   // Experimental. should not be called in production.
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
@@ -176,9 +169,6 @@ class UringProactor : public ProactorBase {
   uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
   uint64_t reaped_cqe_cnt_ = 0;
-
-  int32_t free_req_buf_id_ = -1;
-  std::unique_ptr<uint8_t[]> registered_buf_;
 
   struct EpollEntry {
     EpollCB cb;
