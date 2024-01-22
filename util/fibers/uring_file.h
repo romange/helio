@@ -51,6 +51,7 @@ class LinuxFile {
     return Write(&vec, 1, offset, flags);
   }
 
+  virtual std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) = 0;
  protected:
   int fd_ = -1;
 };

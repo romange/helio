@@ -83,6 +83,9 @@ class LinuxFileImpl : public LinuxFile {
   io::Result<size_t> ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
                               unsigned flags) final;
 
+
+  std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) final;
+
   std::error_code Close() final;
 
  protected:
@@ -279,6 +282,19 @@ std::error_code LinuxFileImpl::Close() {
   error_code ec = CloseFile(fd_, proactor_);
   fd_ = -1;
   return ec;
+}
+
+std::error_code LinuxFileImpl::ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) {
+  FiberCall fc(proactor_);
+  fc->PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
+  FiberCall::IoResult io_res = fc.Get();
+
+  if (io_res < 0) {
+    return error_code{-io_res, system_category()};
+  }
+
+  DCHECK_EQ(size_t(io_res), dest.size());
+  return error_code{};
 }
 
 }  // namespace
