@@ -314,6 +314,7 @@ class Done {
     return impl_->Wait(reset);
   }
 
+  // Returns true if Done was notified, false if timeout reached.
   bool WaitFor(const std::chrono::steady_clock::duration& duration) {
     return impl_->WaitFor(duration);
   }

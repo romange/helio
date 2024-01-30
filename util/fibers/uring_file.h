@@ -12,6 +12,8 @@ namespace util {
 
 namespace fb2 {
 
+class UringProactor;
+
 // The following functions must be called in the context of Proactor thread.
 // The objects should be accessed and used in the context of the same thread where
 // they have been opened.
@@ -24,26 +26,30 @@ io::Result<io::ReadonlyFile*> OpenRead(std::string_view path);
 // been open. Unlike classic IO classes can read and write at specified offsets.
 class LinuxFile {
  public:
-  virtual ~LinuxFile() {
-  }
+  LinuxFile(int fd, UringProactor* proactor);
+  ~LinuxFile();
 
   // Corresponds to pwritev2 interface. However, it does not guarantee full write
   // in case of a successful operation. Hence "Some".
-  virtual io::Result<size_t> WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                       unsigned flags) = 0;
+  io::Result<size_t> WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
+                               unsigned flags);
 
   // Corresponds to preadv2 interface.
-  virtual io::Result<size_t> ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                      unsigned flags) = 0;
+  io::Result<size_t> ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
+                              unsigned flags);
 
-  virtual std::error_code Close() = 0;
+  std::error_code Close();
 
   int fd() const {
     return fd_;
   }
 
   // Similar to XXXSome methods but writes fully all the io vectors or fails.
+  // Is not atomic meaning that it can issue multiple io calls until error occurs or we
+  // fully write all the buffers.
   std::error_code Write(const struct iovec* iov, unsigned iovcnt, off_t offset, unsigned flags);
+
+  // Similarly to Write, reads fully all the io vectors or fails.
   std::error_code Read(const struct iovec* iov, unsigned iovcnt, off_t offset, unsigned flags);
 
   std::error_code Write(io::Bytes src, off_t offset, unsigned flags) {
@@ -51,13 +57,21 @@ class LinuxFile {
     return Write(&vec, 1, offset, flags);
   }
 
-  virtual std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) = 0;
+  std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index);
+
+  using AsyncCb = std::function<void(int)>;
+
+  // Async versions of Read
+  void ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index, AsyncCb cb);
+  void ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb);
+
  protected:
   int fd_ = -1;
+  UringProactor* proactor_;
 };
 
-// Equivalent to open(2) call.
+// Equivalent to open(2) call. "flags" is the OR mask of O_XXX constants.
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode);
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util
