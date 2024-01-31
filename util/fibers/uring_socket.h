@@ -76,7 +76,7 @@ class UringSocket : public LinuxSocketBase {
 
   struct ErrorCbRefWrapper {
     uint32_t error_cb_id = 0;
-    uint32_t ref_count = 2;
+    uint32_t ref_count = 2;   // one for the socket reference, one for the completion lambda.
     std::function<void(uint32_t)> cb;
 
     static ErrorCbRefWrapper* New(std::function<void(uint32_t)> cb) {
