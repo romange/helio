@@ -74,7 +74,28 @@ class UringSocket : public LinuxSocketBase {
     fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
 
-  uint32_t error_cb_id_ = UINT32_MAX;
+  struct ErrorCbRefWrapper {
+    uint32_t error_cb_id = 0;
+    uint32_t ref_count = 2;   // one for the socket reference, one for the completion lambda.
+    std::function<void(uint32_t)> cb;
+
+    static ErrorCbRefWrapper* New(std::function<void(uint32_t)> cb) {
+      return new ErrorCbRefWrapper(std::move(cb));
+    }
+
+    static void Destroy(ErrorCbRefWrapper* ptr) {
+      ptr->cb = {};
+      if (--ptr->ref_count == 0)
+        delete ptr;
+    }
+
+   private:
+    ErrorCbRefWrapper(std::function<void(uint32_t)> _cb) : cb(std::move(_cb)) {
+    }
+  };
+
+  ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
+
   union {
     uint32_t flags_;
     struct {
