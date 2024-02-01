@@ -64,7 +64,7 @@ class UringSocket : public LinuxSocketBase {
   }
 
   void OnSetProactor() final;
-  void OnResetProactor();
+  void OnResetProactor() final;
 
   uint8_t register_flag() const {
     return is_direct_fd_ ? IOSQE_FIXED_FILE : 0;

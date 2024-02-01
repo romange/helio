@@ -151,13 +151,13 @@ void ListenerInterface::RunAcceptLoop() {
     conn->SetSocket(peer.release());
 
     // Run cb in its Proactor thread.
-    next->Dispatch([this, conn, next] {
+    next->Dispatch([this, conn] {
       conn->socket()->SetProactor(fb2::ProactorBase::me());
       RunSingleConnection(conn);
     });
   }
 
-  sock_->Shutdown(SHUT_RDWR);
+  error_code ec = sock_->Shutdown(SHUT_RDWR);
   PreShutdown();
 
   atomic_uint32_t cur_conn_cnt{0};
@@ -191,7 +191,7 @@ void ListenerInterface::RunAcceptLoop() {
   VLOG(1) << "Listener - " << ep.port() << " connections closed";
 
   PostShutdown();
-  error_code ec = sock_->Close();
+  ec = sock_->Close();
   LOG_IF(WARNING, ec) << "Socket close failed: " << ec.message();
   LOG(INFO) << "Listener stopped for port " << ep.port();
 }

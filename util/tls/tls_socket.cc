@@ -127,9 +127,7 @@ auto TlsSocket::Connect(const endpoint_type& endpoint) -> error_code {
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
-  next_sock_->Close();
-
-  return error_code{};
+  return next_sock_->Close();
 }
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
