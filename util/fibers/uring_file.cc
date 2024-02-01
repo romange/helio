@@ -8,7 +8,6 @@
 #include <sys/stat.h>
 
 #include "base/logging.h"
-
 #include "util/fibers/uring_proactor.h"
 
 namespace util {
@@ -63,32 +62,6 @@ class WriteFileImpl final : public WriteFile {
 
  protected:
   int fd_ = -1;
-  Proactor* proactor_;
-};
-
-class LinuxFileImpl : public LinuxFile {
- public:
-  LinuxFileImpl(int fd, Proactor* p) : proactor_(p) {
-    fd_ = fd;
-  }
-
-  ~LinuxFileImpl();
-
-  // Corresponds to pwritev2 interface. Has suffix Some because it does not guarantee the full
-  // write in case of a successful operation.
-  io::Result<size_t> WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                               unsigned flags) final;
-
-  // Corresponds to preadv2 interface.
-  io::Result<size_t> ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                              unsigned flags) final;
-
-
-  std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) final;
-
-  std::error_code Close() final;
-
- protected:
   Proactor* proactor_;
 };
 
@@ -261,42 +234,6 @@ Result<size_t> WriteFileImpl::WriteSome(const iovec* v, uint32_t len) {
   return res;
 }
 
-LinuxFileImpl::~LinuxFileImpl() {
-  CloseFile(fd_, proactor_);
-}
-
-// Corresponds to pwritev2 interface. Has suffix Some because it does not guarantee the full
-// write in case of a successful operation.
-io::Result<size_t> LinuxFileImpl::WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                            unsigned flags) {
-  return WriteSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
-}
-
-// Corresponds to preadv2 interface.
-io::Result<size_t> LinuxFileImpl::ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                           unsigned flags) {
-  return ReadSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
-}
-
-std::error_code LinuxFileImpl::Close() {
-  error_code ec = CloseFile(fd_, proactor_);
-  fd_ = -1;
-  return ec;
-}
-
-std::error_code LinuxFileImpl::ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) {
-  FiberCall fc(proactor_);
-  fc->PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
-  FiberCall::IoResult io_res = fc.Get();
-
-  if (io_res < 0) {
-    return error_code{-io_res, system_category()};
-  }
-
-  DCHECK_EQ(size_t(io_res), dest.size());
-  return error_code{};
-}
-
 }  // namespace
 
 io::Result<io::WriteFile*> OpenWrite(std::string_view path, io::WriteFile::Options opts) {
@@ -360,6 +297,45 @@ io::Result<io::ReadonlyFile*> OpenRead(std::string_view path) {
   return new ReadFileImpl(fd, sb.st_size, p);
 }
 
+LinuxFile::LinuxFile(int fd, Proactor* proactor) : fd_(fd), proactor_(proactor) {
+}
+
+LinuxFile::~LinuxFile() {
+  CloseFile(fd_, proactor_);
+}
+
+// Corresponds to pwritev2 interface. Has suffix Some because it does not guarantee the full
+// write in case of a successful operation.
+io::Result<size_t> LinuxFile::WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
+                                        unsigned flags) {
+  return WriteSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
+}
+
+// Corresponds to preadv2 interface.
+io::Result<size_t> LinuxFile::ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
+                                       unsigned flags) {
+  return ReadSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
+}
+
+std::error_code LinuxFile::Close() {
+  error_code ec = CloseFile(fd_, proactor_);
+  fd_ = -1;
+  return ec;
+}
+
+std::error_code LinuxFile::ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) {
+  FiberCall fc(proactor_);
+  fc->PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
+  FiberCall::IoResult io_res = fc.Get();
+
+  if (io_res < 0) {
+    return error_code{-io_res, system_category()};
+  }
+
+  DCHECK_EQ(size_t(io_res), dest.size());
+  return error_code{};
+}
+
 error_code LinuxFile::Write(const iovec* iov, unsigned iovcnt, off_t offset, unsigned flags) {
   auto cb = [this, flags, offset](const iovec* iov, unsigned iovcnt) mutable {
     auto res = this->WriteSome(iov, iovcnt, offset, flags);
@@ -384,6 +360,23 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
   return io::ApplyExactly(iov, iovcnt, std::move(cb));
 }
 
+void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index,
+                               AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
+                                       uint32_t flags) { cb(res); };
+
+  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+  se.PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
+}
+
+void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
+                                       uint32_t flags) { cb(res); };
+
+  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+  se.PrepRead(fd_, dest.data(), dest.size(), offset);
+}
+
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);
@@ -400,7 +393,7 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
       return make_unexpected(error_code{-io_res, system_category()});
     }
   }
-  return make_unique<LinuxFileImpl>(io_res, p);
+  return make_unique<LinuxFile>(io_res, p);
 }
 
 }  // namespace fb2

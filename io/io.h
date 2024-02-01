@@ -21,6 +21,10 @@ inline Bytes Buffer(std::string_view str) {
   return Bytes{reinterpret_cast<const uint8_t*>(str.data()), str.size()};
 }
 
+template<size_t N> inline MutableBytes MutableBuffer(char (&buf)[N]) {
+  return MutableBytes{reinterpret_cast<uint8_t*>(buf), N};
+}
+
 inline std::string_view View(Bytes bytes) {
   return std::string_view{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
