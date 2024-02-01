@@ -126,15 +126,16 @@ void FiberSocketTest::TearDown() {
   VLOG(1) << "TearDown";
 
   proactor_->Await([&] {
-    listen_socket_->Shutdown(SHUT_RDWR);
-    if (conn_socket_)
-      (void)conn_socket_->Close();
+    std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
+    if (conn_socket_) {
+      std::ignore = conn_socket_->Close();
+    }
   });
 
   accept_fb_.JoinIfNeeded();
 
   // We close here because we need to wake up listening socket.
-  proactor_->Await([&] { (void)listen_socket_->Close(); });
+  proactor_->Await([&] { std::ignore = listen_socket_->Close(); });
 
   proactor_->Stop();
   proactor_thread_.join();
@@ -159,7 +160,7 @@ TEST_P(FiberSocketTest, Basic) {
     auto res = sock->WriteSome(io::Bytes(buf));
     EXPECT_EQ(16, res.value_or(0));
     VLOG(1) << "closing client sock " << sock->native_handle();
-    (void)sock->Close();
+    std::ignore = sock->Close();
   });
 }
 
@@ -197,9 +198,9 @@ TEST_P(FiberSocketTest, Timeout) {
   uint8_t buf[16];
   io::Result<size_t> read_res = proactor_->Await([&] {
     auto res = sock[1]->Recv(buf, 0);
-    (void)tm_sock->Close();
+    std::ignore = tm_sock->Close();
     for (size_t i = 0; i < kNumSocks; ++i) {
-      (void)sock[i]->Close();
+      std::ignore = sock[i]->Close();
     }
     return res;
   });
@@ -231,8 +232,7 @@ TEST_P(FiberSocketTest, Poll) {
 
   LOG(INFO) << "Before close";
   proactor_->Await([&] {
-    auto ec = sock->Close();
-    (void)ec;
+    std::ignore = sock->Close();
   });
   usleep(1000);
 
@@ -254,8 +254,7 @@ TEST_P(FiberSocketTest, PollCancel) {
   accept_fb_.Join();
   proactor_->Await([&] {
     conn_socket_->CancelOnErrorCb();
-    auto ec = sock->Close();
-    (void)ec;
+    std::ignore = sock->Close();
   });
   usleep(100);
 
@@ -279,7 +278,7 @@ TEST_P(FiberSocketTest, AsyncWrite) {
   });
   done.Wait();
 
-  proactor_->Await([&] { (void)sock->Close(); });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 
 TEST_P(FiberSocketTest, UDS) {
@@ -308,7 +307,7 @@ TEST_P(FiberSocketTest, UDS) {
   });
 
   bool got_connection = false;
-  auto uds_accept = proactor_->LaunchFiber("AcceptFb", [this, &sock, &got_connection] {
+  auto uds_accept = proactor_->LaunchFiber("AcceptFb", [&sock, &got_connection] {
     auto accept_res = sock->Accept();
     EXPECT_TRUE(accept_res) << accept_res.error().message();
     auto linux_sock = dynamic_cast<LinuxSocketBase*>(*accept_res);
@@ -343,7 +342,7 @@ TEST_P(FiberSocketTest, UDS) {
   uds_accept.JoinIfNeeded();
   EXPECT_TRUE(got_connection);
 
-  proactor_->Await([&] { (void)sock->Close(); });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
 
   LOG(INFO) << "Finished";
 }
@@ -381,9 +380,9 @@ TEST_P(FiberSocketTest, NotEmpty) {
   ASSERT_FALSE(ec);
 
   UringSocket* uring_sock = static_cast<UringSocket*>(conn_socket_.get());
-  EXPECT_TRUE(uring_sock->HasRecvData());   // we have more pending data to read.
+  EXPECT_TRUE(uring_sock->HasRecvData());  // we have more pending data to read.
 
-  proactor_->Await([&] { (void)sock->Close(); });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 #endif
 

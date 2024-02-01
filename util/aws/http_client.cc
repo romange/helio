@@ -94,8 +94,9 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     buf_body = dynamic_cast<boost::interprocess::bufferstream*>(request->GetContentBody().get());
     // Only copy if we don't know the type.
     if (!buf_body) {
-      int content_size;
-      absl::SimpleAtoi(request->GetContentLength(), &content_size);
+      unsigned content_size;
+      CHECK(absl::SimpleAtoi(request->GetContentLength(), &content_size));
+
       std::string s(content_size, '0');
       request->GetContentBody()->read(s.data(), s.size());
       boost_req.body() = s;
@@ -133,7 +134,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     if (ec) {
       LOG(WARNING) << "aws: http clent: tls connect failed; error=" << ec;
       response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-      (void)tls_conn->Close();
+      std::ignore = tls_conn->Close();
       return response;
     }
     conn.reset(tls_conn.release());
@@ -147,7 +148,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-    (void)conn->Close();
+    std::ignore = conn->Close();
     return response;
   }
 
@@ -162,7 +163,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                    << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                    << "; url=" << request->GetUri().GetURIString() << "; error=" << ec;
       response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-      (void)conn->Close();
+      std::ignore = conn->Close();
       return response;
     }
   }
@@ -175,7 +176,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
                  << Aws::Http::HttpMethodMapper::GetNameForHttpMethod(request->GetMethod())
                  << "; url=" << request->GetUri().GetURIString() << "; error=" << bec;
     response->SetClientErrorType(Aws::Client::CoreErrors::NETWORK_CONNECTION);
-    (void)conn->Close();
+    std::ignore = conn->Close();
     return response;
   }
 
@@ -191,7 +192,7 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
     DVLOG(2) << "aws: http client: response; header=" << h.first << "=" << h.second;
   }
 
-  conn->Close();
+  ec = conn->Close();
 
   return response;
 }
@@ -230,7 +231,7 @@ io::Result<std::unique_ptr<FiberSocketBase>> HttpClient::Connect(const std::stri
   std::error_code ec = socket->Connect(ep);
   if (ec) {
     LOG(WARNING) << "aws: http client: failed to connect; host=" << host << "; error=" << ec;
-    socket->Close();
+    std::ignore = socket->Close();
     return nonstd::make_unexpected(ec);
   }
 
