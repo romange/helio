@@ -18,6 +18,11 @@ inline void FiberInterface::Suspend() {
   assert(!IsScheduledRemotely());
 }
 
+inline void WaitQueue::Link(Waiter* waiter) {
+  wait_list_.push_back(*waiter);
+  waiter->cntx()->DEBUG_wait_state = true;
+}
+
 }  // namespace detail
 }  // namespace fb2
 }  // namespace util

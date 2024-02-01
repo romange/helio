@@ -49,7 +49,7 @@ class DispatcherImpl final : public FiberInterface {
   // This is used to wake up the scheduler from sleep.
   bool wake_suspend_ = false;
 
-  mutex mu_;
+  mutex mu_;  // protects wake_suspend_.
   condition_variable cnd_;
 };
 
@@ -221,10 +221,18 @@ void Scheduler::AddReady(FiberInterface* fibi) {
   }
 }
 
+// Is called only from ActivateOther.
 void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // This function is called from FiberInterface::ActivateOther from a remote scheduler.
   // But the fiber belongs to this scheduler.
   DCHECK(cntx->scheduler_ == this);
+
+  // we call ScheduleFromRemote under the same lock that protects writes into DEBUG_wait_state.
+  // Therefore it's safe to call check.
+  // Only check proactor fibers
+  if (custom_policy_) {
+    CHECK(cntx->DEBUG_wait_state);
+  }
 
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.

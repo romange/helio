@@ -170,6 +170,8 @@ class FiberInterface {
 
   void PullMyselfFromRemoteReadyQueue();
 
+  bool DEBUG_wait_state = false;
+
  protected:
   bool IsScheduledRemotely() const {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;

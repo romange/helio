@@ -35,7 +35,7 @@ jobs:
     container:
       image: ghcr.io/romange/${{ matrix.container }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
@@ -76,7 +76,7 @@ jobs:
           GLOG_logtostderr=1 ctest -V -L CI
     - name: Upload logs on failure
       if: failure()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: binaries
         path: |
@@ -92,7 +92,7 @@ jobs:
 
     - name: Upload coverage to Codecov
       if: matrix.container == 'ubuntu-dev:20'
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
          files: ./coverage.info
          fail_ci_if_error: false
@@ -102,7 +102,7 @@ jobs:
     if: ${{ false }}  # Disabled due to mysterious segfaults in fibers_test ✨
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - run: |
           brew update && brew install ninja boost openssl automake gcc
           cmake --version
