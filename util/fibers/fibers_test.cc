@@ -431,10 +431,9 @@ TEST_F(FiberTest, SwitchAndExecute) {
     for (unsigned i = 0; i < 10; ++i) {
       other->SwitchToAndExecute([&] { ++cnt1; });
     }
-    while (cnt2  < 10)
+    while (cnt2 < 10)
       ThisFiber::Yield();
   });
-
 
   Fiber fb2("fb2", [&] {
     second.set_value(detail::FiberActive());
@@ -446,7 +445,9 @@ TEST_F(FiberTest, SwitchAndExecute) {
       ++cnt2;
     }
 
-    do { ThisFiber::Yield(); } while (cnt1 < 10);
+    do {
+      ThisFiber::Yield();
+    } while (cnt1 < 10);
   });
 
   fb1.Join();
@@ -606,6 +607,43 @@ TEST_P(ProactorTest, NotifyMyself) {
 
   for (auto& th : ths)
     th.reset();
+}
+
+TEST_P(ProactorTest, ContendTimeout) {
+  constexpr unsigned kNumThreads = 4;
+  constexpr unsigned kNumFibers = 50;
+
+  unique_ptr<ProactorThread> ths[kNumThreads];
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    ths[i] = CreateProactorThread();
+  }
+  EventCount ec[2];
+  atomic_int cond[2];
+
+  vector<fb2::Fiber> fbs;
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    for (unsigned j = 0; j < kNumFibers; ++j) {
+      fbs.emplace_back(
+          ths[i]->get()->LaunchFiber(Launch::post, StrCat("test", i, "/", j), [&, i, j] {
+            thread_local unsigned index = 0;
+
+            for (unsigned iter = 0; iter < 40; ++iter) {
+              unsigned cur = index;
+              index ^= 1;
+              cond[cur].fetch_add(1, std::memory_order_relaxed);
+              ThisFiber::Yield();
+              ec[cur].notify();
+              ec[index].await_until([&] { return cond[index].load(memory_order_acquire) > 0; },
+                                    chrono::steady_clock::now() + 100us);
+              cond[index].fetch_sub(1, std::memory_order_release);
+            }
+          }));
+    }
+  }
+
+  for (auto& fb : fbs)
+    fb.Join();
 }
 
 TEST_P(ProactorTest, Migrate) {
