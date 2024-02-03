@@ -162,15 +162,18 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.8.2.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.8.3.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
 if (NOT benchmark_POPULATED)
     FetchContent_Populate(benchmark)
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "")
+    set(BENCHMARK_ENABLE_EXCEPTIONS OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_LIBPFM OFF CACHE BOOL "")
+    set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "")
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
@@ -284,7 +287,7 @@ set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
 set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.9.patch)
 
- add_third_party(mimalloc
+add_third_party(mimalloc
    #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
    #GIT_TAG v2.0.9
    URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.9.tar.gz

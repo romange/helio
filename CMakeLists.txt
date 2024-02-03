@@ -22,6 +22,28 @@ option (USE_MOLD "whether to use mold linker" OFF)
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
 
+include(CheckCXXCompilerFlag)
+
+set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
+check_cxx_source_compiles("int main() { return 0; }" SUPPORT_ASAN)
+
+set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
+check_cxx_source_compiles("int main() { return 0; }" SUPPORT_USAN)
+
+set(CMAKE_REQUIRED_FLAGS "")
+
+if (SUPPORT_ASAN)
+  # TODO: asan sanitizer is not working with fibers,
+  # but if we build Boost.context ourselves, it should work.
+  # See https://github.com/boostorg/context/issues/70
+  # It's possible today to build Boost.context with cmake separately.
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
+endif()
+
+if (SUPPORT_USAN)
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
+endif()
+
 if (PARENT_PROJ_NAME)
   Message(STATUS "PARENT_PROJ_NAME ${PARENT_PROJ_NAME}")
 else()

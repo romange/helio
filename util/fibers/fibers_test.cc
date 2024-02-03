@@ -366,6 +366,7 @@ TEST_F(FiberTest, Future) {
 }
 
 #ifdef __linux__
+
 TEST_F(FiberTest, AsyncEvent) {
   Done done;
 
@@ -384,6 +385,15 @@ TEST_F(FiberTest, AsyncEvent) {
 
   LOG(INFO) << "DispatchBrief";
   done.Wait();
+}
+
+TEST_F(FiberTest, CleanExit) {
+  ASSERT_EXIT(
+      {
+        thread th([] { Fiber([] { exit(42); }).Join(); });
+        th.join();
+      },
+      ::testing::ExitedWithCode(42), "");
 }
 #endif
 
@@ -441,15 +451,6 @@ TEST_F(FiberTest, SwitchAndExecute) {
 
   fb1.Join();
   fb2.Join();
-}
-
-TEST_F(FiberTest, CleanExit) {
-  ASSERT_EXIT(
-      {
-        thread th([] { Fiber([] { exit(42); }).Join(); });
-        th.join();
-      },
-      ::testing::ExitedWithCode(42), "");
 }
 
 // EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
@@ -790,9 +791,11 @@ TEST_P(ProactorTest, Periodic) {
   proactor()->Await([&] {
     auto task_id = proactor()->AddPeriodic(1, [&] { ++cnt; });
     ThisFiber::SleepFor(20ms);
+    LOG(INFO) << "Canceling periodic";
     proactor()->CancelPeriodic(task_id);
+    LOG(INFO) << "After canceling periodic";
   });
-
+  LOG(INFO) << "Periodic finished";
   EXPECT_GT(cnt, 0u);
 }
 

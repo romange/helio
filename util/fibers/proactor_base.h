@@ -190,7 +190,10 @@ class ProactorBase {
 
     uint32_t val1;  // implementation dependent payload.
     uint32_t val2;  // implementation dependent payload.
-    bool in_map = true;
+
+    // for iouring the completions arrive asynchronously. We need to keep the reference count
+    // to make sure this record is alive when the completion arrives.
+    uint8_t ref_cnt = 1;
   };
 
   // Called only from external threads.
@@ -200,7 +203,7 @@ class ProactorBase {
   void WakeupIfNeeded();
 
   virtual void SchedulePeriodic(uint32_t id, PeriodicItem* item) = 0;
-  virtual void CancelPeriodicInternal(uint32_t val1, uint32_t val2) = 0;
+  virtual void CancelPeriodicInternal(PeriodicItem* item) = 0;
 
   // Returns true if we should continue spinning or false otherwise.
   bool RunOnIdleTasks();

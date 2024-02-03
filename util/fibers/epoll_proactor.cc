@@ -416,26 +416,27 @@ void EpollProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
 #endif
 }
 
-void EpollProactor::CancelPeriodicInternal(uint32_t val1, uint32_t arm_id) {
-  // we call the callback one more time explicitly in order to make sure it
-  // deleted PeriodicItem.
-  if (centries_[arm_id].cb) {
-    centries_[arm_id].cb(0, 0, this);
-    centries_[arm_id].cb = nullptr;
-  }
-
+void EpollProactor::CancelPeriodicInternal(PeriodicItem* item) {
 #ifdef __linux__
-  uint32_t tfd = val1;
+  uint32_t tfd = item->val1, arm_id = item->val2;
+
   Disarm(tfd, arm_id);
   if (close(tfd) == -1) {
     LOG(ERROR) << "Could not close timer, error " << errno;
   }
+
 #else
   // FreeBsd
   struct kevent kev;
-  EV_SET(&kev, val1, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+  EV_SET(&kev, item->val1, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
   CHECK_EQ(0, kevent(epoll_fd_, &kev, 1, NULL, 0, NULL));
 #endif
+
+  // Note - I assume that unlike with io_uring,
+  // kevent/epoll do not send late completions after we disarmed the event.
+  // If this assumption holds, it's safe to delete this pointer.
+  DCHECK_EQ(item->ref_cnt, 0u);
+  delete item;
 }
 
 void EpollProactor::WakeRing() {
@@ -468,11 +469,9 @@ void EpollProactor::WakeRing() {
 }
 
 void EpollProactor::PeriodicCb(PeriodicItem* item) {
-  if (!item->in_map) {
-    delete item;
-    return;
-  }
+  CHECK_GT(item->ref_cnt, 0u);
 
+  DCHECK(item->task);
   item->task();
 
 #ifdef __linux__

@@ -99,7 +99,7 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
-    if: ${{ false }}  # Disabled due to mysterious segfaults in fibers_test ✨
+    if: ${{ true }}  #  ✨
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -120,4 +120,5 @@ jobs:
           cd ${{github.workspace}}/build
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
             https_client_cli s3_demo
+          ./fibers_test --logtostderr --gtest_repeat=10
           ctest -V -L CI
