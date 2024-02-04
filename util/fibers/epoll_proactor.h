@@ -45,7 +45,7 @@ class EpollProactor : public ProactorBase {
   void MainLoop(detail::Scheduler* sched) final;
   LinuxSocketBase* CreateSocket() final;
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
-  void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
+  void CancelPeriodicInternal(PeriodicItem* item) final;
   void WakeRing() final;
   void PeriodicCb(PeriodicItem* item);
 

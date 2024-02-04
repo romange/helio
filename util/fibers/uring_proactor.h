@@ -121,7 +121,7 @@ class UringProactor : public ProactorBase {
   // Used with older kernels with msgring_f_ == 0.
   void ArmWakeupEvent();
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
-  void CancelPeriodicInternal(uint32_t val1, uint32_t val2) final;
+  void CancelPeriodicInternal(PeriodicItem* item) final;
 
   void PeriodicCb(IoResult res, uint32_t task_id, PeriodicItem* item);
 

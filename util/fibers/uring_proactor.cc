@@ -18,7 +18,8 @@
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
-ABSL_FLAG(bool, enable_direct_fd, true, "If true tries to register file descriptors");
+// TODO: to fix the bug when running dragonfly regtests on 6.2.
+ABSL_FLAG(bool, enable_direct_fd, false, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                        \
   do {                                                                        \
@@ -452,12 +453,12 @@ void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
 
   se.PrepTimeout(&item->period, false);
   DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
-
+  item->ref_cnt = 2;  // one for the map and one for the callback.
   item->val1 = se.sqe()->user_data;
 }
 
 void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item) {
-  if (!item->in_map) {  // has been removed from the map.
+  if (item->ref_cnt <= 1) {  // has been removed from the map.
     delete item;
     return;
   }
@@ -466,16 +467,18 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
   CHECK_EQ(res, -ETIME);
 
   DCHECK(periodic_map_.find(task_id) != periodic_map_.end());
+  DCHECK(item->task);
   item->task();
 
   schedule_periodic_list_.emplace_back(task_id, item);
 }
 
-void UringProactor::CancelPeriodicInternal(uint32_t val1, uint32_t val2) {
+void UringProactor::CancelPeriodicInternal(PeriodicItem* item) {
   auto* me = detail::FiberActive();
   auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags) {
     ActivateSameThread(current, me);
   };
+  uint32_t val1 = item->val1;
   SubmitEntry se = GetSubmitEntry(std::move(cb));
 
   DVLOG(1) << "Cancel timer " << val1 << ", cb userdata: " << se.sqe()->user_data;

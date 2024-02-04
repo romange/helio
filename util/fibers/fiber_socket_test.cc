@@ -31,7 +31,7 @@ void InitProactor(ProactorBase* p) {
 }
 #else
 void InitProactor(ProactorBase* p) {
-  static_cast<EpollProactor*>(p)->Init();
+  static_cast<EpollProactor*>(p)->Init(0);
 }
 #endif
 
@@ -241,8 +241,8 @@ TEST_P(FiberSocketTest, Poll) {
   EXPECT_TRUE(POLLRDHUP & conn_sock_err_mask_) << conn_sock_err_mask_;
 #endif
 
-  EXPECT_TRUE(POLLHUP & conn_sock_err_mask_);
-  EXPECT_TRUE(POLLERR & conn_sock_err_mask_);
+  // POLLERR does not appear on macos.
+  EXPECT_TRUE((POLLHUP | POLLERR) & conn_sock_err_mask_) << conn_sock_err_mask_;
 }
 
 TEST_P(FiberSocketTest, PollCancel) {

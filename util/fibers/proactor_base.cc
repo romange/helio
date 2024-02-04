@@ -199,13 +199,12 @@ void ProactorBase::CancelPeriodic(uint32_t id) {
 
   auto it = periodic_map_.find(id);
   CHECK(it != periodic_map_.end());
-  uint32_t val1 = it->second->val1;
-  uint32_t val2 = it->second->val2;
-  it->second->in_map = false;
+  PeriodicItem* item = it->second;
+  --item->ref_cnt;
 
   // we never deallocate here since there is a callback that holds pointer to the item.
   periodic_map_.erase(it);
-  CancelPeriodicInternal(val1, val2);
+  CancelPeriodicInternal(item);
 }
 
 void ProactorBase::Migrate(ProactorBase* dest) {

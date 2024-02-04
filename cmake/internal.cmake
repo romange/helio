@@ -20,7 +20,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-include(CheckCXXCompilerFlag)
 
 CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
 CHECK_CXX_COMPILER_FLAG("-std=c++20" COMPILER_SUPPORTS_CXX20)
@@ -37,23 +36,6 @@ if (COMPILER_SUPPORTS_CXX20)
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 endif()
-
-set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
-check_cxx_source_compiles("int main() { return 0; }" SUPPORT_ASAN)
-
-set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
-check_cxx_source_compiles("int main() { return 0; }" SUPPORT_USAN)
-
-if (SUPPORT_ASAN)
-  # There is some weird interaction with sanitizers and exceptions.
-  # It exists at least on gcc 11.2 and clang-13.
-  # set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
-endif()
-
-if (SUPPORT_USAN)
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
-endif()
-set(CMAKE_REQUIRED_FLAGS "")
 
 check_cxx_source_compiles("
 #include <string.h>
@@ -77,8 +59,6 @@ endif()
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fdiagnostics-color=auto")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fdiagnostics-color=always")
-  #set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -fsanitize=address -fsanitize=undefined \
-  #-fno-sanitize=vptr -DUNDEFINED_BEHAVIOR_SANITIZER")
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${HELIO_RELEASE_FLAGS}")
   set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} ${HELIO_RELEASE_FLAGS}")
 endif()
