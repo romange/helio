@@ -18,7 +18,8 @@
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
-ABSL_FLAG(bool, enable_direct_fd, true, "If true tries to register file descriptors");
+// TODO: to fix the bug when running dragonfly regtests on 6.2.
+ABSL_FLAG(bool, enable_direct_fd, false, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                        \
   do {                                                                        \
