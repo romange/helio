@@ -50,7 +50,7 @@ void IoBuf::Reserve(size_t sz) {
     } else {
       size_ = offs_ = 0;
     }
-    delete[] buf_;
+    ::operator delete[](buf_, std::align_val_t{alignment_});
   }
 
   buf_ = nb;
