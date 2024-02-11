@@ -75,7 +75,9 @@ class Scheduler {
   }
 
   void DestroyTerminated();
-  void ProcessRemoteReady(FiberInterface* active);
+
+  // Returns true if active fiber was pulled from the queue.
+  bool ProcessRemoteReady(FiberInterface* active);
 
   // Returns number of sleeping fibers being activated from sleep.
   unsigned ProcessSleep();
@@ -90,6 +92,9 @@ class Scheduler {
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
   void SuspendAndExecuteOnDispatcher(std::function<void()> fn);
 
+  bool RemoteEmpty() const {
+    return remote_ready_queue_.Empty();
+  }
  private:
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.

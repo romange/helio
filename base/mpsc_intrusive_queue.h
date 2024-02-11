@@ -65,7 +65,7 @@ template <typename T> class MPSCIntrusiveQueue {
     T* head = head_;
     T* next = MPSC_intrusive_load_next(*head);
 
-    return stub() == head && next == nullptr;
+    return reinterpret_cast<const T*>(&storage_) == head && next == nullptr;
   }
 };
 
