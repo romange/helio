@@ -15,7 +15,8 @@ option (WITH_UNWIND "Enable libunwind support" ON)
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 
-set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC")
+set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC -fno-stack-protector \
+    -fno-stack-clash-protection")
 
 find_package(Threads REQUIRED)
 
