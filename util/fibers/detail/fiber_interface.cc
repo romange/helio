@@ -298,8 +298,12 @@ void FiberInterface::PullMyselfFromRemoteReadyQueue() {
   // Therefore we process all the items and since this function is called after the fiber
   // was pulled from the wait queue, it is guaranteed that other threads won't add this object
   // back to the remote_ready_queue.
-  scheduler_->ProcessRemoteReady(this);
-  CHECK(!IsScheduledRemotely());
+  bool res = scheduler_->ProcessRemoteReady(this);
+  if (IsScheduledRemotely()) {
+    LOG(FATAL) << "Failed to pull " << name_ << " from remote_ready_queue. res=" << res
+               << " remotenext: " << uint64_t(remote_next_.load(std::memory_order_relaxed))
+               <<  " remotempty: " << scheduler_->RemoteEmpty();
+  }
 }
 
 void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {

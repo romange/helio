@@ -317,7 +317,8 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
-void Scheduler::ProcessRemoteReady(FiberInterface* active) {
+bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
+  bool res = false;
   while (true) {
     FiberInterface* fi = remote_ready_queue_.Pop();
     if (!fi)
@@ -330,6 +331,8 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     DCHECK(fi->scheduler_ == this);
 
+    if (fi == active)
+      res = true;
     // Generally, fi should not be in the ready queue if it's still in the remote queue,
     // because being in the remote queue means fi is still registered in the wait_queue of
     // some event. However, in case fi is waiting with timeout, ProcessSleep below can not
@@ -350,6 +353,8 @@ void Scheduler::ProcessRemoteReady(FiberInterface* active) {
       AddReady(fi);
     }
   }
+
+  return res;
 }
 
 unsigned Scheduler::ProcessSleep() {
