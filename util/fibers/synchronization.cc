@@ -29,7 +29,6 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
 
     // We must protect wait_hook because we modify it in notification thread.
     lk.lock();
-
     if (waiter.IsLinked()) {
       assert(!wait_queue_.empty());
 

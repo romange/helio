@@ -90,6 +90,9 @@ class Scheduler {
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
   void SuspendAndExecuteOnDispatcher(std::function<void()> fn);
 
+  bool RemoteEmpty() const {
+    return remote_ready_queue_.Empty();
+  }
  private:
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.

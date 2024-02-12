@@ -212,7 +212,7 @@ ctx::fiber_context Scheduler::Preempt() {
 
 void Scheduler::AddReady(FiberInterface* fibi) {
   DCHECK(!fibi->list_hook.is_linked());
-  DVLOG(1) << "Adding " << fibi->name() << " to ready_queue_";
+  DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
   ready_queue_.push_back(*fibi);
@@ -253,7 +253,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // clear the bit after we pushed to the queue.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
 
-    DVLOG(1) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
+    DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
     if (custom_policy_) {
       custom_policy_->Notify();
@@ -313,15 +313,21 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 }
 
 void Scheduler::ProcessRemoteReady(FiberInterface* active) {
+  [[maybe_unused]] unsigned iteration = 0;
   while (true) {
-    FiberInterface* fi = remote_ready_queue_.Pop();
-    if (!fi)
-      break;
+    auto [fi, qempty] = remote_ready_queue_.PopWeak();
+    if (!fi) {
+      if (qempty)
+        break;
+
+      DVLOG(1) << "Retrying " << iteration++;
+      continue;
+    }
 
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
 
-    DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
+    DVLOG(2) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
     DCHECK(fi->scheduler_ == this);
 
