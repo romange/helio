@@ -209,7 +209,7 @@ ctx::fiber_context Scheduler::Preempt() {
 
 void Scheduler::AddReady(FiberInterface* fibi) {
   DCHECK(!fibi->list_hook.is_linked());
-  DVLOG(1) << "Adding " << fibi->name() << " to ready_queue_";
+  DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
   ready_queue_.push_back(*fibi);
@@ -226,13 +226,6 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // This function is called from FiberInterface::ActivateOther from a remote scheduler.
   // But the fiber belongs to this scheduler.
   DCHECK(cntx->scheduler_ == this);
-
-  // we call ScheduleFromRemote under the same lock that protects writes into DEBUG_wait_state.
-  // Therefore it's safe to call check.
-  // Only check proactor fibers
-  if (custom_policy_) {
-    CHECK(cntx->DEBUG_wait_state);
-  }
 
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
@@ -258,7 +251,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // clear the bit after we pushed to the queue.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
 
-    DVLOG(1) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
+    DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
     if (custom_policy_) {
       custom_policy_->Notify();
@@ -319,15 +312,21 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
+  [[maybe_unused]] unsigned iteration = 0;
   while (true) {
-    FiberInterface* fi = remote_ready_queue_.Pop();
-    if (!fi)
-      break;
+    auto [fi, qempty] = remote_ready_queue_.PopWeak();
+    if (!fi) {
+      if (qempty)
+        break;
+
+      DVLOG(1) << "Retrying " << iteration++;
+      continue;
+    }
 
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
 
-    DVLOG(1) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
+    DVLOG(2) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
     DCHECK(fi->scheduler_ == this);
 

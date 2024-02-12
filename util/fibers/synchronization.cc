@@ -29,7 +29,6 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
 
     // We must protect wait_hook because we modify it in notification thread.
     lk.lock();
-    active->DEBUG_wait_state = false;
     if (waiter.IsLinked()) {
       assert(!wait_queue_.empty());
 
@@ -57,7 +56,6 @@ void Mutex::lock() {
   while (true) {
     detail::Waiter waiter(active->CreateWaiter());
     wait_queue_splk_.lock();
-    active->DEBUG_wait_state = false;
     if (nullptr == owner_) {
       DCHECK(!waiter.IsLinked());
 

@@ -168,10 +168,6 @@ class CondVarAny {
 
     active->Suspend();
 
-    wait_queue_splk_.lock();
-    active->DEBUG_wait_state = false;
-    wait_queue_splk_.unlock();
-
     // relock external again before returning
     try {
       lt.lock();
@@ -204,8 +200,6 @@ class CondVarAny {
     bool clear_remote = true;
 
     wait_queue_splk_.lock();
-    active->DEBUG_wait_state = false;
-
     if (waiter.IsLinked()) {
       wait_queue_.Unlink(&waiter);
 
@@ -568,10 +562,6 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     wait_queue_.Link(&waiter);
     lk.unlock();
     active->Suspend();
-
-    lk.lock();
-    active->DEBUG_wait_state = false;
-    lk.unlock();
 
     return true;
   }
