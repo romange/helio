@@ -76,7 +76,7 @@ class Scheduler {
 
   void DestroyTerminated();
 
-  // Returns true if active fiber was pulled from the queue.
+  // Returns whether the active fiber was pulled from the queue and the queue state.
   bool ProcessRemoteReady(FiberInterface* active);
 
   // Returns number of sleeping fibers being activated from sleep.

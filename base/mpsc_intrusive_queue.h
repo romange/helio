@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <utility>
 
 namespace base {
 
@@ -53,12 +54,26 @@ template <typename T> class MPSCIntrusiveQueue {
     MPSC_intrusive_store_next(item, nullptr);
     T* prev = tail_.exchange(item, std::memory_order_acq_rel);
 
-    // link the previous tail to the new tail. Also a potential blocking point.
+    // link the previous tail to the new tail.
+    // (*) Also a potential blocking point!
+    // For more details see the linked article above!
     MPSC_intrusive_store_next(prev, item);
   }
 
-  // Poops the first item at the head or returns nullptr if the queue is empty.
-  T* Pop() noexcept;
+  // Pops the first item at the head or returns nullptr if the queue is empty.
+  T* Pop() noexcept {
+    while (true) {
+      auto [elem, empty] = PopWeak();
+      if (elem || empty)
+        return elem;
+    }
+    return nullptr;
+  }
+
+  // Returns an item at the head if exists and a status whether the queue is empty.
+  // There can be a state where the queue is in the middle of Push transaction
+  // and Pop can not pull the element yet. In that case, PopWeak returns {null, false}.
+  std::pair<T*, bool> PopWeak() noexcept;
 
   // Can be run only on a consumer thread.
   bool Empty() const noexcept {
@@ -69,15 +84,15 @@ template <typename T> class MPSCIntrusiveQueue {
   }
 };
 
-template <typename T> T* MPSCIntrusiveQueue<T>::Pop() noexcept {
+template <typename T> std::pair<T*, bool> MPSCIntrusiveQueue<T>::PopWeak() noexcept {
+  // Unlike with tail_, this is the only thread that touches head_
   T* head = head_;
 
-  //  head->next_.load(std::memory_order_acquire);
-  T* next = MPSC_intrusive_load_next(*head);
+  T* next = MPSC_intrusive_load_next(*head);  // load(std::memory_order_acquire)
   if (stub() == head) {
     if (nullptr == next) {
       // empty
-      return nullptr;
+      return {nullptr, true};
     }
     head_ = next;
     head = next;
@@ -87,13 +102,13 @@ template <typename T> T* MPSCIntrusiveQueue<T>::Pop() noexcept {
   if (nullptr != next) {
     // non-empty
     head_ = next;
-    return head;
+    return {head, false};
   }
 
   T* tail = tail_.load(std::memory_order_acquire);
   if (tail != head) {
     // non-empty, we are in the middle of push - see a blocking point above.
-    return nullptr;
+    return {nullptr, false};
   }
 
   // tail and head are the same, pointing to the last element in the queue.
@@ -103,11 +118,11 @@ template <typename T> T* MPSCIntrusiveQueue<T>::Pop() noexcept {
   next = MPSC_intrusive_load_next(*head);
   if (nullptr != next) {
     head_ = next;
-    return head;
+    return {head, false};
   }
 
   // non-empty, we are still adding.
-  return nullptr;
+  return {nullptr, false};
 }
 
 }  // namespace base
