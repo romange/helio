@@ -181,16 +181,30 @@ Result<SelfStat> ReadSelfStat() {
   if (bytes_read <= 0)
     return make_unexpected(error_code{errno, system_category()});
 
-  string_view str(buf.get(), bytes_read);
-  size_t pos = find_nth(str, ' ', 20);
-  str.remove_prefix(pos);
-  if (!str.empty()) {
-    size_t next = str.find(' ', 1);
-    CHECK(absl::SimpleAtoi(str.substr(1, next - 1), &start_since_boot));
-    start_since_boot /= jiffies_per_second;
-  }
   SelfStat res;
+  string_view str(buf.get(), bytes_read);
+  size_t pos = find_nth(str, ' ', 10);
+  str.remove_prefix(pos);
+  if (str.empty())
+    return make_unexpected(error_code{EILSEQ, system_category()});
+
+  size_t next = str.find(' ', 1);
+  uint64_t maj_flt = 0;
+  if (next == string_view::npos || !absl::SimpleAtoi(str.substr(1, next - 1), &maj_flt))
+    return make_unexpected(error_code{EILSEQ, system_category()});
+  str.remove_prefix(next + 1);
+
+  pos = find_nth(str, ' ', 8);
+  str.remove_prefix(pos);
+  if (str.empty())
+    return make_unexpected(error_code{EILSEQ, system_category()});
+
+  next = str.find(' ', 1);
+  CHECK(absl::SimpleAtoi(str.substr(1, next - 1), &start_since_boot));
+  start_since_boot /= jiffies_per_second;
+
   res.start_time_sec = btime + start_since_boot;
+  res.maj_flt = maj_flt;
   return res;
 }
 
