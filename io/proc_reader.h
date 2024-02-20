@@ -34,6 +34,7 @@ struct MemInfoData {
 
 struct SelfStat {
   uint64_t start_time_sec = 0;
+  uint64_t maj_flt = 0;
 };
 
 Result<StatusData> ReadStatusInfo();
