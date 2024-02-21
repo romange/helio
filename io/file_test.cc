@@ -5,9 +5,11 @@
 #include "io/file.h"
 
 #include <gmock/gmock.h>
+#include <absl/strings/numbers.h>
 
 #include "base/gtest.h"
 #include "io/file_util.h"
+#include "io/line_reader.h"
 
 namespace io {
 
@@ -34,6 +36,20 @@ TEST_F(FileTest, Util) {
   auto res2 = ReadFileToString(path2);
   ASSERT_TRUE(res2);
   EXPECT_EQ(res2.value(), "foo");
+}
+
+TEST_F(FileTest, LineReader) {
+  string path = base::ProgramRunfile("testdata/ids.txt");
+  ReadonlyFileOrError fl_err = OpenRead(path, ReadonlyFile::Options{});
+  ASSERT_TRUE(fl_err);
+  FileSource fs(std::move(*fl_err));
+  LineReader lr(&fs, DO_NOT_TAKE_OWNERSHIP);
+  string_view line;
+  uint64_t val;
+  while (lr.Next(&line)) {
+    ASSERT_TRUE(absl::SimpleHexAtoi(line, &val)) << lr.line_num();
+  }
+  EXPECT_EQ(746, lr.line_num());
 }
 
 }  // namespace io
