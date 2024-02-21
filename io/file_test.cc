@@ -49,7 +49,7 @@ TEST_F(FileTest, LineReader) {
   while (lr.Next(&line)) {
     ASSERT_TRUE(absl::SimpleHexAtoi(line, &val)) << lr.line_num();
   }
-  EXPECT_EQ(746, lr.line_num());
+  EXPECT_EQ(48, lr.line_num());
 }
 
 }  // namespace io

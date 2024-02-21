@@ -32,6 +32,13 @@ string ProgramAbsoluteFileName() {
     // Buffer size is too small.
     return res;
   }
+
+  // _NSGetExecutablePath doesn't seem to set sz, so update to exclude zero
+  // characters from res.
+  if (res.find(static_cast<char>(0)) != std::string::npos) {
+    sz = res.find(static_cast<char>(0));
+  }
+
 #else // not __APPLE__
   ssize_t sz = readlink(kProcSelf, &res.front(), res.size());
   CHECK_GT(sz, 0);
