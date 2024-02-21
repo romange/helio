@@ -35,8 +35,10 @@ string ProgramAbsoluteFileName() {
 
   // _NSGetExecutablePath doesn't seem to set sz, so update to exclude zero
   // characters from res.
-  if (res.find(static_cast<char>(0)) != std::string::npos) {
-    sz = res.find(static_cast<char>(0));
+  if (sz == res.size()) {
+    if (auto pos = res.find('\0'); pos != string::npos) {
+      sz = pos;
+    }
   }
 
 #else // not __APPLE__
