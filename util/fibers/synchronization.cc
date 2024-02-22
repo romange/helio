@@ -17,6 +17,7 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
 
   cv_status status = cv_status::no_timeout;
 
+  CHECK(!active->IsScheduledRemotely());
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     detail::Waiter waiter(active->CreateWaiter());
@@ -30,7 +31,7 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
     // We must protect wait_hook because we modify it in notification thread.
     lk.lock();
     if (waiter.IsLinked()) {
-      assert(!wait_queue_.empty());
+      DCHECK(!wait_queue_.empty());
 
       // We were woken up by timeout, lets remove ourselves from the queue.
       wait_queue_.Unlink(&waiter);
@@ -45,6 +46,8 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
     // We must pull ourselves from the scheduler's remote_ready_queue in case we are there.
     if (clear_remote) {
       active->PullMyselfFromRemoteReadyQueue();
+    } else {
+      CHECK(!active->IsScheduledRemotely());
     }
   }
   return status;
@@ -92,6 +95,30 @@ void Mutex::unlock() {
   owner_ = nullptr;
 
   wait_queue_.NotifyOne(active);
+}
+
+std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out,
+                                           detail::FiberInterface* active) {
+  std::cv_status status = std::cv_status::no_timeout;
+  bool clear_remote = true;
+  wait_queue_splk_.lock();
+
+  if (waiter.IsLinked()) {
+    wait_queue_.Unlink(&waiter);
+
+    status = std::cv_status::timeout;
+    clear_remote = false;
+  } else if (timed_out) {
+    status = std::cv_status::timeout;
+  }
+  wait_queue_splk_.unlock();
+
+  if (clear_remote) {
+    active->PullMyselfFromRemoteReadyQueue();
+  } else {
+    CHECK(!active->IsScheduledRemotely());
+  }
+  return status;
 }
 
 void CondVarAny::notify_one() noexcept {

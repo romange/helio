@@ -139,6 +139,9 @@ class CondVarAny {
   base::SpinLock wait_queue_splk_;
   detail::WaitQueue wait_queue_;
 
+  std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
+                                 detail::FiberInterface* active);
+
  public:
   CondVarAny() = default;
 
@@ -186,7 +189,6 @@ class CondVarAny {
   std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
     detail::FiberInterface* active = detail::FiberActive();
 
-    std::cv_status status = std::cv_status::no_timeout;
     detail::Waiter waiter(active->CreateWaiter());
 
     // atomically call lt.unlock() and block on *this
@@ -197,23 +199,7 @@ class CondVarAny {
     wait_queue_splk_.unlock();
 
     bool timed_out = active->WaitUntil(tp);
-    bool clear_remote = true;
-
-    wait_queue_splk_.lock();
-    if (waiter.IsLinked()) {
-      wait_queue_.Unlink(&waiter);
-
-      status = std::cv_status::timeout;
-      clear_remote = false;
-    } else if (timed_out) {
-      status = std::cv_status::timeout;
-    }
-    wait_queue_splk_.unlock();
-
-    if (clear_remote) {
-      active->PullMyselfFromRemoteReadyQueue();
-    }
-
+    std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
     lt.lock();
     return status;
   }

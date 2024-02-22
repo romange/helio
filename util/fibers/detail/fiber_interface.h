@@ -170,11 +170,11 @@ class FiberInterface {
 
   void PullMyselfFromRemoteReadyQueue();
 
- protected:
   bool IsScheduledRemotely() const {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
   }
 
+ protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
 
