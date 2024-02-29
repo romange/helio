@@ -105,6 +105,11 @@ TEST_F(IoTest, ProcReader) {
   EXPECT_GT(mdata->mem_cached, 0);
   EXPECT_GT(mdata->mem_SReclaimable, 0);
   EXPECT_GT(mdata->mem_total, 1ul << 30);
+
+  auto self_stat = ReadSelfStat();
+  EXPECT_TRUE(self_stat.has_value());
+  EXPECT_GT(self_stat->start_time_sec, 0);
+  EXPECT_EQ(0, self_stat->maj_flt);
 }
 
 TEST_F(IoTest, IniReader) {

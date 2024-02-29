@@ -329,6 +329,7 @@ add_third_party(
   URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.5.tar.gz
 
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
+  BUILD_COMMAND make -C src
   BUILD_IN_SOURCE 1
 )
 
