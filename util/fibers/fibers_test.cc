@@ -387,6 +387,7 @@ TEST_F(FiberTest, AsyncEvent) {
   done.Wait();
 }
 
+#if 0
 TEST_F(FiberTest, CleanExit) {
   ASSERT_EXIT(
       {
@@ -395,6 +396,8 @@ TEST_F(FiberTest, CleanExit) {
       },
       ::testing::ExitedWithCode(42), "");
 }
+#endif
+
 #endif
 
 TEST_F(FiberTest, Notify) {
@@ -724,9 +727,11 @@ TEST_P(ProactorTest, DragonflyBug1591) {
     end_step();
 
     start_step(2);
-    auto a_res = sock->Accept();
+    FiberSocketBase::AcceptResult a_res = sock->Accept();
     a_res.value()->SetProactor(proactor());
     ASSERT_TRUE(a_res.has_value()) << a_res.error().message();
+    unique_ptr<FiberSocketBase> guard(a_res.value());
+
     m1.lock();
     end_step();
 

@@ -1,0 +1,26 @@
+{
+  "name": "ubuntu24-ucontext-asan",
+  "image": "ghcr.io/romange/ubuntu-dev:24",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-vscode.cpptools-themes",
+        "twxs.cmake"
+      ],
+      "settings": {
+        "cmake.buildDirectory": "/build",
+        "cmake.configureArgs": [
+          "-DUSE_MOLD=ON",
+          "-DBOOST_ROOT=/opt/boost",  // This is a custom built boost with ucontext support
+          "-DCMAKE_CXX_FLAGS='-DBOOST_USE_UCONTEXT -DBOOST_USE_ASAN'"
+        ]
+      }
+    }
+  },
+  "mounts": [
+    "source=ubuntu24-vol,target=/build,type=volume"
+  ],
+  "postCreateCommand": ".devcontainer/ubuntu24/post-create.sh ${containerWorkspaceFolder}"
+}

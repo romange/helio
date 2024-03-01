@@ -1,5 +1,5 @@
 {
-	"name": "helio",
+	"name": "ubuntu22",
 	"image": "ghcr.io/romange/ubuntu-dev:22",
 	"customizations": {
 		"vscode": {

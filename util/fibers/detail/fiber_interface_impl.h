@@ -14,7 +14,8 @@ inline bool FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) 
 }
 
 inline void FiberInterface::Suspend() {
-  scheduler_->Preempt();
+  auto res = scheduler_->Preempt();
+  assert(!res);
   assert(!IsScheduledRemotely());
 }
 

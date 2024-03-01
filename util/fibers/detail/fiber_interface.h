@@ -228,6 +228,9 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
         arg_(std::forward<Arg>(arg)...) {
     entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                     [this](FbCntx&& caller) { return run_(std::move(caller)); });
+#if defined(BOOST_USE_UCONTEXT)
+    entry_ = std::move(entry_).resume();
+#endif
   }
 
  private:
@@ -238,6 +241,11 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
       // fn and tpl must be destroyed before calling terminate()
       auto fn = std::move(fn_);
       auto arg = std::move(arg_);
+
+#if defined(BOOST_USE_UCONTEXT)
+      std::move(c).resume();
+#endif
+
       std::apply(std::move(fn), std::move(arg));
     }
 

@@ -41,10 +41,6 @@ else()
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
   if (SUPPORT_ASAN)
-    # TODO: asan sanitizer is not working with fibers,
-    # but if we build Boost.context ourselves, it should work.
-    # See https://github.com/boostorg/context/issues/70
-    # It's possible today to build Boost.context with cmake separately.
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
   endif()
 
