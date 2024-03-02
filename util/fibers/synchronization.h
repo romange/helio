@@ -556,8 +556,10 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
 
 // Returns true if had to preempt, false if no preemption happenned.
 template <typename Condition> bool EventCount::await(Condition condition) {
-  if (condition())
+  if (condition()) {
+    std::atomic_thread_fence(std::memory_order_acquire);
     return false;  // fast path
+  }
 
   // condition() is the only thing that may throw, everything else is
   // noexcept, Key destructor makes sure to cancelWait state when exiting the function.
