@@ -1,5 +1,5 @@
 {
-	"name": "helio",
+	"name": "alpine",
 	"image": "ghcr.io/romange/alpine-dev",
 	"customizations": {
 		"vscode": {

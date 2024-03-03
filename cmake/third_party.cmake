@@ -3,6 +3,10 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
  cmake_policy(SET CMP0135 NEW)
 endif()
 
+if(POLICY CMP0144)
+  cmake_policy(SET CMP0144 NEW) # find_package() uses upper-case <PACKAGENAME>_ROOT variables
+endif()
+
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party")
 
 SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})

@@ -223,6 +223,7 @@ void FiberInterface::Join() {
   DVLOG(2) << "Joining on " << name_;
 
   active->Suspend();
+  DCHECK(!waiter.IsLinked());
 }
 
 void FiberInterface::Yield() {

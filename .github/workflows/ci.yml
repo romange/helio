@@ -30,6 +30,8 @@ jobs:
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
           - container: fedora:30
             compiler: {cxx: g++, c: gcc}
+          - container: ubuntu-dev:24
+            compiler: {cxx: g++, c: gcc}
 
     timeout-minutes: 50
     container:

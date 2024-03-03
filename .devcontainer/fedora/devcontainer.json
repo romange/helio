@@ -1,5 +1,5 @@
 {
-	"name": "helio",
+	"name": "fedora",
 	"image": "ghcr.io/romange/fedora:30",
 	"customizations": {
 		"vscode": {

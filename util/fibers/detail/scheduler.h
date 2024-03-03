@@ -5,7 +5,7 @@
 #pragma once
 
 #include <vector>
-
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #define __FIBERS_SCHEDULER_H__
 #include "util/fibers/detail/fiber_interface.h"
 #undef __FIBERS_SCHEDULER_H__

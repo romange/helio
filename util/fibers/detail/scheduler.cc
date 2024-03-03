@@ -71,6 +71,9 @@ DispatcherImpl::DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_s
   entry_ = ctx::fiber(std::allocator_arg, palloc, salloc,
                       [this](ctx::fiber&& caller) { return Run(std::move(caller)); });
   scheduler_ = sched;
+#if defined(BOOST_USE_UCONTEXT)
+  entry_ = std::move(entry_).resume();
+#endif
 }
 
 DispatcherImpl::~DispatcherImpl() {
@@ -80,14 +83,12 @@ DispatcherImpl::~DispatcherImpl() {
 }
 
 ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
-  if (c) {
-    // We context switched from intrusive_ptr_release and this object is destroyed.
-    return std::move(c);
-  }
+#if defined(BOOST_USE_UCONTEXT)
+    std::move(c).resume();
+#else
+    DCHECK(!c);
+#endif
 
-  // Normal SwitchTo operation.
-
-  // auto& fb_init = detail::FbInitializer();
   if (scheduler_->policy()) {
     scheduler_->policy()->Run(scheduler_);
   } else {
@@ -325,8 +326,8 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
                      << ", next:" << (uint64_t)next;
           if (next && next != (FiberInterface*)FiberInterface::kRemoteFree) {
             LOG(ERROR) << "Next fiber next is: "
-                       << next->remote_next_.load(std::memory_order_acquire)
-                       << ", usecount" << next->use_count_.load(std::memory_order_relaxed);
+                       << next->remote_next_.load(std::memory_order_acquire) << ", usecount"
+                       << next->use_count_.load(std::memory_order_relaxed);
           }
         }
         break;
