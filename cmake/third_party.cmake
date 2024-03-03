@@ -363,21 +363,12 @@ add_third_party(
   LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
 )
 
-if(APPLE)
-  message("On macOS, please install c-ares via homebrew: ")
-  message("brew install c-ares && brew link c-ares")
-  message("This shall also create cmake config file to guide find_package()")
-  add_library(TRDP::cares SHARED IMPORTED)
-  find_package(c-ares REQUIRED)
-  set_target_properties(TRDP::cares PROPERTIES IMPORTED_LOCATION ${c-ares_DIR}/../../libcares.dylib)
-else()
-  add_third_party(
-    cares
-    URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
-    CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
+add_third_party(
+  cares
+  URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
+  CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
-  )
-endif()
+)
 
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
@@ -392,3 +383,7 @@ endif()
 cmake_policy (SET CMP0079 NEW)
 target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIXML_NO_XPATH=1)
+
+if (APPLE) 
+  set_target_properties(TRDP::cares PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES resolv)
+endif()
