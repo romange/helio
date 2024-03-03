@@ -84,7 +84,7 @@ DispatcherImpl::~DispatcherImpl() {
 
 ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 #if defined(BOOST_USE_UCONTEXT)
-    std::move( c).resume();
+    std::move(c).resume();
 #else
     DCHECK(!c);
 #endif
