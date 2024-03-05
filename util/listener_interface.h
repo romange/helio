@@ -79,6 +79,10 @@ class ListenerInterface {
   void SetMaxClients(uint32_t max_clients);
   uint32_t GetMaxClients() const;
 
+  void SetConnFiberStackSize(uint32_t size) {
+    conn_fiber_stack_size_ = size;
+  }
+
  protected:
   ProactorPool* pool() {
     return pool_;
@@ -110,6 +114,9 @@ class ListenerInterface {
   std::unique_ptr<FiberSocketBase> sock_;
   // Number of max connections. Unlimited by default.
   uint32_t max_clients_{UINT32_MAX};
+
+  uint32_t conn_fiber_stack_size_ = 64 * 1024;
+
   // Number of current open connections. Incremented in RunAcceptLoop, decremented at the end of
   // RunSingleConnection.
   std::atomic_uint32_t open_connections_{0};

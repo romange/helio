@@ -434,10 +434,9 @@ TEST_F(FiberTest, SwitchAndExecute) {
     for (unsigned i = 0; i < 10; ++i) {
       other->SwitchToAndExecute([&] { ++cnt1; });
     }
-    while (cnt2  < 10)
+    while (cnt2 < 10)
       ThisFiber::Yield();
   });
-
 
   Fiber fb2("fb2", [&] {
     second.set_value(detail::FiberActive());
@@ -449,11 +448,36 @@ TEST_F(FiberTest, SwitchAndExecute) {
       ++cnt2;
     }
 
-    do { ThisFiber::Yield(); } while (cnt1 < 10);
+    do {
+      ThisFiber::Yield();
+    } while (cnt1 < 10);
   });
 
   fb1.Join();
   fb2.Join();
+}
+
+TEST_F(FiberTest, StackSize) {
+  Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{4096}, "fb1", [] {
+    LOG(INFO) << "fb1 started";
+    detail::FiberInterface* active = detail::FiberActive();
+
+    // we can not have bigger buffer here because LOG(INFO) callchain also uses stack,
+    // and it can lead to stack overflow.
+    char buf[128];
+    memset(buf, 0, sizeof(buf));
+
+    // active is on the right side of the stack address range but variables on stack
+    // grow from high to low addresses.
+    {
+      unsigned free_space =
+          reinterpret_cast<uintptr_t>(&free_space) - (reinterpret_cast<uintptr_t>(active) - 4096);
+
+      LOG(INFO) << "fb1 ends, free space on the stack: " << free_space;
+    }
+  });
+
+  fb1.Join();
 }
 
 // EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.

@@ -16,11 +16,14 @@ if (APPLE)
 else()
   option (WITH_UNWIND "Enable libunwind support" ON)
 endif()
+
+option (HELIO_USE_SANITIZER "Use asan and usan sanitizers" OFF)
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
 option (USE_MOLD "whether to use mold linker" OFF)
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
+
 
 include(CheckCXXCompilerFlag)
 
@@ -40,11 +43,11 @@ else()
   set(CMAKE_CXX_STANDARD 17)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
-  if (SUPPORT_ASAN)
+  if (HELIO_USE_SANITIZER AND SUPPORT_ASAN)
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
   endif()
 
-  if (SUPPORT_USAN)
+  if (HELIO_USE_SANITIZER AND SUPPORT_USAN)
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
   endif()
 
