@@ -259,12 +259,19 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
 
 template <typename FbImpl>
 boost::context::preallocated MakePreallocated(const boost::context::stack_context& sctx) {
-  // reserve space for control structure
-  uintptr_t storage =
+  // reserve space for FbImpl control structure. fb_impl_ptr points to the address where FbImpl
+  // will be placed.
+  uintptr_t fb_impl_ptr =
       (reinterpret_cast<uintptr_t>(sctx.sp) - sizeof(FbImpl)) & ~static_cast<uintptr_t>(0xff);
+
+  // stack_bottom is the real pointer allocated inside salloc.allocate()
+  // sctx.sp, on the other hand, points to the top (right boundary) of the allocated region.
+  // The deeper the stack grows, the closer it gets to the stack_bottom.
   uintptr_t stack_bottom = reinterpret_cast<uintptr_t>(sctx.sp) - static_cast<uintptr_t>(sctx.size);
-  const std::size_t size = storage - stack_bottom;
-  void* sp_ptr = reinterpret_cast<void*>(storage);
+  const std::size_t size = fb_impl_ptr - stack_bottom;  // effective stack size.
+
+  // we place FbImpl object at the top of the stack.
+  void* sp_ptr = reinterpret_cast<void*>(fb_impl_ptr);
 
   return boost::context::preallocated{sp_ptr, size, sctx};
 }
@@ -276,12 +283,12 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, S
   using WorkerImpl = WorkerFiberImpl<Fn, Arg...>;
   boost::context::preallocated palloc = MakePreallocated<WorkerImpl>(sctx);
 
-  void* sp_ptr = palloc.sp;
+  void* obj_ptr = palloc.sp;  // copy because we move palloc.
 
   // placement new of context on top of fiber's stack
   WorkerImpl* fctx =
-      new (sp_ptr) WorkerImpl{name, std::move(palloc), std::forward<StackAlloc>(salloc),
-                              std::forward<Fn>(fn), std::forward<Arg>(arg)...};
+      new (obj_ptr) WorkerImpl{name, std::move(palloc), std::forward<StackAlloc>(salloc),
+                               std::forward<Fn>(fn), std::forward<Arg>(arg)...};
   return fctx;
 }
 

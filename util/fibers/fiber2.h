@@ -26,10 +26,12 @@ class Fiber {
   }
 
   template <typename Fn>
-  Fiber(Launch policy, Fn&& fn)
-      : impl_{util::fb2::detail::MakeWorkerFiberImpl({}, boost::context::fixedsize_stack(),
-                                                     std::forward<Fn>(fn))} {
-    Start(policy);
+  Fiber(Launch policy, Fn&& fn) : Fiber(policy, std::string_view{}, std::forward<Fn>(fn)) {
+  }
+
+  template <typename Fn, typename... Arg>
+  Fiber(std::string_view name, Fn&& fn, Arg&&... arg)
+      : Fiber(Launch::post, name, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename... Arg>
@@ -40,9 +42,12 @@ class Fiber {
     Start(policy);
   }
 
-  template <typename Fn, typename... Arg>
-  Fiber(std::string_view name, Fn&& fn, Arg&&... arg)
-      : Fiber(Launch::post, name, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
+  template <typename Fn, typename StackAlloc, typename... Arg>
+  Fiber(Launch policy, StackAlloc&& stack_alloc, std::string_view name, Fn&& fn, Arg&&... arg)
+      : impl_{util::fb2::detail::MakeWorkerFiberImpl(
+            name, std::forward<StackAlloc>(stack_alloc), std::forward<Fn>(fn),
+            std::forward<Arg>(arg)...)} {
+    Start(policy);
   }
 
   ~Fiber();

@@ -151,9 +151,14 @@ void ListenerInterface::RunAcceptLoop() {
     conn->SetSocket(peer.release());
 
     // Run cb in its Proactor thread.
-    next->Dispatch([this, conn] {
-      conn->socket()->SetProactor(fb2::ProactorBase::me());
-      RunSingleConnection(conn);
+    next->DispatchBrief([this, conn] {
+      fb2::Fiber(fb2::Launch::post, boost::context::fixedsize_stack(conn_fiber_stack_size_),
+                 "Connection",
+                 [this, conn] {
+                   conn->socket()->SetProactor(fb2::ProactorBase::me());
+                   RunSingleConnection(conn);
+                 })
+          .Detach();
     });
   }
 
