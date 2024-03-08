@@ -8,6 +8,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include "base/pmr/memory_resource.h"
 #include "util/fiber_socket_base.h"
 
 namespace util {
@@ -26,7 +27,7 @@ class ListenerInterface {
 
   virtual ~ListenerInterface();
 
-  void RegisterPool(ProactorPool* pool);
+  void InitByAcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr);
 
   //! Creates a dedicated handler for a new connection.
   //! Called per new accepted connection
@@ -122,6 +123,7 @@ class ListenerInterface {
   std::atomic_uint32_t open_connections_{0};
 
   ProactorPool* pool_ = nullptr;
+  PMR_NS::memory_resource* mr_;
   friend class AcceptServer;
 };
 

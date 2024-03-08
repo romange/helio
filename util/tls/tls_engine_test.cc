@@ -48,6 +48,22 @@ SSL_CTX* CreateSslCntx() {
 
   return ctx;
 }
+
+static void* TestMalloc(size_t num, const char* file, int line) {
+  VLOG(1) << "MyTestMalloc " << num << " " << file << ":" << line;
+  return malloc(num);
+}
+
+static void* TestRealloc(void* addr, size_t num, const char* file, int line) {
+  VLOG(1) << "MyTestRealloc " << num << " " << file << ":" << line;
+  return realloc(addr, num);
+}
+
+static void TestFree(void* addr, const char* file, int line) {
+  VLOG(1) << "TestFree " << file << ":" << line << " " << addr;
+  free(addr);
+}
+
 class SslStreamTest : public testing::Test {
  public:
   struct Options {
@@ -65,8 +81,11 @@ class SslStreamTest : public testing::Test {
 
  protected:
   static void SetUpTestSuite() {
+    CRYPTO_set_mem_functions(&TestMalloc, &TestRealloc, &TestFree);
   }
-
+  static void TearDownTestSuite() {
+    OPENSSL_cleanup();
+  }
   void SetUp() override;
 
   void TearDown() override {

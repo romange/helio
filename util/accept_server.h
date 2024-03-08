@@ -8,8 +8,10 @@
 #include <memory>
 #include <vector>
 
+#include "base/pmr/memory_resource.h"
 #include "util/connection.h"
 #include "util/fibers/synchronization.h"
+
 namespace util {
 
 class ListenerInterface;
@@ -20,7 +22,12 @@ class AcceptServer {
   void operator=(const AcceptServer&) = delete;
 
  public:
-  explicit AcceptServer(ProactorPool* pool, bool break_on_int = true);
+  explicit AcceptServer(ProactorPool* pool, bool break_on_int = true)
+      : AcceptServer(pool, nullptr, break_on_int) {
+  }
+
+  AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool break_on_int);
+
   ~AcceptServer();
 
   void Run();
@@ -55,6 +62,7 @@ class AcceptServer {
   void BreakListeners();
 
   ProactorPool* pool_;
+  PMR_NS::memory_resource* mr_;
 
   // Called if a termination signal has been caught (SIGTERM/SIGINT).
   std::function<void()> on_break_hook_;
