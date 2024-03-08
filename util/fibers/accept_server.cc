@@ -16,7 +16,8 @@ namespace util {
 using namespace boost;
 using namespace std;
 
-AcceptServer::AcceptServer(ProactorPool* pool, bool break_on_int) : pool_(pool), ref_bc_(0) {
+AcceptServer::AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool break_on_int)
+    : pool_(pool), mr_(mr), ref_bc_(0) {
   if (break_on_int) {
     ProactorBase* proactor = pool_->GetNextProactor();
     proactor->RegisterSignal({SIGINT, SIGTERM}, [this](int signal) {
@@ -150,7 +151,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   if (success) {
     DCHECK(fs->IsOpen());
 
-    listener->RegisterPool(pool_);
+    listener->InitByAcceptServer(pool_, mr_);
     listener->sock_ = std::move(fs);
     list_interface_.emplace_back(listener);
   }
@@ -179,7 +180,7 @@ error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
   });
 
   if (!ec) {
-    listener->RegisterPool(pool_);
+    listener->InitByAcceptServer(pool_, mr_);
     listener->sock_ = std::move(fs);
     list_interface_.emplace_back(listener);
   }

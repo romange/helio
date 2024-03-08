@@ -11,6 +11,7 @@
 #include <chrono>
 
 #include "base/mpsc_intrusive_queue.h"
+#include "base/pmr/memory_resource.h"
 #include "util/fibers/detail/wait_queue.h"
 
 namespace util {
@@ -19,6 +20,33 @@ namespace fb2 {
 enum class Launch {
   dispatch,  // switch to the fiber immediately
   post       // enqueue the fiber for activation but continue with the current fiber.
+};
+
+// based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
+class FixedStackAllocator {
+ public:
+  using stack_context = boost::context::stack_context;
+
+  FixedStackAllocator(PMR_NS::memory_resource* mr, std::size_t size = 64 * 1024)
+      : mr_(mr), size_(size) {
+  }
+
+  stack_context allocate() {
+    void* vp = mr_->allocate(size_);
+    stack_context sctx;
+    sctx.size = size_;
+    sctx.sp = static_cast<char*>(vp) + sctx.size;
+    return sctx;
+  }
+
+  void deallocate(stack_context& sctx) BOOST_NOEXCEPT_OR_NOTHROW {
+    void* vp = static_cast<char*>(sctx.sp) - sctx.size;
+    mr_->deallocate(vp, sctx.size);
+  }
+
+ private:
+  PMR_NS::memory_resource* mr_;
+  std::size_t size_;
 };
 
 namespace detail {

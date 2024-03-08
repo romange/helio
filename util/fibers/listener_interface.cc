@@ -34,6 +34,27 @@ auto native_handle(const Connection& conn) {
 using ListType =
     intrusive::list<Connection, Connection::member_hook_t, intrusive::constant_time_size<true>>;
 
+class StdMallocResource : public PMR_NS::memory_resource {
+ private:
+  void* do_allocate(std::size_t size, std::size_t align) final {
+    void* res = std::malloc(size);
+    if (res == nullptr) {
+      throw std::bad_alloc();
+    }
+    return res;
+  }
+
+  void do_deallocate(void* ptr, std::size_t size, std::size_t align) final {
+    std::free(ptr);
+  }
+
+  bool do_is_equal(const PMR_NS::memory_resource& o) const noexcept {
+    return this == &o;
+  }
+};
+
+StdMallocResource std_malloc_resource;
+
 }  // namespace
 
 thread_local ListenerInterface::ListenerConnMap ListenerInterface::conn_list;
@@ -152,7 +173,7 @@ void ListenerInterface::RunAcceptLoop() {
 
     // Run cb in its Proactor thread.
     next->DispatchBrief([this, conn] {
-      fb2::Fiber(fb2::Launch::post, boost::context::fixedsize_stack(conn_fiber_stack_size_),
+      fb2::Fiber(fb2::Launch::post, fb2::FixedStackAllocator(mr_, conn_fiber_stack_size_),
                  "Connection",
                  [this, conn] {
                    conn->socket()->SetProactor(fb2::ProactorBase::me());
@@ -245,12 +266,13 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   open_connections_.fetch_sub(1, std::memory_order_release);
 }
 
-void ListenerInterface::RegisterPool(ProactorPool* pool) {
+void ListenerInterface::InitByAcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr) {
   // In tests we might relaunch AcceptServer with the same listener, so we allow
   // reassigning the same pool.
   CHECK(pool_ == nullptr || pool_ == pool);
 
   pool_ = pool;
+  mr_ = mr ? mr : &std_malloc_resource;
 }
 
 error_code ListenerInterface::ConfigureServerSocket(int fd) {
