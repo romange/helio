@@ -42,5 +42,12 @@ void Fiber::JoinIfNeeded() {
     Join();
 }
 
+void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size) {
+  CHECK(detail::default_stack_resource == nullptr);
+  detail::default_stack_resource = mr;
+  detail::default_stack_size = default_size;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
 }  // namespace fb2
 }  // namespace util

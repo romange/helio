@@ -322,4 +322,28 @@ static void BM_MimallocHeapVisit(benchmark::State& state) {
 }
 BENCHMARK(BM_MimallocHeapVisit);
 
+constexpr size_t kMmapSz = 1 << 16;
+static void BM_Madvise(benchmark::State& state) {
+  void* ptr = mmap(NULL, kMmapSz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  CHECK(ptr != MAP_FAILED);
+
+  while (state.KeepRunning()) {
+    madvise(ptr, kMmapSz, MADV_DONTNEED);
+    madvise(ptr, kMmapSz, MADV_SEQUENTIAL);
+  }
+  munmap(ptr, kMmapSz);
+}
+BENCHMARK(BM_Madvise);
+
+static void BM_Mmap(benchmark::State& state) {
+  while (state.KeepRunning()) {
+    char* ptr =
+        (char*)mmap(NULL, kMmapSz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ptr != MAP_FAILED) {
+      munmap(ptr, kMmapSz);
+    }
+  }
+}
+BENCHMARK(BM_Mmap);
+
 }  // namespace base

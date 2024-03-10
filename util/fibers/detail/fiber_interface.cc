@@ -45,6 +45,9 @@ uint64_t g_tsc_cycles_per_ms = 0;
 
 }  // namespace
 
+PMR_NS::memory_resource* default_stack_resource = nullptr;
+size_t default_stack_size = 64 * 1024;
+
 // Per thread initialization structure.
 struct TL_FiberInitializer {
   TL_FiberInitializer* next = nullptr;

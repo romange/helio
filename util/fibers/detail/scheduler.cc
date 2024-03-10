@@ -54,7 +54,7 @@ class DispatcherImpl final : public FiberInterface {
 };
 
 DispatcherImpl* MakeDispatcher(Scheduler* sched) {
-  ctx::fixedsize_stack salloc;
+  ctx::fixedsize_stack salloc(1024 * 32);  // 32K stack.
   ctx::stack_context sctx = salloc.allocate();
   ctx::preallocated palloc = MakePreallocated<DispatcherImpl>(sctx);
 
