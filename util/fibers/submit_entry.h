@@ -27,7 +27,7 @@ class SubmitEntry {
 
   void PrepOpenAt(int dfd, const char* path, int flags, mode_t mode) {
     PrepFd(IORING_OP_OPENAT, dfd);
-    sqe_->addr = (unsigned long)path;
+    sqe_->addr = (__u64)path;
     sqe_->open_flags = flags;
     sqe_->len = mode;
   }
@@ -49,35 +49,35 @@ class SubmitEntry {
 
   void PrepAccept(int listen_fd, struct sockaddr* addr, unsigned addrlen, unsigned flags) {
     PrepFd(IORING_OP_ACCEPT, listen_fd);
-    sqe_->addr = (unsigned long)addr;
+    sqe_->addr = (__u64)addr;
     sqe_->len = addrlen;
     sqe_->accept_flags = flags;
   }
 
   void PrepRecv(int fd, void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_RECV, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = len;
     sqe_->msg_flags = flags;
   }
 
   void PrepRecvMsg(int fd, const struct msghdr* msg, unsigned flags) {
     PrepFd(IORING_OP_RECVMSG, fd);
-    sqe_->addr = (unsigned long)msg;
+    sqe_->addr = (__u64)msg;
     sqe_->len = 1;
     sqe_->msg_flags = flags;
   }
 
   void PrepRead(int fd, void* buf, unsigned size, size_t offset) {
     PrepFd(IORING_OP_READ, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
   }
 
   void PrepReadFixed(int fd, void* buf, unsigned size, size_t offset, uint16_t buf_index) {
     PrepFd(IORING_OP_READ_FIXED, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
     sqe_->buf_index = buf_index;
@@ -86,7 +86,7 @@ class SubmitEntry {
   void PrepReadV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
                  unsigned flags = 0) {
     PrepFd(IORING_OP_READV, fd);
-    sqe_->addr = (unsigned long)vec;
+    sqe_->addr = (__u64)vec;
     sqe_->len = nr_vecs;
     sqe_->off = offset;
     sqe_->rw_flags = flags;
@@ -94,14 +94,14 @@ class SubmitEntry {
 
   void PrepWrite(int fd, const void* buf, unsigned size, size_t offset) {
     PrepFd(IORING_OP_WRITE, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
   }
 
   void PrepWriteFixed(int fd, void* buf, unsigned size, size_t offset, uint16_t buf_index) {
     PrepFd(IORING_OP_WRITE_FIXED, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
     sqe_->buf_index = buf_index;
@@ -110,7 +110,7 @@ class SubmitEntry {
   void PrepWriteV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
                   unsigned flags = 0) {
     PrepFd(IORING_OP_WRITEV, fd);
-    sqe_->addr = (unsigned long)vec;
+    sqe_->addr = (__u64)vec;
     sqe_->len = nr_vecs;
     sqe_->off = offset;
     sqe_->rw_flags = flags;
@@ -132,21 +132,21 @@ class SubmitEntry {
 
   void PrepSend(int fd, const void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_SEND, fd);
-    sqe_->addr = (unsigned long)buf;
+    sqe_->addr = (__u64)buf;
     sqe_->len = len;
     sqe_->msg_flags = flags;
   }
 
   void PrepSendMsg(int fd, const struct msghdr* msg, unsigned flags) {
     PrepFd(IORING_OP_SENDMSG, fd);
-    sqe_->addr = (unsigned long)msg;
+    sqe_->addr = (__u64)msg;
     sqe_->len = 1;
     sqe_->msg_flags = flags;
   }
 
   void PrepConnect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     PrepFd(IORING_OP_CONNECT, fd);
-    sqe_->addr = (unsigned long)addr;
+    sqe_->addr = (__u64)addr;
     sqe_->len = 0;
     sqe_->off = addrlen;
   }
@@ -157,7 +157,7 @@ class SubmitEntry {
 
   void PrepTimeout(const timespec* ts, bool is_abs = true) {
     PrepFd(IORING_OP_TIMEOUT, -1);
-    sqe_->addr = (unsigned long)ts;
+    sqe_->addr = (__u64)ts;
     sqe_->len = 1;
     sqe_->timeout_flags = (is_abs ? IORING_TIMEOUT_ABS : 0);
   }
@@ -171,7 +171,7 @@ class SubmitEntry {
   // Sets up link timeout with relative timespec.
   void PrepLinkTimeout(const timespec* ts) {
     PrepFd(IORING_OP_LINK_TIMEOUT, -1);
-    sqe_->addr = (unsigned long)ts;
+    sqe_->addr = (__u64)ts;
     sqe_->len = 1;
     sqe_->timeout_flags = 0;
   }
@@ -194,13 +194,21 @@ class SubmitEntry {
     sqe_->cancel_flags = flags;
   }
 
-  io_uring_sqe* sqe() {
-    return sqe_;
+  void PrepMadvise(void* addr, off_t len, int advice) {
+    PrepFd(IORING_OP_MADVISE, -1);
+    sqe_->addr = (__u64)addr;
+    sqe_->len = len;
+    sqe_->fadvise_advice = advice;
   }
 
   void PrepNOP() {
     PrepFd(IORING_OP_NOP, -1);
   }
+
+  io_uring_sqe* sqe() {
+    return sqe_;
+  }
+
 
   // Used only by Proactor.
   explicit SubmitEntry(io_uring_sqe* sqe) : sqe_(sqe) {
