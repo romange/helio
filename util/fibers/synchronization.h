@@ -412,7 +412,8 @@ class EmbeddedBlockingCounter {
 
 // A barrier similar to Go's WaitGroup for tracking remote tasks.
 // Internal smart pointer for easier lifetime management. Pass by value.
-struct BlockingCounter {
+class BlockingCounter {
+ public:
   BlockingCounter(unsigned start_count);
 
   EmbeddedBlockingCounter* operator->() {
