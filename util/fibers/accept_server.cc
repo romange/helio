@@ -38,7 +38,7 @@ void AcceptServer::Run() {
   VLOG(1) << "AcceptServer::Run";
 
   if (!list_interface_.empty()) {
-    ref_bc_.Add(list_interface_.size());
+    ref_bc_->Add(list_interface_.size());
 
     for (auto& lw : list_interface_) {
       ProactorBase* proactor = lw->socket()->proactor();
@@ -47,7 +47,7 @@ void AcceptServer::Run() {
       // instance can be destroyed before Dec returnes.
       proactor->Dispatch([li = lw.get(), bc = ref_bc_]() mutable {
         li->RunAcceptLoop();
-        bc.Dec();
+        bc->Dec();
       });
     }
   }
@@ -67,7 +67,7 @@ void AcceptServer::Stop(bool wait) {
 void AcceptServer::Wait() {
   VLOG(1) << "AcceptServer::Wait";
   if (was_run_) {
-    ref_bc_.Wait();
+    ref_bc_->Wait();
     VLOG(1) << "AcceptServer::Wait completed";
     was_run_ = false;
   } else {

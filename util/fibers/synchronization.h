@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>  // for cv_status
 
 #include "base/spinlock.h"
@@ -368,104 +369,59 @@ class Done {
   ptr_t impl_;
 };
 
-// Callbacks must capture BlockingCounter object by value if they call Dec() function.
-// The reason is that if a thread preempts right after count_.fetch_sub returns 1 but before
-// ec_.notify was called, the object may be destroyed before ec_.notify is called.
-class BlockingCounter {
-  class Impl {
-    const uint64_t kCancelFlag = (1ULL << 63);
+// Use `BlockingCounter` unless certain that the counters lifetime is managed properly.
+// Because the decrement of Dec() can be observed before notify is called, the counter can be still
+// in use even after Wait() unblocked.
+class EmbeddedBlockingCounter {
+  const uint64_t kCancelFlag = (1ULL << 63);
 
-   public:
-    Impl(unsigned count) : count_{count} {
-    }
-    Impl(const Impl&) = delete;
-    void operator=(const Impl&) = delete;
-
-    friend void intrusive_ptr_add_ref(Impl* done) noexcept {
-      done->use_count_.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    friend void intrusive_ptr_release(Impl* impl) noexcept {
-      if (1 == impl->use_count_.fetch_sub(1, std::memory_order_release)) {
-        std::atomic_thread_fence(std::memory_order_acquire);
-        delete impl;
-      }
-    }
-
-    auto WaitCondition(uint64_t* cnt) {
-      return [this, cnt]() -> bool {
-        *cnt = count_.load(std::memory_order_acquire);
-        return *cnt == 0 || (*cnt & kCancelFlag);
-      };
-    }
-
-    // I suspect all memory order accesses here could be "relaxed" but I do not bother.
-    bool Wait() {
-      uint64_t cnt;
-      ec_.await(WaitCondition(&cnt));
-      return (cnt & kCancelFlag) == 0;
-    }
-
-    bool WaitUntil(const std::chrono::steady_clock::time_point& tp) {
-      uint64_t cnt;
-      std::cv_status status = ec_.await_until(WaitCondition(&cnt), tp);
-      return status == std::cv_status::no_timeout && (cnt & kCancelFlag) == 0;
-    }
-
-    void Cancel() {
-      count_.fetch_or(kCancelFlag, std::memory_order_acq_rel);
-      ec_.notifyAll();
-    }
-
-    void Dec() {
-      if (1 == count_.fetch_sub(1, std::memory_order_acq_rel))
-        ec_.notifyAll();
-    }
-
-   private:
-    friend class BlockingCounter;
-    EventCount ec_;
-    std::atomic<std::uint32_t> use_count_{0};
-    std::atomic<uint64_t> count_;
-  };
-
-  using ptr_t = ::boost::intrusive_ptr<Impl>;
+  // Re-usable functor for wait condition, stores result in provided pointer
+  auto WaitCondition(uint64_t* cnt) {
+    return [this, cnt]() -> bool {
+      *cnt = count_.load(std::memory_order_relaxed);  // EventCount provides acquire
+      return *cnt == 0 || (*cnt & kCancelFlag);
+    };
+  }
 
  public:
-  explicit BlockingCounter(unsigned count) : impl_(new Impl(count)) {
+  EmbeddedBlockingCounter(unsigned start_count = 0) : ec_{}, count_{start_count} {
   }
 
-  void Inc() {
-    Add(1);
-  }
+  // Returns true on success (reaching 0), false when cancelled. Acquire semantics
+  bool Wait();
 
-  void Dec() {
-    impl_->Dec();
-  }
+  // Same as Wait(), but with timeout
+  bool WaitFor(const std::chrono::steady_clock::duration& duration);
 
-  void Add(unsigned delta) {
-    impl_->count_.fetch_add(delta, std::memory_order_acq_rel);
-  }
+  // Start with specified count. Current value must be zero or cancelled
+  void Start(unsigned cnt);
 
-  void Cancel() {
-    impl_->Cancel();
-  }
+  // Add to blocking counter
+  void Add(unsigned cnt = 1);
 
-  // Blocks while the blocking counter is pending.
-  // Returns true on success (reaching 0), false when cancelled.
-  bool Wait() {
-    return impl_->Wait();
-  }
+  // Decrement from blocking counter. Release semantics.
+  void Dec();
 
-  // Blocks while the blocking counter is pending our timeout is reached.
-  // Returns true on success (reaching 0), false when cancelled or timed out.
-  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
-    auto tp = std::chrono::steady_clock::now() + duration;
-    return impl_->WaitUntil(tp);
+  // Cancel blocking counter, unblock wait. Release semantics.
+  void Cancel();
+
+ private:
+  EventCount ec_;
+  std::atomic<uint64_t> count_;
+};
+
+// A barrier similar to Go's WaitGroup for tracking remote tasks.
+// Internal smart pointer for easier lifetime management. Pass by value.
+class BlockingCounter {
+ public:
+  BlockingCounter(unsigned start_count);
+
+  EmbeddedBlockingCounter* operator->() {
+    return counter_.get();
   }
 
  private:
-  ptr_t impl_;
+  std::shared_ptr<EmbeddedBlockingCounter> counter_;
 };
 
 class SharedMutex {

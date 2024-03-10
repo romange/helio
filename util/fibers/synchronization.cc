@@ -134,6 +134,44 @@ void CondVarAny::notify_all() noexcept {
   wait_queue_.NotifyAll(active);
 }
 
+bool EmbeddedBlockingCounter::Wait() {
+  uint64_t cnt;
+  ec_.await(WaitCondition(&cnt));
+  return (cnt & kCancelFlag) == 0;
+}
+
+bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration& duration) {
+  auto tp = std::chrono::steady_clock::now() + duration;
+  uint64_t cnt;
+  std::cv_status status = ec_.await_until(WaitCondition(&cnt), tp);
+  return status == std::cv_status::no_timeout && (cnt & kCancelFlag) == 0;
+}
+
+void EmbeddedBlockingCounter::Start(unsigned cnt) {
+  DCHECK_EQ(count_.load(memory_order_relaxed) & ~kCancelFlag, 0u);
+  count_.store(cnt, std::memory_order_relaxed);
+}
+
+void EmbeddedBlockingCounter::Add(unsigned cnt) {
+  count_.fetch_add(cnt, std::memory_order_relaxed);
+}
+
+void EmbeddedBlockingCounter::Dec() {
+  uint64_t prev = count_.fetch_sub(1, std::memory_order_acq_rel);
+  DCHECK_GT(prev, 0u);
+  if (prev == 1)
+    ec_.notifyAll();
+}
+
+void EmbeddedBlockingCounter::Cancel() {
+  count_.fetch_or(kCancelFlag, std::memory_order_acq_rel);
+  ec_.notifyAll();
+}
+
+BlockingCounter::BlockingCounter(unsigned start_count)
+    : counter_{std::make_shared<EmbeddedBlockingCounter>(start_count)} {
+}
+
 Barrier::Barrier(size_t initial) : initial_{initial}, current_{initial_} {
   DCHECK_NE(0u, initial);
 }

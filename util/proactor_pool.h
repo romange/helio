@@ -102,10 +102,10 @@ class ProactorPool {
     BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
-      bc.Dec();
+      bc->Dec();
     };
     DispatchBrief(std::move(cb));
-    bc.Wait();
+    bc->Wait();
   }
 
   /**
@@ -118,10 +118,10 @@ class ProactorPool {
     BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
-      bc.Dec();
+      bc->Dec();
     };
     DispatchBrief(std::move(cb));
-    bc.Wait();
+    bc->Wait();
   }
 
   /**
@@ -167,10 +167,10 @@ class ProactorPool {
     BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned i, ProactorBase* context) mutable {
       func(i, context);
-      bc.Dec();
+      bc->Dec();
     };
     DispatchOnAll(std::move(cb));
-    bc.Wait();
+    bc->Wait();
   }
 
   /**
@@ -186,10 +186,10 @@ class ProactorPool {
     BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
-      bc.Dec();
+      bc->Dec();
     };
     DispatchOnAll(std::move(cb));
-    bc.Wait();
+    bc->Wait();
   }
 
   // Returns vector of proactor thread indiced pinned to cpu_id.
