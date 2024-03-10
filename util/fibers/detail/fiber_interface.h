@@ -336,6 +336,9 @@ inline void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
   active->ActivateOther(other);
 }
 
+extern PMR_NS::memory_resource* default_stack_resource;
+extern size_t default_stack_size;
+
 }  // namespace detail
 }  // namespace fb2
 }  // namespace util

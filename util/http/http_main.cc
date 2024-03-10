@@ -31,6 +31,7 @@ namespace h2 = boost::beast::http;
 VarzQps http_qps("bar-qps");
 metrics::CounterFamily http_req("http_requests_total", "Number of served http requests");
 
+namespace {
 class MyListener : public HttpListener<> {
  public:
   ProactorBase* PickConnectionProactor(FiberSocketBase* sock);
@@ -153,6 +154,28 @@ bool HelpshortFlags(std::string_view f) {
   return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
 }
 
+
+
+class StdMallocResource : public PMR_NS::memory_resource {
+ private:
+  void* do_allocate(std::size_t size, std::size_t align) final {
+    VLOG(1) << "Allocating " << size << " bytes";
+    return std::malloc(size);
+  }
+
+  void do_deallocate(void* ptr, std::size_t size, std::size_t align) final {
+    std::free(ptr);
+  }
+
+  bool do_is_equal(const PMR_NS::memory_resource& o) const noexcept {
+    return this == &o;
+  }
+};
+
+StdMallocResource std_malloc_resource;
+
+}  // namespace
+
 int main(int argc, char** argv) {
   absl::SetProgramUsageMessage("http example server");
   absl::FlagsUsageConfig config;
@@ -161,8 +184,9 @@ int main(int argc, char** argv) {
   absl::SetFlagsUsageConfig(config);
 
   MainInitGuard guard(&argc, &argv);
-
+  fb2::SetDefaultStackResource(&std_malloc_resource, 32 * 1024);
   std::unique_ptr<ProactorPool> pool;
+
 #ifdef __linux__
   pool.reset(fb2::Pool::IOUring(256));
 #else
