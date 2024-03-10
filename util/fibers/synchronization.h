@@ -370,6 +370,8 @@ class Done {
 };
 
 // Use `BlockingCounter` unless certain that the counters lifetime is managed properly.
+// Because the decrement of Dec() can be observed before notify is called, the counter can be still
+// in use even after Wait() unblocked.
 class EmbeddedBlockingCounter {
   const uint64_t kCancelFlag = (1ULL << 63);
 
