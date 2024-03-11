@@ -84,6 +84,9 @@ template <typename T> class MPSCIntrusiveQueue {
   }
 };
 
+// [T*, isempty] - if isempty is true, then q is empty at the moment of the call.
+// However if T* is null, and isempty false then the queue is in the middle
+// of a push transaction and the caller should retry.
 template <typename T> std::pair<T*, bool> MPSCIntrusiveQueue<T>::PopWeak() noexcept {
   // Unlike with tail_, this is the only thread that touches head_
   T* head = head_;
