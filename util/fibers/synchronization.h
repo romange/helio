@@ -393,7 +393,7 @@ class EmbeddedBlockingCounter {
   // Same as Wait(), but with timeout
   bool WaitFor(const std::chrono::steady_clock::duration& duration);
 
-  // Start with specified count. Current value must be zero or cancelled
+  // Start with specified count. Current value must be strictly zero (not cancelled).
   void Start(unsigned cnt);
 
   // Add to blocking counter
@@ -404,6 +404,8 @@ class EmbeddedBlockingCounter {
 
   // Cancel blocking counter, unblock wait. Release semantics.
   void Cancel();
+
+  uint64_t DEBUG_Count() const;
 
  private:
   EventCount ec_;
