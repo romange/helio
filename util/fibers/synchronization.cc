@@ -168,6 +168,10 @@ void EmbeddedBlockingCounter::Cancel() {
   ec_.notifyAll();
 }
 
+uint64_t EmbeddedBlockingCounter::DEBUG_Count() const {
+  return count_.load(memory_order_relaxed);
+}
+
 BlockingCounter::BlockingCounter(unsigned start_count)
     : counter_{std::make_shared<EmbeddedBlockingCounter>(start_count)} {
 }
