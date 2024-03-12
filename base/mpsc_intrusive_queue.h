@@ -84,6 +84,8 @@ template <typename T> class MPSCIntrusiveQueue {
   }
 };
 
+
+// Returns second = true if the queue is empty.
 template <typename T> std::pair<T*, bool> MPSCIntrusiveQueue<T>::PopWeak() noexcept {
   // Unlike with tail_, this is the only thread that touches head_
   T* head = head_;

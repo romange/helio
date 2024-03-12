@@ -230,7 +230,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
-       FiberInterface::kScheduleRemote) == 1) {
+       FiberInterface::kScheduleRemote) != 0) {
     LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
     return;
   }
@@ -312,7 +312,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
-  [[maybe_unused]] unsigned iteration = 0;
+  unsigned iteration = 0;
   while (true) {
     auto [fi, qempty] = remote_ready_queue_.PopWeak();
     if (!fi) {
@@ -323,15 +323,25 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
           LOG(ERROR) << "Failed to pull active fiber from remote_ready_queue, iteration "
                      << iteration << " remote_empty: " << remote_ready_queue_.Empty()
                      << ", next:" << (uint64_t)next;
-          if (next && next != (FiberInterface*)FiberInterface::kRemoteFree) {
-            LOG(ERROR) << "Next fiber next is: "
+          if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
+            LOG_IF(ERROR, next != nullptr) << "Next fiber next is: "
                        << next->remote_next_.load(std::memory_order_acquire)
-                       << ", usecount" << next->use_count_.load(std::memory_order_relaxed);
+                       << ", usecount: " << next->use_count_.load(std::memory_order_relaxed);
+            if (iteration < 100) {
+#if defined(__i386__) || defined(__amd64__)
+            __asm__ __volatile__("pause");
+#else
+            __asm__ __volatile__("isb");
+#endif
+              ++iteration;
+              continue;
+            }
           }
         }
         break;
       }
-      DVLOG(1) << "Retrying " << iteration++;
+      iteration++;
+      DVLOG(1) << "Retrying " << iteration;
       continue;
     }
 
