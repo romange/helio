@@ -231,7 +231,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
        FiberInterface::kScheduleRemote) != 0) {
-    LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
+    LOG(DFATAL) << "Already scheduled remotely " << cntx->name() << " " << GetStacktrace();
     return;
   }
 
