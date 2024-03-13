@@ -68,6 +68,7 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
 DispatcherImpl::DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_stack&& salloc,
                                detail::Scheduler* sched) noexcept
     : FiberInterface{DISPATCH, 0, "_dispatch"} {
+  stack_size_ = palloc.sctx.size;
   entry_ = ctx::fiber(std::allocator_arg, palloc, salloc,
                       [this](ctx::fiber&& caller) { return Run(std::move(caller)); });
   scheduler_ = sched;
@@ -269,6 +270,7 @@ void Scheduler::Attach(FiberInterface* cntx) {
   fibers_.push_back(*cntx);
 
   if (cntx->type() == FiberInterface::WORKER) {
+    worker_stack_size_ += cntx->stack_size();
     ++num_worker_fibers_;
   }
 }
@@ -276,12 +278,14 @@ void Scheduler::Attach(FiberInterface* cntx) {
 void Scheduler::DetachWorker(FiberInterface* cntx) {
   fibers_.erase(fibers_.iterator_to(*cntx));
   --num_worker_fibers_;
+  worker_stack_size_ -= cntx->stack_size();
 }
 
 void Scheduler::ScheduleTermination(FiberInterface* cntx) {
   terminate_queue_.push_back(*cntx);
   if (cntx->type() == FiberInterface::WORKER) {
     --num_worker_fibers_;
+    worker_stack_size_ -= cntx->stack_size();
   }
 }
 

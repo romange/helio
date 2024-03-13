@@ -202,6 +202,10 @@ class FiberInterface {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
   }
 
+  uint32_t stack_size() const {
+    return stack_size_;
+  }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -225,7 +229,7 @@ class FiberInterface {
   std::atomic<uint16_t> flags_{0};
 
   // FiberInterfaces that join on this fiber to terminate are added here.
-  WaitQueue wait_queue_;
+  WaitQueue join_q_;
 
   Scheduler* scheduler_ = nullptr;
 
@@ -236,9 +240,8 @@ class FiberInterface {
 
   // A tsc of when this fiber becames ready or becomes active (in cycles).
   uint64_t cpu_tsc_ = 0;
-
   char name_[24];
-
+  uint32_t stack_size_ = 0;
  private:
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
@@ -254,6 +257,7 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
                   StackAlloc&& salloc, Fn&& fn, Arg&&... arg)
       : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)),
         arg_(std::forward<Arg>(arg)...) {
+    stack_size_ = palloc.sctx.size;
     entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                     [this](FbCntx&& caller) { return run_(std::move(caller)); });
 #if defined(BOOST_USE_UCONTEXT)
