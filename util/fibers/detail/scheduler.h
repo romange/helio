@@ -95,6 +95,10 @@ class Scheduler {
   bool RemoteEmpty() const {
     return remote_ready_queue_.Empty();
   }
+
+  size_t worker_stack_size() const {
+    return worker_stack_size_;
+  }
  private:
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -134,6 +138,7 @@ class Scheduler {
 
   bool shutdown_ = false;
   uint32_t num_worker_fibers_ = 0;
+  size_t worker_stack_size_ = 0;
 };
 
 }  // namespace detail

@@ -184,9 +184,14 @@ TEST_F(FiberTest, Basic) {
   Fiber fb1("test1", [&] { ++run; });
   Fiber fb2("test2", [&] { ++run; });
   EXPECT_EQ(epoch, FiberSwitchEpoch());
+  EXPECT_EQ(128 * 1024 * 2, WorkerFibersStackSize());
+  EXPECT_EQ(2, WorkerFibersCount());
 
   fb1.Join();
   fb2.Join();
+
+  EXPECT_EQ(0, WorkerFibersCount());
+  EXPECT_EQ(0, WorkerFibersStackSize());
 
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());

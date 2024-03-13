@@ -136,7 +136,7 @@ FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
 FiberInterface::~FiberInterface() {
   DVLOG(2) << "Destroying " << name_;
   DCHECK_EQ(use_count_.load(), 0u);
-  DCHECK(wait_queue_.empty());
+  DCHECK(join_q_.empty());
   DCHECK(!list_hook.is_linked());
 }
 
@@ -170,7 +170,7 @@ ctx::fiber_context FiberInterface::Terminate() {
     CpuPause();
   }
   trace_ = TRACE_TERMINATE;
-  wait_queue_.NotifyAll(this);
+  join_q_.NotifyAll(this);
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
 
@@ -221,7 +221,7 @@ void FiberInterface::Join() {
   }
 
   Waiter waiter{active->CreateWaiter()};
-  wait_queue_.Link(&waiter);
+  join_q_.Link(&waiter);
   flags_.fetch_and(~kBusyBit, memory_order_release);  // release the lock
   DVLOG(2) << "Joining on " << name_;
 
@@ -405,6 +405,14 @@ uint64_t FiberLongRunCnt() noexcept {
 
 uint64_t FiberLongRunSumUsec() noexcept {
   return detail::FbInitializer().long_runtime_usec;
+}
+
+size_t WorkerFibersStackSize() {
+  return detail::FbInitializer().sched->worker_stack_size();
+}
+
+size_t WorkerFibersCount() {
+  return detail::FbInitializer().sched->num_worker_fibers();
 }
 
 }  // namespace fb2

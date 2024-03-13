@@ -109,6 +109,14 @@ uint64_t FiberLongRunSumUsec() noexcept;
 // It is advised to call this function when a program starts.
 void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size = 64 * 1024);
 
+// Returns the total stack size (virtual memory) for worker fibers for the current thread.
+// Please note that RSS memory usage is usually smaller, depending on the actuall stack usage
+// of the fibers.
+size_t WorkerFibersStackSize();
+
+// Returns number of worker fibers for the current thread.
+size_t WorkerFibersCount();
+
 }  // namespace fb2
 
 template <typename Fn, typename... Arg> fb2::Fiber MakeFiber(Fn&& fn, Arg&&... arg) {
