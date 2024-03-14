@@ -123,7 +123,8 @@ FiberInterface* FiberActive() noexcept {
 }
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
-    : use_count_(cnt), type_(type) {
+    : use_count_(cnt), type_(type), balance(0) {
+  
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
@@ -234,7 +235,7 @@ void FiberInterface::Yield() {
   scheduler_->Preempt();
 }
 
-void FiberInterface::ActivateOther(FiberInterface* other) {
+bool FiberInterface::ActivateOther(FiberInterface* other, int64_t referrer) {
   DCHECK(other->scheduler_);
 
   // Check first if we the fiber belongs to the active thread.
@@ -245,13 +246,17 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // ProcessSleep.
     if (!other->list_hook.is_linked())
       scheduler_->AddReady(other);
+
+    if (referrer)
+      other->balance.fetch_sub(1, memory_order_relaxed);
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
     // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
     // that is under a lock, and it's guaranteed that `other` is alive during the
     // ScheduleFromRemote() call.
-    other->scheduler_->ScheduleFromRemote(other);
+    return other->scheduler_->ScheduleFromRemote(other, referrer);
   }
+  return true;
 }
 
 void FiberInterface::DetachScheduler() {

@@ -64,7 +64,7 @@ class FiberInterface {
 
   static constexpr uint64_t kRemoteFree = 1;
 
- protected:
+ public:
   // holds its own fiber_context when it's not active.
   // the difference between fiber_context and continuation is that continuation is launched
   // straight away via callcc and fiber is created without switching to it.
@@ -86,6 +86,10 @@ class FiberInterface {
   FI_ListHook list_hook;  // used to add to ready/terminate queues.
   FI_SleepHook sleep_hook;
   FI_ListHook fibers_hook;  // For a list of all fibers in the thread
+
+  std::atomic_int balance;
+  std::atomic<int64_t> debug_flag_;
+
 
   // init_count is the initial use_count of the fiber.
   FiberInterface(Type type, uint32_t init_count, std::string_view nm = std::string_view{});
@@ -116,7 +120,7 @@ class FiberInterface {
 
   // Schedules another fiber without switching to it.
   // other can belong to another thread.
-  void ActivateOther(FiberInterface* other);
+  bool ActivateOther(FiberInterface* other, int64_t referrer = 0);
 
   void Suspend();
 
@@ -206,7 +210,7 @@ class FiberInterface {
     return stack_size_;
   }
 
- protected:
+ public:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
 
@@ -242,7 +246,7 @@ class FiberInterface {
   uint64_t cpu_tsc_ = 0;
   char name_[24];
   uint32_t stack_size_ = 0;
- private:
+ public:
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();
@@ -265,7 +269,7 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
 #endif
   }
 
- private:
+ public:
   FbCntx run_(FbCntx&& c) {
     // assert(!c)  <- we never pass the caller,
     // because with update c_ with it before switching.
@@ -335,9 +339,9 @@ void PrintAllFiberStackTraces();
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
 
 // A convenience function to improve the readability of the code.
-inline void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
+inline void ActivateSameThread(FiberInterface* active, FiberInterface* other, int64_t referrer = 0) {
   assert(active->scheduler() == other->scheduler());
-  active->ActivateOther(other);
+  active->ActivateOther(other, referrer);
 }
 
 extern PMR_NS::memory_resource* default_stack_resource;

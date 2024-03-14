@@ -467,7 +467,7 @@ class SharedMutex {
 };
 
 inline bool EventCount::notify() noexcept {
-  uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
+  uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_acq_rel);
 
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();

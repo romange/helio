@@ -6,6 +6,10 @@
 
 #include <boost/intrusive/slist.hpp>
 
+#include <deque>
+
+#include "base/logging.h"
+
 namespace util {
 namespace fb2 {
 namespace detail {
@@ -19,6 +23,7 @@ class Waiter {
   }
 
  public:
+
   using ListHookType =
       boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
@@ -40,38 +45,32 @@ class Waiter {
 
 class WaitQueue {
  public:
+
+  WaitQueue() = default;
+
   bool empty() const {
-    return wait_list_.empty();
+    return fibs.empty();
   }
 
   void Link(Waiter* waiter);
 
-  void Unlink(Waiter* waiter) {
-    auto it = WaitList::s_iterator_to(*waiter);
-    wait_list_.erase(it);
-  }
-
-  bool NotifyOne(FiberInterface* active) {
-    if (wait_list_.empty())
-      return false;
-
-    Waiter* waiter = &wait_list_.front();
-    wait_list_.pop_front();
-    NotifyImpl(waiter->cntx(), active);
-
-    return true;
-  }
+  void Unlink(Waiter* waiter);
+  bool NotifyOne(FiberInterface* active);
 
   void NotifyAll(FiberInterface* active);
 
  private:
+  WaitQueue(WaitQueue&& other) = delete;
+  WaitQueue(const WaitQueue& other) = delete;
+
   using WaitList = boost::intrusive::slist<
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,
       boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
-  void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
+  bool NotifyImpl(FiberInterface* suspended, FiberInterface* active);
 
-  WaitList wait_list_;
+  //WaitList wait_list_;
+  std::deque<FiberInterface*> fibs;
 };
 
 }  // namespace detail

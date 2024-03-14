@@ -12,6 +12,7 @@
 #include "base/logging.h"
 #include "util/fibers/detail/utils.h"
 #include "util/fibers/stacktrace.h"
+#include "util/proactor_pool.h"
 
 namespace util {
 namespace fb2 {
@@ -85,9 +86,9 @@ DispatcherImpl::~DispatcherImpl() {
 
 ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 #if defined(BOOST_USE_UCONTEXT)
-    std::move(c).resume();
+  std::move(c).resume();
 #else
-    DCHECK(!c);
+  DCHECK(!c);
 #endif
 
   if (scheduler_->policy()) {
@@ -224,18 +225,28 @@ void Scheduler::AddReady(FiberInterface* fibi) {
 }
 
 // Is called only from ActivateOther.
-void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
+bool Scheduler::ScheduleFromRemote(FiberInterface* cntx, int64_t referrer) {
   // This function is called from FiberInterface::ActivateOther from a remote scheduler.
   // But the fiber belongs to this scheduler.
   DCHECK(cntx->scheduler_ == this);
 
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
-  if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
-       FiberInterface::kScheduleRemote) == 1) {
-    LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
-    return;
+  if (auto prev = cntx->debug_flag_.exchange(referrer, memory_order_acquire); prev != 0) {
+    LOG(INFO) << "Already scheduled remotely " << cntx->name() << " self: " << referrer << " prev: " << prev;
+    // << " next: " << uint64_t(cntx->remote_next_.load(memory_order_relaxed))
+    // << " flags: " << uint64_t(cntx->flags_.load(memory_order_relaxed))
+    //<< " referrer: " << referrer << " taken referrer: " <<
+    //cntx->debug_flag_.load(memory_order_relaxed)
+    //<< " balance: " << cntx->balance.load(memory_order_relaxed);
+    if (referrer)
+      CHECK_EQ(cntx->balance.fetch_sub(1, memory_order_relaxed), 1);
+    cntx->debug_flag_.store(0, memory_order_release);
+    return false;
   }
+
+  if (referrer)
+    CHECK_EQ(cntx->balance.fetch_sub(1, memory_order_relaxed), 1);
 
   if (cntx->IsScheduledRemotely()) {
     // We schedule a fiber remotely only once.
@@ -247,11 +258,14 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
 
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
+    CHECK_EQ(cntx->debug_flag_.exchange(0, memory_order_release), referrer);
+    
   } else {
     remote_ready_queue_.Push(cntx);
 
     // clear the bit after we pushed to the queue.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
+    CHECK_EQ(cntx->debug_flag_.exchange(0, memory_order_release), referrer);
 
     DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
@@ -262,6 +276,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
       dimpl->Notify();
     }
   }
+  return true;
 }
 
 void Scheduler::Attach(FiberInterface* cntx) {
