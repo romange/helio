@@ -35,6 +35,11 @@ class EventCount {
   EventCount() noexcept : val_(0) {
   }
 
+  ~EventCount() {
+    assert(!lock_.IsHeld());
+    assert(wait_queue_.empty());
+  }
+
   using cv_status = std::cv_status;
 
   class Key {
@@ -506,7 +511,6 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     wait_queue_.Link(&waiter);
     lk.unlock();
     active->Suspend();
-
     return true;
   }
   return false;

@@ -232,6 +232,11 @@ bool Scheduler::ScheduleFromRemote(FiberInterface* cntx, int64_t referrer) {
 
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
+  if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
+       FiberInterface::kScheduleRemote) != 0) {
+    LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
+    return false;
+  }
   if (auto prev = cntx->debug_flag_.exchange(referrer, memory_order_acquire); prev != 0) {
     LOG(INFO) << "Already scheduled remotely " << cntx->name() << " self: " << referrer << " prev: " << prev;
     // << " next: " << uint64_t(cntx->remote_next_.load(memory_order_relaxed))
@@ -245,9 +250,6 @@ bool Scheduler::ScheduleFromRemote(FiberInterface* cntx, int64_t referrer) {
     return false;
   }
 
-  if (referrer)
-    CHECK_EQ(cntx->balance.fetch_sub(1, memory_order_relaxed), 1);
-
   if (cntx->IsScheduledRemotely()) {
     // We schedule a fiber remotely only once.
     // This should not happen in general, because we usually schedule a fiber under
@@ -259,7 +261,7 @@ bool Scheduler::ScheduleFromRemote(FiberInterface* cntx, int64_t referrer) {
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
     CHECK_EQ(cntx->debug_flag_.exchange(0, memory_order_release), referrer);
-    
+
   } else {
     remote_ready_queue_.Push(cntx);
 

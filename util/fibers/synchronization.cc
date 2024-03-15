@@ -14,7 +14,7 @@ using namespace std;
 std::cv_status EventCount::wait_until(uint32_t epoch,
                                       const std::chrono::steady_clock::time_point& tp) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
-
+  // DCHECK(active->balance.load(std::memory_order_relaxed) == 0);
   cv_status status = cv_status::no_timeout;
 
   CHECK(!active->IsScheduledRemotely());

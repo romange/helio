@@ -124,7 +124,7 @@ FiberInterface* FiberActive() noexcept {
 
 FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
     : use_count_(cnt), type_(type), balance(0) {
-  
+
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
@@ -254,6 +254,9 @@ bool FiberInterface::ActivateOther(FiberInterface* other, int64_t referrer) {
     // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
     // that is under a lock, and it's guaranteed that `other` is alive during the
     // ScheduleFromRemote() call.
+    // DCHECK_EQ(other->balance.load(std::memory_order_relaxed), 1);
+    auto flags = other->flags_.load(std::memory_order_acquire);
+    DCHECK_EQ(flags & 4, 0u) << other->debug_flag_.load(std::memory_order_relaxed);
     return other->scheduler_->ScheduleFromRemote(other, referrer);
   }
   return true;

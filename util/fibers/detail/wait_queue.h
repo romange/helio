@@ -6,10 +6,6 @@
 
 #include <boost/intrusive/slist.hpp>
 
-#include <deque>
-
-#include "base/logging.h"
-
 namespace util {
 namespace fb2 {
 namespace detail {
@@ -49,7 +45,7 @@ class WaitQueue {
   WaitQueue() = default;
 
   bool empty() const {
-    return fibs.empty();
+    return wait_list_.empty();
   }
 
   void Link(Waiter* waiter);
@@ -69,8 +65,7 @@ class WaitQueue {
 
   bool NotifyImpl(FiberInterface* suspended, FiberInterface* active);
 
-  //WaitList wait_list_;
-  std::deque<FiberInterface*> fibs;
+  WaitList wait_list_;
 };
 
 }  // namespace detail

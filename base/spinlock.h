@@ -26,6 +26,9 @@ class SpinLock {
     return lock_.TryLock();
   }
 
+  bool IsHeld() const {
+    return lock_.IsHeld();
+  }
  private:
   absl::base_internal::SpinLock lock_;
 };

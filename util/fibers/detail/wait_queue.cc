@@ -16,51 +16,48 @@ namespace detail {
 [[maybe_unused]] constexpr size_t WakeOtherkSizeOfWaitQ = sizeof(WaitQueue);
 
 void WaitQueue::NotifyAll(FiberInterface* active) {
-  while (!fibs.empty()) {
-    FiberInterface* fib = fibs.front();
-    fibs.pop_front();
+  while (!wait_list_.empty()) {
+    Waiter* waiter = &wait_list_.front();
+    wait_list_.pop_front();
 
-    DVLOG(2) << "Scheduling " << fib->name() << " from " << active->name();
+    FiberInterface* cntx = waiter->cntx();
+    DVLOG(2) << "Scheduling " << cntx->name() << " from " << active->name();
+    auto flags = cntx->flags_.load(std::memory_order_acquire);
+    auto dbg = cntx->debug_flag_.load(std::memory_order_relaxed);
+    DCHECK_EQ(flags & 4, 0u) << dbg;
 
-    active->ActivateOther(fib, int64_t(this));
+    active->ActivateOther(cntx, int64_t(active));
   }
 }
 
 bool WaitQueue::NotifyOne(FiberInterface* active) {
-  //if (wait_list_.empty())
-  //  return false;
-  //FiberInterface* fib = wait_list_.front().cntx();
-  //wait_list_.pop_front();
-
-  if (fibs.empty())
+  if (wait_list_.empty())
     return false;
-  auto* fib = fibs.front();
-  fibs.pop_front();
 
-  if (!active->ActivateOther(fib, int64_t(this))) {
-    //CHECK(false);
-  }
+  Waiter* waiter = &wait_list_.front();
+  wait_list_.pop_front();
+  NotifyImpl(waiter->cntx(), active);
 
   return true;
 }
 
 void WaitQueue::Link(Waiter* waiter) {
   int64_t balance = waiter->cntx()->balance.fetch_add(1, std::memory_order_relaxed);
-  CHECK_EQ(balance, 0) << " me: " << int64_t(this) << " f-reff: " << waiter->cntx()->debug_flag_.load(std::memory_order_relaxed) << " flags: " << waiter->cntx()->flags_.load(std::memory_order_relaxed);
-  //wait_list_.push_back(*waiter);
-  fibs.push_back(waiter->cntx());
+  // CHECK_EQ(balance, 0) << " me: " << int64_t(this) << " f-reff: " << waiter->cntx()->debug_flag_.load(std::memory_order_relaxed) << " flags: " << waiter->cntx()->flags_.load(std::memory_order_relaxed);
+  DCHECK(!waiter->IsLinked());
+  wait_list_.push_back(*waiter);
+  // fibs.push_back(waiter->cntx());
 }
 
 void WaitQueue::Unlink(Waiter* waiter) {
-  CHECK_EQ(waiter->cntx()->balance.fetch_sub(1, std::memory_order_relaxed), 1);
-  //auto it = WaitList::s_iterator_to(*waiter);
-  //wait_list_.erase(it);
-  fibs.erase(find(fibs.begin(), fibs.end(), waiter->cntx()));
+  // CHECK_EQ(waiter->cntx()->balance.fetch_sub(1, std::memory_order_relaxed), 1);
+  auto it = WaitList::s_iterator_to(*waiter);
+  wait_list_.erase(it);
+  // fibs.erase(find(fibs.begin(), fibs.end(), waiter->cntx()));
 }
 
 bool WaitQueue::NotifyImpl(FiberInterface* suspended, FiberInterface* active) {
-  return false;
-  //return active->ActivateOther(suspended);
+  return active->ActivateOther(suspended, -int64_t(this));
 }
 
 }  // namespace detail
