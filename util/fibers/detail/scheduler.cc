@@ -232,7 +232,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
-       FiberInterface::kScheduleRemote) == 1) {
+       FiberInterface::kScheduleRemote) != 0) {
     LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
     return;
   }

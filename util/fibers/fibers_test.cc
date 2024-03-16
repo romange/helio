@@ -609,6 +609,46 @@ TEST_P(ProactorTest, MultiParking) {
     th.reset();
 }
 
+TEST_P(ProactorTest, NotifyRemote2) {
+  EventCount ec;
+  constexpr unsigned kNumThreads = 4;
+
+  unique_ptr<ProactorThread> ths[kNumThreads];
+  vector<Fiber> fbs;
+
+  for (unsigned i = 0; i < kNumThreads; ++i) {
+    ths[i] = CreateProactorThread();
+  }
+
+  for (unsigned i = 0; i < 2; ++i) {
+    for (unsigned j = 0; j < kNumFibers; ++j) {
+      fbs.push_back(ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [&] {
+        BlockingCounter b1(0);
+        BlockingCounter b2(0);
+
+        for (unsigned iter = 0; iter < 100; ++iter) {
+          unsigned idx = (iter) % kNumThreads;
+          b1.Inc();
+          ths[idx]->proactor->DispatchBrief([&] { b1.Dec(); });
+
+          idx = (iter + 1) % kNumThreads;
+          ths[idx]->proactor->DispatchBrief([&] { b2.Dec(); });
+
+          b1.Wait();
+          b2.Wait();
+        }
+      }));
+    }
+  }
+
+  for (auto& fb_arr : fbs)
+    fb_arr.Join();
+
+  LOG(INFO) << "After fiber join";
+  for (auto& th : ths)
+    th.reset();
+}
+
 TEST_P(ProactorTest, NotifyMyself) {
   unique_ptr<ProactorThread> ths[2];
 
