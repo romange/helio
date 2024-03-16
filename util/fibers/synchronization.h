@@ -388,7 +388,11 @@ class EmbeddedBlockingCounter {
   }
 
   // Returns true on success (reaching 0), false when cancelled. Acquire semantics
-  bool Wait();
+  bool Wait() {
+    uint64_t cnt;
+    ec_.await(WaitCondition(&cnt));
+    return (cnt & kCancelFlag) == 0;
+  }
 
   // Same as Wait(), but with timeout
   bool WaitFor(const std::chrono::steady_clock::duration& duration);
@@ -397,7 +401,9 @@ class EmbeddedBlockingCounter {
   void Start(unsigned cnt);
 
   // Add to blocking counter
-  void Add(unsigned cnt = 1);
+  void Add(unsigned cnt = 1) {
+    count_.fetch_add(cnt, std::memory_order_relaxed);
+  }
 
   // Decrement from blocking counter. Release semantics.
   void Dec();

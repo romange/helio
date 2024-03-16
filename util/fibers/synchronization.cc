@@ -134,12 +134,6 @@ void CondVarAny::notify_all() noexcept {
   wait_queue_.NotifyAll(active);
 }
 
-bool EmbeddedBlockingCounter::Wait() {
-  uint64_t cnt;
-  ec_.await(WaitCondition(&cnt));
-  return (cnt & kCancelFlag) == 0;
-}
-
 bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration& duration) {
   auto tp = std::chrono::steady_clock::now() + duration;
   uint64_t cnt;
@@ -150,10 +144,6 @@ bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration&
 void EmbeddedBlockingCounter::Start(unsigned cnt) {
   DCHECK_EQ(count_.load(memory_order_relaxed) & ~kCancelFlag, 0u);
   count_.store(cnt, std::memory_order_relaxed);
-}
-
-void EmbeddedBlockingCounter::Add(unsigned cnt) {
-  count_.fetch_add(cnt, std::memory_order_relaxed);
 }
 
 void EmbeddedBlockingCounter::Dec() {
