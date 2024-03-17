@@ -34,27 +34,6 @@ auto native_handle(const Connection& conn) {
 using ListType =
     intrusive::list<Connection, Connection::member_hook_t, intrusive::constant_time_size<true>>;
 
-class StdMallocResource : public PMR_NS::memory_resource {
- private:
-  void* do_allocate(std::size_t size, std::size_t align) final {
-    void* res = std::malloc(size);
-    if (res == nullptr) {
-      throw std::bad_alloc();
-    }
-    return res;
-  }
-
-  void do_deallocate(void* ptr, std::size_t size, std::size_t align) final {
-    std::free(ptr);
-  }
-
-  bool do_is_equal(const PMR_NS::memory_resource& o) const noexcept {
-    return this == &o;
-  }
-};
-
-StdMallocResource std_malloc_resource;
-
 }  // namespace
 
 thread_local ListenerInterface::ListenerConnMap ListenerInterface::conn_list;
@@ -272,7 +251,7 @@ void ListenerInterface::InitByAcceptServer(ProactorPool* pool, PMR_NS::memory_re
   CHECK(pool_ == nullptr || pool_ == pool);
 
   pool_ = pool;
-  mr_ = mr ? mr : &std_malloc_resource;
+  mr_ = mr ? mr : &fb2::std_malloc_resource;
 }
 
 error_code ListenerInterface::ConfigureServerSocket(int fd) {

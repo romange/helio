@@ -49,5 +49,19 @@ void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size) {
   std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
+void* StdMallocResource::do_allocate(size_t size, size_t align) {
+  void* res = malloc(size);
+  if (res == nullptr) {
+    throw bad_alloc();
+  }
+  return res;
+}
+
+void StdMallocResource::do_deallocate(void* ptr, size_t size, size_t align) {
+  free(ptr);
+}
+
+StdMallocResource std_malloc_resource;
+
 }  // namespace fb2
 }  // namespace util

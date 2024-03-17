@@ -310,6 +310,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   sleep_queue_.insert(*me);
   auto fc = Preempt();
   DCHECK(!fc);
+  DCHECK(!me->sleep_hook.is_linked());
   bool has_timed_out = (me->tp_ == chrono::steady_clock::time_point::max());
 
   return has_timed_out;
