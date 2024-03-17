@@ -101,8 +101,8 @@ std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out
                                            detail::FiberInterface* active) {
   std::cv_status status = std::cv_status::no_timeout;
   bool clear_remote = true;
-  wait_queue_splk_.lock();
 
+  // Is called under the external lock so it's safe to access wait_queue_ here.
   if (waiter.IsLinked()) {
     wait_queue_.Unlink(&waiter);
 
@@ -111,7 +111,6 @@ std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out
   } else if (timed_out) {
     status = std::cv_status::timeout;
   }
-  wait_queue_splk_.unlock();
 
   if (clear_remote) {
     active->PullMyselfFromRemoteReadyQueue();
@@ -119,25 +118,6 @@ std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out
     CHECK(!active->IsScheduledRemotely());
   }
   return status;
-}
-
-void CondVarAny::notify_one() noexcept {
-  detail::FiberInterface* active = detail::FiberActive();
-
-  unique_lock lk(wait_queue_splk_);
-  wait_queue_.NotifyOne(active);
-}
-
-void CondVarAny::notify_all() noexcept {
-  detail::FiberInterface* active = detail::FiberActive();
-  unique_lock lk(wait_queue_splk_);
-  wait_queue_.NotifyAll(active);
-}
-
-bool EmbeddedBlockingCounter::Wait() {
-  uint64_t cnt;
-  ec_.await(WaitCondition(&cnt));
-  return (cnt & kCancelFlag) == 0;
 }
 
 bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration& duration) {
@@ -150,10 +130,6 @@ bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration&
 void EmbeddedBlockingCounter::Start(unsigned cnt) {
   DCHECK_EQ(count_.load(memory_order_relaxed) & ~kCancelFlag, 0u);
   count_.store(cnt, std::memory_order_relaxed);
-}
-
-void EmbeddedBlockingCounter::Add(unsigned cnt) {
-  count_.fetch_add(cnt, std::memory_order_relaxed);
 }
 
 void EmbeddedBlockingCounter::Dec() {

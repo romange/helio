@@ -136,8 +136,6 @@ class Mutex {
 };
 
 class CondVarAny {
- private:
-  base::SpinLock wait_queue_splk_;
   detail::WaitQueue wait_queue_;
 
   std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
@@ -153,32 +151,15 @@ class CondVarAny {
   CondVarAny(CondVarAny const&) = delete;
   CondVarAny& operator=(CondVarAny const&) = delete;
 
-  void notify_one() noexcept;
-
-  void notify_all() noexcept;
-
-  template <typename LockType> void wait(LockType& lt) {
-    detail::FiberInterface* active = detail::FiberActive();
-
-    detail::Waiter waiter(active->CreateWaiter());
-
-    // atomically call lt.unlock() and block on *this
-    // store this fiber in waiting-queue
-    wait_queue_splk_.lock();
-    lt.unlock();
-
-    wait_queue_.Link(&waiter);
-    wait_queue_splk_.unlock();
-
-    active->Suspend();
-
-    // relock external again before returning
-    try {
-      lt.lock();
-    } catch (...) {
-      std::terminate();
-    }
+  void notify_one() noexcept {
+    wait_queue_.NotifyOne(detail::FiberActive());
   }
+
+  void notify_all() noexcept {
+    wait_queue_.NotifyAll(detail::FiberActive());
+  }
+
+  template <typename LockType> void wait(LockType& lt);
 
   template <typename LockType, typename Pred> void wait(LockType& lt, Pred pred) {
     while (!pred()) {
@@ -187,23 +168,7 @@ class CondVarAny {
   }
 
   template <typename LockType>
-  std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
-    detail::FiberInterface* active = detail::FiberActive();
-
-    detail::Waiter waiter(active->CreateWaiter());
-
-    // atomically call lt.unlock() and block on *this
-    // store this fiber in waiting-queue
-    wait_queue_splk_.lock();
-    lt.unlock();
-    wait_queue_.Link(&waiter);
-    wait_queue_splk_.unlock();
-
-    bool timed_out = active->WaitUntil(tp);
-    std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
-    lt.lock();
-    return status;
-  }
+  std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp);
 
   template <typename LockType, typename Pred>
   bool wait_until(LockType& lt, std::chrono::steady_clock::time_point tp, Pred pred) {
@@ -397,7 +362,9 @@ class EmbeddedBlockingCounter {
   void Start(unsigned cnt);
 
   // Add to blocking counter
-  void Add(unsigned cnt = 1);
+  void Add(unsigned cnt = 1) {
+    count_.fetch_add(cnt, std::memory_order_relaxed);
+  }
 
   // Decrement from blocking counter. Release semantics.
   void Dec();
@@ -507,6 +474,12 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     lk.unlock();
     active->Suspend();
 
+    // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
+    // This is necessary because we want to avoid the case where continue to wait for
+    // another eventcount/condition_variable and have two notify functions waking up the same
+    // fiber at the same time.
+    lock_.lock();
+    lock_.unlock();
     return true;
   }
   return false;
@@ -525,6 +498,7 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   while (true) {
     Key key = prepareWait();  // Key destructor restores back the sequence counter.
     if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
       break;
     }
     preempt |= wait(key.epoch());
@@ -577,6 +551,51 @@ class Barrier {
   Mutex mtx_;
   CondVar cond_;
 };
+
+template <typename LockType> void CondVarAny::wait(LockType& lt) {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  detail::Waiter waiter(active->CreateWaiter());
+
+  wait_queue_.Link(&waiter);
+  lt.unlock();
+
+  active->Suspend();
+
+  // relock external again before returning
+  try {
+    lt.lock();
+  } catch (...) {
+    std::terminate();
+  }
+}
+
+template <typename LockType>
+std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  detail::Waiter waiter(active->CreateWaiter());
+
+  // store this fiber in waiting-queue, we can do it without spinlocks because
+  // lt is already locked.
+  wait_queue_.Link(&waiter);
+
+  // release the lock suspend this fiber until tp.
+  lt.unlock();
+  bool timed_out = active->WaitUntil(tp);
+
+  // lock back.
+  lt.lock();
+  std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
+
+  return status;
+}
+
+inline bool EmbeddedBlockingCounter::Wait() {
+  uint64_t cnt;
+  ec_.await(WaitCondition(&cnt));
+  return (cnt & kCancelFlag) == 0;
+}
 
 }  // namespace fb2
 

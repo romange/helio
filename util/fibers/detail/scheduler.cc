@@ -85,9 +85,9 @@ DispatcherImpl::~DispatcherImpl() {
 
 ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
 #if defined(BOOST_USE_UCONTEXT)
-    std::move(c).resume();
+  std::move(c).resume();
 #else
-    DCHECK(!c);
+  DCHECK(!c);
 #endif
 
   if (scheduler_->policy()) {
@@ -232,7 +232,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // If someone else holds the bit - give up on scheduling by this call.
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
-       FiberInterface::kScheduleRemote) == 1) {
+       FiberInterface::kScheduleRemote) != 0) {
     LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
     return;
   }
@@ -324,21 +324,29 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
     if (!fi) {
       if (qempty) {
         if (active && !res) {
-          // UB state.
+          // UB state. Try to recover.
           FiberInterface* next = active->remote_next_.load(std::memory_order_acquire);
           LOG(ERROR) << "Failed to pull active fiber from remote_ready_queue, iteration "
                      << iteration << " remote_empty: " << remote_ready_queue_.Empty()
                      << ", next:" << (uint64_t)next;
-          if (next && next != (FiberInterface*)FiberInterface::kRemoteFree) {
-            LOG(ERROR) << "Next fiber next is: "
-                       << next->remote_next_.load(std::memory_order_acquire) << ", usecount"
-                       << next->use_count_.load(std::memory_order_relaxed);
+
+          if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
+            LOG_IF(ERROR, next != nullptr)
+                << "Next fiber next is: " << next->remote_next_.load(std::memory_order_acquire)
+                << ", usecount: " << next->use_count_.load(std::memory_order_relaxed);
+            if (iteration < 100) {
+              // Work around the inconsistency by retrying.
+              ++iteration;
+              continue;
+            }
           }
         }
         break;
+      } else {  // qempty == false, retry.
+        ++iteration;
+        VLOG(1) << "Retrying " << iteration;
+        continue;
       }
-      DVLOG(1) << "Retrying " << iteration++;
-      continue;
     }
 
     // Marks as free.
