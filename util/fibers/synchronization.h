@@ -136,8 +136,6 @@ class Mutex {
 };
 
 class CondVarAny {
- private:
-  base::SpinLock wait_queue_splk_;
   detail::WaitQueue wait_queue_;
 
   std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
@@ -153,22 +151,21 @@ class CondVarAny {
   CondVarAny(CondVarAny const&) = delete;
   CondVarAny& operator=(CondVarAny const&) = delete;
 
-  void notify_one() noexcept;
+  void notify_one() noexcept {
+    wait_queue_.NotifyOne(detail::FiberActive());
+  }
 
-  void notify_all() noexcept;
+  void notify_all() noexcept {
+    wait_queue_.NotifyAll(detail::FiberActive());
+  }
 
   template <typename LockType> void wait(LockType& lt) {
     detail::FiberInterface* active = detail::FiberActive();
 
     detail::Waiter waiter(active->CreateWaiter());
 
-    // atomically call lt.unlock() and block on *this
-    // store this fiber in waiting-queue
-    wait_queue_splk_.lock();
-    lt.unlock();
-
     wait_queue_.Link(&waiter);
-    wait_queue_splk_.unlock();
+    lt.unlock();
 
     active->Suspend();
 
@@ -192,16 +189,18 @@ class CondVarAny {
 
     detail::Waiter waiter(active->CreateWaiter());
 
-    // atomically call lt.unlock() and block on *this
-    // store this fiber in waiting-queue
-    wait_queue_splk_.lock();
-    lt.unlock();
+    // store this fiber in waiting-queue, we can do it without spinlocks because
+    // lt is already locked.
     wait_queue_.Link(&waiter);
-    wait_queue_splk_.unlock();
 
+    // release the lock suspend this fiber until tp.
+    lt.unlock();
     bool timed_out = active->WaitUntil(tp);
-    std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
+
+    // lock back.
     lt.lock();
+    std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
+
     return status;
   }
 
@@ -513,6 +512,12 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     lk.unlock();
     active->Suspend();
 
+    // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
+    // This is necessary because we want to avoid the case where continue to wait for
+    // another eventcount/condition_variable and have two notify functions waking up the same
+    // fiber at the same time.
+    lock_.lock();
+    lock_.unlock();
     return true;
   }
   return false;
@@ -531,6 +536,7 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   while (true) {
     Key key = prepareWait();  // Key destructor restores back the sequence counter.
     if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
       break;
     }
     preempt |= wait(key.epoch());
