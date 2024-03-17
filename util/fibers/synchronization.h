@@ -159,23 +159,7 @@ class CondVarAny {
     wait_queue_.NotifyAll(detail::FiberActive());
   }
 
-  template <typename LockType> void wait(LockType& lt) {
-    detail::FiberInterface* active = detail::FiberActive();
-
-    detail::Waiter waiter(active->CreateWaiter());
-
-    wait_queue_.Link(&waiter);
-    lt.unlock();
-
-    active->Suspend();
-
-    // relock external again before returning
-    try {
-      lt.lock();
-    } catch (...) {
-      std::terminate();
-    }
-  }
+  template <typename LockType> void wait(LockType& lt);
 
   template <typename LockType, typename Pred> void wait(LockType& lt, Pred pred) {
     while (!pred()) {
@@ -184,25 +168,7 @@ class CondVarAny {
   }
 
   template <typename LockType>
-  std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
-    detail::FiberInterface* active = detail::FiberActive();
-
-    detail::Waiter waiter(active->CreateWaiter());
-
-    // store this fiber in waiting-queue, we can do it without spinlocks because
-    // lt is already locked.
-    wait_queue_.Link(&waiter);
-
-    // release the lock suspend this fiber until tp.
-    lt.unlock();
-    bool timed_out = active->WaitUntil(tp);
-
-    // lock back.
-    lt.lock();
-    std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
-
-    return status;
-  }
+  std::cv_status wait_until(LockType& lt, std::chrono::steady_clock::time_point tp);
 
   template <typename LockType, typename Pred>
   bool wait_until(LockType& lt, std::chrono::steady_clock::time_point tp, Pred pred) {
@@ -387,11 +353,7 @@ class EmbeddedBlockingCounter {
   }
 
   // Returns true on success (reaching 0), false when cancelled. Acquire semantics
-  bool Wait() {
-    uint64_t cnt;
-    ec_.await(WaitCondition(&cnt));
-    return (cnt & kCancelFlag) == 0;
-  }
+  bool Wait();
 
   // Same as Wait(), but with timeout
   bool WaitFor(const std::chrono::steady_clock::duration& duration);
@@ -589,6 +551,51 @@ class Barrier {
   Mutex mtx_;
   CondVar cond_;
 };
+
+template <typename LockType> void CondVarAny::wait(LockType& lt) {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  detail::Waiter waiter(active->CreateWaiter());
+
+  wait_queue_.Link(&waiter);
+  lt.unlock();
+
+  active->Suspend();
+
+  // relock external again before returning
+  try {
+    lt.lock();
+  } catch (...) {
+    std::terminate();
+  }
+}
+
+template <typename LockType>
+std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  detail::Waiter waiter(active->CreateWaiter());
+
+  // store this fiber in waiting-queue, we can do it without spinlocks because
+  // lt is already locked.
+  wait_queue_.Link(&waiter);
+
+  // release the lock suspend this fiber until tp.
+  lt.unlock();
+  bool timed_out = active->WaitUntil(tp);
+
+  // lock back.
+  lt.lock();
+  std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
+
+  return status;
+}
+
+inline bool EmbeddedBlockingCounter::Wait() {
+  uint64_t cnt;
+  ec_.await(WaitCondition(&cnt));
+  return (cnt & kCancelFlag) == 0;
+}
 
 }  // namespace fb2
 
