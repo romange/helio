@@ -75,7 +75,11 @@ void TlsSocket::InitSSL(SSL_CTX* context) {
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
-  return next_sock_->Shutdown(how);
+  Engine::OpResult op_result = engine_->Shutdown();
+  if (!op_result) {
+    return SSL2Error(op_result.error());
+  }
+  return {};
 }
 
 auto TlsSocket::Accept() -> AcceptResult {
@@ -83,13 +87,16 @@ auto TlsSocket::Accept() -> AcceptResult {
 
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::SERVER);
-    if (!op_result) {
-      return make_unexpected(SSL2Error(op_result.error()));
-    }
 
+    // it is important to send output (protocol errors) before we return from this function.
     error_code ec = MaybeSendOutput();
     if (ec) {
       return make_unexpected(ec);
+    }
+
+    // now check the result of the handshake.
+    if (!op_result) {
+      return make_unexpected(SSL2Error(op_result.error()));
     }
 
     int op_val = *op_result;

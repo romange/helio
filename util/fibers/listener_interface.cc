@@ -227,6 +227,9 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   CHECK(conn->socket() != nullptr);
 
   VSOCK(1, *conn) << "Closing connection";
+
+  // Shut down connections in orderly fashion by telling the peer that we are done.
+  conn->socket()->Shutdown(SHUT_RDWR);
   LOG_IF(ERROR, conn->socket()->Close());
 
   // Our connection could migrate, hence we should find it again

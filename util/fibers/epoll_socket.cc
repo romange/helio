@@ -355,7 +355,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET})) {
+  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
     LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
                << RemoteEndpoint();
   }
