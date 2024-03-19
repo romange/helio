@@ -68,18 +68,27 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 TlsSocket::~TlsSocket() {
 }
 
-void TlsSocket::InitSSL(SSL_CTX* context) {
+void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   CHECK(!engine_);
   engine_.reset(new Engine{context});
+  if (!prefix.empty()) {
+    Engine::OpResult op_result = engine_->WriteBuf(prefix);
+    CHECK(op_result);
+    CHECK_EQ(unsigned(*op_result), prefix.size());
+  }
 }
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
   Engine::OpResult op_result = engine_->Shutdown();
-  if (!op_result) {
-    return SSL2Error(op_result.error());
+  if (op_result) {
+    // engine_ could send notification messages to the peer.
+    MaybeSendOutput();
   }
-  return {};
+
+  // In any case we should also shutdown the underlying TCP socket without relying on the
+  // the peer.
+  return next_sock_->Shutdown(how);
 }
 
 auto TlsSocket::Accept() -> AcceptResult {
