@@ -18,6 +18,10 @@ class Engine;
 
 class TlsSocket : public FiberSocketBase {
  public:
+  using Buffer = Engine::Buffer;
+  using FiberSocketBase::endpoint_type;
+
+
   TlsSocket(std::unique_ptr<FiberSocketBase> next);
 
   // Takes ownership of next
@@ -25,7 +29,8 @@ class TlsSocket : public FiberSocketBase {
 
   ~TlsSocket();
 
-  void InitSSL(SSL_CTX* context);
+  // prefix points to the buffer that optionally holds first bytes from the TLS data stream.
+  void InitSSL(SSL_CTX* context, Buffer prefix = {});
 
   error_code Shutdown(int how) final;
 
@@ -49,17 +54,6 @@ class TlsSocket : public FiberSocketBase {
 
   SSL* ssl_handle();
 
-  // Enables caching the first n_bytes received in HandleRead()
-  // such that it can be used later to downgrade tls to non-tls
-  // connections
-  void CacheOnce();
-
-  using Buffer = Engine::Buffer;
-
-  Buffer GetCachedBuffer() const;
-
-  void PlaceBufferInCache(Buffer buffer, size_t n_bytes);
-  using FiberSocketBase::endpoint_type;
   endpoint_type LocalEndpoint() const override;
   endpoint_type RemoteEndpoint() const override;
 
@@ -85,7 +79,7 @@ class TlsSocket : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
-  io::Result<size_t> SendBuffer(Engine::Buffer buf);
+  io::Result<size_t> SendBuffer(Buffer buf);
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
