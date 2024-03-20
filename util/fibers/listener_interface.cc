@@ -277,8 +277,12 @@ void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
   DCHECK(ProactorBase::IsProactorThread());
   unsigned index = ProactorBase::me()->GetPoolIndex();
 
-  FiberAtomicGuard fg;
   auto it = conn_list.find(this);
+  if (it == conn_list.end()) {
+    return;
+  }
+
+  FiberAtomicGuard fg;
   for (auto& conn : it->second->list) {
     cb(index, &conn);
   }
