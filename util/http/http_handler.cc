@@ -312,6 +312,7 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
   AsioStreamAdapter<> asa(*socket_);
 
   HttpContext cntx(asa);
+  cntx.set_user_data(user_data_);
 
   while (!buf.empty()) {
     ParserType parser{std::move(request)};
@@ -351,6 +352,9 @@ void HttpConnection::HandleRequests() {
   AsioStreamAdapter<> asa(*socket_);
   RequestType request;
 
+  HttpContext cntx(asa);
+  cntx.set_user_data(user_data_);
+
   while (true) {
     ParserType parser{std::move(request)};
     parser.eager(true);
@@ -362,7 +366,6 @@ void HttpConnection::HandleRequests() {
 
     request = parser.release();
 
-    HttpContext cntx(asa);
     VLOG(1) << "Full Url: " << request.target();
     HandleSingleRequest(std::move(request), &cntx);
   }
