@@ -289,9 +289,13 @@ bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx)
 }
 
 bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
-  CbInfo cb_info{.cb = cb};
 
-  auto res = cb_map_.emplace(path, cb_info);
+  auto res = cb_map_.emplace(path, std::move(cb));
+  return res.second;
+}
+
+bool HttpListenerBase::RegisterCb(std::string_view path, RequestCbExt cb) {
+  auto res = cb_map_.emplace(path, std::move(cb));
   return res.second;
 }
 
@@ -320,7 +324,7 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
     request = parser.release();
 
     VLOG(1) << "Full Url: " << request.target();
-    HandleSingleRequest(request, &cntx);
+    HandleSingleRequest(std::move(request), &cntx);
   }
 
   if (ec == h2::error::need_more) {
@@ -360,7 +364,7 @@ void HttpConnection::HandleRequests() {
 
     HttpContext cntx(asa);
     VLOG(1) << "Full Url: " << request.target();
-    HandleSingleRequest(request, &cntx);
+    HandleSingleRequest(std::move(request), &cntx);
   }
 
   VLOG(1) << "HttpConnection exit " << ec.message();
@@ -397,16 +401,16 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
   h2::response<h2::string_body> resp{h2::status::unauthorized, req.version()};
   resp.set(h2::field::content_type, "text/plain");
   resp.set(h2::field::www_authenticate, "Basic realm=\"Restricted Area\"");
-  resp.body() = "Please authorize!";
+  resp.body() = "Please authorize!\r\n";
   cntx->Invoke(std::move(resp));
 
   return false;
 }
 
-void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cntx) {
+void HttpConnection::HandleSingleRequest(RequestType&& req, HttpContext* cntx) {
   CHECK(owner_);
 
-  std::string_view target = ToStd(req.target());
+  std::string target{ToStd(req.target())};
   auto [path, query] = ParseQuery(target);
 
   if (!CheckRequestAuthorization(req, cntx, path))
@@ -423,7 +427,11 @@ void HttpConnection::HandleSingleRequest(const RequestType& req, HttpContext* cn
     return cntx->Invoke(std::move(resp));
   }
   auto args = SplitQuery(query);
-  it->second.cb(args, cntx);
+  if (std::holds_alternative<HttpListenerBase::RequestCb>(it->second)) {
+    std::get<HttpListenerBase::RequestCb>(it->second)(args, cntx);
+  } else {
+    std::get<HttpListenerBase::RequestCbExt>(it->second)(args, std::move(req), cntx);
+  }
 }
 
 }  // namespace util

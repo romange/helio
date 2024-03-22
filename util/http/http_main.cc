@@ -117,6 +117,24 @@ void ServerRun(ProactorPool* pool) {
     return send->Invoke(std::move(resp));
   };
   listener->RegisterCb("/table", table_cb);
+
+  auto post_cb = [](const http::QueryArgs& args, util::HttpListenerBase::RequestType&& req,
+                    HttpContext* send) {
+    if (req.method() != h2::verb::post) {
+      return send->Invoke(http::MakeStringResponse(h2::status::bad_request));
+    }
+    http::StringResponse resp = http::MakeStringResponse(h2::status::ok);
+    resp.body() = absl::StrCat("Post: ", req.body(), "\r\n");
+
+    http::SetMime(http::kTextMime, &resp);
+    resp.set(h2::field::server, "http_main");
+    http_qps.Inc();
+    http_req.IncBy({"post", "post"}, 1);
+
+    return send->Invoke(std::move(resp));
+  };
+  listener->RegisterCb("/post", post_cb);
+
   listener->enable_metrics();
 
   uint16_t port = server.AddListener(absl::GetFlag(FLAGS_port), listener);
@@ -154,28 +172,16 @@ bool HelpshortFlags(std::string_view f) {
   return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
 }
 
-
-
-class StdMallocResource : public PMR_NS::memory_resource {
- private:
-  void* do_allocate(std::size_t size, std::size_t align) final {
-    VLOG(1) << "Allocating " << size << " bytes";
-    return std::malloc(size);
-  }
-
-  void do_deallocate(void* ptr, std::size_t size, std::size_t align) final {
-    std::free(ptr);
-  }
-
-  bool do_is_equal(const PMR_NS::memory_resource& o) const noexcept {
-    return this == &o;
-  }
-};
-
-StdMallocResource std_malloc_resource;
-
 }  // namespace
 
+/**
+ * Demo http server. Currently registers most handlers under basic authentication layer
+ * with user "default" and empty password. The password can be set with flag "--password".
+ * The only "open" handler is /foo.
+ * There are handlers like "/json" and "/table" that return json and html tables respectively.
+ * In addition, it exposes POST handler that prints the contents of its body back.
+ *
+ */
 int main(int argc, char** argv) {
   absl::SetProgramUsageMessage("http example server");
   absl::FlagsUsageConfig config;
@@ -184,7 +190,7 @@ int main(int argc, char** argv) {
   absl::SetFlagsUsageConfig(config);
 
   MainInitGuard guard(&argc, &argv);
-  fb2::SetDefaultStackResource(&std_malloc_resource, 32 * 1024);
+  fb2::SetDefaultStackResource(&fb2::std_malloc_resource, 32 * 1024);
   std::unique_ptr<ProactorPool> pool;
 
 #ifdef __linux__

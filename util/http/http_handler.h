@@ -64,10 +64,16 @@ class HttpListenerBase : public ListenerInterface {
   using RequestType = ::boost::beast::http::request<::boost::beast::http::string_body>;
   typedef std::function<void(const http::QueryArgs&, HttpContext*)> RequestCb;
 
+  // Extended callback that allows to pass the request object.
+  typedef std::function<void(const http::QueryArgs&, RequestType&&,  HttpContext*)> RequestCbExt;
+
   HttpListenerBase();
 
   // Returns true if a callback was registered.
   bool RegisterCb(std::string_view path, RequestCb cb);
+
+  // Returns true if a callback was registered.
+  bool RegisterCb(std::string_view path, RequestCbExt cb);
 
   void set_resource_prefix(std::string_view prefix) {
     resource_prefix_ = prefix;
@@ -91,9 +97,8 @@ class HttpListenerBase : public ListenerInterface {
  private:
   bool HandleRoot(const RequestType& rt, HttpContext* cntx) const;
 
-  struct CbInfo {
-    RequestCb cb;
-  };
+  using CbInfo = std::variant<RequestCb, RequestCbExt>;
+
   absl::flat_hash_map<std::string_view, CbInfo> cb_map_;
 
   std::string favicon_url_;
@@ -119,7 +124,7 @@ class HttpConnection : public Connection {
   void HandleRequests() final;
 
  protected:
-  void HandleSingleRequest(const RequestType& req, HttpContext* cntx);
+  void HandleSingleRequest(RequestType&& req, HttpContext* cntx);
 
   // Check request authorization and return whether we can proceed.
   bool CheckRequestAuthorization(const RequestType& req, HttpContext* cntx, std::string_view path);
