@@ -23,9 +23,17 @@ class HttpContext {
   using error_code = ::boost::system::error_code;
 
   AsioStreamAdapter<>& asa_;
-
+  void* user_data_ = nullptr;
  public:
   explicit HttpContext(AsioStreamAdapter<>& asa) : asa_(asa) {
+  }
+
+  void set_user_data(void* ud) {
+    user_data_ = ud;
+  }
+
+  void* user_data() {
+    return user_data_;
   }
 
   template <typename Body> void Invoke(Response<Body>&& msg) {
@@ -123,6 +131,9 @@ class HttpConnection : public Connection {
 
   void HandleRequests() final;
 
+  void set_user_data(void* ud) {
+    user_data_ = ud;
+  }
  protected:
   void HandleSingleRequest(RequestType&& req, HttpContext* cntx);
 
@@ -132,6 +143,7 @@ class HttpConnection : public Connection {
  private:
   const HttpListenerBase* owner_;
   ::boost::beast::flat_buffer req_buffer_;
+  void* user_data_ = nullptr;
 };
 
 // http Listener + handler factory. By default creates HttpHandler.
