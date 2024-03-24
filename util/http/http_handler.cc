@@ -315,7 +315,7 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
   cntx.set_user_data(user_data_);
 
   while (!buf.empty()) {
-    ParserType parser{std::move(request)};
+    ParserType parser;
     parser.eager(true);
 
     size_t consumed = parser.put(boost::asio::const_buffer{buf.data(), buf.size()}, ec);
@@ -356,7 +356,7 @@ void HttpConnection::HandleRequests() {
   cntx.set_user_data(user_data_);
 
   while (true) {
-    ParserType parser{std::move(request)};
+    ParserType parser;
     parser.eager(true);
 
     h2::read(asa, req_buffer_, parser, ec);
