@@ -38,11 +38,6 @@ class Client {
   std::error_code Connect(std::string_view host, std::string_view service);
   std::error_code Reconnect();
 
-  /*BoostError Send(Verb verb, std::string_view url, std::string_view body, Response* response);
-  BoostError Send(Verb verb, std::string_view url, Response* response) {
-    return Send(verb, url, std::string_view{}, response);
-  }*/
-
   /*! @brief Sends http request but does not read response back.
    *
    *  Possibly retries and reconnects if there are problems with connection.

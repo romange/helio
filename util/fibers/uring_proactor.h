@@ -195,12 +195,7 @@ class FiberCall {
     return &se_;
   }
 
-  IoResult Get() {
-    me_->Suspend();
-    me_ = nullptr;
-
-    return io_res_;
-  }
+  IoResult Get();
 
   uint32_t flags() const {
     return res_flags_;
@@ -208,12 +203,12 @@ class FiberCall {
 
  private:
   SubmitEntry se_;
-  SubmitEntry tm_;
 
   detail::FiberInterface* me_;
   UringProactor::IoResult io_res_ = 0;
-  timespec ts_;             // in case of timeout.
   uint32_t res_flags_ = 0;  // set by waker upon completion.
+  bool was_run_ = false;
+  timespec ts_;             // in case of timeout.
 };
 
 }  // namespace fb2
