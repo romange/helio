@@ -135,10 +135,14 @@ void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hoste
 
 void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCallbackArgs* args) {
   auto* myself = detail::FiberActive();
-  state->fiber_ctx = myself;
 
   while (!args->done) {
+    // It's important to set and reset fiber_ctx close to Suspend, to avoid the case
+    // where EPOLL callbacks wake up the fiber in the wrong place.
+    // ares_process_fd calls helio code that in turn can suspend a fiber as well.
+    state->fiber_ctx = myself;
     myself->Suspend();
+    state->fiber_ctx = nullptr;
 
     for (const auto& [socket, socket_state] : state->sockets_state) {
       int read_sock = HasReads(socket_state.mask) ? socket : ARES_SOCKET_BAD;
@@ -146,7 +150,6 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
       ares_process_fd(channel, read_sock, write_sock);
     }
   }
-  state->fiber_ctx = nullptr;
 }
 
 }  // namespace
