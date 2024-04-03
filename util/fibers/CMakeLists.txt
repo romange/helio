@@ -12,6 +12,7 @@ add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             fiber_socket_base.cc listener_interface.cc
             prebuilt_asio.cc proactor_pool.cc stacktrace.cc
             sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc
+            uring_buf_pool.cc
             ${FB_LINUX_SRCS})
 
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
