@@ -13,12 +13,32 @@ namespace detail {
 
 [[maybe_unused]] constexpr size_t WakeOtherkSizeOfWaitQ = sizeof(WaitQueue);
 
+bool WaitQueue::NotifyOne(FiberInterface* active) {
+  if (wait_list_.empty())
+    return false;
+
+  Waiter* waiter = &wait_list_.front();
+  DCHECK(waiter);
+
+  FiberInterface* cntx = waiter->cntx();
+  DCHECK(cntx);
+
+  wait_list_.pop_front();
+  NotifyImpl(waiter->cntx(), active);
+
+  return true;
+}
+
 void WaitQueue::NotifyAll(FiberInterface* active) {
   while (!wait_list_.empty()) {
     Waiter* waiter = &wait_list_.front();
-    wait_list_.pop_front();
+    DCHECK(waiter);
 
     FiberInterface* cntx = waiter->cntx();
+    DCHECK(cntx);
+
+    wait_list_.pop_front();
+
     DVLOG(2) << "Scheduling " << cntx->name() << " from " << active->name();
 
     active->ActivateOther(cntx);
