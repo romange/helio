@@ -56,6 +56,8 @@ Engine::~Engine() {
 
   ::BIO_free(external_bio_);
   ::SSL_free(ssl_);
+  external_bio_ = nullptr;
+  ssl_ = nullptr;
 }
 
 auto Engine::ToOpResult(const SSL* ssl, int result) -> Engine::OpResult {
@@ -132,7 +134,9 @@ auto Engine::PeekOutputBuf() -> BufResult {
 }
 
 void Engine::ConsumeOutputBuf(unsigned sz) {
+  CHECK(external_bio_);
   int res = BIO_nread(external_bio_, NULL, sz);
+
   if (res <= 0) {
     unsigned long error = ::ERR_get_error();
     char buf[256];
