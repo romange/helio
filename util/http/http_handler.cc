@@ -321,7 +321,12 @@ error_code HttpConnection::ParseFromBuffer(io::Bytes buf) {
     size_t consumed = parser.put(boost::asio::const_buffer{buf.data(), buf.size()}, ec);
     if (ec)
       break;
+    if (!parser.is_done()) {
+      ec = h2::error::need_more;
+      break;
+    }
     buf.remove_prefix(consumed);
+
     request = parser.release();
 
     VLOG(1) << "Full Url: " << request.target();
@@ -357,13 +362,18 @@ void HttpConnection::HandleRequests() {
 
   while (true) {
     ParserType parser;
-    parser.eager(true);
 
+    // h2::read sets parser.eager=true
+    // This function reads from the socket until parser reaches done state or error is encountered.
     h2::read(asa, req_buffer_, parser, ec);
     if (ec) {
       break;
     }
 
+    if (!parser.is_done()) {
+      LOG(DFATAL) << "Incomplete http parsing";
+      break;
+    }
     request = parser.release();
 
     VLOG(1) << "Full Url: " << request.target();
