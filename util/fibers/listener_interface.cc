@@ -170,16 +170,18 @@ void ListenerInterface::RunAcceptLoop() {
   pool_->AwaitFiberOnAll([&](auto* pb) {
     auto it = conn_list.find(this);
     DCHECK(it != conn_list.end());
-    auto* clist = it->second;
+    TLConnList* clist = it->second;
 
-    cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
+    // Important to pop from the end because Shutdown may suspend and the list may change
+    while (!clist->list.empty()) {
+      Connection& conn = clist->list.back();
+      clist->list.pop_back();
 
-    // This is correctly atomic because Shutdown() does not block the fiber or yields.
-    // However once we implement Shutdown via io_uring, this code becomes unsafe.
-    for (auto& conn : clist->list) {
+      boost::intrusive_ptr guard(&conn);
       conn.Shutdown();
       DVSOCK(1, conn) << "Shutdown";
     }
+    cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
   });
 
   VLOG(1) << "Listener - " << ep.port() << " waiting for " << cur_conn_cnt
@@ -208,7 +210,7 @@ ListenerInterface::~ListenerInterface() {
 void ListenerInterface::RunSingleConnection(Connection* conn) {
   VSOCK(2, *conn) << "Running connection ";
 
-  unique_ptr<Connection> guard(conn);
+  boost::intrusive_ptr<Connection> guard(conn);
 
   ListenerConnMap* conn_map = GetSafeTlsConnMap();
   TLConnList* clist = conn_map->find(this)->second;
@@ -224,25 +226,30 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
   }
 
   OnConnectionClose(conn);
-  CHECK(conn->socket() != nullptr);
 
   VSOCK(1, *conn) << "Closing connection";
-
   // Shut down connections in orderly fashion by telling the peer that we are done.
   conn->socket()->Shutdown(SHUT_RDWR);
   LOG_IF(ERROR, conn->socket()->Close());
 
-  // Our connection could migrate, hence we should find it again
-  conn_map = GetSafeTlsConnMap();
+  // If connection was migrated into a listener that was destroyed
+  // we may end up with unlinked connection, so no need to unlink it upon closure.
+  if (conn->hook_.is_linked()) {
+    // Our connection could migrate, hence we should find it again
+    conn_map = GetSafeTlsConnMap();
 
-  auto it = conn_map->find(this);
+    // if hook is linked, we must find the listener in the local map.
+    auto it = conn_map->find(this);
 
-  // If the listener was destroyed (when we are in the middle of migration)
-  // we do not need to unlink the connection.
-  if (it != conn_map->end()) {
-    clist = it->second;
+    // If the listener was destroyed (when we are in the middle of migration)
+    // we do not need to unlink the connection.
+    if (it == conn_map->end()) {
+      LOG(DFATAL) << "Internal error, could not find the listener " << this;
+    } else {
+      clist = it->second;
 
-    clist->Unlink(conn, this);
+      clist->Unlink(conn, this);
+    }
   }
   guard.reset();
   open_connections_.fetch_sub(1, std::memory_order_release);
@@ -302,7 +309,7 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   unsigned src_index = src_proactor->GetPoolIndex();
 
   ListenerConnMap* src_conn_map = GetSafeTlsConnMap();
-  VLOG(1) << "Migrating from " << src_proactor->sys_tid() << "(" << src_index << ") "
+  VLOG(1) << "Migrating " << conn << " from " << src_proactor->sys_tid() << "(" << src_index << ") "
           << src_conn_map << " to " << dest->sys_tid();
 
   conn->OnPreMigrateThread();
@@ -317,14 +324,16 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   ListenerConnMap* dest_conn_map = GetSafeTlsConnMap();
   int dest_index = dest->GetPoolIndex();
-  VLOG(1) << "Migrated from " << src_index << " to " << dest_index << " " << dest_conn_map;
+  VLOG(1) << "Migrated " << conn << " from " << src_index << " to " << dest_index << " " << dest_conn_map;
 
   CHECK_NE(dest_conn_map, src_conn_map);
   auto it = dest_conn_map->find(this);
 
   // If the listener is being destroyed but the connection is in the middle of thread migration,
   // we do not need to link it again.
-  if (it != dest_conn_map->end()) {
+  if (it == dest_conn_map->end()) {
+    VLOG(1) << "Conn " << conn << " left unlinked";
+  } else {
     TLConnList* dst_clist = it->second;
     CHECK(dst_clist != src_clist);
     CHECK_EQ(dst_clist->pool_index, dest_index);
