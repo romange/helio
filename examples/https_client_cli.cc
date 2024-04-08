@@ -85,10 +85,11 @@ using OpResult = io::Result<RequestResults, std::string>;
 
 OpResult ConnectAndRead(ProactorBase* proactor, std::string_view host, std::string_view service,
                         const char* resource, SSL_CTX* ssl_ctx) {
-  TlsClient http_client{proactor};
-
-  http_client.set_connect_timeout_ms(2000);
+  
   auto list_res = proactor->Await([&] {
+    TlsClient http_client{proactor};
+
+    http_client.set_connect_timeout_ms(2000);
     if (auto ec = http_client.Connect(host, service, ssl_ctx); !ec) {
       h2::request<h2::string_body> req{h2::verb::get, resource, 11 /*http 1.1*/};
       req.set(h2::field::host, std::string(host).c_str());
@@ -106,7 +107,7 @@ OpResult ConnectAndRead(ProactorBase* proactor, std::string_view host, std::stri
   });
 
   return list_res;
-};
+}
 
 using namespace std::chrono_literals;
 

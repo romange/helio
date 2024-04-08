@@ -16,7 +16,7 @@ namespace tls {
 
 class Engine;
 
-class TlsSocket : public FiberSocketBase {
+class TlsSocket final : public FiberSocketBase {
  public:
   using Buffer = Engine::Buffer;
   using FiberSocketBase::endpoint_type;
@@ -44,6 +44,14 @@ class TlsSocket : public FiberSocketBase {
 
   bool IsOpen() const final {
     return next_sock_->IsOpen();
+  }
+
+  void set_timeout(uint32_t msec) final override {
+    next_sock_->set_timeout(msec);
+  }
+
+  uint32_t timeout() const final override {
+    return next_sock_->timeout();
   }
 
   io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final;

@@ -72,12 +72,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   }
 
   // UINT32_MAX to disable timeout.
-  void set_timeout(uint32_t msec) {
-    timeout_ = msec;
-  }
-  uint32_t timeout() const {
-    return timeout_;
-  }
+  virtual void set_timeout(uint32_t msec) = 0;
+  virtual uint32_t timeout() const = 0;
 
   using AsyncSink::AsyncWrite;
   using AsyncSink::AsyncWriteSome;
@@ -123,7 +119,6 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   // We must reference proactor in each socket so that we could support write_some/read_some
   // with predefined interface and be compliant with SyncWriteStream/SyncReadStream concepts.
   ProactorBase* proactor_;
-  uint32_t timeout_ = UINT32_MAX;
 };
 
 class LinuxSocketBase : public FiberSocketBase {
@@ -154,6 +149,15 @@ class LinuxSocketBase : public FiberSocketBase {
                                             unsigned backlog) override;
 
   error_code Shutdown(int how) override;
+
+  // UINT32_MAX to disable timeout.
+  void set_timeout(uint32_t msec) final override {
+    timeout_ = msec;
+  }
+
+  uint32_t timeout() const final override {
+    return timeout_;
+  }
 
   //! Removes the ownership over file descriptor. Use with caution.
   void Detach() {
@@ -195,6 +199,9 @@ class LinuxSocketBase : public FiberSocketBase {
   // kFdShift low bits are used for masking the state of fd.
   // gives me 256M descriptors.
   int32_t fd_;
+
+  private:
+    uint32_t timeout_ = UINT32_MAX;
 };
 
 void SetNonBlocking(int fd);
