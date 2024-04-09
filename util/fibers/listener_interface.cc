@@ -172,13 +172,19 @@ void ListenerInterface::RunAcceptLoop() {
     DCHECK(it != conn_list.end());
     TLConnList* clist = it->second;
 
-    // Important to pop from the end because Shutdown may suspend and the list may change
-    while (!clist->list.empty()) {
-      Connection& conn = clist->list.back();
-      clist->list.pop_back();
+    // we iterate over list but Shutdown serves as a preemption point so we must handle the
+    // invalidation case inside the loop;
+    auto iter = clist->list.begin();
+    while (iter != clist->list.end()) {
+      Connection& conn = *iter;
 
       boost::intrusive_ptr guard(&conn);
       conn.Shutdown();
+      if (guard->hook_.is_linked()) {
+        ++iter;
+      } else {
+        iter = clist->list.begin();  // reset the iteration.
+      }
       DVSOCK(1, conn) << "Shutdown";
     }
     cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
