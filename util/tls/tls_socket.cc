@@ -68,7 +68,7 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 
 TlsSocket::~TlsSocket() {
   // sanity check that all pending ops are done.
-  DCHECK_EQ(state_ & 7, 0);
+  DCHECK_EQ(state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS), 0);
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
