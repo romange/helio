@@ -43,6 +43,7 @@ using namespace std;
 ABSL_FLAG(short, http_port, 443, "HTTPS remote server port.");
 ABSL_FLAG(std::string, host, "", "Remote host domain name");
 ABSL_FLAG(std::string, resource, "/", "resource path on the remote host");
+ABSL_FLAG(uint32_t, connect_timeout, 2000, "Connection timeout");
 
 struct RequestResults {
   unsigned int status = 400;
@@ -89,7 +90,7 @@ OpResult ConnectAndRead(ProactorBase* proactor, std::string_view host, std::stri
   auto list_res = proactor->Await([&] {
     TlsClient http_client{proactor};
 
-    http_client.set_connect_timeout_ms(2000);
+    http_client.set_connect_timeout_ms(GetFlag(FLAGS_connect_timeout));
     if (auto ec = http_client.Connect(host, service, ssl_ctx); !ec) {
       h2::request<h2::string_body> req{h2::verb::get, resource, 11 /*http 1.1*/};
       req.set(h2::field::host, std::string(host).c_str());
