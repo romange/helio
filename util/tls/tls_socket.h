@@ -21,7 +21,6 @@ class TlsSocket final : public FiberSocketBase {
   using Buffer = Engine::Buffer;
   using FiberSocketBase::endpoint_type;
 
-
   TlsSocket(std::unique_ptr<FiberSocketBase> next);
 
   // Takes ownership of next
@@ -65,7 +64,7 @@ class TlsSocket final : public FiberSocketBase {
   endpoint_type LocalEndpoint() const override;
   endpoint_type RemoteEndpoint() const override;
 
-  void RegisterOnErrorCb(std::function<void (uint32_t)> cb) override;
+  void RegisterOnErrorCb(std::function<void(uint32_t)> cb) override;
   void CancelOnErrorCb() override;
 
   bool IsUDS() const override;
@@ -98,7 +97,12 @@ class TlsSocket final : public FiberSocketBase {
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
 
-  enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2};
+  enum {
+    WRITE_IN_PROGRESS = 1,
+    READ_IN_PROGRESS = 2,
+    SHUTDOWN_IN_PROGRESS = 4,
+    SHUTDOWN_DONE = 8
+  };
   uint8_t state_{0};
 };
 

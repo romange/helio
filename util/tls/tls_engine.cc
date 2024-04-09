@@ -134,7 +134,6 @@ auto Engine::PeekOutputBuf() -> BufResult {
 }
 
 void Engine::ConsumeOutputBuf(unsigned sz) {
-  CHECK(external_bio_);
   int res = BIO_nread(external_bio_, NULL, sz);
 
   if (res <= 0) {

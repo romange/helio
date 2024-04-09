@@ -6,7 +6,7 @@
 #include <boost/intrusive/list.hpp>
 #include <functional>
 #include <memory>
-
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include "util/fiber_socket_base.h"
 #include "util/fibers/proactor_base.h"
 
@@ -14,7 +14,15 @@ namespace util {
 
 class ListenerInterface;
 
-class Connection {
+/**
+ * @brief A connection object that represents a client tcp connection, managed by a listener.
+ *
+ * We use boost::intrusive_ref_counter to be able to access the object from multiple fibers
+ * in the same thread. Specifically, we may shutdown a connection during the shutdown of
+ * ListenerInterface::RunAcceptLoop,
+ * while the connection is going through a closing sequence itself.
+ */
+class Connection : public boost::intrusive_ref_counter<Connection, boost::thread_unsafe_counter> {
   using connection_hook_t = ::boost::intrusive::list_member_hook<
       ::boost::intrusive::link_mode<::boost::intrusive::safe_link>>;
 
@@ -57,11 +65,6 @@ class Connection {
   virtual void OnPreMigrateThread() {
   }
   virtual void OnPostMigrateThread() {
-  }
-
-  [[deprecated]]
-  ListenerInterface* owner() const {
-    return listener_;
   }
 
   ListenerInterface* listener() const {
