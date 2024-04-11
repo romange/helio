@@ -356,7 +356,11 @@ class EmbeddedBlockingCounter {
   bool Wait();
 
   // Same as Wait(), but with timeout
-  bool WaitFor(const std::chrono::steady_clock::duration& duration);
+  bool WaitFor(const std::chrono::steady_clock::duration& duration) {
+    return WaitUntil(std::chrono::steady_clock::now() + duration);
+  }
+
+  bool WaitUntil(const std::chrono::steady_clock::time_point tp);
 
   // Start with specified count. Current value must be strictly zero (not cancelled).
   void Start(unsigned cnt);
