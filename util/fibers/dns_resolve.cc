@@ -4,8 +4,10 @@
 
 #include <ares.h>
 #include <netdb.h>
+#include <sys/socket.h>
 
 #include "base/logging.h"
+#include "base/stl_util.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/proactor_base.h"
 
@@ -119,8 +121,7 @@ void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hoste
     return set_error();
   }
 
-  if (hostent->h_addrtype != AF_INET) {
-    // We currently only support IPv4
+  if (!base::_in(hostent->h_addrtype, {AF_INET, AF_INET6})) {
     return set_error();
   }
 
@@ -129,7 +130,7 @@ void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hoste
     return set_error();
   }
 
-  ares_inet_ntop(AF_INET, *addr, cb_args->dest_ip, INET_ADDRSTRLEN);
+  ares_inet_ntop(hostent->h_addrtype, *addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
   cb_args->done = true;
 }
 
@@ -156,7 +157,6 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
 
 error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBase* proactor) {
   DCHECK(ProactorBase::me() == proactor) << "must call from the proactor thread";
-
   VLOG(1) << "DnsResolveStart";
 
   AresChannelState state;
@@ -171,7 +171,7 @@ error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBas
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
-  ares_gethostbyname(channel, host.c_str(), AF_INET, &DnsResolveCallback, &cb_args);
+  ares_gethostbyname(channel, host.c_str(), AF_UNSPEC, &DnsResolveCallback, &cb_args);
 
   ProcessChannel(channel, &state, &cb_args);
   ares_destroy(channel);
