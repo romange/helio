@@ -122,6 +122,16 @@ void ListenerInterface::RunAcceptLoop() {
 
     unique_ptr<FiberSocketBase> peer{res.value()};
 
+    if (pause_accepting_) {
+      // Immediately closes the incoming connection.
+      // Please note that this mode could trigger a dangerous dynamic like a connection storm,
+      // where many clients try to reconnect again and again, causing a pressure on the host's
+      // firewall. Must be enabled only in special cases.
+      peer->SetProactor(sock_->proactor());
+      peer->Close();
+      continue;
+    }
+
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
     uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_acquire);

@@ -84,6 +84,16 @@ class ListenerInterface {
     conn_fiber_stack_size_ = size;
   }
 
+  // Stops accepting the new sockets. Any incomming connection is immediately closed.
+  // The listener continues runnning.
+  void pause_accepting() {
+    pause_accepting_ = true;
+  }
+
+  void resume_accepting() {
+    pause_accepting_ = false;
+  }
+
  protected:
   ProactorPool* pool() {
     return pool_;
@@ -124,6 +134,8 @@ class ListenerInterface {
 
   ProactorPool* pool_ = nullptr;
   PMR_NS::memory_resource* mr_;
+  bool pause_accepting_ = false;
+
   friend class AcceptServer;
 };
 

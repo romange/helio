@@ -79,8 +79,7 @@ auto UringSocket::Close() -> error_code {
   error_code ec;
   if (fd_ < 0)
     return ec;
-
-  DCHECK(proactor()->InMyThread());
+  DCHECK(DCHECK_NOTNULL(proactor())->InMyThread());
   DVSOCK(1) << "Closing socket";
 
   int fd;

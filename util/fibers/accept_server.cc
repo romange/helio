@@ -43,7 +43,7 @@ void AcceptServer::Run() {
     for (auto& lw : list_interface_) {
       ProactorBase* proactor = lw->socket()->proactor();
 
-      // We must capture ref_bc_ by value because once it is decremented AcceptServer
+      // We must capture ref_bc_ by value because once it is decremented, AcceptServer
       // instance can be destroyed before Dec returnes.
       proactor->Dispatch([li = lw.get(), bc = ref_bc_]() mutable {
         li->RunAcceptLoop();
