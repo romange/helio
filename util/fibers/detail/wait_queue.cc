@@ -13,12 +13,17 @@ namespace detail {
 
 [[maybe_unused]] constexpr size_t WakeOtherkSizeOfWaitQ = sizeof(WaitQueue);
 
+void WaitQueue::Link(Waiter* waiter) {
+  DCHECK(waiter);
+  wait_list_.push_back(*waiter);
+}
+
 bool WaitQueue::NotifyOne(FiberInterface* active) {
   if (wait_list_.empty())
     return false;
 
   Waiter* waiter = &wait_list_.front();
-  DCHECK(waiter);
+  DCHECK(waiter) << wait_list_.empty();
 
   FiberInterface* cntx = waiter->cntx();
   DCHECK(cntx);
@@ -32,7 +37,7 @@ bool WaitQueue::NotifyOne(FiberInterface* active) {
 void WaitQueue::NotifyAll(FiberInterface* active) {
   while (!wait_list_.empty()) {
     Waiter* waiter = &wait_list_.front();
-    DCHECK(waiter);
+    DCHECK(waiter) << wait_list_.empty();
 
     FiberInterface* cntx = waiter->cntx();
     DCHECK(cntx);
