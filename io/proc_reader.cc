@@ -102,6 +102,8 @@ Result<StatusData> ReadStatusInfo() {
       ParseKb(num, &sdata.vm_size);
     } else if (key == "VmRSS") {
       ParseKb(num, &sdata.vm_rss);
+    } else if (key == "VmSwap") {
+      ParseKb(num, &sdata.vm_swap);
     } else if (key == "HugetlbPages") {
       ParseKb(num, &sdata.hugetlb_pages);
     }
