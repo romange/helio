@@ -106,32 +106,36 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
   }
 }
 
-void DnsResolveCallback(void* ares_arg, int status, int timeouts, hostent* hostent) {
-  VLOG(1) << "DnsResolve: " << status;
-
-  CHECK(ares_arg != nullptr);
-
+void DnsResolveCallback(void* ares_arg, int status, int timeouts, struct ares_addrinfo* res) {
   auto* cb_args = static_cast<DnsResolveCallbackArgs*>(ares_arg);
-  auto set_error = [&]() {
-    cb_args->ec = make_error_code(errc::address_not_available);
-    cb_args->done = true;
-  };
-
-  if (status != ARES_SUCCESS || hostent == nullptr) {
-    return set_error();
-  }
-
-  if (!base::_in(hostent->h_addrtype, {AF_INET, AF_INET6})) {
-    return set_error();
-  }
-
-  char** addr = hostent->h_addr_list;
-  if (addr == nullptr) {
-    return set_error();
-  }
-
-  ares_inet_ntop(hostent->h_addrtype, *addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
   cb_args->done = true;
+
+  if (status != ARES_SUCCESS || res->nodes == nullptr) {
+    cb_args->ec = make_error_code(errc::address_not_available);
+    return;
+  }
+
+  auto* node = res->nodes;
+
+  // If IpV4 is available, prefer it
+  if (node->ai_family == AF_INET6 && node->ai_next != nullptr &&
+      node->ai_next->ai_family == AF_INET)
+    node = node->ai_next;
+
+  switch (node->ai_family) {
+    case AF_INET: {
+      auto* addr_in = reinterpret_cast<sockaddr_in*>(node->ai_addr);
+      ares_inet_ntop(AF_INET, &addr_in->sin_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
+      break;
+    }
+    case AF_INET6: {
+      auto* addr_in6 = reinterpret_cast<sockaddr_in6*>(node->ai_addr);
+      ares_inet_ntop(AF_INET6, &addr_in6->sin6_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
+      break;
+    }
+    default:
+      cb_args->ec = make_error_code(errc::invalid_argument);
+  }
 }
 
 void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCallbackArgs* args) {
@@ -171,7 +175,11 @@ error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBas
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
-  ares_gethostbyname(channel, host.c_str(), AF_UNSPEC, &DnsResolveCallback, &cb_args);
+
+
+  // Same hints as for  hostentares_gethostbyname
+  ares_addrinfo_hints hints{ARES_AI_CANONNAME, AF_UNSPEC, 0, 0};
+  ares_getaddrinfo(channel, host.c_str(), nullptr, &hints, &DnsResolveCallback, &cb_args);
 
   ProcessChannel(channel, &state, &cb_args);
   ares_destroy(channel);
