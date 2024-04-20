@@ -198,7 +198,9 @@ Scheduler::~Scheduler() {
 }
 
 ctx::fiber_context Scheduler::Preempt() {
-  DCHECK(FiberActive() != dispatch_cntx_.get()) << "Should not preempt dispatcher";
+  if (FiberActive() == dispatch_cntx_.get()) {
+    LOG(DFATAL) << "Should not preempt dispatcher";
+  }
   DCHECK(!IsFiberAtomicSection()) << "Preempting inside of atomic section";
   DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
 

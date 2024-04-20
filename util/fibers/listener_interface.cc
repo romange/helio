@@ -333,6 +333,8 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   TLConnList* src_clist = src_conn_map->find(this)->second;
   src_clist->Unlink(conn, this);
   conn->socket()->SetProactor(nullptr);
+
+  // Preemption point.
   src_proactor->Migrate(dest);
 
   CHECK(dest->InMyThread());  // We are running in the updated thread.
