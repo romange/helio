@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -18,19 +19,22 @@ template <typename T> struct Future {
   }
 
   T Get() {
-    block->waker.await([this] { return block->value.has_value(); });
-    return std::move(*block->value);
+    block->waker.await(
+        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); });
+    return std::move(block->value);
   }
 
   void Resolve(T result) {
     block->value = std::move(result);
+    block->has_value.store(true, std::memory_order_relaxed);
     block->waker.notify();
   }
 
  private:
   struct Block {
-    std::optional<T> value;
-    util::fb2::EventCount waker;
+    T value{};  // replace with aligned_storage or optional if T is not default-constructible
+    std::atomic_bool has_value = false;
+    util::fb2::EventCount waker{};
   };
   std::shared_ptr<Block> block;
 };
