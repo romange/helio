@@ -220,7 +220,8 @@ void ProactorBase::Migrate(ProactorBase* dest) {
     // We can not use DispatchBrief because it may block dispatch fiber, which is forbidden.
     // While this state is theoretically possible but it's very improbable, so we should not reach
     // usleep in the normal state.
-    while (!dest->EmplaceTaskQueue(std::move(cb))) {
+    while (!dest->EmplaceTaskQueue(cb)) {
+      LOG_FIRST_N(WARNING, 10000) << "Retrying task emplace";
       usleep(0);
     };
   });
