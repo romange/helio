@@ -99,7 +99,7 @@ template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCoun
     CheckInit();
 
     std::atomic_uint32_t res{0};
-    pp_->Await([&](unsigned i, auto*) {
+    pp_->AwaitBrief([&](unsigned i, auto*) {
       res.fetch_add(sc_thread_map_[i].Sum(), std::memory_order_relaxed);
     });
 
@@ -110,7 +110,7 @@ template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCoun
     CheckInit();
 
     std::atomic_uint32_t res{0};
-    pp_->Await([&](unsigned i, auto*) {
+    pp_->AwaitBrief([&](unsigned i, auto*) {
       res.fetch_add(sc_thread_map_[i].SumTail(), std::memory_order_relaxed);
     });
 

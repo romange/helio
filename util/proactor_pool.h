@@ -114,7 +114,7 @@ class ProactorPool {
    *
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
-  void Await(Func&& func) {
+  void AwaitBrief(Func&& func) {
     BlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
@@ -122,6 +122,12 @@ class ProactorPool {
     };
     DispatchBrief(std::move(cb));
     bc->Wait();
+  }
+
+
+  template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
+  [[deprecated]] void Await(Func&& func) {
+    AwaitBrief(std::forward<Func>(func));
   }
 
   /**

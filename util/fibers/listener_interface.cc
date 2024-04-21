@@ -36,7 +36,7 @@ using ListType =
 
 }  // namespace
 
-thread_local ListenerInterface::ListenerConnMap ListenerInterface::conn_list;
+thread_local ListenerInterface::ListenerConnMap ListenerInterface::listener_map;
 
 struct ListenerInterface::TLConnList {
   ListType list;
@@ -83,12 +83,12 @@ void ListenerInterface::TLConnList::Unlink(Connection* c, ListenerInterface* l) 
 }
 
 auto __attribute__((noinline)) ListenerInterface::GetSafeTlsConnMap() -> ListenerConnMap* {
-  // Prevents conn_list being cached when a function being migrated between threads.
+  // Prevents listener_map being cached when a function being migrated between threads.
   // See: https://stackoverflow.com/a/75622732 and also https://godbolt.org/z/acrozfMW8
   // for why we need this.
 
   asm volatile("");
-  return &ListenerInterface::conn_list;
+  return &ListenerInterface::listener_map;
 }
 
 // Runs in a dedicated fiber for each listener.
@@ -103,9 +103,9 @@ void ListenerInterface::RunAcceptLoop() {
 
   PreAcceptLoop(sock_->proactor());
 
-  pool_->Await([this](unsigned index, auto*) {
+  pool_->AwaitBrief([this](unsigned index, auto*) {
     DVLOG(1) << "Emplacing listener " << this;
-    auto res = conn_list.emplace(this, new TLConnList{});
+    auto res = listener_map.emplace(this, new TLConnList{});
     CHECK(res.second);
     res.first->second->pool_index = index;
   });
@@ -134,7 +134,7 @@ void ListenerInterface::RunAcceptLoop() {
 
     VSOCK(2, *peer) << "Accepted " << peer->RemoteEndpoint();
 
-    uint32_t prev_connections = open_connections_.fetch_add(1, std::memory_order_acquire);
+    uint32_t prev_connections = open_connections_.fetch_add(1, memory_order_acquire);
     if (prev_connections >= max_clients_) {
       // In general, we do not handle max client limit correctly for case where we experience
       // connection storms. The reason is that we immediately close the just-accepted socket,
@@ -149,7 +149,7 @@ void ListenerInterface::RunAcceptLoop() {
       peer->SetProactor(sock_->proactor());
       OnMaxConnectionsReached(peer.get());
       (void)peer->Close();
-      open_connections_.fetch_sub(1, std::memory_order_release);
+      open_connections_.fetch_sub(1, memory_order_release);
       continue;
     }
 
@@ -178,8 +178,8 @@ void ListenerInterface::RunAcceptLoop() {
   atomic_uint32_t cur_conn_cnt{0};
 
   pool_->AwaitFiberOnAll([&](auto* pb) {
-    auto it = conn_list.find(this);
-    DCHECK(it != conn_list.end());
+    auto it = listener_map.find(this);
+    DCHECK(it != listener_map.end());
     TLConnList* clist = it->second;
 
     // we iterate over list but Shutdown serves as a preemption point so we must handle the
@@ -204,12 +204,12 @@ void ListenerInterface::RunAcceptLoop() {
           << " connections to close";
 
   pool_->AwaitFiberOnAll([this](auto* pb) {
-    auto it = conn_list.find(this);
-    DCHECK(it != conn_list.end());
+    auto it = listener_map.find(this);
+    DCHECK(it != listener_map.end());
 
     it->second->AwaitEmpty();
     delete it->second;
-    conn_list.erase(this);
+    listener_map.erase(this);
   });
   VLOG(1) << "Listener - " << ep.port() << " connections closed";
 
@@ -268,7 +268,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
     }
   }
   guard.reset();
-  open_connections_.fetch_sub(1, std::memory_order_release);
+  open_connections_.fetch_sub(1, memory_order_release);
 }
 
 void ListenerInterface::InitByAcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr) {
@@ -293,22 +293,33 @@ fb2::ProactorBase* ListenerInterface::PickConnectionProactor(FiberSocketBase* so
 }
 
 void ListenerInterface::TraverseConnections(TraverseCB cb) {
-  pool_->Await([&](unsigned index, auto* pb) { TraverseConnectionsOnThread(cb); });
+  pool_->AwaitFiberOnAll([&](unsigned index, auto* pb) { TraverseConnectionsOnThread(cb); });
 }
 
 void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
   DCHECK(ProactorBase::IsProactorThread());
   unsigned index = ProactorBase::me()->GetPoolIndex();
 
-  auto it = conn_list.find(this);
-  if (it == conn_list.end()) {
+  auto it = listener_map.find(this);
+  if (it == listener_map.end()) {
     return;
   }
 
+  // Unlike with migrations we do not rollback this counter in case of contention.
+  // We wait until all migrations finish before we proceed.
+  uint64_t gate = migrate_traversal_state_.fetch_add(1, memory_order_acquire);
+  while ((gate >> 32)) {
+    ThisFiber::SleepFor(1us);
+    gate = migrate_traversal_state_.load(memory_order_acquire);
+  }
+
+  // From this moment only traversal routines hold the lock.
+  // We demand that
   FiberAtomicGuard fg;
   for (auto& conn : it->second->list) {
     cb(index, &conn);
   }
+  migrate_traversal_state_.fetch_sub(1, memory_order_release);  // release the lock.
 }
 
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
@@ -328,7 +339,23 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   VLOG(1) << "Migrating " << conn << " from " << src_proactor->sys_tid() << "(" << src_index << ") "
           << src_conn_map << " to " << dest->sys_tid();
 
+
+  constexpr uint64_t kTraverseMask = (1ULL << 32) - 1;
+
   conn->OnPreMigrateThread();
+
+  // A very naive barrier competing with traversals.
+  // Tries to grab the lock but if it does not succeed, rollbacks and retries.
+  // Assumes that traversals are not a frequent operation.
+  while (true) {
+    uint64_t gate = migrate_traversal_state_.fetch_add(kMigrateVal, memory_order_acquire);
+    if ((gate & kTraverseMask) == 0)
+      break;
+
+    // rollback, sleep and try again.
+    migrate_traversal_state_.fetch_sub(kMigrateVal, memory_order_release);
+    ThisFiber::SleepFor(1us);
+  }
 
   TLConnList* src_clist = src_conn_map->find(this)->second;
   src_clist->Unlink(conn, this);
@@ -355,6 +382,9 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
     CHECK_EQ(dst_clist->pool_index, dest_index);
     dst_clist->Link(conn);
   }
+
+  // Release the lock.
+  migrate_traversal_state_.fetch_sub(kMigrateVal, memory_order_release);
   conn->OnPostMigrateThread();
 }
 

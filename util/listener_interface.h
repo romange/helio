@@ -63,7 +63,8 @@ class ListenerInterface {
   void TraverseConnections(TraverseCB cb);
 
   // traverses all client connection in current thread. cb must adhere to rules from
-  // `TraverseConnections`;
+  // `TraverseConnections`. Specifically, cb should not fiber block so that the underlying
+  // connection list won't change during the traversal.
   void TraverseConnectionsOnThread(TraverseCB cb);
 
   // Must be called from the connection fiber (that runs HandleRequests() function).
@@ -120,7 +121,7 @@ class ListenerInterface {
 
   static ListenerConnMap* GetSafeTlsConnMap();
 
-  static thread_local ListenerConnMap conn_list;
+  static thread_local ListenerConnMap listener_map;
 
   std::unique_ptr<FiberSocketBase> sock_;
   // Number of max connections. Unlimited by default.
@@ -136,6 +137,19 @@ class ListenerInterface {
   PMR_NS::memory_resource* mr_;
   bool pause_accepting_ = false;
 
+  // we want to prevent from migrations running in parallel to traversals using
+  // the following rules:
+  // 1. Multiple traversals can run in parallel.
+  // 2. Multiple migrations  can run in parallel.
+  // 3. Traversals are not common, therefore to prevent starvation in frequent migration
+  //    scenarios, traversals must be able to proceed.
+  //
+  // We divide this 64 bit integer into 32 high-bit migration counter and 32 low-bit
+  // traversal counter. Any of the parties can progress only if the other is 0.
+  // The code however is not symmetric, see cc file for more details.
+  std::atomic_uint64_t migrate_traversal_state_{0};
+  constexpr static uint64_t kMigrateVal = 1ULL << 32;
+  constexpr static uint64_t kTraverseVal = 1ULL;
   friend class AcceptServer;
 };
 
