@@ -213,9 +213,17 @@ void ProactorBase::Migrate(ProactorBase* dest) {
   me->scheduler()->SuspendAndExecuteOnDispatcher([me, dest] {
     me->DetachScheduler();
 
-    dest->DispatchBrief([me] {
-      me->AttachScheduler();
-    });
+    auto cb = [me] {
+        me->AttachScheduler();
+    };
+
+    // We can not use DispatchBrief because it may block dispatch fiber, which is forbidden.
+    // While this state is theoretically possible but it's very improbable, so we should not reach
+    // usleep in the normal state.
+    while (!dest->EmplaceTaskQueue(cb)) {
+      LOG_FIRST_N(WARNING, 10000) << "Retrying task emplace";
+      usleep(0);
+    };
   });
 }
 
