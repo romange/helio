@@ -73,6 +73,10 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
+    if (buf_pool_.backing) {
+      ::operator delete[](buf_pool_.backing, std::align_val_t(4096));
+    }
+
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
@@ -308,12 +312,28 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
   return SubmitEntry{res};
 }
 
-int UringProactor::RegisterBuffers(const struct iovec *iovecs, unsigned nr_vecs) {
-  return io_uring_register_buffers(&ring_, iovecs, nr_vecs);
+int UringProactor::RegisterBuffers(size_t size) {
+  size = (size + 4096 - 1) / 4096 * 4096;
+  buf_pool_.backing = new (std::align_val_t(4096)) uint8_t[size];
+  buf_pool_.segments.Grow(size / 4096);
+
+  iovec vec{buf_pool_.backing, size};
+  return io_uring_register_buffers(&ring_, &vec, 1);
 }
 
-int UringProactor::UnregisterBuffers() {
-  return io_uring_unregister_buffers(&ring_);
+std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
+  DCHECK(buf_pool_.backing);
+  size = (size + 4096 - 1) / 4096 * 4096;
+  if (auto offset = buf_pool_.segments.Request(size / 4096)) {
+    return UringBuf{{buf_pool_.backing + *offset * 4096, size}, 0};
+  }
+  return std::nullopt;
+}
+
+void UringProactor::ReturnBuffer(UringBuf buf) {
+  DCHECK(buf.buf_idx);
+
+  buf_pool_.segments.Return((buf.bytes.data() - buf_pool_.backing) / 4096);
 }
 
 int UringProactor::RegisterBufferRing(unsigned group_id) {

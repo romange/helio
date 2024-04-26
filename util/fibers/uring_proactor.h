@@ -9,6 +9,7 @@
 
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/submit_entry.h"
+#include "base/segment_pool.h"
 
 namespace util {
 namespace fb2 {
@@ -16,6 +17,12 @@ namespace fb2 {
 namespace detail {
 class Scheduler;
 }
+
+// Aligned buffer that is optionally part of registered buffer (io_uring_register_buffers)
+struct UringBuf {
+  io::MutableBytes bytes;           // buf, nbytes
+  std::optional<unsigned> buf_idx;  // buf_idx
+};
 
 class UringProactor : public ProactorBase {
   UringProactor(const UringProactor&) = delete;
@@ -90,9 +97,17 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
+  // Register buffer with given size and allocate backing, calls io_uring_register_buffers
+  int RegisterBuffers(size_t size);
+
+  // Request buffer of given size, returns none if there's no space left in the backing.
+  // Must be returned with ReturnBuffer
+  std::optional<UringBuf> RequestBuffer(size_t size);
+  void ReturnBuffer(UringBuf buf);
+
   // Wrapper interface around io_uring_(un)register_buffers.
   // Returns 0 on success, -errno on failure.
-  int RegisterBuffers(const struct iovec *iovecs, unsigned nr_vecs);
+  int RegisterBuffers(const struct iovec* iovecs, unsigned nr_vecs);
   int UnregisterBuffers();
 
   // Experimental. should not be called in production.
@@ -132,9 +147,9 @@ class UringProactor : public ProactorBase {
 
   io_uring ring_;
 
-  uint8_t msgring_f_  : 1;
+  uint8_t msgring_f_ : 1;
   uint8_t poll_first_ : 1;
-  uint8_t direct_fd_  : 1;
+  uint8_t direct_fd_ : 1;
   uint8_t buf_ring_f_ : 1;
   uint8_t : 4;
 
@@ -162,6 +177,12 @@ class UringProactor : public ProactorBase {
   };
 
   std::vector<BufRingGroup> bufring_groups_;
+
+  // Keeps track of requested buffers
+  struct {
+    uint8_t* backing = nullptr;
+    base::SegmentPool segments{};
+  } buf_pool_{};
 
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;

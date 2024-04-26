@@ -1,3 +1,7 @@
+// Copyright 2024, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
+//
+
 #include "base/segment_pool.h"
 
 #include <algorithm>
@@ -23,7 +27,12 @@ std::optional<unsigned> SegmentPool::Request(unsigned length) {
 }
 
 void SegmentPool::Return(unsigned offset) {
-  auto it = std::lower_bound(taken_.begin(), taken_.end(), std::make_pair(offset, 0u));
+  auto it = taken_.end();
+
+  if (taken_.front().first == offset)  // fast path
+    it = taken_.begin();
+  else
+    it = std::lower_bound(taken_.begin(), taken_.end(), std::make_pair(offset, 0u));
   DCHECK(it != taken_.end());
 
   it->second = 0;  // clear length

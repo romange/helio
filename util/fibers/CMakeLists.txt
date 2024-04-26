@@ -1,6 +1,6 @@
 if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
   set(FB_LINUX_LIBS TRDP::uring rt) # rt is required for timerfd_create
-  set(FB_LINUX_SRCS uring_proactor.cc uring_socket.cc uring_file.cc uring_buf_pool.cc)
+  set(FB_LINUX_SRCS uring_proactor.cc uring_socket.cc uring_file.cc)
 
   cxx_test(uring_file_test fibers2 LABELS CI)
 endif()
