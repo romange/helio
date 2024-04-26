@@ -20,6 +20,8 @@ class Scheduler;
 
 // Aligned buffer that is optionally part of registered buffer (io_uring_register_buffers)
 struct UringBuf {
+  static constexpr size_t kAlign = 4096;
+
   io::MutableBytes bytes;           // buf, nbytes
   std::optional<unsigned> buf_idx;  // buf_idx
 };

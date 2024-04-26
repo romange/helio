@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 
 #include "base/flags.h"
@@ -75,10 +76,6 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
-    if (buf_pool_.backing) {
-      ::operator delete[](buf_pool_.backing, std::align_val_t(4096));
-    }
-
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
@@ -315,9 +312,15 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
 }
 
 int UringProactor::RegisterBuffers(size_t size) {
-  size = (size + 4096 - 1) / 4096 * 4096;
-  buf_pool_.backing = new (std::align_val_t(4096)) uint8_t[size];
-  buf_pool_.segments.Grow(size / 4096);
+  size = (size + UringBuf::kAlign - 1) / UringBuf::kAlign * UringBuf::kAlign;
+
+  // Use mmap to create the backing. For cleanup we rely just on process termination.
+  void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED)
+    return -errno;
+
+  buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
+  buf_pool_.segments.Grow(size / UringBuf::kAlign);
 
   iovec vec{buf_pool_.backing, size};
   return io_uring_register_buffers(&ring_, &vec, 1);
@@ -325,9 +328,11 @@ int UringProactor::RegisterBuffers(size_t size) {
 
 std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
   DCHECK(buf_pool_.backing);
-  size = (size + 4096 - 1) / 4096 * 4096;
-  if (auto offset = buf_pool_.segments.Request(size / 4096)) {
-    return UringBuf{{buf_pool_.backing + *offset * 4096, size}, 0};
+  // We keep track not of bytes, but 4kb segments and round up
+  size_t segments = (size + UringBuf::kAlign - 1) / UringBuf::kAlign;
+  if (auto offset = buf_pool_.segments.Request(segments)) {
+    uint8_t* ptr = buf_pool_.backing + *offset * UringBuf::kAlign;
+    return UringBuf{{ptr, segments * UringBuf::kAlign}, 0};
   }
   return std::nullopt;
 }
@@ -335,7 +340,8 @@ std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
 void UringProactor::ReturnBuffer(UringBuf buf) {
   DCHECK(buf.buf_idx);
 
-  buf_pool_.segments.Return((buf.bytes.data() - buf_pool_.backing) / 4096);
+  size_t segments = (buf.bytes.data() - buf_pool_.backing) / UringBuf::kAlign;
+  buf_pool_.segments.Return(segments);
 }
 
 int UringProactor::RegisterBufferRing(unsigned group_id) {
