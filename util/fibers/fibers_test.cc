@@ -196,8 +196,7 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3(
-      "test3", [](int i) {}, 1);
+  Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
 }
 
@@ -228,9 +227,7 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber(
-      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
-      .Detach();
+  Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -361,11 +358,10 @@ TEST_F(FiberTest, EventCountMT) {
 }
 
 TEST_F(FiberTest, Future) {
-  Promise<int> p1;
-  Future<int> f1 = p1.get_future();
+  Future<int> fut;
 
-  Fiber fb("fb3", [f1 = std::move(f1)]() mutable { EXPECT_EQ(42, f1.get()); });
-  p1.set_value(42);
+  Fiber fb("fb3", [fut]() mutable { EXPECT_EQ(42, fut.Get()); });
+  fut.Resolve(42);
 
   fb.Join();
 }
@@ -428,14 +424,12 @@ TEST_F(FiberTest, Notify) {
 }
 
 TEST_F(FiberTest, SwitchAndExecute) {
-  Promise<detail::FiberInterface*> first, second;
+  Future<detail::FiberInterface*> first, second;
   unsigned cnt1 = 0, cnt2 = 0;
 
   Fiber fb1("fb1", [&]() mutable {
-    first.set_value(detail::FiberActive());
-    Future<detail::FiberInterface*> f2 = second.get_future();
-
-    detail::FiberInterface* other = f2.get();
+    first.Resolve(detail::FiberActive());
+    detail::FiberInterface* other = second.Get();
     for (unsigned i = 0; i < 10; ++i) {
       other->SwitchToAndExecute([&] { ++cnt1; });
     }
@@ -444,9 +438,8 @@ TEST_F(FiberTest, SwitchAndExecute) {
   });
 
   Fiber fb2("fb2", [&] {
-    second.set_value(detail::FiberActive());
-    Future<detail::FiberInterface*> f1 = first.get_future();
-    detail::FiberInterface* other = f1.get();
+    second.Resolve(detail::FiberActive());
+    detail::FiberInterface* other = first.Get();
 
     for (unsigned i = 0; i < 10; ++i) {
       other->SwitchTo();

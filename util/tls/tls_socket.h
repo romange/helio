@@ -16,11 +16,10 @@ namespace tls {
 
 class Engine;
 
-class TlsSocket : public FiberSocketBase {
+class TlsSocket final : public FiberSocketBase {
  public:
   using Buffer = Engine::Buffer;
   using FiberSocketBase::endpoint_type;
-
 
   TlsSocket(std::unique_ptr<FiberSocketBase> next);
 
@@ -46,6 +45,14 @@ class TlsSocket : public FiberSocketBase {
     return next_sock_->IsOpen();
   }
 
+  void set_timeout(uint32_t msec) final override {
+    next_sock_->set_timeout(msec);
+  }
+
+  uint32_t timeout() const final override {
+    return next_sock_->timeout();
+  }
+
   io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final;
   io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
@@ -57,7 +64,7 @@ class TlsSocket : public FiberSocketBase {
   endpoint_type LocalEndpoint() const override;
   endpoint_type RemoteEndpoint() const override;
 
-  void RegisterOnErrorCb(std::function<void (uint32_t)> cb) override;
+  void RegisterOnErrorCb(std::function<void(uint32_t)> cb) override;
   void CancelOnErrorCb() override;
 
   bool IsUDS() const override;
@@ -90,7 +97,12 @@ class TlsSocket : public FiberSocketBase {
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
 
-  enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2};
+  enum {
+    WRITE_IN_PROGRESS = 1,
+    READ_IN_PROGRESS = 2,
+    SHUTDOWN_IN_PROGRESS = 4,
+    SHUTDOWN_DONE = 8
+  };
   uint8_t state_{0};
 };
 

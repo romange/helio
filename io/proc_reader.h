@@ -13,6 +13,7 @@ struct StatusData {
   size_t vm_peak = 0;
   size_t vm_rss = 0;
   size_t vm_size = 0;
+  size_t vm_swap = 0;
   size_t hugetlb_pages = 0;
 };
 

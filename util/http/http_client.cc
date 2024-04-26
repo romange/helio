@@ -46,6 +46,9 @@ Client::Client(ProactorBase* proactor) : proactor_(proactor) {
 }
 
 Client::~Client() {
+  if (socket_) {
+    socket_->Close();
+  }
 }
 
 std::error_code Client::Connect(string_view host, string_view service) {
@@ -67,7 +70,7 @@ std::error_code Client::Reconnect() {
     socket_.reset();
   }
 
-  char ip[INET_ADDRSTRLEN];
+  char ip[INET6_ADDRSTRLEN];
   error_code ec = fb2::DnsResolve(host_.data(), 2000, ip, proactor_);
   if (ec) {
     return ec;
@@ -120,7 +123,6 @@ void Client::Shutdown() {
   if (socket_) {
     std::error_code ec = socket_->Shutdown(SHUT_RDWR);
     LOG_IF(WARNING, !ec) << "Socket Shutdown failed: " << ec.message();
-    socket_.reset();
   }
 }
 

@@ -120,8 +120,7 @@ std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out
   return status;
 }
 
-bool EmbeddedBlockingCounter::WaitFor(const std::chrono::steady_clock::duration& duration) {
-  auto tp = std::chrono::steady_clock::now() + duration;
+bool EmbeddedBlockingCounter::WaitUntil(const std::chrono::steady_clock::time_point tp) {
   uint64_t cnt;
   std::cv_status status = ec_.await_until(WaitCondition(&cnt), tp);
   return status == std::cv_status::no_timeout && (cnt & kCancelFlag) == 0;

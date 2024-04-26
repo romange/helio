@@ -40,6 +40,8 @@ using detail::SafeErrorMessage;
 
 namespace fb2 {
 
+static_assert(sizeof(FiberCall) == 48);
+
 using detail::FiberInterface;
 
 namespace {
@@ -851,6 +853,8 @@ FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detai
                       uint32_t flags) {
     io_res_ = res;
     res_flags_ = flags;
+    was_run_ = true;
+    DCHECK(me_) << io_res_ << " " << res_flags_;
     ActivateSameThread(current, me_);
   };
 
@@ -862,17 +866,34 @@ FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detai
   if (timeout_msec != UINT32_MAX) {
     se_.sqe()->flags |= IOSQE_IO_LINK;
 
-    tm_ = proactor->GetSubmitEntry(nullptr, kTimeoutSubmitTag);
+    SubmitEntry tm = proactor->GetSubmitEntry(nullptr, kTimeoutSubmitTag);
 
     // We must keep ts_ as member function so it could be accessed after this function scope.
     ts_.tv_sec = (timeout_msec / 1000);
     ts_.tv_nsec = (timeout_msec % 1000) * 1000000;
-    tm_.PrepLinkTimeout(&ts_);  // relative timeout.
+    tm.PrepLinkTimeout(&ts_);  // relative timeout.
   }
 }
 
 FiberCall::~FiberCall() {
   CHECK(!me_) << "Get was not called!";
+}
+
+auto FiberCall::Get() -> IoResult {
+  // In most cases our fibers wait on exactly one io_uring event, specifically the one that
+  // was issued by this fiber call. However, it is possible and in fact in some cases we do that
+  // that we issue asynchronously an io_uring request A (could be any call supported by io_uring)
+  // and then issue another request B via FiberCall. Once completion A is being fullfilled, it may
+  // wake this suspended fiber via its completion callback. In that case this fiber will wake up
+  // even though the waker of this call was not run yet.
+  // To avoid this, we suspend until we make sure our own waker runs.
+  do {
+    me_->Suspend();
+    LOG_IF(DFATAL, !was_run_) << "Woken up by the wrong notifier";
+  } while (!was_run_);
+  me_ = nullptr;
+
+  return io_res_;
 }
 
 }  // namespace fb2

@@ -56,6 +56,8 @@ Engine::~Engine() {
 
   ::BIO_free(external_bio_);
   ::SSL_free(ssl_);
+  external_bio_ = nullptr;
+  ssl_ = nullptr;
 }
 
 auto Engine::ToOpResult(const SSL* ssl, int result) -> Engine::OpResult {
@@ -70,15 +72,31 @@ auto Engine::ToOpResult(const SSL* ssl, int result) -> Engine::OpResult {
 
   if (want == SSL_NOTHING) {
     int ssl_error = SSL_get_error(ssl, result);
-    if (ssl_error == SSL_ERROR_ZERO_RETURN)
-      return EOF_STREAM;
-    LOG(FATAL) << "Unexpected error " << ssl_error;
+    int io_err = errno;
+
+    switch (ssl_error) {
+      case SSL_ERROR_ZERO_RETURN:
+        break;
+      case SSL_ERROR_SYSCALL:
+        LOG(WARNING) << "SSL syscall error " << io_err << ":" << result;
+        break;
+      case SSL_ERROR_SSL:
+        LOG(WARNING) << "SSL protocol error " << io_err << ":" << result;
+        break;
+      default:
+        LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result;
+        break;
+    }
+
+    return EOF_STREAM;
   }
+
   if (SSL_WRITING == want)
     return Engine::NEED_WRITE;
-  else if (SSL_READING == want)
+  if (SSL_READING == want)
     return Engine::NEED_READ_AND_MAYBE_WRITE;
-  LOG(FATAL) << "Unsupported want value " << want;
+
+  LOG(ERROR) << "Unsupported want value " << want << ", ssl_error: " << SSL_get_error(ssl, result);
 
   return EOF_STREAM;
 }
@@ -117,6 +135,7 @@ auto Engine::PeekOutputBuf() -> BufResult {
 
 void Engine::ConsumeOutputBuf(unsigned sz) {
   int res = BIO_nread(external_bio_, NULL, sz);
+
   if (res <= 0) {
     unsigned long error = ::ERR_get_error();
     char buf[256];
@@ -189,7 +208,6 @@ auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
 
   RETURN_RESULT(result);
 }
-
 
 // returns -1 if failed to load any CA certificates, 0 if loaded successfully
 int SslProbeSetDefaultCALocation(SSL_CTX* ctx) {

@@ -254,7 +254,7 @@ io::Result<boost::asio::ip::address> HttpClient::Resolve(const std::string& host
                                                          ProactorBase* proactor) const {
   VLOG(1) << "aws: http client: resolving host; host=" << host;
 
-  char ip[INET_ADDRSTRLEN];
+  char ip[INET6_ADDRSTRLEN];
   std::error_code ec = fb2::DnsResolve(host.data(), client_conf_.connectTimeoutMs, ip, proactor);
   if (ec) {
     LOG(WARNING) << "aws: http client: failed to resolve host; host=" << host << "; error=" << ec;

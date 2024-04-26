@@ -10,6 +10,7 @@
 
 #include "base/logging.h"
 #include "util/tls/tls_engine.h"
+#include "util/fibers/fibers.h"
 
 namespace util {
 namespace tls {
@@ -66,6 +67,8 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 }
 
 TlsSocket::~TlsSocket() {
+  // sanity check that all pending ops are done.
+  DCHECK_EQ(state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS), 0);
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
@@ -80,6 +83,11 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
+  if (state_ & (SHUTDOWN_DONE | SHUTDOWN_IN_PROGRESS)) {
+    return {};
+  }
+
+  state_ |= SHUTDOWN_IN_PROGRESS;
   Engine::OpResult op_result = engine_->Shutdown();
   if (op_result) {
     // engine_ could send notification messages to the peer.
@@ -87,8 +95,19 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   }
 
   // In any case we should also shutdown the underlying TCP socket without relying on the
-  // the peer.
-  return next_sock_->Shutdown(how);
+  // the peer. It could be that when we are in the middle of MaybeSendOutput, and
+  // the other fiber calls Close() on this socket. In this case next_sock_ will be closed
+  // by the time we reach this line, so we omit calling Shutdown().
+  // It's not the best behavior, but it's also not disastrous either, because
+  // such interaction happens only during the server shutdown.
+  error_code res;
+  if (next_sock_->IsOpen()) {
+    res = next_sock_->Shutdown(how);
+  }
+  state_ |= SHUTDOWN_DONE;
+  state_ &= ~SHUTDOWN_IN_PROGRESS;
+
+  return res;
 }
 
 auto TlsSocket::Accept() -> AcceptResult {
@@ -324,7 +343,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
     // Safe to clear here since the code below is atomic fiber-wise.
     state_ &= ~WRITE_IN_PROGRESS;
-
+    DCHECK(engine_);
     if (!write_result) {
       return write_result.error();
     }

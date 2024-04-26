@@ -134,7 +134,8 @@ void ProactorPool::CheckRunningState() {
 void ProactorPool::Run() {
   SetupProactors();
 
-  Await([](unsigned index, ProactorBase* proactor) {
+  // TODO: to remove this code.
+  AwaitBrief([](unsigned index, ProactorBase* proactor) {
   // It seems to simplify things in kernel for io_uring.
   // https://github.com/axboe/liburing/issues/218
   // I am not sure what's how it impacts higher application levels.

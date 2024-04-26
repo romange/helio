@@ -51,17 +51,7 @@ class WaitQueue {
     wait_list_.erase(it);
   }
 
-  bool NotifyOne(FiberInterface* active) {
-    if (wait_list_.empty())
-      return false;
-
-    Waiter* waiter = &wait_list_.front();
-    wait_list_.pop_front();
-    NotifyImpl(waiter->cntx(), active);
-
-    return true;
-  }
-
+  bool NotifyOne(FiberInterface* active);
   void NotifyAll(FiberInterface* active);
 
  private:
