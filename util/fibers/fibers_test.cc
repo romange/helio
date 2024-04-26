@@ -401,6 +401,15 @@ TEST_F(FiberTest, RegisteredBuffers) {
     EXPECT_TRUE(borrowed.has_value());
     EXPECT_EQ(*borrowed->buf_idx, 0u);
     EXPECT_EQ(borrowed->bytes.size(), 3 * 4096);
+
+    char test_string[] = "SOME SIMPLE TEST DATA TO CHECK PAGE VALIDITY";
+    memcpy(borrowed->bytes.data(), test_string, sizeof(test_string));
+
+    // Not enough space until we return our previous one
+    EXPECT_FALSE(up->RequestBuffer(12 * 4096).has_value());
+  
+    up->ReturnBuffer(*borrowed);
+    EXPECT_TRUE(up->RequestBuffer(12 * 4096).has_value());
   });
 }
 
