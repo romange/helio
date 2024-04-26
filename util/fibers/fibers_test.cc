@@ -196,7 +196,8 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3("test3", [](int i) {}, 1);
+  Fiber fb3(
+      "test3", [](int i) {}, 1);
   fb3.Join();
 }
 
@@ -227,7 +228,9 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
+  Fiber(
+      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
+      .Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -386,6 +389,19 @@ TEST_F(FiberTest, AsyncEvent) {
 
   LOG(INFO) << "DispatchBrief";
   done.Wait();
+}
+
+TEST_F(FiberTest, RegisteredBuffers) {
+  ProactorThread pth(0, ProactorBase::IOURING);
+  pth.get()->DispatchBrief([&] {
+    UringProactor* up = static_cast<UringProactor*>(pth.proactor.get());
+    EXPECT_EQ(up->RegisterBuffers(12 * 4096), 0);
+
+    auto borrowed = up->RequestBuffer(3 * 4096 - 1);
+    EXPECT_TRUE(borrowed.has_value());
+    EXPECT_EQ(*borrowed->buf_idx, 0u);
+    EXPECT_EQ(borrowed->bytes.size(), 3 * 4096);
+  });
 }
 
 #if 0
