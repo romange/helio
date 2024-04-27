@@ -1,5 +1,5 @@
 add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
-    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc)
+    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
 
 # atomic is not present on Fedora. I suspect it's not needed on ubuntu as well
 # removing it for now.

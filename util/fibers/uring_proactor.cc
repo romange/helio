@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <sys/syscall.h>
 
 #include "base/flags.h"
@@ -75,6 +76,11 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
+    if (buf_pool_.backing) {
+      munmap(buf_pool_.backing, buf_pool_.segments.Size() * UringBuf::kAlign);
+      io_uring_unregister_buffers(&ring_);
+    }
+
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
@@ -310,12 +316,37 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
   return SubmitEntry{res};
 }
 
-int UringProactor::RegisterBuffers(const struct iovec* iovecs, unsigned nr_vecs) {
-  return io_uring_register_buffers(&ring_, iovecs, nr_vecs);
+int UringProactor::RegisterBuffers(size_t size) {
+  size = (size + UringBuf::kAlign - 1) / UringBuf::kAlign * UringBuf::kAlign;
+
+  // Use mmap to create the backing
+  void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED)
+    return -errno;
+
+  buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
+  buf_pool_.segments.Grow(size / UringBuf::kAlign);
+
+  iovec vec{buf_pool_.backing, size};
+  return io_uring_register_buffers(&ring_, &vec, 1);
 }
 
-int UringProactor::UnregisterBuffers() {
-  return io_uring_unregister_buffers(&ring_);
+std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
+  DCHECK(buf_pool_.backing);
+  // We keep track not of bytes, but 4kb segments and round up
+  size_t segments = (size + UringBuf::kAlign - 1) / UringBuf::kAlign;
+  if (auto offset = buf_pool_.segments.Request(segments)) {
+    uint8_t* ptr = buf_pool_.backing + *offset * UringBuf::kAlign;
+    return UringBuf{{ptr, segments * UringBuf::kAlign}, 0};
+  }
+  return std::nullopt;
+}
+
+void UringProactor::ReturnBuffer(UringBuf buf) {
+  DCHECK(buf.buf_idx);
+
+  size_t segments = (buf.bytes.data() - buf_pool_.backing) / UringBuf::kAlign;
+  buf_pool_.segments.Return(segments);
 }
 
 int UringProactor::RegisterBufferRing(unsigned group_id) {
