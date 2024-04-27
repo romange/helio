@@ -76,6 +76,11 @@ UringProactor::UringProactor() : ProactorBase() {
 UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
+    if (buf_pool_.backing) {
+      munmap(buf_pool_.backing, buf_pool_.segments.Size() * UringBuf::kAlign);
+      io_uring_unregister_buffers(&ring_);
+    }
+
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
@@ -314,7 +319,7 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
 int UringProactor::RegisterBuffers(size_t size) {
   size = (size + UringBuf::kAlign - 1) / UringBuf::kAlign * UringBuf::kAlign;
 
-  // Use mmap to create the backing. For cleanup we rely just on process termination.
+  // Use mmap to create the backing
   void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (ptr == MAP_FAILED)
     return -errno;
