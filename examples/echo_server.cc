@@ -8,6 +8,7 @@
 
 // clang-format on
 
+#include <absl/strings/str_cat.h>
 #include <boost/asio/read.hpp>
 
 #include "base/histogram.h"

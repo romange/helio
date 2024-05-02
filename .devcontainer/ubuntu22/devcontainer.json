@@ -8,7 +8,18 @@
 				"ms-vscode.cmake-tools",
 				"ms-vscode.cpptools-themes",
 				"twxs.cmake"
-			]
+			],
+			"settings": {
+				"cmake.buildDirectory": "/build",
+				"extensions.ignoreRecommendations": true,
+				"cmake.configureArgs": [
+					"-DUSE_MOLD=ON"
+				]
+			}
 		}
-	}
+	},
+	"mounts": [
+		"source=ubuntu22-vol,target=/build,type=volume"
+	],
+	"postCreateCommand": ".devcontainer/post-create.sh ${containerWorkspaceFolder}"
 }

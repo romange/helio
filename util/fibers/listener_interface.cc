@@ -128,7 +128,7 @@ void ListenerInterface::RunAcceptLoop() {
       // where many clients try to reconnect again and again, causing a pressure on the host's
       // firewall. Must be enabled only in special cases.
       peer->SetProactor(sock_->proactor());
-      peer->Close();
+      std::ignore = peer->Close();
       continue;
     }
 
@@ -245,7 +245,7 @@ void ListenerInterface::RunSingleConnection(Connection* conn) {
 
   VSOCK(1, *conn) << "Closing connection";
   // Shut down connections in orderly fashion by telling the peer that we are done.
-  conn->socket()->Shutdown(SHUT_RDWR);
+  std::ignore = conn->socket()->Shutdown(SHUT_RDWR);
   LOG_IF(ERROR, conn->socket()->Close());
 
   // If connection was migrated into a listener that was destroyed

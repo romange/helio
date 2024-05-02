@@ -156,7 +156,7 @@ endfunction()
 
 FetchContent_Declare(
   gtest
-  URL https://github.com/google/googletest/archive/v1.13.0.tar.gz
+  URL https://github.com/google/googletest/archive/v1.14.0.tar.gz
 )
 
 FetchContent_GetProperties(gtest)
@@ -185,10 +185,8 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20230802.1.tar.gz
-  # GIT_REPOSITORY https://github.com/abseil/abseil-cpp
-  # GIT_TAG 20230802.1
-  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20230802.1.patch"
+  URL https://github.com/abseil/abseil-cpp/archive/20240116.2.tar.gz
+  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20240116.2.patch"
 )
 
 FetchContent_GetProperties(abseil_cpp)
@@ -265,18 +263,18 @@ endif()
 
 add_third_party(
   gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.13.tar.gz
+  URL https://github.com/gperftools/gperftools/archive/gperftools-2.15.tar.gz
 
   # GIT_SHALLOW TRUE
   PATCH_COMMAND autoreconf -i   # update runs every time for some reason
   # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
   #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
   #                  -Dgperftools_build_benchmark=OFF"
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers --enable-static=yes
-                     "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}"
+  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers
+                     "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}" CPPFLAGS=-I<SOURCE_DIR>
                      --disable-heap-checker --disable-debugalloc --disable-heap-profiler
-                     --disable-deprecated-pprof --enable-aggressive-decommit-by-default
-                     --disable-dependency-tracking --disable-shared --enable-static
+                     --disable-deprecated-pprof --disable-dependency-tracking
+                     --disable-shared --enable-static
                      --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
                      MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
   BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
@@ -319,7 +317,7 @@ add_third_party(jemalloc
 
 add_third_party(
   xxhash
-  URL https://github.com/Cyan4973/xxHash/archive/v0.8.1.tar.gz
+  URL https://github.com/Cyan4973/xxHash/archive/v0.8.2.tar.gz
 
   # A bug in xxhash 0.8.1 that searches for a file that doesn't exist
   PATCH_COMMAND touch <SOURCE_DIR>/xxhsum.1
@@ -330,7 +328,7 @@ add_third_party(
 
 add_third_party(
   uring
-  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.5.tar.gz
+  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.6.tar.gz
 
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_COMMAND make -C src
@@ -365,7 +363,7 @@ add_third_party(
 
 add_third_party(
   cares
-  URL https://c-ares.org/download/c-ares-1.19.0.tar.gz
+  URL https://c-ares.org/download/c-ares-1.28.1.tar.gz
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
