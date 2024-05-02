@@ -3,6 +3,7 @@
 
 #include "util/aws/http_client.h"
 
+#include <absl/strings/numbers.h>
 #include <aws/core/http/HttpRequest.h>
 #include <aws/core/http/HttpResponse.h>
 #include <aws/core/http/standard/StandardHttpResponse.h>

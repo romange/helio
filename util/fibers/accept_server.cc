@@ -6,6 +6,7 @@
 
 #include <signal.h>
 
+#include <absl/strings/numbers.h>
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
 #include "util/listener_interface.h"

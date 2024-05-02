@@ -22,5 +22,5 @@
   "mounts": [
     "source=ubuntu24-vol,target=/build,type=volume"
   ],
-  "postCreateCommand": ".devcontainer/ubuntu24/post-create.sh ${containerWorkspaceFolder}"
+  "postCreateCommand": ".devcontainer/post-create.sh ${containerWorkspaceFolder}"
 }

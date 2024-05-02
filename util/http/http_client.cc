@@ -47,7 +47,7 @@ Client::Client(ProactorBase* proactor) : proactor_(proactor) {
 
 Client::~Client() {
   if (socket_) {
-    socket_->Close();
+    std::ignore = socket_->Close();
   }
 }
 

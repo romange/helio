@@ -8,10 +8,16 @@
 				"ms-vscode.cmake-tools",
 				"ms-vscode.cpptools-themes",
 				"twxs.cmake"
-			]
+			],
+			"settings": {
+				"cmake.buildDirectory": "/build",
+				"extensions.ignoreRecommendations": true,
+				"cmake.configureArgs": []
+			}
 		}
 	},
 	"mounts": [
-        "source=alpine-vol,target=/root,type=volume"
-    ]
+		"source=alpine-vol,target=/build,type=volume"
+	],
+	"postCreateCommand": ".devcontainer/post-create.sh ${containerWorkspaceFolder}"
 }
