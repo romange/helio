@@ -10,8 +10,8 @@
 
 #ifdef __linux__
 #include <sys/epoll.h>
-#include <sys/timerfd.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #endif
 
 #include "base/logging.h"
@@ -182,14 +182,12 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
   EventsBatch ev_batch;
   uint32_t tq_seq = 0;
-  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_suspends = 0;
-  uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
-  uint32_t cqe_count = 0;
+  uint32_t spin_loops = 0;
+
   Tasklet task;
 
   while (true) {
-    ++loop_cnt;
-    num_task_runs = 0;
+    ++stats_.loop_cnt;
     bool task_queue_exhausted = true;
 
     tq_seq = tq_seq_.load(memory_order_acquire);
@@ -202,11 +200,11 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       tl_info_.monotonic_time = task_start;
       do {
         task();
-        ++num_task_runs;
+        ++stats_.num_task_runs;
         ++cnt;
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
-          ++task_interrupts;
+          ++stats_.task_interrupts;
           task_queue_exhausted = false;
           break;
         }
@@ -219,8 +217,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         }
       } while (task_queue_.try_dequeue(task));
 
-      num_task_runs += cnt;
-      DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
+      stats_.num_task_runs += cnt;
+      DVLOG(2) << "Tasks runs " << stats_.num_task_runs << "/" << spin_loops;
 
       // We notify at the end that the queue is not full.
       // Tested by ProactorTest.AsyncCall.
@@ -246,7 +244,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         // stopping EpollProactor.
         if (is_stopped_)
           break;
-        ++num_stalls;
+        ++stats_.num_stalls;
         timeout = -1;  // We gonna block on epoll_wait.
       }
     }
@@ -260,7 +258,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
         // epoll_wait() uses millisecond precision. If we block for less than the precise deadline,
         // we cause unnesessary spinning and an elevated CPU usage. Therefore, we round up.
-        timeout = (ns + 1000'000 - 1)/ 1000'000;
+        timeout = (ns + 1000'000 - 1) / 1000'000;
       } else {
         timeout = 0;
       }
@@ -275,9 +273,9 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     }
     tq_seq_.store(0, std::memory_order_release);
 
-    cqe_count = epoll_res;
+    uint32_t cqe_count = epoll_res;
     if (cqe_count) {
-      ++cqe_fetches;
+      ++stats_.completions_fetches;
       tl_info_.monotonic_time = GetClockNanos();
 
       while (true) {
@@ -292,6 +290,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
           break;
         }
         cqe_count = epoll_res;
+        ++stats_.completions_fetches;
       };
     }
 
@@ -323,11 +322,10 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     ++spin_loops;
   }
 
-  VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << loop_cnt << "/" << num_stalls << "/"
-          << cqe_fetches << "/" << num_suspends;
+  VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << stats_.loop_cnt << "/"
+          << stats_.num_stalls << "/" << stats_.completions_fetches << "/" << stats_.num_suspends;
 
-  VPRO(1) << "wakeups/stalls/task_int: " << tq_wakeup_ev_.load() << "/" << num_stalls << "/"
-          << task_interrupts;
+  VPRO(1) << "wakeups/stalls/task_int: " << tq_wakeup_ev_.load() << "/" << stats_.task_interrupts;
   VPRO(1) << "centries size: " << centries_.size();
 }
 
@@ -446,19 +444,6 @@ void EpollProactor::WakeRing() {
   tq_wakeup_ev_.fetch_add(1, memory_order_relaxed);
 
 #ifdef __linux__
-  /**
-   * It's tempting to use io_uring_prep_nop() here in order to resume wait_cqe() call.
-   * However, it's not that staightforward. io_uring_get_sqe and io_uring_submit
-   * are not thread-safe and this function is called from another thread.
-   * Even though tq_seq_ == WAIT_SECTION_STATE ensured that Proactor thread
-   * is going to stall we can not guarantee that it will not wake up before we reach the next line.
-   * In that case, Proactor loop will continue and both threads could call
-   * io_uring_get_sqe and io_uring_submit at the same time. This will cause data-races.
-   * It's possible to fix this by guarding with spinlock the section below as well as
-   * the section after the wait_cqe() call but I think it's overcomplicated and not worth it.
-   * Therefore we gonna stick with event_fd descriptor to wake up Proactor thread.
-   */
-
   uint64_t val = 1;
   CHECK_EQ(8, write(wake_fd_, &val, sizeof(uint64_t)));
 #else

@@ -598,9 +598,8 @@ LinuxSocketBase* UringProactor::CreateSocket() {
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   struct io_uring_cqe* cqes[kCqeBatchLen];
 
-  uint64_t num_stalls = 0, cqe_fetches = 0, loop_cnt = 0, num_submits = 0;
   uint32_t tq_seq = 0;
-  uint32_t spin_loops = 0, num_task_runs = 0, task_interrupts = 0;
+  uint32_t spin_loops = 0;
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
 
@@ -620,7 +619,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   // 6. ProcessSleep and ProcessRemoteReady may introduce ready fibers.
 
   while (true) {
-    ++loop_cnt;
+    ++stats_.loop_cnt;
     bool has_cpu_work = false;
 
     // io_uring_submit should be more performant in some case than io_uring_submit_and_get_events
@@ -633,7 +632,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool ring_busy = false;
 
     if (num_submitted >= 0) {
-      num_submits += (num_submitted != 0);
+      stats_.uring_submit_calls += (num_submitted != 0);
       if (num_submitted) {
         DVLOG(3) << "Submitted " << num_submitted;
       }
@@ -659,17 +658,17 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       tl_info_.monotonic_time = task_start;
       do {
         task();
-        ++num_task_runs;
+        ++stats_.num_task_runs;
         ++cnt;
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
-          ++task_interrupts;
+          ++stats_.task_interrupts;
           has_cpu_work = true;
           break;
         }
       } while (task_queue_.try_dequeue(task));
-      num_task_runs += cnt;
-      DVLOG(2) << "Tasks runs " << num_task_runs << "/" << spin_loops;
+      stats_.num_task_runs += cnt;
+      DVLOG(2) << "Tasks runs " << stats_.num_task_runs << "/" << spin_loops;
 
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
@@ -704,7 +703,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
     uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
     if (cqe_count) {
-      ++cqe_fetches;
+      ++stats_.completions_fetches;
 
       // cqe tail (ring->cq.ktail) can be updated asynchronously by the kernel even if we
       // do now execute any syscalls. Therefore we count how many completions we handled
@@ -783,23 +782,24 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       DCHECK(!scheduler->HasReady());
 
-      VPRO(2) << "wait_for_cqe " << loop_cnt;
+      VPRO(2) << "wait_for_cqe " << stats_.loop_cnt;
 
       wait_for_cqe(&ring_, 1, ts_arg);
       VPRO(2) << "Woke up after wait_for_cqe ";
 
-      ++num_stalls;
+      ++stats_.num_stalls;
       tq_seq = 0;
       tq_seq_.store(0, std::memory_order_release);
     }
   }
 
-  VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << loop_cnt << "/" << num_stalls << "/"
-          << cqe_fetches << "/" << num_submits;
-  if (cqe_fetches > 0)
-    VPRO(1) << "AvgCqe/ReapCall: " << double(reaped_cqe_cnt_) / cqe_fetches;
+  VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << stats_.loop_cnt << "/" << stats_.num_stalls
+          << "/" << stats_.completions_fetches << "/" << stats_.uring_submit_calls;
+  if (stats_.completions_fetches > 0)
+    VPRO(1) << "AvgCqe/ReapCall: " << double(reaped_cqe_cnt_) / stats_.completions_fetches;
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
-          << tq_wakeup_prevent_ev_.load() << "/" << tq_full_ev_.load() << "/" << task_interrupts;
+          << tq_wakeup_skipped_ev_.load() << "/" << tq_full_ev_.load() << "/"
+          << stats_.task_interrupts;
   VPRO(1) << "busy_sq/get_entry_sq_full/get_entry_sq_err/get_entry_awaits/pending_callbacks: "
           << busy_sq_cnt << "/" << get_entry_sq_full_ << "/" << get_entry_await_ << "/"
           << pending_cb_cnt_;
