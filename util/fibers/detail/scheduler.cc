@@ -245,12 +245,14 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // a spinlock when pulling it from the WaitQueue. However, there are ActivateOther calls
     // that happen due to I/O events that might break this assumption. To see if this happens,
     // I log the case and will investigate if it happens.
-    LOG(ERROR) << "Fiber " << cntx->name() << " is already scheduled remotely";
+    LOG(DFATAL) << "Fiber " << cntx->name() << " is already scheduled remotely";
 
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
   } else {
+    cntx->DEBUG_remote_epoch = remote_epoch_.fetch_add(1, memory_order_relaxed);
     remote_ready_queue_.Push(cntx);
+
 
     // clear the bit after we pushed to the queue.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
@@ -320,7 +322,9 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
-  [[maybe_unused]] unsigned iteration = 0;
+  unsigned iteration = 0;
+  uint64_t epoch = active ? remote_epoch_.load(memory_order_relaxed) : 0;
+
   while (true) {
     auto [fi, qempty] = remote_ready_queue_.PopWeak();
     if (!fi) {
@@ -328,14 +332,13 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
         if (active && !res) {
           // UB state. Try to recover.
           FiberInterface* next = active->remote_next_.load(std::memory_order_acquire);
+          bool qempty = remote_ready_queue_.Empty();
           LOG(ERROR) << "Failed to pull active fiber from remote_ready_queue, iteration "
-                     << iteration << " remote_empty: " << remote_ready_queue_.Empty()
+                     << iteration << " remote_empty: " << qempty << ", current_epoch: " << epoch
+                     << ", push_epoch: " << active->DEBUG_remote_epoch
                      << ", next:" << (uint64_t)next;
 
           if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
-            LOG_IF(ERROR, next != nullptr)
-                << "Next fiber next is: " << next->remote_next_.load(std::memory_order_acquire)
-                << ", usecount: " << next->use_count_.load(std::memory_order_relaxed);
             if (iteration < 100) {
               // Work around the inconsistency by retrying.
               ++iteration;
@@ -353,6 +356,7 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
+    fi->DEBUG_remote_epoch = 0;
 
     DVLOG(2) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 

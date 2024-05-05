@@ -132,6 +132,7 @@ class Scheduler {
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
+  std::atomic_uint64_t remote_epoch_{0};
 
   // A list of all fibers in the thread.
   FI_List fibers_;

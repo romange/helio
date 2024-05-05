@@ -8,7 +8,7 @@
 #include <condition_variable>  // for cv_status
 
 #include "base/spinlock.h"
-#include "util/fibers/detail/scheduler.h"
+#include "util/fibers/detail/fiber_interface.h"
 
 namespace util {
 namespace fb2 {
