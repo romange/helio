@@ -70,6 +70,8 @@ string MyUserName() {
   return str ? str : string("unknown-user");
 }
 
+#if USE_ABSL_LOG
+#else
 void ConsoleLogSink::send(google::LogSeverity severity, const char* full_filename,
                           const char* base_filename, int line, const struct ::tm* tm_time,
                           const char* message, size_t message_len) {
@@ -81,6 +83,7 @@ ConsoleLogSink* ConsoleLogSink::instance() {
   static ConsoleLogSink sink;
   return &sink;
 }
+#endif
 
 const char* kProgramName = "";
 
