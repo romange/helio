@@ -19,8 +19,7 @@
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
-// TODO: to fix the bug when running dragonfly regtests on 6.2.
-ABSL_FLAG(bool, enable_direct_fd, false, "If true tries to register file descriptors");
+ABSL_FLAG(bool, enable_direct_fd, true, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                        \
   do {                                                                        \
@@ -89,6 +88,9 @@ UringProactor::~UringProactor() {
       }
     }
 
+    if (direct_fd_) {
+      io_uring_unregister_files(&ring_);
+    }
     io_uring_queue_exit(&ring_);
   }
   VLOG(1) << "Closing wake_fd " << wake_fd_ << " ring fd: " << ring_.ring_fd;
@@ -104,7 +106,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   base::sys::KernelVersion kver;
   base::sys::GetKernelVersion(&kver);
 
-  CHECK(kver.kernel > 5 || (kver.kernel = 5 && kver.major >= 8))
+  CHECK(kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 8))
       << "Versions 5.8 or higher are supported";
 
   io_uring_params params;

@@ -89,12 +89,14 @@ error_code CloseFile(int fd, Proactor* p) {
 }
 
 io::Result<size_t> WriteSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                     unsigned flags, Proactor* p) {
+                                     unsigned flags, bool direct, Proactor* p) {
   CHECK_GE(fd, 0);
   CHECK_GT(iovcnt, 0u);
 
   FiberCall fc(p);
   fc->PrepWriteV(fd, iov, iovcnt, offset, flags);
+  if (direct)
+    fc->sqe()->flags |= IOSQE_FIXED_FILE;
   FiberCall::IoResult io_res = fc.Get();
   if (io_res < 0) {
     return make_unexpected(error_code{-io_res, system_category()});
@@ -103,12 +105,15 @@ io::Result<size_t> WriteSomeInternal(int fd, const struct iovec* iov, unsigned i
 }
 
 io::Result<size_t> ReadSomeInternal(int fd, const struct iovec* iov, unsigned iovcnt, off_t offset,
-                                    unsigned flags, Proactor* p) {
+                                    unsigned flags, bool direct, Proactor* p) {
   CHECK_GE(fd, 0);
   CHECK_GT(iovcnt, 0u);
 
   FiberCall fc(p);
   fc->PrepReadV(fd, iov, iovcnt, offset, flags);
+  if (direct)
+    fc->sqe()->flags |= IOSQE_FIXED_FILE;
+
   FiberCall::IoResult io_res = fc.Get();
   if (io_res < 0) {
     return make_unexpected(error_code{-io_res, system_category()});
@@ -163,7 +168,7 @@ io::SizeOrError ReadFileImpl::Read(size_t offset, const iovec* v, uint32_t len) 
   ssize_t read_total = 0;
 
   do {
-    io::SizeOrError res = ReadSomeInternal(fd_, v, len, offset + read_total, 0, proactor_);
+    io::SizeOrError res = ReadSomeInternal(fd_, v, len, offset + read_total, 0, false, proactor_);
 
     if (!res)
       return res;
@@ -230,7 +235,7 @@ error_code WriteFileImpl::Close() {
 }
 
 Result<size_t> WriteFileImpl::WriteSome(const iovec* v, uint32_t len) {
-  Result<size_t> res = WriteSomeInternal(fd_, v, len, -1, 0, proactor_);
+  Result<size_t> res = WriteSomeInternal(fd_, v, len, -1, 0, false, proactor_);
   return res;
 }
 
@@ -297,30 +302,58 @@ io::Result<io::ReadonlyFile*> OpenRead(std::string_view path) {
   return new ReadFileImpl(fd, sb.st_size, p);
 }
 
-LinuxFile::LinuxFile(int fd, Proactor* proactor) : fd_(fd), proactor_(proactor) {
+LinuxFile::LinuxFile(int fd, Proactor* proactor) : fd_(fd), flags_(0), proactor_(proactor) {
+  DCHECK_GE(fd, 0);
+  DCHECK(proactor);
+
+  if (proactor->HasDirectFD()) {
+    unsigned direct_fd = proactor->RegisterFd(fd);
+    if (direct_fd != UringProactor::kInvalidDirectFd) {
+      fd_ = direct_fd;
+      is_direct_ = 1;
+    }
+  }
 }
 
 LinuxFile::~LinuxFile() {
-  CloseFile(fd_, proactor_);
+  error_code ec = Close();
+  if (ec) {
+    LOG(WARNING) << "Error closing file " << ec;
+  }
 }
 
 // Corresponds to pwritev2 interface. Has suffix Some because it does not guarantee the full
 // write in case of a successful operation.
 io::Result<size_t> LinuxFile::WriteSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
                                         unsigned flags) {
-  return WriteSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
+  return WriteSomeInternal(fd_, iov, iovcnt, offset, flags, is_direct_, proactor_);
 }
 
 // Corresponds to preadv2 interface.
 io::Result<size_t> LinuxFile::ReadSome(const struct iovec* iov, unsigned iovcnt, off_t offset,
                                        unsigned flags) {
-  return ReadSomeInternal(fd_, iov, iovcnt, offset, flags, proactor_);
+  return ReadSomeInternal(fd_, iov, iovcnt, offset, flags, is_direct_, proactor_);
 }
 
 std::error_code LinuxFile::Close() {
-  error_code ec = CloseFile(fd_, proactor_);
+  if (fd_ < 0)
+    return {};
+
+  int fd = fd_;
+  if (is_direct_) {
+    fd = proactor_->UnregisterFd(fd_);
+    if (fd < 0) {
+      LOG(WARNING) << "Error unregistering fd " << fd_;
+      return {};
+    }
+    is_direct_ = 0;
+  }
   fd_ = -1;
-  return ec;
+  return CloseFile(fd, proactor_);
+}
+
+int LinuxFile::GetFd() const {
+  return is_direct_ ? proactor_->TranslateDirectFd(fd_) : fd_;
 }
 
 std::error_code LinuxFile::ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index) {
@@ -367,6 +400,8 @@ void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
   se.PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
+  if (is_direct_)
+    se.sqe()->flags |= IOSQE_FIXED_FILE;
 }
 
 void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
@@ -375,6 +410,27 @@ void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
   se.PrepRead(fd_, dest.data(), dest.size(), offset);
+  if (is_direct_)
+    se.sqe()->flags |= IOSQE_FIXED_FILE;
+}
+
+void LinuxFile::WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
+                                       uint32_t flags) { cb(res); };
+  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+  se.PrepWriteFixed(fd_, src.data(), src.size(), offset, buf_index);
+  if (is_direct_)
+    se.sqe()->flags |= IOSQE_FIXED_FILE;
+}
+
+void LinuxFile::WriteAsync(io::Bytes src, off_t offset, AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
+                                       uint32_t flags) { cb(res); };
+  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+
+  se.PrepWrite(fd_, src.data(), src.size(), offset);
+  if (is_direct_)
+    se.sqe()->flags |= IOSQE_FIXED_FILE;
 }
 
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {

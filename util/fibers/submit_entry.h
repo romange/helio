@@ -99,7 +99,7 @@ class SubmitEntry {
     sqe_->off = offset;
   }
 
-  void PrepWriteFixed(int fd, void* buf, unsigned size, size_t offset, uint16_t buf_index) {
+  void PrepWriteFixed(int fd, const void* buf, unsigned size, size_t offset, uint16_t buf_index) {
     PrepFd(IORING_OP_WRITE_FIXED, fd);
     sqe_->addr = (__u64)buf;
     sqe_->len = size;

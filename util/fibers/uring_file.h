@@ -40,9 +40,13 @@ class LinuxFile {
 
   std::error_code Close();
 
+  // Kept for backward compatibility. Use GetFd.
   int fd() const {
-    return fd_;
+    return GetFd();
   }
+
+  // Always returns linux file descriptor.
+  int GetFd() const;
 
   // Similar to XXXSome methods but writes fully all the io vectors or fails.
   // Is not atomic meaning that it can issue multiple io calls until error occurs or we
@@ -59,14 +63,24 @@ class LinuxFile {
 
   std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index);
 
+  // int - io result.
   using AsyncCb = std::function<void(int)>;
 
   // Async versions of Read
   void ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index, AsyncCb cb);
   void ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb);
+  void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
+  void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
 
  protected:
   int fd_ = -1;
+  union {
+    unsigned flags_ : 1;
+    struct {
+      unsigned is_direct_ : 1;
+    };
+  };
+
   UringProactor* proactor_;
 };
 

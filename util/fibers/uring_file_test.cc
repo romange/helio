@@ -38,35 +38,66 @@ class UringFileTest : public testing::Test {
 };
 
 TEST_F(UringFileTest, Basic) {
-  proactor_->Await([this] {
-    auto res = OpenLinux("/tmp/1.log", O_RDWR | O_CREAT | O_TRUNC, 0666);
+  string path = base::GetTestTempPath("1.log");
+  proactor_->Await([this, path] {
+    auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
     ASSERT_TRUE(res);
     LinuxFile* wf = (*res).get();
 
     auto ec = wf->Write(io::Buffer("hello"), -1, RWF_APPEND);
     ASSERT_FALSE(ec);
 
-    ec = wf->Write(io::Buffer(" world"), -1, RWF_APPEND);
-    ASSERT_FALSE(ec);
-
+    char buf[] = " world";
+    Done done;
+    wf->WriteAsync(io::Buffer(buf), 5, [done](int res) mutable {
+      done.Notify();
+      ASSERT_EQ(res, 6);
+    });
+    done.WaitFor(100ms);
     ec = wf->Close();
     EXPECT_FALSE(ec);
   });
 
-  proactor_->Await([this] {
-    auto res = OpenLinux("/tmp/1.log", O_RDONLY, 0666);
+  proactor_->Await([&] {
+    auto res = OpenLinux(path, O_RDWR, 0666);
     ASSERT_TRUE(res);
-    LinuxFile* rf = (*res).get();
+    unique_ptr<LinuxFile> lf = std::move(*res);
     char buf[100];
     Done done;
-    rf->ReadAsync(io::MutableBuffer(buf), 0, [&](int res) {
+    lf->ReadAsync(io::MutableBuffer(buf), 0, [&](int res) {
       ASSERT_EQ(res, 11);
       EXPECT_EQ("hello world", string(buf, res));
       done.Notify();
     });
 
     ASSERT_TRUE(done.WaitFor(10ms));
-    error_code ec = rf->Close();
+    error_code ec = lf->Close();
+    EXPECT_FALSE(ec);
+  });
+}
+
+TEST_F(UringFileTest, WriteAsync) {
+  string path = base::GetTestTempPath("file.log");
+  char src[] = "hello world";
+
+  proactor_->Await([&] {
+    auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    ASSERT_TRUE(res);
+    unique_ptr<LinuxFile> lf = std::move(*res);
+
+    BlockingCounter bc{0};
+
+    auto cb = [bc](int res) mutable {
+      ASSERT_GT(res, 0);
+      bc->Dec();
+    };
+
+    for (unsigned i = 0; i < 100; ++i) {
+      bc->Add(1);
+      lf->WriteAsync(io::Buffer(src), 5, cb);
+    }
+    ASSERT_TRUE(bc->WaitFor(100ms));
+    auto ec = lf->Close();
     EXPECT_FALSE(ec);
   });
 }
