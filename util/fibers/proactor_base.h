@@ -177,6 +177,29 @@ class ProactorBase {
 
   virtual Kind GetKind() const = 0;
 
+  uint32_t task_queue_full_event_count() const {
+    return tq_full_ev_.load(std::memory_order_relaxed);
+  }
+
+  uint32_t wakeup_event_count() const {
+    return tq_wakeup_ev_.load(std::memory_order_relaxed);
+  }
+
+  uint32_t wakeup_skipped_event_count() const {
+    return tq_wakeup_skipped_ev_.load(std::memory_order_relaxed);
+  }
+
+  struct Stats {
+    uint64_t num_stalls = 0, completions_fetches = 0, loop_cnt = 0, num_suspends = 0;
+    uint64_t num_task_runs = 0, task_interrupts = 0;
+    uint64_t cqe_count = 0;
+    uint64_t uring_submit_calls = 0;
+  };
+
+  const Stats& stats() const {
+    return stats_;
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -229,7 +252,9 @@ class ProactorBase {
   std::atomic_uint32_t tq_seq_{0};
   std::atomic_uint32_t tq_full_ev_{0};   // task queue full events.
   std::atomic_uint32_t tq_wakeup_ev_{0};  // task queue wakeup events.
-  std::atomic_uint32_t tq_wakeup_prevent_ev_{0};  // task queue wakeup prevented events.
+  std::atomic_uint32_t tq_wakeup_skipped_ev_{0};  // task queue wakeup prevented events.
+
+  Stats stats_;
 
   // We use fu2 function to allow moveable semantics.
   using Fu2Fun =
@@ -303,7 +328,7 @@ inline void ProactorBase::WakeupIfNeeded() {
     std::atomic_thread_fence(std::memory_order_acquire);
     WakeRing();
   } else {
-    tq_wakeup_prevent_ev_.fetch_add(1, std::memory_order_relaxed);
+    tq_wakeup_skipped_ev_.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
