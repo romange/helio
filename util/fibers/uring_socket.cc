@@ -167,7 +167,6 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
 
   FiberCall fc(proactor, timeout());
   fc->PrepConnect(fd, (const sockaddr*)ep.data(), ep.size());
-  // fc->sqe()->flags |= register_flag();
   io_res = fc.Get();
 
   if (io_res < 0) {  // In that case connect returns -errno.
