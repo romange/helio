@@ -316,7 +316,7 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
 }
 
 // TODO: to implement async functionality.
-void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) {
   io::Result<size_t> res = WriteSome(v, len);
   cb(res);
 }

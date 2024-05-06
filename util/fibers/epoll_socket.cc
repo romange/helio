@@ -306,7 +306,7 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
-void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) {
   auto res = WriteSome(v, len);
   cb(res);
 }

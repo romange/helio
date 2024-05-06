@@ -244,7 +244,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   return make_unexpected(std::move(ec));
 }
 
-void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) {
+void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) {
   if (fd_ & IS_SHUTDOWN) {
     cb(Unexpected(errc::connection_aborted));
     return;

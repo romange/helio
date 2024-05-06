@@ -30,12 +30,11 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
 
 struct AsyncWriteState {
   absl::FixedArray<iovec, 4> arr;
+  AsyncSink::AsyncCb cb;
   iovec* cur;
   AsyncSink* owner;
 
-  function<void(error_code)> cb;
-
-  AsyncWriteState(const iovec* v, uint32_t length) : arr(length) {
+  AsyncWriteState(AsyncSink* sink, const iovec* v, uint32_t length) : arr(length), owner(sink) {
     cur = arr.data();
     std::copy(v, v + length, cur);
   }
@@ -167,9 +166,8 @@ Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
   return res;
 }
 
-void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, function<void(error_code)> cb) {
-  AsyncWriteState* state = new AsyncWriteState(v, len);
-  state->owner = this;
+void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, AsyncCb cb) {
+  AsyncWriteState* state = new AsyncWriteState(this, v, len);
   state->cb = std::move(cb);
   AsyncWriteSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });
 }

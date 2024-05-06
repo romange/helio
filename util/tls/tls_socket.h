@@ -57,7 +57,7 @@ class TlsSocket final : public FiberSocketBase {
   io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
   ::io::Result<size_t> WriteSome(const iovec* ptr, uint32_t len) final;
-  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) final;
+  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) final;
 
   SSL* ssl_handle();
 
