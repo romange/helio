@@ -10,7 +10,7 @@
 #include <string_view>
 
 #include "base/expected.hpp"
-#include "base/io_buf.h"
+#include "io/io_buf.h"
 
 namespace io {
 
@@ -160,17 +160,18 @@ class Sink {
 
 class AsyncSink {
  public:
-  using AsyncWriteCb = std::function<void(Result<size_t>)>;
+  using AsyncProgressCb = std::function<void(Result<size_t>)>;
+  using AsyncCb = std::function<void(std::error_code)>;
 
   // Dispatches the write call asynchronously and immediately exits.
   // The caller must make sure that (v, len) are valid until cb is called.
-  virtual void AsyncWriteSome(const iovec* v, uint32_t len, AsyncWriteCb cb) = 0;
+  virtual void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) = 0;
 
   // Wrapper around AsyncWriteSome that makes sure that the passed vectir is written to
   // completion. Copies (v, len) internally so it can be discarded after the call.
-  void AsyncWrite(const iovec* v, uint32_t len, std::function<void(std::error_code)> cb);
+  void AsyncWrite(const iovec* v, uint32_t len, AsyncCb cb);
 
-  void AsyncWrite(Bytes buf, std::function<void(std::error_code)> cb) {
+  void AsyncWrite(Bytes buf, AsyncCb cb) {
     iovec v{const_cast<uint8_t*>(buf.data()), buf.size()};
     AsyncWrite(&v, 1, std::move(cb));
   }
@@ -212,13 +213,13 @@ class BytesSource : public Source {
 // Allows using an IoBuf as a source.
 class BufSource : public Source {
  public:
-  BufSource(base::IoBuf* source) : buf_{source} {
+  BufSource(IoBuf* source) : buf_{source} {
   }
 
   Result<size_t> ReadSome(const iovec* v, uint32_t len) final;
 
  protected:
-  base::IoBuf* buf_;
+  IoBuf* buf_;
 };
 
 class NullSink final : public Sink {
@@ -229,13 +230,13 @@ class NullSink final : public Sink {
 // Allows using an IoBuf as a sink.
 class BufSink : public Sink {
  public:
-  BufSink(base::IoBuf* sink) : buf_{sink} {
+  BufSink(IoBuf* sink) : buf_{sink} {
   }
 
   Result<size_t> WriteSome(const iovec* v, uint32_t len) final;
 
  protected:
-  base::IoBuf* buf_;
+  IoBuf* buf_;
 };
 
 class StringSink final : public Sink {
