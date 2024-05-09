@@ -110,15 +110,15 @@ jobs:
               node@18 php composer
           brew update && brew install  --force ninja boost openssl automake gcc
           cmake --version
-          gcc-13 --version
+          gcc-14 --version
           uname -a
       - name: Configure CMake
         run: |
           cmake -B ${{github.workspace}}/build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
-            -DCMAKE_C_COMPILER="gcc-13" \
-            -DCMAKE_CXX_COMPILER="g++-13"
+            -DCMAKE_C_COMPILER="gcc-14" \
+            -DCMAKE_CXX_COMPILER="g++-14"
       - name: Build & Test
         run: |
           cd ${{github.workspace}}/build
