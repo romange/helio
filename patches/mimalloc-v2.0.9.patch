@@ -1,5 +1,5 @@
 diff --git a/src/alloc.c b/src/alloc.c
-index 86453f1..e28fc24 100644
+index 86453f15..4977ebba 100644
 --- a/src/alloc.c
 +++ b/src/alloc.c
 @@ -1010,6 +1010,24 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
@@ -27,3 +27,11 @@ index 86453f1..e28fc24 100644
  // ------------------------------------------------------
  // ensure explicit external inline definitions are emitted!
  // ------------------------------------------------------
+@@ -1024,6 +1042,7 @@ void* _mi_externs[] = {
+   (void*)&mi_zalloc_small,
+   (void*)&mi_heap_malloc,
+   (void*)&mi_heap_zalloc,
++  (void*)&mi_heap_calloc,
+   (void*)&mi_heap_malloc_small,
+   (void*)&mi_heap_alloc_new,
+   (void*)&mi_heap_alloc_new_n
