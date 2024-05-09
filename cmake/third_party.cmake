@@ -293,18 +293,16 @@ set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE
 add_third_party(mimalloc
    #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
    #GIT_TAG v2.0.9
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.9.tar.gz
+   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.4.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
    CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
-                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DCMAKE_C_FLAGS=-g \
-                    ${HELIO_MIMALLOC_OPTS}"
+                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DMI_NO_PADDING=ON \ -DCMAKE_C_FLAGS=-g ${HELIO_MIMALLOC_OPTS}"
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
-  COMMAND cp <SOURCE_DIR>/include/mimalloc-types.h <SOURCE_DIR>/include/mimalloc-atomic.h
-          ${MIMALLOC_INCLUDE_DIR}/
+  COMMAND cp -r <SOURCE_DIR>/include/mimalloc ${MIMALLOC_INCLUDE_DIR}/
   LIB ${HELIO_MIMALLOC_LIBNAME}
 )
 
