@@ -95,6 +95,11 @@ class HttpListenerBase : public ListenerInterface {
     enable_metrics_ = true;
   }
 
+  // Overrides the http response send by the backend.
+  void set_root_response(const std::string& response) {
+    root_response_ = response;
+  }
+
   // Functor that's used to setup authentication
   void SetAuthFunctor(std::function<bool(std::string_view path, std::string_view username,
                                          std::string_view password)>
@@ -111,6 +116,7 @@ class HttpListenerBase : public ListenerInterface {
 
   std::string favicon_url_;
   std::string resource_prefix_;
+  std::string root_response_;
   bool enable_metrics_ = false;
 
   std::function<bool(std::string_view path, std::string_view username, std::string_view password)>

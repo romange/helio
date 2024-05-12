@@ -19,14 +19,17 @@
 #include "util/metrics/metrics.h"
 #include "util/varz.h"
 
-ABSL_FLAG(uint32_t, port, 8080, "Port number.");
-ABSL_FLAG(bool, use_incoming_cpu, false,
-          "If true uses incoming cpu of a socket in order to distribute incoming connections");
-ABSL_FLAG(std::string, password, "", "Protect the web interface with this password.");
 
 using namespace std;
 using namespace util;
+using absl::GetFlag;
 namespace h2 = boost::beast::http;
+
+ABSL_FLAG(uint32_t, port, 8080, "Port number.");
+ABSL_FLAG(bool, use_incoming_cpu, false,
+          "If true uses incoming cpu of a socket in order to distribute incoming connections");
+ABSL_FLAG(string, password, "", "Protect the web interface with this password.");
+ABSL_FLAG(string, root_resp, "", "If set, overrides root page response");
 
 VarzQps http_qps("bar-qps");
 metrics::CounterFamily http_req("http_requests_total", "Number of served http requests");
@@ -47,7 +50,7 @@ ProactorBase* MyListener::PickConnectionProactor(FiberSocketBase* sock) {
   CHECK_EQ(0, getsockopt(fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, &len));
   VLOG(1) << "Got socket from cpu " << cpu;
 
-  bool use_incoming = absl::GetFlag(FLAGS_use_incoming_cpu);
+  bool use_incoming = GetFlag(FLAGS_use_incoming_cpu);
   if (use_incoming) {
     vector<unsigned> ids = pool()->MapCpuToThreads(cpu);
     if (!ids.empty()) {
@@ -64,7 +67,7 @@ void ServerRun(ProactorPool* pool) {
   http_req.Init(pool, {"type", "handle"});
 
   HttpListener<>* listener = new MyListener;
-  std::string pass = absl::GetFlag(FLAGS_password);
+  std::string pass = GetFlag(FLAGS_password);
   listener->SetAuthFunctor([pass = std::move(pass)](std::string_view path,
                                                     std::string_view username,
                                                     std::string_view password) {
@@ -136,8 +139,9 @@ void ServerRun(ProactorPool* pool) {
   listener->RegisterCb("/post", post_cb);
 
   listener->enable_metrics();
+  listener->set_root_response(GetFlag(FLAGS_root_resp));
 
-  uint16_t port = server.AddListener(absl::GetFlag(FLAGS_port), listener);
+  uint16_t port = server.AddListener(GetFlag(FLAGS_port), listener);
   LOG(INFO) << "Listening on port " << port;
 
   server.Run();

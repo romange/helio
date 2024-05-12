@@ -261,7 +261,13 @@ bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx)
   auto args = SplitQuery(query);
 
   if (path == "/") {
-    cntx->Invoke(BuildStatusPage(args, resource_prefix_));
+    if (root_response_.empty()) {
+      cntx->Invoke(BuildStatusPage(args, resource_prefix_));
+    } else {
+      auto resp = MakeStringResponse();
+      resp.body() = root_response_;
+      cntx->Invoke(std::move(resp));
+    }
     return true;
   }
 
