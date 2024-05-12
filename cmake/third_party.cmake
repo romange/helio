@@ -278,9 +278,9 @@ add_third_party(
                      --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
                      MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
   BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
-  
+
   # install-data required by fedora
-  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data 
+  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
   LIB libprofiler.a
 )
 
@@ -291,9 +291,12 @@ set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.9.patch)
 
 add_third_party(mimalloc
-   #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-   #GIT_TAG v2.0.9
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.4.tar.gz
+   GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+
+   # This is a commit after series of commits that solve over allocation issue for aligned
+   # mallocs. TODO: to switch to stable tag once it's released.
+   GIT_TAG 0f6d8293c74796fa913e4b5eb4361f1e4734f7c6
+   # URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.4.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
@@ -380,6 +383,6 @@ cmake_policy (SET CMP0079 NEW)
 target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIXML_NO_XPATH=1)
 
-if (APPLE) 
+if (APPLE)
   set_target_properties(TRDP::cares PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES resolv)
 endif()

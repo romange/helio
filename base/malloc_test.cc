@@ -176,14 +176,12 @@ TEST_F(MallocTest, MimallocUsed) {
   constexpr size_t kElems = 100000;
   for (size_t i = 0; i < kElems; ++i) {
     void* ptr = mi_heap_malloc_aligned(myheap, 160, 8);
-    (void)ptr;
-    // Not working yet due to https://github.com/microsoft/mimalloc/issues/889
-    // EXPECT_EQ(160, mi_usable_size(ptr)) << i;
+    EXPECT_EQ(160, mi_usable_size(ptr)) << i;
   }
   EXPECT_LT(_mi_stats_main.committed.current, 140000000);
   sum = {};
   mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
-  EXPECT_EQ(sum.used, kElems * 192);  // See https://github.com/microsoft/mimalloc/issues/889
+  EXPECT_EQ(sum.used, kElems * 160);  // See https://github.com/microsoft/mimalloc/issues/889
   mi_heap_destroy(myheap);
   mi_collect(true);
   EXPECT_LT(_mi_stats_main.committed.current, 10000);
