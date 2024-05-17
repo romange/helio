@@ -383,6 +383,31 @@ void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
 }
 
+
+base::mpmc_bounded_queue<FiberInterface*> FiberPool::available_queue_(1024);
+
+void ReusableFiberImpl::MoveToPool() {
+  scheduler()->SuspendAndExecuteOnDispatcher([this] {
+    DetachScheduler();
+
+    while (true) {
+      // We signal that the fiber is being terminated by setting the kTerminatedBit flag.
+      // We also set the kBusyBit flag to try to acquire the lock.
+      uint16_t fprev = flags_.fetch_or(kTerminatedBit | kBusyBit, memory_order_acquire);
+      if ((fprev & kBusyBit) == 0) {  // has been acquired
+        break;
+      }
+      CpuPause();
+    }
+    //trace_ = TRACE_TERMINATE; // need to create one
+    join_q_.NotifyAll(this);
+
+    flags_.fetch_and(~kBusyBit, memory_order_release);
+
+    FiberPool::AddAvailableFiber(this);
+  });
+}
+
 }  // namespace detail
 
 void SetCustomDispatcher(DispatchPolicy* policy) {

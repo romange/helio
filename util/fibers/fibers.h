@@ -36,21 +36,15 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : impl_{detail::default_stack_resource
-                  ? detail::MakeWorkerFiberImpl(name,
-                                                FixedStackAllocator(detail::default_stack_resource,
-                                                                    detail::default_stack_size),
-                                                std::forward<Fn>(fn), std::forward<Arg>(arg)...)
-                  : detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
-                                                std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
+      : impl_{detail::FiberPool::PopOrCreate(std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
+    impl_->SetName(name);
     Start(policy);
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
-  Fiber(Launch policy, StackAlloc&& stack_alloc, std::string_view name, Fn&& fn, Arg&&... arg)
-      : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, std::forward<StackAlloc>(stack_alloc),
-                                                     std::forward<Fn>(fn),
-                                                     std::forward<Arg>(arg)...)} {
+  Fiber(Launch policy, StackAlloc&&, std::string_view name, Fn&& fn, Arg&&... arg)
+      : impl_{detail::FiberPool::PopOrCreate(std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
+     impl_->SetName(name);
     Start(policy);
   }
 
