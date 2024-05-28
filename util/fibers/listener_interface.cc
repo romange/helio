@@ -418,7 +418,8 @@ uint32_t ListenerInterface::GetMaxClients() const {
 }
 
 void Connection::Shutdown() {
-  auto ec = CHECK_NOTNULL(socket_)->Shutdown(SHUT_RDWR);
+  CHECK(socket_);
+  auto ec = socket_->Shutdown(SHUT_RDWR);
   VLOG_IF(1, ec) << "Error during shutdown " << ec.message();
 
   OnShutdown();
