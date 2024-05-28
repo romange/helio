@@ -112,12 +112,12 @@ jobs:
           # Prevent updating these packages that sometimes break the update
           brew pin azure-cli jpeg-xl aom lima pipx gcc
 
-          brew update && brew install  --force ninja boost openssl automake gcc
+          brew update && brew install --force ninja boost openssl automake libtool
+      - name: Configure CMake
+        run: |
           cmake --version
           gcc-13 --version
           uname -a
-      - name: Configure CMake
-        run: |
           cmake -B ${{github.workspace}}/build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
@@ -126,6 +126,8 @@ jobs:
       - name: Build & Test
         run: |
           cd ${{github.workspace}}/build
+          ninja gperf_project || cat third_party/src/gperf_project-stamp/gperf_project-patch-*.log
+
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
             https_client_cli s3_demo
           ./fibers_test --logtostderr --gtest_repeat=10
