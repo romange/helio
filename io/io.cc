@@ -137,7 +137,6 @@ Result<size_t> PrefixSource::ReadSome(const iovec* v, uint32_t len) {
 error_code Sink::Write(const iovec* v, uint32_t len) {
   return ApplyExactly(v, len,
                       [this](const auto* v, uint32_t len) { return WriteSomeBytes(v, len, this); });
-  return error_code{};
 }
 
 Result<size_t> NullSink::WriteSome(const iovec* v, uint32_t len) {
