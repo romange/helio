@@ -9,8 +9,8 @@
 #include <algorithm>
 
 #include "base/logging.h"
-#include "util/tls/tls_engine.h"
 #include "util/fibers/fibers.h"
+#include "util/tls/tls_engine.h"
 
 namespace util {
 namespace tls {
@@ -165,6 +165,29 @@ auto TlsSocket::Close() -> error_code {
   return next_sock_->Close();
 }
 
+class SpinCounter {
+ public:
+  explicit SpinCounter(size_t limit) : limit_(limit) {
+  }
+
+  bool Check(bool condition) {
+    current_it_ = condition ? current_it_ + 1 : 0;
+    return current_it_ >= limit_;
+  }
+
+  size_t Limit() const {
+    return limit_;
+  }
+
+  size_t Spins() const {
+    return current_it_;
+  }
+
+ private:
+  const size_t limit_;
+  size_t current_it_{0};
+};
+
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
   DCHECK_GT(size_t(msg.msg_iovlen), 0u);
@@ -176,6 +199,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 
   Engine::MutableBuffer dest{reinterpret_cast<uint8_t*>(io->iov_base), io->iov_len};
   size_t read_total = 0;
+  SpinCounter spin_count(20);
 
   while (true) {
     DCHECK(!dest.empty());
@@ -193,6 +217,11 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     }
 
     int op_val = *op_result;
+    if (spin_count.Check(op_val == 0)) {
+      // Once every 30 seconds.
+      LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
+                               << " Spin: " << spin_count.Spins();
+    }
 
     if (op_val > 0) {
       read_total += op_val;
@@ -277,6 +306,7 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
   DCHECK_GT(buf.size(), 0u);
 
   size_t send_total = 0;
+  SpinCounter spin_count(20);
 
   while (true) {
     Engine::OpResult op_result = engine_->Write(buf);
@@ -290,6 +320,11 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
     }
 
     int op_val = *op_result;
+    if (spin_count.Check(op_val == 0)) {
+      // Once every 30 seconds.
+      LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
+                               << " Spins: " << spin_count.Spins();
+    }
 
     if (op_val > 0) {
       send_total += op_val;
@@ -326,10 +361,23 @@ SSL* TlsSocket::ssl_handle() {
 }
 
 auto TlsSocket::MaybeSendOutput() -> error_code {
-  // this function is present in both read and write paths.
+  // This function is present in both read and write paths.
   // meaning that both of them can be called concurrently from differrent fibers and then
   // race over flushing the output buffer. We use state_ to prevent that.
   if (state_ & WRITE_IN_PROGRESS) {
+    // Do not remove the Yield from here because it can enter an infinite loop
+    // which can be described by the following chore:
+    // Fiber1 (Connection fiber):
+    // Reads SSL renegotiation request
+    // Sets WRITE_IN_PROGRESS in state_
+    // Tries to write renegotiation response to socket
+    // BIO (SSL buffer) gets filled up
+    // Fiber2 (runs command):
+    // Tries to write response to socket
+    // Can't write to socket because WRITE_IN_PROGRESS is set
+    // Live blocks indefinitely
+    // Fiber2 is in infinite loop, Fiber1 can't progress
+    ThisFiber::Yield();
     return error_code{};
   }
 
@@ -356,6 +404,9 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 auto TlsSocket::HandleRead() -> error_code {
   if (state_ & READ_IN_PROGRESS) {
+    // We need to Yield because otherwise we might end up in an infinite loop.
+    // See also comments in MaybeSendOutput.
+    ThisFiber::Yield();
     return error_code{};
   }
 
@@ -387,7 +438,6 @@ void TlsSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
 void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
-
 
 bool TlsSocket::IsUDS() const {
   return next_sock_->IsUDS();
