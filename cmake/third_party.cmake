@@ -7,6 +7,8 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW) # find_package() uses upper-case <PACKAGENAME>_ROOT variables
 endif()
 
+cmake_policy (SET CMP0079 NEW)
+
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party")
 
 SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})
@@ -204,41 +206,44 @@ if(NOT abseil_cpp_POPULATED)
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
 
-set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
+if (LEGACY_GLOG)
+  set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
 
-FetchContent_Declare(
-  glog
-  GIT_REPOSITORY https://github.com/romange/glog
-  GIT_TAG Absl
+  FetchContent_Declare(
+    glog
+    GIT_REPOSITORY https://github.com/romange/glog
+    GIT_TAG Absl
 
-  GIT_PROGRESS    TRUE
-  GIT_SHALLOW     TRUE
-)
+    GIT_PROGRESS    TRUE
+    GIT_SHALLOW     TRUE
+  )
 
-FetchContent_GetProperties(glog)
-if (NOT glog_POPULATED)
-    FetchContent_Populate(glog)
+  FetchContent_GetProperties(glog)
+  if (NOT glog_POPULATED)
+      FetchContent_Populate(glog)
 
-  # There are bugs with libunwind on aarch64
-  # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
-  # inside pthreads code.
-  if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
-    set(WITH_UNWIND OFF  CACHE BOOL "")
-    set(HAVE_RWLOCK OFF  CACHE BOOL "")
+    # There are bugs with libunwind on aarch64
+    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
+    # inside pthreads code.
+    if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
+      set(WITH_UNWIND OFF  CACHE BOOL "")
+      set(HAVE_RWLOCK OFF  CACHE BOOL "")
+    endif()
+
+      set(WITH_GTEST OFF CACHE BOOL "")
+      set(BUILD_TESTING OFF CACHE BOOL "")
+
+      set(HAVE_LIB_GFLAGS OFF CACHE BOOL "")
+      set(WITH_GFLAGS OFF CACHE BOOL "")
+      set(WITH_ABSL ON  BOOL "")
+      add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
+
+      set_property(TARGET glog APPEND PROPERTY
+                  INCLUDE_DIRECTORIES $<TARGET_PROPERTY:absl::flags,INTERFACE_INCLUDE_DIRECTORIES>)
   endif()
 
-    set(WITH_GTEST OFF CACHE BOOL "")
-    set(BUILD_TESTING OFF CACHE BOOL "")
-
-    set(HAVE_LIB_GFLAGS OFF CACHE BOOL "")
-    set(WITH_GFLAGS OFF CACHE BOOL "")
-    set(WITH_ABSL ON  BOOL "")
-    add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
-
-    set_property(TARGET glog APPEND PROPERTY
-                 INCLUDE_DIRECTORIES $<TARGET_PROPERTY:absl::flags,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 endif()
-
 
 # 1.71 comes with ubuntu 20.04 so that's what we require.
 find_package(Boost 1.71.0 REQUIRED COMPONENTS context system)
@@ -289,15 +294,12 @@ set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
 # asan interferes with mimalloc. See https://github.com/microsoft/mimalloc/issues/317
 
-set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.9.patch)
+set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.1.6.patch)
 
 add_third_party(mimalloc
-   GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-
-   # This is a commit after series of commits that solve over allocation issue for aligned
-   # mallocs. TODO: to switch to stable tag once it's released.
-   GIT_TAG 0f6d8293c74796fa913e4b5eb4361f1e4734f7c6
-   # URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.4.tar.gz
+   # GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+   # GIT_TAG v2.1.6
+   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.6.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
@@ -382,8 +384,6 @@ if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
   set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
 endif()
 
-cmake_policy (SET CMP0079 NEW)
-target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIXML_NO_XPATH=1)
 
 if (APPLE)

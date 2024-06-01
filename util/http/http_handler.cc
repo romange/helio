@@ -66,7 +66,7 @@ void HandleVModule(std::string_view str) {
     int32_t level = 0;
     if (sep != std::string_view::npos && absl::SimpleAtoi(p.substr(sep + 1), &level)) {
       string module_expr = string(p.substr(0, sep));
-      int prev = google::SetVLOGLevel(module_expr.c_str(), level);
+      int prev = base::SetVLogLevel(module_expr, level);
       LOG(INFO) << "Setting module " << module_expr << " to loglevel " << level
                 << ", prev: " << prev;
     }

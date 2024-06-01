@@ -392,7 +392,7 @@ void TLocalClient::Connect(tcp::endpoint ep) {
   for (auto& fb : fbs)
     fb.Join();
   LOG(INFO) << "TLocalClient::Connect-End";
-  google::FlushLogFiles(google::INFO);
+  base::FlushLogs();
 }
 
 size_t TLocalClient::Run() {

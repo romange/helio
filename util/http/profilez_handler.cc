@@ -93,7 +93,7 @@ static void HandleCpuProfile(bool enable, StringResponse* response) {
   string url("filez?file=");
   url.append(profile_name);
   LOG(INFO) << "Redirecting to " << url;
-  google::FlushLogFiles(google::INFO);
+  base::FlushLogs();
 
   response->set(h2::field::location, url);
   response->result(h2::status::moved_permanently);
