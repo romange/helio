@@ -170,7 +170,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.8.3.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.8.4.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -182,6 +182,7 @@ if (NOT benchmark_POPULATED)
     set(BENCHMARK_ENABLE_LIBPFM OFF CACHE BOOL "")
     set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
+    set(HAVE_STD_REGEX ON CACHE BOOL "")
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
