@@ -17,6 +17,7 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
+option (LEGACY_GLOG "whether to use legacy glog library" ON)
 
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
@@ -223,7 +224,7 @@ if (LEGACY_GLOG)
       FetchContent_Populate(glog)
 
     # There are bugs with libunwind on aarch64
-    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
+    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sporadically fails
     # inside pthreads code.
     if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
       set(WITH_UNWIND OFF  CACHE BOOL "")
