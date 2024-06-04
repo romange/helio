@@ -87,8 +87,8 @@ TEST_F(IoTest, LineReader) {
 
 TEST_F(IoTest, ProcReader) {
 #ifdef __APPLE__
-    GTEST_SKIP() << "Skipped IoTest.ProcReader test on MacOS";
-    return;
+  GTEST_SKIP() << "Skipped IoTest.ProcReader test on MacOS";
+  return;
 #endif
   auto sdata = ReadStatusInfo();
   ASSERT_TRUE(sdata.has_value());
@@ -110,6 +110,13 @@ TEST_F(IoTest, ProcReader) {
   EXPECT_TRUE(self_stat.has_value());
   EXPECT_GT(self_stat->start_time_sec, 0);
   EXPECT_EQ(0, self_stat->maj_flt);
+
+  auto dist_info = ReadDistributionInfo();
+  EXPECT_TRUE(dist_info);
+  const DistributionInfo& dinfo = *dist_info;
+  auto it =
+      find_if(dinfo.begin(), dinfo.end(), [](auto val) { return val.first == "PRETTY_NAME"; });
+  ASSERT_TRUE(it != dinfo.end());
 }
 
 TEST_F(IoTest, IniReader) {

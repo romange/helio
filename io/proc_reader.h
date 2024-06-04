@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <vector>
 #include "io/io.h"
 
 namespace io {
@@ -41,5 +42,10 @@ struct SelfStat {
 Result<StatusData> ReadStatusInfo();
 Result<MemInfoData> ReadMemInfo();
 Result<SelfStat> ReadSelfStat();
+
+// key,value list from /etc/os-release
+using DistributionInfo = std::vector<std::pair<std::string, std::string>>;
+
+Result<DistributionInfo> ReadDistributionInfo();
 
 }  // namespace io
