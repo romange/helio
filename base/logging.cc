@@ -28,7 +28,7 @@ string ProgramAbsoluteFileName() {
 #ifdef __APPLE__
   uint32_t sz = res.size();
 
-  if (_NSGetExecutablePath( &res.front(), &sz) != 0) {
+  if (_NSGetExecutablePath(&res.front(), &sz) != 0) {
     // Buffer size is too small.
     return res;
   }
@@ -41,7 +41,7 @@ string ProgramAbsoluteFileName() {
     }
   }
 
-#else // not __APPLE__
+#else  // not __APPLE__
   ssize_t sz = readlink(kProcSelf, &res.front(), res.size());
   CHECK_GT(sz, 0);
   if (sz > kDeletedSuffixLen) {
@@ -70,8 +70,7 @@ string MyUserName() {
   return str ? str : string("unknown-user");
 }
 
-#if USE_ABSL_LOG
-#else
+#ifndef USE_ABSL_LOG
 void ConsoleLogSink::send(google::LogSeverity severity, const char* full_filename,
                           const char* base_filename, int line, const struct ::tm* tm_time,
                           const char* message, size_t message_len) {

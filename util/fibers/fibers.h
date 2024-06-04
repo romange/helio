@@ -77,6 +77,11 @@ class Fiber {
     return nullptr != impl_;
   }
 
+  // returns true if the fiber is running in the calling thread
+  bool IsLocal() const {
+    return impl_->scheduler() == detail::FiberActive()->scheduler();
+  }
+
   void Join();
 
   // Join fiber if it's running, else do nothing.

@@ -18,6 +18,8 @@ Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
 option (WITH_AWS "Include AWS client for working with S3 files" ON)
+option (LEGACY_GLOG "whether to use legacy glog library" ON)
+
 
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
@@ -170,7 +172,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.8.3.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.8.4.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -182,6 +184,7 @@ if (NOT benchmark_POPULATED)
     set(BENCHMARK_ENABLE_LIBPFM OFF CACHE BOOL "")
     set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
+    set(HAVE_STD_REGEX ON CACHE BOOL "")
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
@@ -223,7 +226,7 @@ if (LEGACY_GLOG)
       FetchContent_Populate(glog)
 
     # There are bugs with libunwind on aarch64
-    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
+    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sporadically fails
     # inside pthreads code.
     if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
       set(WITH_UNWIND OFF  CACHE BOOL "")
@@ -297,9 +300,9 @@ set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.1.6.patch)
 
 add_third_party(mimalloc
-   # GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-   # GIT_TAG v2.1.6
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.6.tar.gz
+   GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+   GIT_TAG 0f6d8293c74796fa913e4b5eb4361f1e4734f7c6
+   #URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.6.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug

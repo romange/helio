@@ -21,7 +21,6 @@ option (HELIO_USE_SANITIZER "Use asan and usan sanitizers" OFF)
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
 option (USE_MOLD "whether to use mold linker" OFF)
-option (LEGACY_GLOG "whether to use legacy glog library" ON)
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
 
