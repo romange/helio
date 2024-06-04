@@ -17,7 +17,9 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
+option (WITH_AWS "Include AWS client for working with S3 files" ON)
 option (LEGACY_GLOG "whether to use legacy glog library" ON)
+
 
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
@@ -354,17 +356,19 @@ add_third_party(
   URL https://github.com/zeux/pugixml/archive/refs/tags/v1.13.tar.gz
 )
 
-set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
+if (WITH_AWS)
+  set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
 
-add_third_party(
-  aws
-  GIT_REPOSITORY https://github.com/aws/aws-sdk-cpp.git
-  GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
-  GIT_SHALLOW TRUE
-  PATCH_COMMAND "${AWS_PATCH_COMMAND}"
-  CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
-  LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
-)
+  add_third_party(
+    aws
+    GIT_REPOSITORY https://github.com/aws/aws-sdk-cpp.git
+    GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
+    GIT_SHALLOW TRUE
+    PATCH_COMMAND "${AWS_PATCH_COMMAND}"
+    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
+    LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
+  )
+endif()
 
 add_third_party(
   cares
