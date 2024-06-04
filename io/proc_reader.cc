@@ -210,4 +210,16 @@ Result<SelfStat> ReadSelfStat() {
   return res;
 }
 
+Result<DistributionInfo> ReadDistributionInfo() {
+  DistributionInfo result;
+  auto cb = [&result](string_view key, string_view value) {
+    result.emplace_back(key, value);
+  };
+
+  error_code ec = ReadProcFile("/etc/os-release", '=', std::move(cb));
+  if (ec)
+    return make_unexpected(ec);
+  return result;
+}
+
 }  // namespace io
