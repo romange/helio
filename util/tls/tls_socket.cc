@@ -217,7 +217,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     }
 
     int op_val = *op_result;
-    if (spin_count.Check(op_val == 0)) {
+    if (spin_count.Check(op_val <= 0)) {
       // Once every 30 seconds.
       LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
                                << " Spin: " << spin_count.Spins();
@@ -320,7 +320,7 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
     }
 
     int op_val = *op_result;
-    if (spin_count.Check(op_val == 0)) {
+    if (spin_count.Check(op_val <= 0)) {
       // Once every 30 seconds.
       LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
                                << " Spins: " << spin_count.Spins();
