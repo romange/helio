@@ -217,6 +217,12 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     msg.msg_iov = const_cast<iovec*>(ptr);
     msg.msg_iovlen = len;
 
+#if 0
+    res = sendmsg(fd, &msg, MSG_NOSIGNAL);
+    if (res >= 0) {
+      return res;
+    }
+#endif
     while (true) {
       FiberCall fc(p, timeout());
       fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
