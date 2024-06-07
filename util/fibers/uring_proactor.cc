@@ -19,7 +19,10 @@
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
-ABSL_FLAG(bool, enable_direct_fd, true, "If true tries to register file descriptors");
+// TODO: we need to fix register_fds_ resize flow.
+// Also we must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
+// See AcceptServerTest.Shutdown to trigger direct fd resize.
+ABSL_FLAG(bool, enable_direct_fd, false, "If true tries to register file descriptors");
 
 #define URING_CHECK(x)                                                        \
   do {                                                                        \
@@ -172,7 +175,6 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
 
   if (direct_fd_) {
-    // TODO: to make it configurable.
     register_fds_.resize(512, -1);
     int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
     CHECK_EQ(0, res);
@@ -536,9 +538,12 @@ unsigned UringProactor::RegisterFd(int source_fd) {
     register_fds_[prev_sz] = source_fd;  // source fd will map to prev_sz index.
     next_free_index_ = prev_sz + 1;
 
+    // TODO: this does not work because it seems we need to unregister first
+    // to be able re-register. See
     int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
     if (res < 0) {
-      LOG(ERROR) << "Error registering files: " << -res << " " << SafeErrorMessage(-res);
+      LOG(ERROR) << "Error registering files: " << -res << " " << SafeErrorMessage(-res) << " "
+                 << prev_sz;
       register_fds_.resize(prev_sz);
       next_free_index_ = prev_sz;
       return kInvalidDirectFd;
