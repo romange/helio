@@ -13,17 +13,6 @@
 namespace util {
 namespace fb2 {
 
-namespace detail {
-
-/*using WaitQueue2 = boost::intrusive::slist<
-    detail::FiberInterface,
-    boost::intrusive::member_hook<detail::FiberInterface, detail::FI_ListHook,
-                                  &detail::FiberInterface::wait_hook>,
-    boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
-*/
-
-}  // namespace detail
-
 // This class is all about reducing the contention on the producer side (notifications).
 // We want notifications to be as light as possible, while waits are less important
 // since they on the path of being suspended anyway. However, we also want to reduce number of
@@ -152,11 +141,13 @@ class CondVarAny {
   CondVarAny& operator=(CondVarAny const&) = delete;
 
   void notify_one() noexcept {
-    wait_queue_.NotifyOne(detail::FiberActive());
+    if (!wait_queue_.empty())
+      wait_queue_.NotifyOne(detail::FiberActive());
   }
 
   void notify_all() noexcept {
-    wait_queue_.NotifyAll(detail::FiberActive());
+    if (!wait_queue_.empty())
+      wait_queue_.NotifyAll(detail::FiberActive());
   }
 
   template <typename LockType> void wait(LockType& lt);
@@ -531,10 +522,16 @@ std::cv_status EventCount::await_until(Condition condition,
 }
 
 // For synchronizing fibers in single-threaded environment.
+// Can be used together with `CondVarAny` to implement local-thread `CondVar` which is more
+// efficient than EventCount.
 struct NoOpLock {
   void lock() {
   }
   void unlock() {
+  }
+
+  bool try_lock() {
+    return true;
   }
 };
 
