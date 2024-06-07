@@ -372,7 +372,7 @@ endif()
 
 add_third_party(
   cares
-  URL https://c-ares.org/download/c-ares-1.28.1.tar.gz
+  URL https://github.com/c-ares/c-ares/releases/download/cares-1_29_0/c-ares-1.29.0.tar.gz
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
