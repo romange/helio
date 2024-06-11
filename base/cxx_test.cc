@@ -4,9 +4,11 @@
 #include <absl/container/flat_hash_set.h>
 
 #include "base/gtest.h"
+#include "base/iterator.h"
 #include "base/logging.h"
 #include "base/random.h"
 #include "base/string_view_sso.h"
+#include "iterator.h"
 
 using namespace std;
 
@@ -173,6 +175,19 @@ TEST_F(CxxTest, Arrow) {
 TEST_F(CxxTest, Random) {
   SplitMix64 rand1;
   Xoroshiro128p rand2;
+}
+
+TEST_F(CxxTest, Iterator) {
+  vector<string> v1 = {"a", "bb", "ccc"};
+  vector<string_view> v2 = {"a", "bb", "ccc"};
+
+  variant<vector<string>, vector<string_view>> curv = v2;
+
+  auto views = base::it::Wrap([](const auto& str) { return std::string_view(str); }, curv);
+  auto lengths = base::it::Transform([](std::string_view str) { return str.length(); }, views);
+  auto sum = std::reduce(lengths.begin(), lengths.end());
+
+  EXPECT_EQ(sum, 6);
 }
 
 }  // namespace base
