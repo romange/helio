@@ -40,6 +40,9 @@ jobs:
     timeout-minutes: 50
     container:
       image: ghcr.io/romange/${{ matrix.container }}
+      
+      # Seems that docker by default prohibits running iouring syscalls
+      options: --security-opt seccomp=unconfined  
     steps:
     - uses: actions/checkout@v4
 
