@@ -172,11 +172,9 @@ TEST_F(CxxTest, Iterator) {
   EXPECT_EQ(sum, 6);
 }
 
-#ifdef __x86_64__
 TEST_F(CxxTest, CPUFeatures) {
   CpuFeatures features = GetCpuFeatures();
   (void)features;
 }
-#endif
 
 }  // namespace base
