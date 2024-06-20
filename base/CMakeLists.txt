@@ -1,4 +1,4 @@
-add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
+add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc proc_util.cc
     pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
 
 if (LEGACY_GLOG) 
