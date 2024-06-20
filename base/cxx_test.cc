@@ -8,6 +8,7 @@
 #include "base/logging.h"
 #include "base/random.h"
 #include "base/string_view_sso.h"
+#include "base/cpu_features.h"
 #include "iterator.h"
 
 using namespace std;
@@ -147,25 +148,6 @@ TEST_F(CxxTest, UnderDebugger) {
   table.emplace_back();  // verified that HasVector was moved without copying the array.
 }
 
-#if 0
-TEST_F(CxxTest, StringViewSSO) {
-  constexpr string_view_sso s1("aaaa");
-  static_assert(-1 == s1.compare("bbbb"));
-  string s2("cccc");
-  string_view_sso s3(s2);
-
-  EXPECT_EQ(s3, s2);
-  EXPECT_NE(s1, s2);
-  EXPECT_NE(s1, s3);
-  absl::flat_hash_set<string_view_sso> set;
-  set.emplace("a");
-  set.emplace("b");
-  set.emplace("b");
-  set.emplace(string_view{"foo"});
-  EXPECT_EQ(3, set.size());
-}
-#endif
-
 TEST_F(CxxTest, Arrow) {
   Pointer1 p1{5, "roman"};
   EXPECT_EQ(5, p1->first);
@@ -188,6 +170,11 @@ TEST_F(CxxTest, Iterator) {
   auto sum = std::reduce(lengths.begin(), lengths.end());
 
   EXPECT_EQ(sum, 6);
+}
+
+TEST_F(CxxTest, CPUFeatures) {
+  CpuFeatures features = GetCpuFeatures();
+  (void)features;
 }
 
 }  // namespace base
