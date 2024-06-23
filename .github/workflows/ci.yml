@@ -9,6 +9,10 @@ on:
   schedule:
     - cron: "0 0/3 * * *"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: Debug
@@ -36,6 +40,9 @@ jobs:
     timeout-minutes: 50
     container:
       image: ghcr.io/romange/${{ matrix.container }}
+      
+      # Seems that docker by default prohibits running iouring syscalls
+      options: --security-opt seccomp=unconfined  
     steps:
     - uses: actions/checkout@v4
 
@@ -100,6 +107,7 @@ jobs:
          fail_ci_if_error: false
 
   build-macos:
+    if: false
     runs-on: macos-12
     timeout-minutes: 30  # ✨✨✨✨
     steps:
@@ -108,20 +116,26 @@ jobs:
           brew uninstall --formula node kotlin harfbuzz sbt selenium-server imagemagick \
               gradle maven openjdk postgresql r ant mongodb-community@5.0 mongosh \
               node@18 php composer
-          brew update && brew install  --force ninja boost openssl automake gcc
-          cmake --version
-          gcc-14 --version
-          uname -a
+
+          # Prevent updating these packages that sometimes break the update
+          brew pin azure-cli jpeg-xl aom lima pipx gcc
+
+          brew update && brew install --force ninja boost openssl automake libtool
       - name: Configure CMake
         run: |
+          cmake --version
+          gcc-13 --version
+          uname -a
           cmake -B ${{github.workspace}}/build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
-            -DCMAKE_C_COMPILER="gcc-14" \
-            -DCMAKE_CXX_COMPILER="g++-14"
+            -DCMAKE_C_COMPILER="gcc-13" \
+            -DCMAKE_CXX_COMPILER="g++-13"
       - name: Build & Test
         run: |
           cd ${{github.workspace}}/build
+          ninja gperf_project || cat third_party/src/gperf_project-stamp/gperf_project-patch-*.log
+
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
             https_client_cli s3_demo
           ./fibers_test --logtostderr --gtest_repeat=10

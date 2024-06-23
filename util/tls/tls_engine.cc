@@ -33,6 +33,56 @@ static void ClearSslError() {
   } while (l);
 }
 
+static Engine::OpResult ToOpResult(const SSL* ssl, int result, const char* location) {
+  DCHECK_LE(result, 0);
+
+  unsigned long error = ERR_get_error();
+  if (error != 0) {
+    return nonstd::make_unexpected(error);
+  }
+
+  int want = SSL_want(ssl);
+
+  if (want == SSL_NOTHING) {
+    int ssl_error = SSL_get_error(ssl, result);
+    int io_err = errno;
+
+    switch (ssl_error) {
+      case SSL_ERROR_ZERO_RETURN:
+        break;
+      case SSL_ERROR_SYSCALL:
+        LOG(WARNING) << "SSL syscall error " << io_err << ":" << result << " " << location;
+        break;
+      case SSL_ERROR_SSL:
+        LOG(WARNING) << "SSL protocol error " << io_err << ":" << result << " " << location;
+        break;
+      default:
+        LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result << " " << location;
+        break;
+    }
+
+    return Engine::EOF_STREAM;
+  }
+
+  if (SSL_WRITING == want)
+    return Engine::NEED_WRITE;
+  if (SSL_READING == want)
+    return Engine::NEED_READ_AND_MAYBE_WRITE;
+
+  LOG(ERROR) << "Unsupported want value " << want << ", ssl_error: " << SSL_get_error(ssl, result);
+
+  return Engine::EOF_STREAM;
+}
+
+#define S1(x) #x
+#define S2(x) S1(x)
+#define LOCATION __FILE__ " : " S2(__LINE__)
+
+#define RETURN_RESULT(res) \
+  if (res > 0)             \
+    return res;            \
+  return ToOpResult(ssl_, res, LOCATION)
+
 Engine::Engine(SSL_CTX* context) : ssl_(::SSL_new(context)) {
   CHECK(ssl_);
 
@@ -60,51 +110,6 @@ Engine::~Engine() {
   ssl_ = nullptr;
 }
 
-auto Engine::ToOpResult(const SSL* ssl, int result) -> Engine::OpResult {
-  DCHECK_LE(result, 0);
-
-  unsigned long error = ERR_get_error();
-  if (error != 0) {
-    return nonstd::make_unexpected(error);
-  }
-
-  int want = SSL_want(ssl);
-
-  if (want == SSL_NOTHING) {
-    int ssl_error = SSL_get_error(ssl, result);
-    int io_err = errno;
-
-    switch (ssl_error) {
-      case SSL_ERROR_ZERO_RETURN:
-        break;
-      case SSL_ERROR_SYSCALL:
-        LOG(WARNING) << "SSL syscall error " << io_err << ":" << result;
-        break;
-      case SSL_ERROR_SSL:
-        LOG(WARNING) << "SSL protocol error " << io_err << ":" << result;
-        break;
-      default:
-        LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result;
-        break;
-    }
-
-    return EOF_STREAM;
-  }
-
-  if (SSL_WRITING == want)
-    return Engine::NEED_WRITE;
-  if (SSL_READING == want)
-    return Engine::NEED_READ_AND_MAYBE_WRITE;
-
-  LOG(ERROR) << "Unsupported want value " << want << ", ssl_error: " << SSL_get_error(ssl, result);
-
-  return EOF_STREAM;
-}
-
-#define RETURN_RESULT(res) \
-  if (res > 0)             \
-    return res;            \
-  return ToOpResult(ssl_, res)
 
 auto Engine::FetchOutputBuf() -> BufResult {
   char* buf = nullptr;

@@ -7,6 +7,8 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW) # find_package() uses upper-case <PACKAGENAME>_ROOT variables
 endif()
 
+cmake_policy (SET CMP0079 NEW)
+
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party")
 
 SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})
@@ -15,6 +17,9 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
+option (WITH_AWS "Include AWS client for working with S3 files" ON)
+option (LEGACY_GLOG "whether to use legacy glog library" ON)
+
 
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
@@ -167,7 +172,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.8.3.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.8.4.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -179,6 +184,7 @@ if (NOT benchmark_POPULATED)
     set(BENCHMARK_ENABLE_LIBPFM OFF CACHE BOOL "")
     set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "")
     set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "")
+    set(HAVE_STD_REGEX ON CACHE BOOL "")
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
@@ -203,41 +209,44 @@ if(NOT abseil_cpp_POPULATED)
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
 
-set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
+if (LEGACY_GLOG)
+  set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
 
-FetchContent_Declare(
-  glog
-  GIT_REPOSITORY https://github.com/romange/glog
-  GIT_TAG Absl
+  FetchContent_Declare(
+    glog
+    GIT_REPOSITORY https://github.com/romange/glog
+    GIT_TAG Absl
 
-  GIT_PROGRESS    TRUE
-  GIT_SHALLOW     TRUE
-)
+    GIT_PROGRESS    TRUE
+    GIT_SHALLOW     TRUE
+  )
 
-FetchContent_GetProperties(glog)
-if (NOT glog_POPULATED)
-    FetchContent_Populate(glog)
+  FetchContent_GetProperties(glog)
+  if (NOT glog_POPULATED)
+      FetchContent_Populate(glog)
 
-  # There are bugs with libunwind on aarch64
-  # Also there is something fishy with pthread_rw_lock on aarch64 - glog sproadically fails
-  # inside pthreads code.
-  if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
-    set(WITH_UNWIND OFF  CACHE BOOL "")
-    set(HAVE_RWLOCK OFF  CACHE BOOL "")
+    # There are bugs with libunwind on aarch64
+    # Also there is something fishy with pthread_rw_lock on aarch64 - glog sporadically fails
+    # inside pthreads code.
+    if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
+      set(WITH_UNWIND OFF  CACHE BOOL "")
+      set(HAVE_RWLOCK OFF  CACHE BOOL "")
+    endif()
+
+      set(WITH_GTEST OFF CACHE BOOL "")
+      set(BUILD_TESTING OFF CACHE BOOL "")
+
+      set(HAVE_LIB_GFLAGS OFF CACHE BOOL "")
+      set(WITH_GFLAGS OFF CACHE BOOL "")
+      set(WITH_ABSL ON  BOOL "")
+      add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
+
+      set_property(TARGET glog APPEND PROPERTY
+                  INCLUDE_DIRECTORIES $<TARGET_PROPERTY:absl::flags,INTERFACE_INCLUDE_DIRECTORIES>)
   endif()
 
-    set(WITH_GTEST OFF CACHE BOOL "")
-    set(BUILD_TESTING OFF CACHE BOOL "")
-
-    set(HAVE_LIB_GFLAGS OFF CACHE BOOL "")
-    set(WITH_GFLAGS OFF CACHE BOOL "")
-    set(WITH_ABSL ON  BOOL "")
-    add_subdirectory(${glog_SOURCE_DIR} ${glog_BINARY_DIR})
-
-    set_property(TARGET glog APPEND PROPERTY
-                 INCLUDE_DIRECTORIES $<TARGET_PROPERTY:absl::flags,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 endif()
-
 
 # 1.71 comes with ubuntu 20.04 so that's what we require.
 find_package(Boost 1.71.0 REQUIRED COMPONENTS context system)
@@ -278,9 +287,9 @@ add_third_party(
                      --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
                      MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
   BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
-  
+
   # install-data required by fedora
-  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data 
+  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
   LIB libprofiler.a
 )
 
@@ -288,23 +297,22 @@ set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
 # asan interferes with mimalloc. See https://github.com/microsoft/mimalloc/issues/317
 
-set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.0.9.patch)
+set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.1.6.patch)
 
 add_third_party(mimalloc
-   #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-   #GIT_TAG v2.0.9
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.0.9.tar.gz
+   GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+   GIT_TAG 0f6d8293c74796fa913e4b5eb4361f1e4734f7c6
+   #URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.6.tar.gz
    PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
    # -DCMAKE_BUILD_TYPE=Release
    # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
-   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_USE_CXX=ON -DMI_BUILD_SHARED=OFF \
-                    -DMI_BUILD_TESTS=OFF -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF \
-                    -DCMAKE_C_FLAGS=-g ${HELIO_MIMALLOC_OPTS}"
+   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
+                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DMI_NO_PADDING=ON \
+                    -DCMAKE_C_FLAGS=-g -DMI_USE_CXX=ON ${HELIO_MIMALLOC_OPTS}"
 
   BUILD_COMMAND make -j4 mimalloc-static
   INSTALL_COMMAND make install
-  COMMAND cp <SOURCE_DIR>/include/mimalloc-types.h <SOURCE_DIR>/include/mimalloc-atomic.h
-          ${MIMALLOC_INCLUDE_DIR}/
+  COMMAND cp -r <SOURCE_DIR>/include/mimalloc ${MIMALLOC_INCLUDE_DIR}/
   LIB ${HELIO_MIMALLOC_LIBNAME}
 )
 
@@ -349,21 +357,23 @@ add_third_party(
   URL https://github.com/zeux/pugixml/archive/refs/tags/v1.13.tar.gz
 )
 
-set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
+if (WITH_AWS)
+  set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
 
-add_third_party(
-  aws
-  GIT_REPOSITORY https://github.com/aws/aws-sdk-cpp.git
-  GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
-  GIT_SHALLOW TRUE
-  PATCH_COMMAND "${AWS_PATCH_COMMAND}"
-  CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
-  LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
-)
+  add_third_party(
+    aws
+    GIT_REPOSITORY https://github.com/aws/aws-sdk-cpp.git
+    GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
+    GIT_SHALLOW TRUE
+    PATCH_COMMAND "${AWS_PATCH_COMMAND}"
+    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
+    LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
+  )
+endif()
 
 add_third_party(
   cares
-  URL https://c-ares.org/download/c-ares-1.28.1.tar.gz
+  URL https://github.com/c-ares/c-ares/releases/download/cares-1_29_0/c-ares-1.29.0.tar.gz
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
@@ -378,10 +388,8 @@ if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
   set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
 endif()
 
-cmake_policy (SET CMP0079 NEW)
-target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIXML_NO_XPATH=1)
 
-if (APPLE) 
+if (APPLE)
   set_target_properties(TRDP::cares PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES resolv)
 endif()

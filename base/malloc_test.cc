@@ -13,7 +13,7 @@
 
 // we expose internal types of mimalloc to access its statistics.
 // Currently it's not supported officially by the library.
-#include <mimalloc-types.h>
+#include <mimalloc/types.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 
@@ -24,6 +24,8 @@
 namespace base {
 
 using namespace std;
+
+extern "C" mi_stats_t _mi_stats_main;
 
 typedef struct dictEntry {
   void* key;
@@ -42,6 +44,7 @@ class MallocTest : public testing::Test {
  public:
   static void SetUpTestCase() {
     mi_process_init();
+    mi_option_set(mi_option_arena_reserve, 0);
   }
 };
 
@@ -54,6 +57,7 @@ TEST_F(MallocTest, GoodSize) {
   EXPECT_EQ(8, mi_good_size(5));
   EXPECT_EQ(8, je_nallocx(5, 0));
 
+  EXPECT_EQ(160, mi_good_size(160));
   EXPECT_EQ(512, mi_good_size(512));
   EXPECT_EQ(640, mi_good_size(513));
   EXPECT_EQ(16384, mi_good_size(16136));
@@ -65,7 +69,7 @@ TEST_F(MallocTest, GoodSize) {
 
 TEST_F(MallocTest, Oom) {
   errno = 0;
-  mi_option_enable(mi_option_limit_os_alloc);
+  mi_option_enable(mi_option_disallow_os_alloc);
 
   ASSERT_EQ(0, errno);
 
@@ -74,7 +78,7 @@ TEST_F(MallocTest, Oom) {
   ASSERT_TRUE(ptr == NULL);
   ASSERT_EQ(ENOMEM, err);
 
-  mi_option_disable(mi_option_limit_os_alloc);
+  mi_option_disable(mi_option_disallow_os_alloc);
   ptr = mi_malloc(1 << 10);
   ASSERT_TRUE(ptr != NULL);
   void* ptr2 = mi_malloc(1 << 10);
@@ -141,37 +145,55 @@ TEST_F(MallocTest, OS) {
   munmap(map, ps * n);
 }
 
-extern "C" mi_stats_t _mi_stats_main;
+// in version 2.0.2 "area->used" is number of used blocks and not bytes.
+// to get bytes one needs to multiple by block_size reported to the visitor.
+struct Sum {
+  size_t reserved = 0, used = 0, committed = 0;
+} sum;
+
+bool heap_visit_cb(const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
+                   size_t block_size, void* arg) {
+  Sum* s = (Sum*)arg;
+
+  LOG(INFO) << "block_size " << block_size << "/" << area->block_size << ", reserved "
+            << area->reserved << " comitted " << area->committed << " used: " << area->used;
+
+  s->reserved += area->reserved;
+  s->used += area->used * block_size;
+  s->committed += area->committed;
+
+  return true;
+};
+
+TEST_F(MallocTest, MimallocUsed) {
+  mi_collect(true);
+  EXPECT_EQ(0, _mi_stats_main.committed.current);
+  mi_heap_t* myheap = mi_heap_new();
+  Sum sum;
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
+  EXPECT_EQ(sum.used, 0);
+
+  constexpr size_t kElems = 100000;
+  for (size_t i = 0; i < kElems; ++i) {
+    void* ptr = mi_heap_malloc_aligned(myheap, 160, 8);
+    EXPECT_EQ(160, mi_usable_size(ptr)) << i;
+  }
+  EXPECT_LT(_mi_stats_main.committed.current, 140000000);
+  sum = {};
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
+  EXPECT_EQ(sum.used, kElems * 160);  // See https://github.com/microsoft/mimalloc/issues/889
+  mi_heap_destroy(myheap);
+  mi_collect(true);
+  EXPECT_LT(_mi_stats_main.committed.current, 10000);
+}
 
 TEST_F(MallocTest, MimallocVisit) {
-  // in version 2.0.2 "area->used" is number of used blocks and not bytes.
-  // to get bytes one needs to multiple by block_size reported to the visitor.
-  struct Sum {
-    size_t reserved = 0, used = 0, committed = 0;
-  } sum;
-
-  auto cb_visit = [](const mi_heap_t* heap, const mi_heap_area_t* area, void* block,
-                     size_t block_size, void* arg) {
-    Sum* s = (Sum*)arg;
-
-    LOG(INFO) << "block_size " << block_size << "/" << area->block_size << ", reserved "
-              << area->reserved << " comitted " << area->committed << " used: " << area->used;
-
-    s->reserved += area->reserved;
-    s->used += area->used * block_size;
-    s->committed += area->committed;
-
-    return true;
-  };
-
   auto* myheap = mi_heap_new();
 
-  void* p1 = mi_heap_malloc(myheap, 64);
+  std::ignore = mi_heap_malloc(myheap, 64);
 
   for (size_t i = 0; i < 50; ++i)
-    p1 = mi_heap_malloc(myheap, 128);
-  (void)p1;
-
+  std::ignore = mi_heap_malloc(myheap, 128);
   void* ptr[50];
 
   // allocate 50
@@ -184,7 +206,7 @@ TEST_F(MallocTest, MimallocVisit) {
     mi_free(ptr[i]);
   }
 
-  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, cb_visit, &sum);
+  mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
 
   mi_collect(false);
   mi_stats_print_out(NULL, NULL);

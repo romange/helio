@@ -407,7 +407,7 @@ TEST_F(FiberTest, RegisteredBuffers) {
 
     // Not enough space until we return our previous one
     EXPECT_FALSE(up->RequestBuffer(12 * 4096).has_value());
-  
+
     up->ReturnBuffer(*borrowed);
     EXPECT_TRUE(up->RequestBuffer(12 * 4096).has_value());
   });
@@ -578,6 +578,18 @@ TEST_P(ProactorTest, Sleep) {
     ThisFiber::SleepFor(20ms);
     LOG(INFO) << "After Sleep";
   });
+}
+
+TEST_P(ProactorTest, LocalCond) {
+  CondVarAny cond;
+  NoOpLock lock;
+  unsigned latch = 0;
+  auto fb = proactor()->LaunchFiber(Launch::dispatch, [&] {
+    cond.wait(lock, [&] { return latch == 1; });
+  });
+  latch = 1;
+  cond.notify_one();
+  fb.Join();
 }
 
 constexpr unsigned kNumFibers = 64;

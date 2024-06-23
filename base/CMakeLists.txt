@@ -1,9 +1,16 @@
-add_library(base hash.cc histogram.cc init.cc logging.cc proc_util.cc
+add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc proc_util.cc
     pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
 
-# atomic is not present on Fedora. I suspect it's not needed on ubuntu as well
-# removing it for now.
-cxx_link(base glog::glog absl::flags_parse
+if (LEGACY_GLOG) 
+  set(LOG_LIBS glog::glog)
+else()
+
+  target_compile_definitions(base PUBLIC -DUSE_ABSL_LOG=1)
+  set(LOG_LIBS absl::check absl::log -Wl,--whole-archive absl::log_flags
+      absl::log_initialize)
+endif()
+
+cxx_link(base ${LOG_LIBS} absl::flags_parse 
     absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
 
 # Define default gtest_main for tests.

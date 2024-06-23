@@ -101,7 +101,7 @@ class AcceptServerTest : public testing::Test {
   static void SetUpTestCase() {
   }
 
-  FiberSocketBase::endpoint_type ep;
+  FiberSocketBase::endpoint_type ep_;
 
   std::unique_ptr<ProactorPool> pp_;
   std::unique_ptr<AcceptServer> as_;
@@ -130,11 +130,11 @@ void AcceptServerTest::SetUp() {
   ProactorBase* pb = pp_->GetNextProactor();
   client_sock_.reset(pb->CreateSocket());
   auto address = boost::asio::ip::make_address("127.0.0.1");
-  ep = FiberSocketBase::endpoint_type{address, kPort};
+  ep_ = FiberSocketBase::endpoint_type{address, kPort};
 
   pb->Await([&] {
     ThisFiber::SetName("ClientConnect");
-    FiberSocketBase::error_code ec = client_sock_->Connect(ep);
+    FiberSocketBase::error_code ec = client_sock_->Connect(ep_);
     CHECK(!ec) << ec.message();
   });
 
@@ -262,6 +262,39 @@ TEST_F(AcceptServerTest, Migrate) {
     }
   });
   ASSERT_EQ(200, conn->migrations);
+}
+
+TEST_F(AcceptServerTest, Shutdown) {
+  listener_->SetMaxClients(1 << 16);
+  auto* proactor = client_sock_->proactor();
+  proactor->Await([this, proactor] {
+    vector<unique_ptr<FiberSocketBase>> socks;
+    constexpr unsigned kNumSocks = 2000;
+    unsigned called = 0;
+
+    for (unsigned i = 0; i < kNumSocks; ++i) {
+      socks.emplace_back(proactor->CreateSocket());
+      error_code ec = socks.back()->Connect(ep_);
+      EXPECT_FALSE(ec);
+
+      socks.back()->RegisterOnErrorCb([&](int) { ++called; });
+    }
+
+    for (unsigned i = 0; i < socks.size(); ++i) {
+      std::ignore = socks[i]->Shutdown(SHUT_RDWR);
+    }
+    ThisFiber::SleepFor(1us);
+
+    // Please note that in perfect conditions like with this unit test,
+    // we will get ErrorCb trigerred for every socket because both the server and the client
+    // exchange FIN packets. With real world scenarios it's not guaranteed that Shutdown
+    // will trigger POLLHUP delivery, because it depends on the other size sending FIN as well.
+    // See https://man7.org/linux/man-pages/man2/poll.2.html for more details.
+    EXPECT_EQ(called, socks.size());
+    for (unsigned i = 0; i < socks.size(); ++i) {
+      std::ignore = socks[i]->Close();
+    }
+  });
 }
 
 }  // namespace util

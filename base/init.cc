@@ -4,6 +4,10 @@
 
 #include "base/init.h"
 
+#ifdef USE_ABSL_LOG
+#include <absl/log/initialize.h>
+#endif
+
 #include <atomic>
 #include <exception>
 
@@ -57,9 +61,13 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
     return;
 
   absl::ParseCommandLine(*argc, *argv);
+#ifdef USE_ABSL_LOG
+  absl::InitializeLog();
+#else
   if (!google::IsGoogleLoggingInitialized()) {
     google::InitGoogleLogging((*argv)[0]);
   }
+#endif
   absl::InitializeSymbolizer((*argv)[0]);
   absl::FailureSignalHandlerOptions options;
   absl::InstallFailureSignalHandler(options);
@@ -96,5 +104,7 @@ MainInitGuard::~MainInitGuard() {
     return;
 
   __internal__::ModuleInitializer::RunFtors(false);
+#ifndef USE_ABSL_LOG
   google::ShutdownGoogleLogging();
+#endif
 }

@@ -111,8 +111,6 @@ class Engine {
   // Perform one operation. Returns > 0 on success.
   using EngineOp = int (Engine::*)(void*, std::size_t);
 
-  static OpResult ToOpResult(const SSL* ssl, int result);
-
   SSL* ssl_;
   BIO* external_bio_;
 };
