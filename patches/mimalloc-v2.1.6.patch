@@ -1,12 +1,8 @@
 diff --git a/src/alloc.c b/src/alloc.c
-<<<<<<< HEAD:patches/mimalloc-v2.0.9.patch
-index 86453f15..4977ebba 100644
-=======
-index 86aaae75..876dfd38 100644
->>>>>>> master:patches/mimalloc-v2.1.6.patch
+index ce24b8ec..b3d6d9f9 100644
 --- a/src/alloc.c
 +++ b/src/alloc.c
-@@ -577,6 +577,24 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
+@@ -579,6 +579,24 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
    }
  }
  
@@ -31,11 +27,17 @@ index 86aaae75..876dfd38 100644
  // ------------------------------------------------------
  // ensure explicit external inline definitions are emitted!
  // ------------------------------------------------------
-@@ -1024,6 +1042,7 @@ void* _mi_externs[] = {
+@@ -586,11 +604,13 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
+ #ifdef __cplusplus
+ void* _mi_externs[] = {
+   (void*)&_mi_page_malloc,
++  (void*)&_mi_page_malloc_zero,
+   (void*)&_mi_heap_malloc_zero,
+   (void*)&_mi_heap_malloc_zero_ex,
+   (void*)&mi_malloc,
+   (void*)&mi_malloc_small,
    (void*)&mi_zalloc_small,
++  (void*)&mi_heap_calloc,
    (void*)&mi_heap_malloc,
    (void*)&mi_heap_zalloc,
-+  (void*)&mi_heap_calloc,
-   (void*)&mi_heap_malloc_small,
-   (void*)&mi_heap_alloc_new,
-   (void*)&mi_heap_alloc_new_n
+   (void*)&mi_heap_malloc_small
