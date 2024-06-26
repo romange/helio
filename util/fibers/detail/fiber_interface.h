@@ -13,6 +13,7 @@
 #include "base/mpsc_intrusive_queue.h"
 #include "base/pmr/memory_resource.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "base/mpmc_bounded_queue.h"
 
 namespace util {
 namespace fb2 {
@@ -62,9 +63,11 @@ class Scheduler;
 class FiberInterface {
   friend class Scheduler;
 
-  static constexpr uint64_t kRemoteFree = 1;
-
+  
  protected:
+ static constexpr uint64_t kRemoteFree = 1;
+
+
   // holds its own fiber_context when it's not active.
   // the difference between fiber_context and continuation is that continuation is launched
   // straight away via callcc and fiber is created without switching to it.
@@ -291,6 +294,62 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
   std::tuple<std::decay_t<Arg>...> arg_;
 };
 
+class ReusableFiberImpl : public FiberInterface {
+  using FbCntx = ::boost::context::fiber_context;
+
+ public:
+  template <typename StackAlloc>
+  ReusableFiberImpl(std::string_view name, const boost::context::preallocated& palloc,
+                  StackAlloc&& salloc) : FiberInterface(WORKER, 1, name) {
+    stack_size_ = palloc.sctx.size;
+    entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
+                    [this](FbCntx&& caller) { return run_(std::move(caller)); });
+#if defined(BOOST_USE_UCONTEXT)
+    entry_ = std::move(entry_).resume();
+#endif
+  }
+  
+  template <class Fn, class ...Arg>
+  void SetTask(Fn&& fn, Arg&&... arg) {
+    flags_.fetch_and(~kTerminatedBit, std::memory_order_release);
+    remote_next_.store((FiberInterface*)kRemoteFree, std::memory_order_relaxed);
+    auto fn_ptr = std::make_shared<std::decay_t<Fn>>(std::forward<Fn>(fn));
+    auto arg_ptr = std::make_shared<std::tuple<std::decay_t<Arg>...>>(std::forward<Arg>(arg)...);
+    fn_ = [fn_ptr, arg_ptr]() mutable {
+        std::apply(std::move(*fn_ptr), std::move(*arg_ptr));
+      };
+  }
+
+ private:
+  FbCntx run_(FbCntx&& c) {
+    // assert(!c)  <- we never pass the caller,
+    // because with update c_ with it before switching.
+    while (!stop_flag) {
+      if (fn_) {
+        // fn and tpl must be destroyed before calling terminate()
+        auto fn = std::move(fn_);
+        fn_ = nullptr;
+
+#if defined(BOOST_USE_UCONTEXT)
+        std::move(c).resume();
+#endif
+
+        fn();
+      } else {
+        MoveToPool();
+      }
+    }
+
+    return Terminate();
+  }
+
+  void MoveToPool();
+
+  volatile bool stop_flag = false;
+  // Without decay - fn_ can be a reference, depending how a function is passed to the constructor.
+  std::function<void()> fn_;
+};
+
 template <typename FbImpl>
 boost::context::preallocated MakePreallocated(const boost::context::stack_context& sctx) {
   // reserve space for FbImpl control structure. fb_impl_ptr points to the address where FbImpl
@@ -309,6 +368,39 @@ boost::context::preallocated MakePreallocated(const boost::context::stack_contex
 
   return boost::context::preallocated{sp_ptr, size, sctx};
 }
+
+// temporary static
+class FiberPool {
+ public:
+  static void AddAvailableFiber(ReusableFiberImpl* cntx) {
+    auto res = available_queue_.try_enqueue(cntx);
+    assert(res);
+  }
+
+  template <typename Fn, typename... Arg>
+  static ReusableFiberImpl* PopOrCreate( Fn&& fn, Arg&&... arg) {
+    FiberInterface* popped_fiber = nullptr;
+    bool is_popped = available_queue_.try_dequeue(popped_fiber);
+    auto* res = is_popped ? static_cast<ReusableFiberImpl*>(popped_fiber) : MakeReusableFiberImpl();
+    res->SetTask(std::forward<Fn>(fn), std::forward<Arg>(arg)...);
+    return res;
+  }
+
+ private:
+  static ReusableFiberImpl* MakeReusableFiberImpl() {
+    boost::context::fixedsize_stack salloc(64 * 1024);
+    boost::context::stack_context sctx = salloc.allocate();
+    boost::context::preallocated palloc = MakePreallocated<ReusableFiberImpl>(sctx);
+
+    void* obj_ptr = palloc.sp;  // copy because we move palloc.
+
+    // placement new of context on top of fiber's stack
+    return new (obj_ptr) ReusableFiberImpl("", std::move(palloc), std::move(salloc));
+  }
+
+ private:
+  static base::mpmc_bounded_queue<FiberInterface*> available_queue_;
+};
 
 template <typename StackAlloc, typename Fn, typename... Arg>
 static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, StackAlloc&& salloc,
