@@ -1,0 +1,49 @@
+name: mac-os-ci
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Debug
+
+jobs:
+  build-macos:
+    runs-on: macos-12
+    timeout-minutes: 30  # ✨✨✨✨
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          brew uninstall --formula node kotlin harfbuzz sbt selenium-server imagemagick \
+              gradle maven openjdk postgresql r ant mongodb-community@5.0 mongosh \
+              node@18 php composer
+
+          # Prevent updating these packages that sometimes break the update
+          brew pin azure-cli jpeg-xl aom lima pipx gcc
+
+          brew update && brew install --force ninja boost openssl automake libtool
+      - name: Configure CMake
+        run: |
+          cmake --version
+          gcc-13 --version
+          uname -a
+          cmake -B ${{github.workspace}}/build \
+            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -GNinja \
+            -DCMAKE_C_COMPILER="gcc-13" \
+            -DCMAKE_CXX_COMPILER="g++-13"
+      - name: Build & Test
+        run: |
+          cd ${{github.workspace}}/build
+          ninja gperf_project || cat third_party/src/gperf_project-stamp/gperf_project-patch-*.log
+
+          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
+            https_client_cli s3_demo
+          ./fibers_test --logtostderr --gtest_repeat=10
+          ctest -V -L CI
