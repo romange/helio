@@ -275,7 +275,10 @@ add_third_party(
   URL https://github.com/gperftools/gperftools/archive/gperftools-2.15.tar.gz
 
   # GIT_SHALLOW TRUE
-  PATCH_COMMAND autoreconf -i   # update runs every time for some reason
+  # Remove building the unneeded programs (they fail on macos)
+  PATCH_COMMAND echo sed -i "/^noinst_PROGRAMS +=/d;/binary_trees binary_trees_shared/d"
+                <SOURCE_DIR>/Makefile.am
+  COMMAND autoreconf -i   # update runs every time for some reason
   # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
   #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
   #                  -Dgperftools_build_benchmark=OFF"
@@ -372,7 +375,7 @@ endif()
 
 add_third_party(
   cares
-  URL https://github.com/c-ares/c-ares/releases/download/cares-1_29_0/c-ares-1.29.0.tar.gz
+  URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.31.0
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
