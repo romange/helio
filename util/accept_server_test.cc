@@ -267,7 +267,15 @@ TEST_F(AcceptServerTest, Migrate) {
 TEST_F(AcceptServerTest, Shutdown) {
   listener_->SetMaxClients(1 << 16);
   auto* proactor = client_sock_->proactor();
-  proactor->Await([this, proactor] {
+
+
+  proactor->Await([proactor, this] {
+#ifdef __linux__
+  constexpr auto kHupMask = POLLHUP | POLLRDHUP;
+#else
+  constexpr auto kHupMask = POLLHUP;
+#endif
+
     vector<unique_ptr<FiberSocketBase>> socks;
     constexpr unsigned kNumSocks = 2000;
     unsigned called = 0;
@@ -277,7 +285,10 @@ TEST_F(AcceptServerTest, Shutdown) {
       error_code ec = socks.back()->Connect(ep_);
       EXPECT_FALSE(ec);
 
-      socks.back()->RegisterOnErrorCb([&](int) { ++called; });
+      socks.back()->RegisterOnErrorCb([&](int err) {
+        EXPECT_EQ(err, kHupMask);
+        ++called;
+      });
     }
 
     for (unsigned i = 0; i < socks.size(); ++i) {
@@ -290,7 +301,7 @@ TEST_F(AcceptServerTest, Shutdown) {
     // exchange FIN packets. With real world scenarios it's not guaranteed that Shutdown
     // will trigger POLLHUP delivery, because it depends on the other size sending FIN as well.
     // See https://man7.org/linux/man-pages/man2/poll.2.html for more details.
-    EXPECT_EQ(called, socks.size());
+    EXPECT_GE(called, socks.size());
     for (unsigned i = 0; i < socks.size(); ++i) {
       std::ignore = socks[i]->Close();
     }
