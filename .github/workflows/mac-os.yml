@@ -32,7 +32,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
             -DCMAKE_C_COMPILER=gcc-12 \
-            -DCMAKE_CXX_COMPILER=g++-12
+            -DCMAKE_CXX_COMPILER=g++-12 \
+            -DCMAKE_CXX_FLAGS="-Wl,-ld_classic"  # due to a linker bug on macos, see https://github.com/Homebrew/homebrew-core/issues/145991
 
       - name: Build & Test
         run: |

@@ -27,6 +27,10 @@ file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC -fno-stack-protector \
     -fno-stack-clash-protection")
 
+if (APPLE) 
+  set(THIRD_PARTY_CXX_FLAGS "${THIRD_PARTY_CXX_FLAGS} -Wl,-ld_classic")
+endif()
+
 find_package(Threads REQUIRED)
 
 function(add_third_party name)
