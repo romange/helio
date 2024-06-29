@@ -384,6 +384,15 @@ add_third_party(
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
 
+add_third_party(
+  blosc  
+  GIT_REPOSITORY https://github.com/Blosc/c-blosc/
+  GIT_TAG v1.21.5
+  CMAKE_PASS_FLAGS "-DBUILD_SHARED:BOOL=OFF  -DBUILD_TESTS:BOOL=OFF -DBUILD_BENCHMARKS:BOOL=OFF \
+                    -DDEACTIVATE_ZSTD:BOOL=OFF -DDEACTIVATE_ZLIB:BOOL=OFF \
+                    -DDEACTIVATE_SNAPPY:BOOL=OFF "
+)
+
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES

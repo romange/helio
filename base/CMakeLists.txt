@@ -1,5 +1,6 @@
 add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc proc_util.cc
-    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
+    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc float2decimal.cc
+    double_compressor.cc)
 
 if (LEGACY_GLOG) 
   set(LOG_LIBS glog::glog)
@@ -11,7 +12,7 @@ else()
 endif()
 
 cxx_link(base ${LOG_LIBS} absl::flags_parse 
-    absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash)
+    absl::strings absl::symbolize absl::time absl::failure_signal_handler TRDP::xxhash TRDP::blosc)
 
 # Define default gtest_main for tests.
 add_library(gtest_main_ext gtest_main.cc)
