@@ -52,21 +52,31 @@ double FromDecimal(int64_t significand, int exponent) {
     return FromPositive(significand, exponent);
 }
 
-constexpr size_t kShuffleStep = 1024;
-
-inline void bitshuffle2(const int64_t* src, size_t count, uint8_t* dest, uint8_t* tmp) {
+void bitshuffle2(const int64_t* src, size_t count, uint8_t* dest) {
   const uint8_t* src_b = reinterpret_cast<const uint8_t*>(src);
-  const uint8_t* src_e = src_b + count * sizeof(uint64_t);
-  uint8_t* ptr = dest;
-  for (; src_b + kShuffleStep <= src_e; src_b += kShuffleStep) {
-    bitshuffle(sizeof(uint64_t), kShuffleStep, src_b, ptr, tmp);
-    ptr+= kShuffleStep;
+  uint8_t btmp[64] = {0};
+  while (count >= 8) {
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      for (unsigned i = 0; i < 8; ++i) {
+        btmp[i + shift] = (src[i] >> shift) & 0xFF;
+      }
+    }
+    memcpy(dest, btmp, sizeof(btmp));
+    src += 8;
+    count -= 8;
+    dest += sizeof(btmp);
   }
-  if (src_b != src_e) {
-    bitshuffle(sizeof(uint64_t), src_e - src_b, src_b, ptr, tmp);
+  if (count > 0) {
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      for (unsigned i = 0; i < count; ++i) {
+        btmp[i + shift] = (src[i] >> shift) & 0xFF;
+      }
+    }
+    memcpy(dest, btmp, count * 8);
   }
 }
 
+#if 0
 inline void bitunshuffle2(const uint8_t* src, size_t sz, uint8_t* dest) {
   uint8_t tmp[kShuffleStep];
 
@@ -80,6 +90,7 @@ inline void bitunshuffle2(const uint8_t* src, size_t sz, uint8_t* dest) {
     bitunshuffle(sizeof(uint64_t), sz - i, src + i, ptr, tmp);
   }
 }
+#endif
 
 }  // namespace
 
@@ -209,10 +220,9 @@ uint32_t DoubleCompressor::Commit(const double* src, uint32_t count, uint8_t* de
   }
   VLOG(1) << "Cost: " << cost << " normalized count: " << normal_cnt;
 
-  // dest here serves as temporary buffer. aux_->shuffle is the destination.
-  uint8_t* shuffle_buf = reinterpret_cast<uint8_t*>(aux_->dec);
-  bitshuffle2(aux_->normalized, count, shuffle_buf, dest);
+  bitshuffle2(aux_->normalized, count, dest);
 
+#if 0
   char* const cdest = reinterpret_cast<char*>(dest);
   char* next = cdest + 3 + DECIMAL_HEADER_MAX_SIZE - 2;
   char* end = cdest + CommitMaxSize(count);
@@ -248,7 +258,8 @@ uint32_t DoubleCompressor::Commit(const double* src, uint32_t count, uint8_t* de
   CHECK_LE(written, COMPRESS_BLOCK_BOUND);
   LittleEndian::Store16(dest + 1, written - 3);
   *dest = flags;
-  return written;
+#endif
+  return count * 8;
 }
 
 uint32_t DoubleCompressor::Optimize(const ExponentMap& em) {
@@ -284,7 +295,7 @@ uint32_t DoubleCompressor::WriteRawDoubles(const double* src, uint32_t count, ui
   return sz + 3;
 }
 
-
+#if 0
 int32_t  DoubleDecompressor::Decompress(const uint8_t* src, uint32_t src_len, double* dest) {
   if (src_len < 3 || LittleEndian::Load16(src + 1) != src_len - 3)
     return -1;
@@ -349,5 +360,5 @@ int32_t  DoubleDecompressor::Decompress(const uint8_t* src, uint32_t src_len, do
   }
   return count;
 }
-
+#endif
 }  // namespace util

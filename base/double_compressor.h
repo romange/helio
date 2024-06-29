@@ -11,7 +11,7 @@ namespace base {
 
 class DoubleCompressor {
  public:
-  enum { BLOCK_MAX_BYTES = 1U << 16, BLOCK_MAX_LEN = BLOCK_MAX_BYTES / sizeof(double) };  // 2^13
+  enum { BLOCK_MAX_BYTES = 1U << 13, BLOCK_MAX_LEN = BLOCK_MAX_BYTES / sizeof(double) };  // 2^13
   enum { COMPRESS_BLOCK_BOUND = (1U << 16) + 3,
          DECIMAL_HEADER_MAX_SIZE = 14};
 

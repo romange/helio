@@ -35,8 +35,8 @@ constexpr uint64_t powers_of_10_internal[] = {
 
 namespace {
 
-unsigned int BitSetRight(uint32_t v) {
-    return 31 - __builtin_ctzl(v);
+constexpr unsigned int BitSetRight(uint32_t v) {
+  return __builtin_clz(v) ^ 31;
 }
 
 // Returns a number between 1 and 10.

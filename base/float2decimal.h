@@ -381,7 +381,7 @@ inline void Fp::NormalizeTo(int new_e) {
   e = new_e;
 }
 
-constexpr uint64_t powers_of_10_internal[];
+extern const uint64_t powers_of_10_internal[];
 
 }  // namespace dtoa
 }  // namespace util
