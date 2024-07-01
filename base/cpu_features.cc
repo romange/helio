@@ -6,19 +6,19 @@
 
 #include <cstdint>
 
+// aarch64 is currently a noop.
+#ifdef __x86_64__
+
 namespace base {
 
 namespace {
 
-// aarch64 is currently a noop.
-#ifdef __x86_64__
-
 // See <cpuid.h> for constants reference
-constexpr unsigned BIT_AVX2	= (1 << 5);
-constexpr unsigned BIT_AVX512F	= (1 << 16);
+constexpr unsigned BIT_AVX2 = (1 << 5);
+constexpr unsigned BIT_AVX512F = (1 << 16);
 
-constexpr unsigned BIT_XSAVE	= (1 << 26);
-constexpr unsigned BIT_OSXSAVE	= (1 << 27);
+constexpr unsigned BIT_XSAVE = (1 << 26);
+constexpr unsigned BIT_OSXSAVE = (1 << 27);
 
 // A struct to hold the result of a call to cpuid.
 typedef struct {
@@ -39,7 +39,7 @@ uint32_t GetXCR0() {
   return xcr0;
 }
 
-}
+}  // namespace
 
 CpuFeatures GetCpuFeatures() {
   CpuFeatures res;
@@ -68,6 +68,6 @@ CpuFeatures GetCpuFeatures() {
   return res;
 }
 
-#endif
-
 }  // namespace base
+
+#endif
