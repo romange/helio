@@ -27,7 +27,7 @@ file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC -fno-stack-protector \
     -fno-stack-clash-protection")
 
-if (APPLE) 
+if (APPLE)
   set(THIRD_PARTY_CXX_FLAGS "${THIRD_PARTY_CXX_FLAGS} -Wl,-ld_classic")
 endif()
 
@@ -364,6 +364,8 @@ add_third_party(
 )
 
 if (WITH_AWS)
+  add_definitions(-DWITH_AWS)
+
   set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
 
   add_third_party(
