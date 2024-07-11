@@ -70,7 +70,14 @@ class GCPCredsProvider {
 class GCS {
  public:
   using BucketItem = std::string_view;
+  struct ObjectItem {
+    size_t size;
+    std::string_view key;
+    bool is_prefix;
+  };
+
   using ListBucketCb = std::function<void(BucketItem)>;
+  using ListObjectCb = std::function<void(const ObjectItem&)>;
 
   GCS(GCPCredsProvider* creds_provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb);
   ~GCS();
@@ -78,7 +85,8 @@ class GCS {
   std::error_code Connect(unsigned msec);
 
   std::error_code ListBuckets(ListBucketCb cb);
-
+  std::error_code List(std::string_view bucket, std::string_view prefix, bool recursive,
+                       ListObjectCb cb);
  private:
   GCPCredsProvider& creds_provider_;
   SSL_CTX* ssl_ctx_;

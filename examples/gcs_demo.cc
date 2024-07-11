@@ -14,9 +14,10 @@ using namespace util;
 using absl::GetFlag;
 
 ABSL_FLAG(string, bucket, "", "");
+ABSL_FLAG(string, prefix, "", "");
+
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
-
 
 void Run(SSL_CTX* ctx) {
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
@@ -28,11 +29,18 @@ void Run(SSL_CTX* ctx) {
   cloud::GCS gcs(&provider, ctx, pb);
   ec = gcs.Connect(connect_ms);
   CHECK(!ec) << "Could not connect " << ec;
-  auto cb = [](std::string_view bname) {
-    CONSOLE_INFO << bname;
-  };
 
-  ec = gcs.ListBuckets(cb);
+  string prefix = GetFlag(FLAGS_prefix);
+  if (!prefix.empty()) {
+    auto cb = [](cloud::GCS::ObjectItem item) {
+      cout << "Object: " << item.key << ", size: " << item.size << endl;
+    };
+    ec = gcs.List(GetFlag(FLAGS_bucket), prefix, false, cb);
+  } else {
+    auto cb = [](std::string_view bname) { CONSOLE_INFO << bname; };
+
+    ec = gcs.ListBuckets(cb);
+  }
   CHECK(!ec) << ec.message();
 }
 
@@ -53,12 +61,9 @@ int main(int argc, char** argv) {
 
   pp->Run();
 
-  SSL_CTX* ctx =  util::http::TlsClient::CreateSslContext();
-  pp->GetNextProactor()->Await([ctx] {
-    Run(ctx);
-  });
+  SSL_CTX* ctx = util::http::TlsClient::CreateSslContext();
+  pp->GetNextProactor()->Await([ctx] { Run(ctx); });
   util::http::TlsClient::FreeContext(ctx);
-
 
   return 0;
 }
