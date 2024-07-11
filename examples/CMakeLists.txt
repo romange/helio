@@ -13,5 +13,8 @@ cxx_link(echo_server base fibers2 http_server_lib TRDP::gperf)
 add_executable(s3_demo s3_demo.cc)
 cxx_link(s3_demo base awsv2_lib)
 
+add_executable(gcs_demo gcs_demo.cc)
+cxx_link(gcs_demo gcp_lib)
+
 add_executable(https_client_cli https_client_cli.cc)
 cxx_link(https_client_cli base fibers2 http_client_lib tls_lib)

@@ -352,7 +352,7 @@ add_third_party(
 add_third_party(
   rapidjson
   GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
-  GIT_TAG 1a803826f1197b5e30703afe4b9c0e7dd48074f5
+  GIT_TAG ab1842a
   CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
                     -DRAPIDJSON_BUILD_DOC=OFF"
   LIB "none"
