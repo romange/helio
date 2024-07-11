@@ -14,6 +14,7 @@
 #include "io/file.h"
 #include "io/file_util.h"
 #include "io/line_reader.h"
+#include "strings/escaping.h"
 
 using namespace std;
 namespace h2 = boost::beast::http;
@@ -31,17 +32,19 @@ auto Unexpected(std::errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
-#define RETURN_UNEXPECTED(x) do {  \
-  auto ec = (x);  \
-  if (ec) \
-    return nonstd::make_unexpected(ec); \
-} while(false)
+#define RETURN_UNEXPECTED(x)              \
+  do {                                    \
+    auto ec = (x);                        \
+    if (ec)                               \
+      return nonstd::make_unexpected(ec); \
+  } while (false)
 
-#define RETURN_ERROR(x) do {  \
-  auto ec = (x);  \
-  if (ec)  \
-    return ec; \
-} while (false)
+#define RETURN_ERROR(x) \
+  do {                  \
+    auto ec = (x);      \
+    if (ec)             \
+      return ec;        \
+  } while (false)
 
 string AuthHeader(string_view access_token) {
   return absl::StrCat("Bearer ", access_token);
@@ -185,7 +188,7 @@ io::Result<EmptyParserPtr> SendWithToken(GCPCredsProvider* provider, http::Clien
     EmptyParserPtr parser(new h2::response_parser<h2::empty_body>());
     RETURN_UNEXPECTED(client->ReadHeader(parser.get()));
 
-    VLOG(1) << "RespHeader" << i << ": " << parser.get();
+    VLOG(1) << "RespHeader" << i << ": " << parser->get();
 
     if (parser->get().result() == h2::status::ok) {
       return parser;
@@ -203,6 +206,11 @@ io::Result<EmptyParserPtr> SendWithToken(GCPCredsProvider* provider, http::Clien
 
   return nonstd::make_unexpected(ec);
 }
+
+#define FETCH_ARRAY_MEMBER(val)  \
+    if (!(val).IsArray())   \
+      return make_error_code(errc::bad_message); \
+    auto array = val.GetArray()
 
 }  // namespace
 
@@ -335,17 +343,79 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
     if (it == doc.MemberEnd())
       break;
 
-    const auto& val = it->value;
-    if (!val.IsArray()) {
-      return make_error_code(errc::bad_message);
-    }
-    auto array = val.GetArray();
+    FETCH_ARRAY_MEMBER(it->value);
 
     for (size_t i = 0; i < array.Size(); ++i) {
       const auto& item = array[i];
       auto it = item.FindMember("name");
       if (it != item.MemberEnd()) {
         cb(string_view{it->value.GetString(), it->value.GetStringLength()});
+      }
+    }
+
+    it = doc.FindMember("nextPageToken");
+    if (it == doc.MemberEnd()) {
+      break;
+    }
+    absl::string_view page_token{it->value.GetString(), it->value.GetStringLength()};
+    http_req.target(absl::StrCat(url, "&pageToken=", page_token));
+  }
+  return {};
+}
+
+error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
+                          ListObjectCb cb) {
+  CHECK(!bucket.empty());
+
+  string url = "/storage/v1/b/";
+  absl::StrAppend(&url, bucket, "/o?maxResults=200&prefix=");
+  strings::AppendUrlEncoded(prefix, &url);
+  if (!recursive) {
+    absl::StrAppend(&url, "&delimiter=%2f");
+  }
+  auto http_req = PrepareRequest(h2::verb::get, url, creds_provider_.access_token());
+
+  rj::Document doc;
+  while (true) {
+    io::Result<EmptyParserPtr> parse_res =
+        SendWithToken(&creds_provider_, client_.get(), &http_req);
+    if (!parse_res)
+      return parse_res.error();
+    EmptyParserPtr empty_parser = std::move(*parse_res);
+    h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
+    RETURN_ERROR(client_->Recv(&resp));
+
+    auto msg = resp.release();
+
+    doc.ParseInsitu(&msg.body().front());
+    if (doc.HasParseError()) {
+      return make_error_code(errc::bad_message);
+    }
+
+    auto it = doc.FindMember("items");
+    if (it != doc.MemberEnd()) {
+      FETCH_ARRAY_MEMBER(it->value);
+
+      for (size_t i = 0; i < array.Size(); ++i) {
+        const auto& item = array[i];
+        auto it = item.FindMember("name");
+        CHECK(it != item.MemberEnd());
+        absl::string_view key_name(it->value.GetString(), it->value.GetStringLength());
+        it = item.FindMember("size");
+        CHECK(it != item.MemberEnd());
+        absl::string_view sz_str(it->value.GetString(), it->value.GetStringLength());
+        size_t item_size = 0;
+        CHECK(absl::SimpleAtoi(sz_str, &item_size));
+        cb(ObjectItem{item_size, key_name, false});
+      }
+    }
+    it = doc.FindMember("prefixes");
+    if (it != doc.MemberEnd()) {
+      FETCH_ARRAY_MEMBER(it->value);
+      for (size_t i = 0; i < array.Size(); ++i) {
+        const auto& item = array[i];
+        absl::string_view str(item.GetString(), item.GetStringLength());
+        cb(ObjectItem{0, str, true});
       }
     }
 
