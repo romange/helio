@@ -74,16 +74,26 @@ class Client {
     on_connect_cb_ = std::move(cb);
   }
 
+  void set_retry_count(uint32_t cnt) { retry_cnt_ = cnt; }
+
+  auto native_handle() const {
+    return socket_->native_handle();
+  }
+
  protected:
   std::unique_ptr<FiberSocketBase> socket_;
 
  private:
   static bool IsIoError(BoostError ec) {
-    return bool(ec);  // TODO: currently all errors are io errors
+    using err = ::boost::beast::http::error;
+    return ec && ec != err::need_buffer;
   }
 
-  static BoostError HandleError(BoostError ec) {
-    return ec;  // TODO: a hook to print warning errors, change state etc.
+  BoostError HandleError(BoostError ec) {
+    if (IsIoError(ec)) {
+      socket_->Close();
+    }
+    return ec;
   }
 
   fb2::ProactorBase* proactor_;
@@ -98,8 +108,7 @@ class Client {
 
 template <typename Req, typename Resp> auto Client::Send(const Req& req, Resp* resp) -> BoostError {
   namespace h2 = ::boost::beast::http;
-  BoostError ec;
-  ::boost::system::error_code read_ec;
+  BoostError ec, read_ec;
   AsioStreamAdapter<> adapter(*socket_);
 
   for (uint32_t i = 0; i < retry_cnt_; ++i) {
