@@ -28,11 +28,12 @@ void Run(SSL_CTX* ctx) {
   cloud::GCS gcs(&provider, ctx, pb);
   ec = gcs.Connect(connect_ms);
   CHECK(!ec) << "Could not connect " << ec;
-  auto res = gcs.ListBuckets();
-  CHECK(res) << res.error().message();
-  for (auto v : *res) {
-    CONSOLE_INFO << v;
-  }
+  auto cb = [](std::string_view bname) {
+    CONSOLE_INFO << bname;
+  };
+
+  ec = gcs.ListBuckets(cb);
+  CHECK(!ec) << ec.message();
 }
 
 int main(int argc, char** argv) {
