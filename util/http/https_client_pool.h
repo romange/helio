@@ -1,41 +1,45 @@
-// Copyright 2019, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2024, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #pragma once
 
-#include <boost/asio/ssl/context.hpp>
 #include <deque>
 #include <memory>
+#include <string>
+
+typedef struct ssl_ctx_st SSL_CTX;
 
 namespace util {
-
-class IoContext;
+namespace fb2 {
+class ProactorBase;
+}  // namespace fb2
 
 namespace http {
 
-class HttpsClient;
+class Client;
 
-// IoContext specific, thread-local pool that manages a set of https connections.
-class HttpsClientPool {
+// thread-local pool that manages a set of http(s) connections.
+class ClientPool {
+  ClientPool(const ClientPool&) = delete;
+  ClientPool& operator=(const ClientPool&) = delete;
  public:
   class HandleGuard {
    public:
-    HandleGuard(HttpsClientPool* pool = nullptr) : pool_(pool) {
+    HandleGuard(ClientPool* pool = nullptr) : pool_(pool) {
     }
 
-    void operator()(HttpsClient* client);
+    void operator()(Client* client);
 
    private:
-    HttpsClientPool* pool_;
+    ClientPool* pool_;
   };
 
-  using ClientHandle = std::unique_ptr<HttpsClient, HandleGuard>;
+  using ClientHandle = std::unique_ptr<Client, HandleGuard>;
 
-  HttpsClientPool(const std::string& domain, ::boost::asio::ssl::context* ssl_ctx,
-                  IoContext* io_cntx);
+  ClientPool(const std::string& domain, SSL_CTX* ssl_ctx, fb2::ProactorBase* pb);
 
-  ~HttpsClientPool();
+  ~ClientPool();
 
   /*! @brief Returns https client connection from the pool.
    *
@@ -55,29 +59,24 @@ class HttpsClientPool {
     retry_cnt_ = cnt;
   }
 
-  IoContext& io_context() {
-    return io_cntx_;
-  }
-
   //! Number of existing handles created by this pool.
   unsigned handles_count() const {
     return existing_handles_;
   }
 
-  const std::string domain() const {
+  const std::string& domain() const {
     return domain_;
   }
 
  private:
-  using SslContext = ::boost::asio::ssl::context;
-
-  SslContext& ssl_cntx_;
-  IoContext& io_cntx_;
   std::string domain_;
+  SSL_CTX* ssl_cntx_;
+  fb2::ProactorBase& proactor_;
+
   unsigned connect_msec_ = 1000, retry_cnt_ = 1;
   int existing_handles_ = 0;
 
-  std::deque<HttpsClient*> available_handles_;  // Using queue to allow round-robin access.
+  std::deque<Client*> available_handles_;  // Using queue to allow round-robin access.
 };
 
 }  // namespace http
