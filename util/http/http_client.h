@@ -80,6 +80,10 @@ class Client {
     return socket_->native_handle();
   }
 
+  ProactorBase* proactor() const {
+    return proactor_;
+  }
+
  protected:
   std::unique_ptr<FiberSocketBase> socket_;
 
@@ -123,6 +127,7 @@ template <typename Req, typename Resp> auto Client::Send(const Req& req, Resp* r
     }
 
     *resp = Resp{};
+    ec = read_ec;
   }
 
   return HandleError(ec);

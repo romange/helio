@@ -14,18 +14,22 @@ using namespace util;
 using absl::GetFlag;
 
 ABSL_FLAG(string, bucket, "", "");
-ABSL_FLAG(string, access_token, "", "");
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
 
 void Run(SSL_CTX* ctx) {
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
-  cloud::GCS gcs(ctx, pb);
-  error_code ec = gcs.Connect(GetFlag(FLAGS_connect_ms));
+  cloud::GCPCredsProvider provider;
+  unsigned connect_ms = GetFlag(FLAGS_connect_ms);
+  error_code ec = provider.Init(connect_ms, pb);
+  CHECK(!ec) << "Could not load credentials " << ec.message();
+
+  cloud::GCS gcs(&provider, ctx, pb);
+  ec = gcs.Connect(connect_ms);
   CHECK(!ec) << "Could not connect " << ec;
   auto res = gcs.ListBuckets();
-  CHECK(res) << res.error();
+  CHECK(res) << res.error().message();
   for (auto v : *res) {
     CONSOLE_INFO << v;
   }
