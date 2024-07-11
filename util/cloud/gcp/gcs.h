@@ -69,14 +69,15 @@ class GCPCredsProvider {
 
 class GCS {
  public:
-  using ListBucketResult = io::Result<std::vector<std::string>>;
+  using BucketItem = std::string_view;
+  using ListBucketCb = std::function<void(BucketItem)>;
 
   GCS(GCPCredsProvider* creds_provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb);
   ~GCS();
 
   std::error_code Connect(unsigned msec);
 
-  ListBucketResult ListBuckets();
+  std::error_code ListBuckets(ListBucketCb cb);
 
  private:
   GCPCredsProvider& creds_provider_;
