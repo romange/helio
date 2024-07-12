@@ -33,7 +33,6 @@ class Engine {
   // write. In any case for non-error OpResult a caller must check OutputPending and write the
   // output buffer to the appropriate channel.
   using OpResult = io::Result<int, unsigned long>;
-  using BufResult = io::Result<Buffer, unsigned long>;
 
   // Construct a new engine for the specified context.
   explicit Engine(SSL_CTX* context);
@@ -67,11 +66,11 @@ class Engine {
   //! Returns output (read) buffer. This operation is destructive, i.e. after calling
   //! this function the buffer is being consumed.
   //! See OutputPending() for checking if there is a output buffer to consume.
-  BufResult FetchOutputBuf();
+  Buffer FetchOutputBuf();
 
   //! Returns output buffer which is the read buffer of tls engine.
   //! This operation is not destructive.
-  BufResult PeekOutputBuf();
+  Buffer PeekOutputBuf();
 
   //! Tells the engine that sz bytes were consumed from the output buffer.
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.

@@ -37,7 +37,7 @@ class TlsSocket final : public FiberSocketBase {
 
   // The endpoint should not really pass here, it is to keep
   // the interface with FiberSocketBase.
-  error_code Connect(const endpoint_type&) final;
+  error_code Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect = {}) final;
 
   error_code Close() final;
 
@@ -92,7 +92,9 @@ class TlsSocket final : public FiberSocketBase {
   error_code MaybeSendOutput();
 
   /// Read encrypted data from the network socket and feed it into the TLS engine.
-  error_code HandleRead();
+  error_code HandleSocketRead();
+
+  error_code HandleSocketWrite();
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;

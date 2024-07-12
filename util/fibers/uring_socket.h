@@ -32,7 +32,8 @@ class UringSocket : public LinuxSocketBase {
 
   ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
-  ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
+  ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep,
+                                          std::function<void(int)> on_pre_connect) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
 
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
@@ -75,7 +76,7 @@ class UringSocket : public LinuxSocketBase {
 
   struct ErrorCbRefWrapper {
     uint32_t error_cb_id = 0;
-    uint32_t ref_count = 2;   // one for the socket reference, one for the completion lambda.
+    uint32_t ref_count = 2;  // one for the socket reference, one for the completion lambda.
     std::function<void(uint32_t)> cb;
 
     static ErrorCbRefWrapper* New(std::function<void(uint32_t)> cb) {
