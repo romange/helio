@@ -97,8 +97,13 @@ Engine::Engine(SSL_CTX* context) : ssl_(::SSL_new(context)) {
   // SSL_set0_[rw]bio take ownership of the passed reference,
   // so if we call both with the same BIO, we need the refcount to be 2.
   BIO_up_ref(int_bio);
+
   SSL_set0_rbio(ssl_, int_bio);
   SSL_set0_wbio(ssl_, int_bio);
+
+  // Debugging traces.
+  // SSL_set_msg_callback(ssl_, SSL_trace);
+  // SSL_set_msg_callback_arg(ssl_, BIO_new_fp(stdout,0));
 }
 
 Engine::~Engine() {
@@ -111,21 +116,21 @@ Engine::~Engine() {
 }
 
 
-auto Engine::FetchOutputBuf() -> BufResult {
+auto Engine::FetchOutputBuf() -> Buffer {
   char* buf = nullptr;
 
   int res = BIO_nread(external_bio_, &buf, INT_MAX);
   if (res < 0) {
     unsigned long error = ::ERR_get_error();
-    return nonstd::make_unexpected(error);
+    LOG(DFATAL) << "Unexpected result " << res << " " << error;
+
+    return Buffer{};
   }
 
   return Buffer(reinterpret_cast<const uint8_t*>(buf), res);
 }
 
-// TODO: to consider replacing BufResult with Buffer since
-// it seems BIO_C_NREAD0 should not return negative values when used properly.
-auto Engine::PeekOutputBuf() -> BufResult {
+auto Engine::PeekOutputBuf() -> Buffer {
   char* buf = nullptr;
 
   long res = BIO_ctrl(external_bio_, BIO_C_NREAD0, 0, &buf);

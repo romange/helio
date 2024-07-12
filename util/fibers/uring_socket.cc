@@ -146,7 +146,7 @@ auto UringSocket::Accept() -> AcceptResult {
   return fs;
 }
 
-auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
+auto UringSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect) -> error_code {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -163,12 +163,13 @@ auto UringSocket::Connect(const endpoint_type& ep) -> error_code {
   // TODO: support direct descriptors. For now client sockets always use regular linux fds.
   fd_ = fd << kFdShift;
 
-  IoResult io_res;
-  ep.data();
+  if (on_pre_connect) {
+    on_pre_connect(fd);
+  }
 
   FiberCall fc(proactor, timeout());
   fc->PrepConnect(fd, (const sockaddr*)ep.data(), ep.size());
-  io_res = fc.Get();
+  IoResult io_res = fc.Get();
 
   if (io_res < 0) {  // In that case connect returns -errno.
     ec = error_code(-io_res, system_category());
@@ -333,7 +334,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
 
-  VSOCK(2) << "Recv [" << fd << "] " << flags;
+  VSOCK(2) << "Recv [" << fd << "], flags: " << flags;
   ssize_t res;
   while (true) {
     FiberCall fc(p, timeout());

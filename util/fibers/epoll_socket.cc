@@ -189,7 +189,7 @@ auto EpollSocket::Accept() -> AcceptResult {
   return nonstd::make_unexpected(ec);
 }
 
-auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
+error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect) {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -208,7 +208,9 @@ auto EpollSocket::Connect(const endpoint_type& ep) -> error_code {
   write_context_ = detail::FiberActive();
   absl::Cleanup clean = [this]() { write_context_ = nullptr; };
 
-  // RegisterEvents(GetProactor()->ev_loop_fd(), fd, arm_index_ + 1024);
+  if (on_pre_connect) {
+    on_pre_connect(fd);
+  }
 
   DVSOCK(2) << "Connecting";
 

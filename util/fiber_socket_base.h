@@ -39,7 +39,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
   ABSL_MUST_USE_RESULT virtual AcceptResult Accept() = 0;
 
-  ABSL_MUST_USE_RESULT virtual error_code Connect(const endpoint_type& ep) = 0;
+  ABSL_MUST_USE_RESULT virtual error_code Connect(const endpoint_type& ep,
+                                                  std::function<void(int)> on_pre_connect = {}) = 0;
 
   ABSL_MUST_USE_RESULT virtual error_code Close() = 0;
 
@@ -200,8 +201,8 @@ class LinuxSocketBase : public FiberSocketBase {
   // gives me 256M descriptors.
   int32_t fd_;
 
-  private:
-    uint32_t timeout_ = UINT32_MAX;
+ private:
+  uint32_t timeout_ = UINT32_MAX;
 };
 
 void SetNonBlocking(int fd);

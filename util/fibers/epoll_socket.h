@@ -20,7 +20,8 @@ class EpollSocket : public LinuxSocketBase {
 
   ABSL_MUST_USE_RESULT AcceptResult Accept() final;
 
-  ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep) final;
+  ABSL_MUST_USE_RESULT error_code Connect(const endpoint_type& ep,
+                                          std::function<void(int)> on_pre_connect) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
 
   // Really need here expected.

@@ -136,7 +136,7 @@ auto TlsSocket::Accept() -> AcceptResult {
       return make_unexpected(make_error_code(errc::connection_reset));
     }
     if (op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
-      ec = HandleRead();
+      ec = HandleSocketRead();
       if (ec)
         return make_unexpected(ec);
     }
@@ -145,19 +145,53 @@ auto TlsSocket::Accept() -> AcceptResult {
   return nullptr;
 }
 
-auto TlsSocket::Connect(const endpoint_type& endpoint) -> error_code {
+error_code TlsSocket::Connect(const endpoint_type& endpoint,
+                              std::function<void(int)> on_pre_connect) {
   DCHECK(engine_);
-  auto io_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
-  if (!io_result.has_value()) {
-    return std::error_code(io_result.error(), std::system_category());
+  Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
+  if (!op_result) {
+    return std::error_code(op_result.error(), std::system_category());
   }
 
   // If the socket is already open, we should not call connect on it
-  if (IsOpen()) {
-    return {};
+  if (!IsOpen()) {
+    error_code ec = next_sock_->Connect(endpoint, std::move(on_pre_connect));
+    if (ec)
+      return ec;
   }
 
-  return next_sock_->Connect(endpoint);
+  // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
+  int op_val = *op_result;
+  error_code ec;
+
+  // it should guide us to write and then read.
+  DCHECK_EQ(op_val, Engine::NEED_READ_AND_MAYBE_WRITE);
+  while (op_val < 0) {
+    if (op_val == Engine::EOF_STREAM) {
+      return make_error_code(errc::connection_reset);
+    }
+
+    if (op_val == Engine::NEED_WRITE) {
+      ec = HandleSocketWrite();
+      if (ec)
+        return ec;
+    } else if (op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
+      ec = HandleSocketWrite();
+      if (ec)
+        return ec;
+
+      ec = HandleSocketRead();
+      if (ec)
+        return ec;
+    }
+    op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
+    if (!op_result) {
+      return std::error_code(op_result.error(), std::system_category());
+    }
+    op_val = *op_result;
+  }
+
+  return ec;
 }
 
 auto TlsSocket::Close() -> error_code {
@@ -249,7 +283,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     }
 
     if (op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
-      ec = HandleRead();
+      ec = HandleSocketRead();
       if (ec)
         return make_unexpected(ec);
     }
@@ -341,7 +375,7 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
     }
 
     if (op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
-      ec = HandleRead();
+      ec = HandleSocketRead();
       if (ec)
         return make_unexpected(ec);
     }
@@ -381,28 +415,10 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
     return error_code{};
   }
 
-  auto buf_result = engine_->PeekOutputBuf();
-  CHECK(buf_result);
-
-  if (!buf_result->empty()) {
-    // we do not allow concurrent writes from multiple fibers.
-    state_ |= WRITE_IN_PROGRESS;
-    io::Result<size_t> write_result = next_sock_->WriteSome(*buf_result);
-
-    // Safe to clear here since the code below is atomic fiber-wise.
-    state_ &= ~WRITE_IN_PROGRESS;
-    DCHECK(engine_);
-    if (!write_result) {
-      return write_result.error();
-    }
-    CHECK_GT(*write_result, 0u);
-    engine_->ConsumeOutputBuf(*write_result);
-  }
-
-  return error_code{};
+  return HandleSocketWrite();
 }
 
-auto TlsSocket::HandleRead() -> error_code {
+auto TlsSocket::HandleSocketRead() -> error_code {
   if (state_ & READ_IN_PROGRESS) {
     // We need to Yield because otherwise we might end up in an infinite loop.
     // See also comments in MaybeSendOutput.
@@ -419,6 +435,28 @@ auto TlsSocket::HandleRead() -> error_code {
   }
 
   engine_->CommitInput(*esz);
+
+  return error_code{};
+}
+
+error_code TlsSocket::HandleSocketWrite() {
+  Engine::Buffer buffer = engine_->PeekOutputBuf();
+
+  while (!buffer.empty()) {
+    // we do not allow concurrent writes from multiple fibers.
+    state_ |= WRITE_IN_PROGRESS;
+    io::Result<size_t> write_result = next_sock_->WriteSome(buffer);
+
+    // Safe to clear here since the code below is atomic fiber-wise.
+    state_ &= ~WRITE_IN_PROGRESS;
+    DCHECK(engine_);
+    if (!write_result) {
+      return write_result.error();
+    }
+    CHECK_GT(*write_result, 0u);
+    engine_->ConsumeOutputBuf(*write_result);
+    buffer.remove_prefix(*write_result);
+  }
 
   return error_code{};
 }

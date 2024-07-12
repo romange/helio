@@ -143,18 +143,17 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
       if (opts.drain_output)
         src->FetchOutputBuf();
       else {
-        auto buf_result = src->PeekOutputBuf();
-        CHECK(buf_result);
-        VLOG(1) << opts.name << " wrote " << buf_result->size() << " bytes";
-        CHECK(!buf_result->empty());
+        auto buffer = src->PeekOutputBuf();
+        VLOG(1) << opts.name << " wrote " << buffer.size() << " bytes";
+        CHECK(!buffer.empty());
 
         if (opts.mutate_indx) {
-          uint8_t* mem = const_cast<uint8_t*>(buf_result->data());
-          mem[opts.mutate_indx % buf_result->size()] = opts.mutate_val;
+          uint8_t* mem = const_cast<uint8_t*>(buffer.data());
+          mem[opts.mutate_indx % buffer.size()] = opts.mutate_val;
           opts.mutate_indx = 0;
         }
 
-        auto write_result = dest->WriteBuf(*buf_result);
+        auto write_result = dest->WriteBuf(buffer);
         if (!write_result) {
           return write_result.error();
         }

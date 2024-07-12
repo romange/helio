@@ -82,12 +82,15 @@ std::error_code Client::Reconnect() {
     return berr;
 
   FiberSocketBase* sock = proactor_->CreateSocket();
-  if (on_connect_cb_) {
-    on_connect_cb_(sock->native_handle());
-  }
+
   socket_.reset(sock);
   FiberSocketBase::endpoint_type ep{address, port_};
-  return socket_->Connect(ep);
+  auto on_connect = [this](int fd) {
+    if (on_connect_cb_) {
+      on_connect_cb_(fd);
+    }
+  };
+  return socket_->Connect(ep, std::move(on_connect));
 }
 
 #if 0
@@ -181,7 +184,9 @@ std::error_code TlsClient::Connect(string_view host, string_view service, SSL_CT
     // verify server cert using server hostname
     SSL_dane_enable(ssl_handle, host);
     ec = tls_socket->Connect(FiberSocketBase::endpoint_type{});
-    if (!ec) {
+    if (ec) {
+      std::ignore = tls_socket->Close();
+    } else {
       socket_.reset(tls_socket.release());
     }
   }
