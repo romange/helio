@@ -15,6 +15,7 @@
 #include "io/file_util.h"
 #include "io/line_reader.h"
 #include "strings/escaping.h"
+#include "util/cloud/gcp/gcp_utils.h"
 
 using namespace std;
 namespace h2 = boost::beast::http;
@@ -24,9 +25,6 @@ namespace util {
 namespace cloud {
 
 namespace {
-constexpr char kDomain[] = "www.googleapis.com";
-
-using EmptyRequest = h2::request<h2::empty_body>;
 
 auto Unexpected(std::errc code) {
   return nonstd::make_unexpected(make_error_code(code));
@@ -46,28 +44,6 @@ auto Unexpected(std::errc code) {
       return ec;        \
   } while (false)
 
-string AuthHeader(string_view access_token) {
-  return absl::StrCat("Bearer ", access_token);
-}
-
-EmptyRequest PrepareRequest(h2::verb req_verb, boost::beast::string_view url,
-                            const string_view access_token) {
-  EmptyRequest req(req_verb, url, 11);
-  req.set(h2::field::host, kDomain);
-  req.set(h2::field::authorization, AuthHeader(access_token));
-  req.keep_alive(true);
-
-  return req;
-}
-
-bool IsUnauthorized(const h2::header<false, h2::fields>& resp) {
-  if (resp.result() != h2::status::unauthorized) {
-    return false;
-  }
-  auto it = resp.find("WWW-Authenticate");
-
-  return it != resp.end();
-}
 
 io::Result<string> ExpandFile(string_view path) {
   io::Result<io::StatShortVec> res = io::StatFiles(path);
@@ -177,36 +153,6 @@ io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
   return result;
 }
 
-using EmptyParserPtr = std::unique_ptr<h2::response_parser<h2::empty_body>>;
-io::Result<EmptyParserPtr> SendWithToken(GCPCredsProvider* provider, http::Client* client,
-                                         EmptyRequest* req) {
-  error_code ec;
-  for (unsigned i = 0; i < 2; ++i) {  // Iterate for possible token refresh.
-    VLOG(1) << "HttpReq" << i << ": " << *req << ", socket " << client->native_handle();
-
-    RETURN_UNEXPECTED(client->Send(*req));
-    EmptyParserPtr parser(new h2::response_parser<h2::empty_body>());
-    RETURN_UNEXPECTED(client->ReadHeader(parser.get()));
-
-    VLOG(1) << "RespHeader" << i << ": " << parser->get();
-
-    if (parser->get().result() == h2::status::ok) {
-      return parser;
-    };
-
-    if (IsUnauthorized(parser->get())) {
-      RETURN_UNEXPECTED(provider->RefreshToken(client->proactor()));
-      req->set(h2::field::authorization, AuthHeader(provider->access_token()));
-
-      continue;
-    }
-    ec = make_error_code(errc::bad_message);
-    LOG(DFATAL) << "Unexpected response " << parser.get();
-  }
-
-  return nonstd::make_unexpected(ec);
-}
-
 #define FETCH_ARRAY_MEMBER(val)  \
     if (!(val).IsArray())   \
       return make_error_code(errc::bad_message); \
@@ -310,7 +256,7 @@ GCS::~GCS() {
 std::error_code GCS::Connect(unsigned msec) {
   client_->set_connect_timeout_ms(msec);
 
-  return client_->Connect(kDomain, "443", ssl_ctx_);
+  return client_->Connect(GCP_API_DOMAIN, "443", ssl_ctx_);
 }
 
 error_code GCS::ListBuckets(ListBucketCb cb) {
@@ -321,12 +267,13 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
 
   rj::Document doc;
 
+  RobustSender sender(2, &creds_provider_);
+
   while (true) {
-    io::Result<EmptyParserPtr> parse_res =
-        SendWithToken(&creds_provider_, client_.get(), &http_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &http_req);
     if (!parse_res)
       return parse_res.error();
-    EmptyParserPtr empty_parser = std::move(*parse_res);
+    RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
     h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
     RETURN_ERROR(client_->Recv(&resp));
 
@@ -376,12 +323,13 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
   auto http_req = PrepareRequest(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
+  RobustSender sender(2, &creds_provider_);
   while (true) {
-    io::Result<EmptyParserPtr> parse_res =
-        SendWithToken(&creds_provider_, client_.get(), &http_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &http_req);
     if (!parse_res)
       return parse_res.error();
-    EmptyParserPtr empty_parser = std::move(*parse_res);
+    RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
+
     h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
     RETURN_ERROR(client_->Recv(&resp));
 
