@@ -41,35 +41,27 @@ static Engine::OpResult ToOpResult(const SSL* ssl, int result, const char* locat
     return nonstd::make_unexpected(error);
   }
 
-  int want = SSL_want(ssl);
+  int ssl_error = SSL_get_error(ssl, result);
+  int io_err = errno;
 
-  if (want == SSL_NOTHING) {
-    int ssl_error = SSL_get_error(ssl, result);
-    int io_err = errno;
-
-    switch (ssl_error) {
-      case SSL_ERROR_ZERO_RETURN:
-        break;
-      case SSL_ERROR_SYSCALL:
-        LOG(WARNING) << "SSL syscall error " << io_err << ":" << result << " " << location;
-        break;
-      case SSL_ERROR_SSL:
-        LOG(WARNING) << "SSL protocol error " << io_err << ":" << result << " " << location;
-        break;
-      default:
-        LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result << " " << location;
-        break;
-    }
-
-    return Engine::EOF_STREAM;
+  switch (ssl_error) {
+    case SSL_ERROR_ZERO_RETURN:
+      break;
+    case SSL_ERROR_WANT_READ:
+      return Engine::NEED_READ_AND_MAYBE_WRITE;
+    case SSL_ERROR_WANT_WRITE:
+      VLOG(1) << "SSL_ERROR_WANT_WRITE " << location;
+      return Engine::NEED_WRITE;
+    case SSL_ERROR_SYSCALL:
+      LOG(WARNING) << "SSL syscall error " << io_err << ":" << result << " " << location;
+      break;
+    case SSL_ERROR_SSL:
+      LOG(WARNING) << "SSL protocol error " << io_err << ":" << result << " " << location;
+      break;
+    default:
+      LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result << " " << location;
+      break;
   }
-
-  if (SSL_WRITING == want)
-    return Engine::NEED_WRITE;
-  if (SSL_READING == want)
-    return Engine::NEED_READ_AND_MAYBE_WRITE;
-
-  LOG(ERROR) << "Unsupported want value " << want << ", ssl_error: " << SSL_get_error(ssl, result);
 
   return Engine::EOF_STREAM;
 }

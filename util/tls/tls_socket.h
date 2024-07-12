@@ -95,6 +95,7 @@ class TlsSocket final : public FiberSocketBase {
   error_code HandleSocketRead();
 
   error_code HandleSocketWrite();
+  error_code HandleOp(int op);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
