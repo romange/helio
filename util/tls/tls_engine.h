@@ -17,7 +17,17 @@ class Engine {
   enum HandshakeType { CLIENT = 1, SERVER = 2 };
   enum OpCode {
     EOF_STREAM = -1,
+
+    // We use BIO buffers, therefore any SSL operation can end up writing to the internal BIO
+    // and result in success, even though the data has not been flushed to the underlying socket.
+    // See https://www.openssl.org/docs/man1.0.2/man3/BIO_new_bio_pair.html
+    // As a result, we must flush output buffer (if OutputPending() > 0)if  before we do any
+    // Socket reads. We could flush after each SSL operation but that would result in fragmented
+    // Socket writes which we want to avoid.
     NEED_READ_AND_MAYBE_WRITE = -2,
+
+    // Happens when we write large chunks of data into the ssl engine,
+    // and it needs to flush its buffers.
     NEED_WRITE = -3,
   };
 
@@ -89,7 +99,7 @@ class Engine {
   void CommitInput(unsigned sz);
 
   // Returns size of pending data that needs to be flushed out from SSL to I/O.
-  // See https://www.openssl.org/docs/man1.1.0/man3/BIO_new_bio_pair.html
+  // See https://www.openssl.org/docs/man1.0.2/man3/BIO_new_bio_pair.html
   // Specifically, warning that says: "An application must not rely on the error value of
   // SSL_operation() but must assure that the write buffer is always flushed first".
   size_t OutputPending() const {
