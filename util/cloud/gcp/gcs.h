@@ -31,18 +31,16 @@ class GCS {
   GCS(GCPCredsProvider* creds_provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb);
   ~GCS();
 
-  std::error_code Connect(unsigned msec);
-
   std::error_code ListBuckets(ListBucketCb cb);
   std::error_code List(std::string_view bucket, std::string_view prefix, bool recursive,
                        ListObjectCb cb);
 
-  std::unique_ptr<http::ClientPool> CreateConnectionPool() const;
+  http::ClientPool* GetConnectionPool() { return client_pool_.get(); }
 
  private:
   GCPCredsProvider& creds_provider_;
   SSL_CTX* ssl_ctx_;
-  std::unique_ptr<http::TlsClient> client_;
+  std::unique_ptr<http::ClientPool> client_pool_;
 };
 
 }  // namespace cloud

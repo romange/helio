@@ -29,22 +29,19 @@ void Run(SSL_CTX* ctx) {
   CHECK(!ec) << "Could not load credentials " << ec.message();
 
   cloud::GCS gcs(&provider, ctx, pb);
-  ec = gcs.Connect(connect_ms);
-  CHECK(!ec) << "Could not connect " << ec;
 
   string prefix = GetFlag(FLAGS_prefix);
-  if (!prefix.empty()) {
-    string bucket = GetFlag(FLAGS_bucket);
-    auto conn_pool = gcs.CreateConnectionPool();
-    CHECK(!bucket.empty());
+  string bucket = GetFlag(FLAGS_bucket);
 
+  if (!bucket.empty()) {
+    auto conn_pool = gcs.GetConnectionPool();
     if (GetFlag(FLAGS_write) > 0) {
       auto src = io::ReadFileToString("/proc/self/exe");
       CHECK(src);
       for (unsigned i = 0; i < GetFlag(FLAGS_write); ++i) {
         string dest_key = absl::StrCat(prefix, "_", i);
         io::Result<io::WriteFile*> dest_res =
-            cloud::OpenWriteGcsFile(bucket, dest_key, &provider, conn_pool.get());
+            cloud::OpenWriteGcsFile(bucket, dest_key, &provider, conn_pool);
         CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
         unique_ptr<io::WriteFile> dest(*dest_res);
         error_code ec = dest->Write(*src);

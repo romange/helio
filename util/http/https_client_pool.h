@@ -5,8 +5,11 @@
 #pragma once
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
+
+#include "io/io.h"
 
 typedef struct ssl_ctx_st SSL_CTX;
 
@@ -43,12 +46,12 @@ class ClientPool {
 
   /*! @brief Returns https client connection from the pool.
    *
-   * Must be called withing IoContext thread. Once ClientHandle destructs,
+   * Must be called withing Proactor thread. Once ClientHandle destructs,
    * the connection returns to the pool. GetHandle() might block the calling fiber for
    * connect_msec_ millis in case it creates a new connection.
    * Note that all allocated handles must be destroyed before destroying their parent pool.
    */
-  ClientHandle GetHandle();
+  io::Result<ClientHandle> GetHandle();
 
   void set_connect_timeout(unsigned msec) {
     connect_msec_ = msec;
@@ -68,6 +71,14 @@ class ClientPool {
     return domain_;
   }
 
+  fb2::ProactorBase& proactor() {
+    return proactor_;
+  }
+
+  void SetOnConnect(std::function<void(int)> cb) {
+    on_connect_ = std::move(cb);
+  }
+
  private:
   std::string domain_;
   SSL_CTX* ssl_cntx_;
@@ -77,6 +88,7 @@ class ClientPool {
   int existing_handles_ = 0;
 
   std::deque<Client*> available_handles_;  // Using queue to allow round-robin access.
+  std::function<void(int)> on_connect_;
 };
 
 }  // namespace http
