@@ -30,13 +30,6 @@ auto Unexpected(std::errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
-#define RETURN_UNEXPECTED(x)              \
-  do {                                    \
-    auto ec = (x);                        \
-    if (ec)                               \
-      return nonstd::make_unexpected(ec); \
-  } while (false)
-
 #define RETURN_ERROR(x) \
   do {                  \
     auto ec = (x);      \
@@ -44,8 +37,7 @@ auto Unexpected(std::errc code) {
       return ec;        \
   } while (false)
 
-
-io::Result<string> ExpandFile(string_view path) {
+io::Result<string> ExpandFilePath(string_view path) {
   io::Result<io::StatShortVec> res = io::StatFiles(path);
 
   if (!res) {
@@ -60,7 +52,7 @@ io::Result<string> ExpandFile(string_view path) {
 }
 
 std::error_code LoadGCPConfig(string* account_id, string* project_id) {
-  io::Result<string> path = ExpandFile("~/.config/gcloud/configurations/config_default");
+  io::Result<string> path = ExpandFilePath("~/.config/gcloud/configurations/config_default");
   if (!path) {
     return path.error();
   }
@@ -153,17 +145,49 @@ io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
   return result;
 }
 
-#define FETCH_ARRAY_MEMBER(val)  \
-    if (!(val).IsArray())   \
-      return make_error_code(errc::bad_message); \
-    auto array = val.GetArray()
+constexpr unsigned kTcpKeepAliveInterval = 30;
+
+error_code EnableKeepAlive(int fd) {
+  int val = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = kTcpKeepAliveInterval;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = kTcpKeepAliveInterval;
+#ifdef __APPLE__
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#else
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#endif
+
+  val = 3;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  return std::error_code{};
+}
+
+#define FETCH_ARRAY_MEMBER(val)                \
+  if (!(val).IsArray())                        \
+    return make_error_code(errc::bad_message); \
+  auto array = val.GetArray()
 
 }  // namespace
 
 error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
   CHECK_GT(connect_ms, 0u);
 
-  io::Result<string> root_path = ExpandFile("~/.config/gcloud");
+  io::Result<string> root_path = ExpandFilePath("~/.config/gcloud");
   if (!root_path) {
     return root_path.error();
   }
@@ -213,8 +237,10 @@ error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
   error_code ec = https_client.Connect(kDomain, "443", context);
   http::TlsClient::FreeContext(context);
 
-  if (ec)
+  if (ec) {
+    VLOG(1) << "Could not connect to " << kDomain;
     return ec;
+  }
   h2::request<h2::string_body> req{h2::verb::post, "/token", 11};
   req.set(h2::field::host, kDomain);
   req.set(h2::field::content_type, "application/x-www-form-urlencoded");
@@ -255,22 +281,25 @@ GCS::~GCS() {
 
 std::error_code GCS::Connect(unsigned msec) {
   client_->set_connect_timeout_ms(msec);
-
-  return client_->Connect(GCP_API_DOMAIN, "443", ssl_ctx_);
+  client_->AssignOnConnect([](int fd) {
+    auto ec = EnableKeepAlive(fd);
+    LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
+  });
+  return client_->Connect(GCS_API_DOMAIN, "443", ssl_ctx_);
 }
 
 error_code GCS::ListBuckets(ListBucketCb cb) {
   string url = absl::StrCat("/storage/v1/b?project=", creds_provider_.project_id());
-  absl::StrAppend(&url, "&maxResults=50&fields=items,nextPageToken");
+  absl::StrAppend(&url, "&maxResults=50&fields=items/id,nextPageToken");
 
-  auto http_req = PrepareRequest(h2::verb::get, url, creds_provider_.access_token());
+  detail::EmptyRequestImpl empty_req(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
 
   RobustSender sender(2, &creds_provider_);
 
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &http_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &empty_req);
     if (!parse_res)
       return parse_res.error();
     RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
@@ -294,7 +323,7 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
 
     for (size_t i = 0; i < array.Size(); ++i) {
       const auto& item = array[i];
-      auto it = item.FindMember("name");
+      auto it = item.FindMember("id");
       if (it != item.MemberEnd()) {
         cb(string_view{it->value.GetString(), it->value.GetStringLength()});
       }
@@ -305,13 +334,12 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
       break;
     }
     absl::string_view page_token{it->value.GetString(), it->value.GetStringLength()};
-    http_req.target(absl::StrCat(url, "&pageToken=", page_token));
+    empty_req.SetUrl(absl::StrCat(url, "&pageToken=", page_token));
   }
   return {};
 }
 
-error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
-                          ListObjectCb cb) {
+error_code GCS::List(string_view bucket, string_view prefix, bool recursive, ListObjectCb cb) {
   CHECK(!bucket.empty());
 
   string url = "/storage/v1/b/";
@@ -320,12 +348,13 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
   if (!recursive) {
     absl::StrAppend(&url, "&delimiter=%2f");
   }
-  auto http_req = PrepareRequest(h2::verb::get, url, creds_provider_.access_token());
+
+  detail::EmptyRequestImpl empty_req(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
   RobustSender sender(2, &creds_provider_);
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &http_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &empty_req);
     if (!parse_res)
       return parse_res.error();
     RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
@@ -372,9 +401,15 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
       break;
     }
     absl::string_view page_token{it->value.GetString(), it->value.GetStringLength()};
-    http_req.target(absl::StrCat(url, "&pageToken=", page_token));
+    empty_req.SetUrl(absl::StrCat(url, "&pageToken=", page_token));
   }
   return {};
+}
+
+unique_ptr<http::ClientPool> GCS::CreateConnectionPool() const {
+  unique_ptr<http::ClientPool> res(
+      new http::ClientPool(GCS_API_DOMAIN, ssl_ctx_, client_->proactor()));
+  return res;
 }
 
 }  // namespace cloud

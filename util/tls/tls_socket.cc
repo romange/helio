@@ -327,6 +327,8 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
 }
 
 io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
+  DVLOG(2) << "TlsSocket::SendBuffer " << buf.size() << " bytes";
+
   // Sending buffer into ssl.
   DCHECK(engine_);
   DCHECK_GT(buf.size(), 0u);
@@ -362,6 +364,13 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
     error_code ec = HandleOp(op_val);
     if (ec)
       return make_unexpected(ec);
+  }
+
+  // Usually we want to batch writes as much as possible, but here we can not now if more writes
+  // will follow. We must flush the output buffer, so that data will be sent down the socket.
+  error_code ec = MaybeSendOutput();
+  if (ec) {
+    return make_unexpected(ec);
   }
 
   return send_total;
@@ -436,6 +445,7 @@ error_code TlsSocket::HandleSocketWrite() {
   if (buffer.empty())
     return {};
 
+  DVLOG(2) << "HandleSocketWrite " << buffer.size();
   // we do not allow concurrent writes from multiple fibers.
   state_ |= WRITE_IN_PROGRESS;
   while (!buffer.empty()) {
