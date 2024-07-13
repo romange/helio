@@ -9,6 +9,7 @@
 
 #include "util/cloud/gcp/gcp_creds_provider.h"
 #include "util/http/http_client.h"
+#include "util/http/https_client_pool.h"
 
 typedef struct ssl_ctx_st SSL_CTX;
 
@@ -35,6 +36,9 @@ class GCS {
   std::error_code ListBuckets(ListBucketCb cb);
   std::error_code List(std::string_view bucket, std::string_view prefix, bool recursive,
                        ListObjectCb cb);
+
+  std::unique_ptr<http::ClientPool> CreateConnectionPool() const;
+
  private:
   GCPCredsProvider& creds_provider_;
   SSL_CTX* ssl_ctx_;

@@ -4,18 +4,19 @@
 #include "base/flags.h"
 #include "base/init.h"
 #include "base/logging.h"
+#include "io/file_util.h"
 #include "util/cloud/gcp/gcs.h"
+#include "util/cloud/gcp/gcs_file.h"
 #include "util/fibers/pool.h"
 
 using namespace std;
-using namespace boost;
 using namespace util;
 
 using absl::GetFlag;
 
 ABSL_FLAG(string, bucket, "", "");
 ABSL_FLAG(string, prefix, "", "");
-
+ABSL_FLAG(bool, write, false, "");
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
@@ -32,10 +33,27 @@ void Run(SSL_CTX* ctx) {
 
   string prefix = GetFlag(FLAGS_prefix);
   if (!prefix.empty()) {
-    auto cb = [](cloud::GCS::ObjectItem item) {
-      cout << "Object: " << item.key << ", size: " << item.size << endl;
-    };
-    ec = gcs.List(GetFlag(FLAGS_bucket), prefix, false, cb);
+    string bucket = GetFlag(FLAGS_bucket);
+    auto conn_pool = gcs.CreateConnectionPool();
+    CHECK(!bucket.empty());
+
+    if (GetFlag(FLAGS_write)) {
+      auto src = io::ReadFileToString("/proc/self/exe");
+      CHECK(src);
+      io::Result<io::WriteFile*> dest_res =
+          cloud::OpenWriteGcsFile(bucket, prefix, &provider, conn_pool.get());
+      CHECK(dest_res);
+      unique_ptr<io::WriteFile> dest(*dest_res);
+      error_code ec = dest->Write(*src);
+      CHECK(!ec);
+      ec = dest->Close();
+      CHECK(!ec);
+    } else {
+      auto cb = [](cloud::GCS::ObjectItem item) {
+        cout << "Object: " << item.key << ", size: " << item.size << endl;
+      };
+      ec = gcs.List(GetFlag(FLAGS_bucket), prefix, false, cb);
+    }
   } else {
     auto cb = [](std::string_view bname) { CONSOLE_INFO << bname; };
 
