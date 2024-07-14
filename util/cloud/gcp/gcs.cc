@@ -10,6 +10,7 @@
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 
+#include "base/flags.h"
 #include "base/logging.h"
 #include "io/file.h"
 #include "io/file_util.h"
@@ -21,6 +22,8 @@ using namespace std;
 namespace h2 = boost::beast::http;
 namespace rj = rapidjson;
 
+ABSL_FLAG(string, gcs_auth_token, "", "");
+
 namespace util {
 namespace cloud {
 
@@ -30,11 +33,15 @@ auto Unexpected(std::errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
-#define RETURN_ERROR(x) \
-  do {                  \
-    auto ec = (x);      \
-    if (ec)             \
-      return ec;        \
+const char kInstanceTokenUrl[] = "/computeMetadata/v1/instance/service-accounts/default/token";
+
+#define RETURN_ERROR(x)                                          \
+  do {                                                           \
+    auto ec = (x);                                               \
+    if (ec) {                                                    \
+      VLOG(1) << "Error calling " << #x << ": " << ec.message(); \
+      return ec;                                                 \
+    }                                                            \
   } while (false)
 
 io::Result<string> ExpandFilePath(string_view path) {
@@ -115,7 +122,7 @@ std::error_code ParseADC(string_view adc_file, string* client_id, string* client
 using TokenTtl = pair<string, unsigned>;
 
 io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
-  VLOG(1) << "Refresh Token response: " << response;
+  VLOG(2) << "Refresh Token response: " << response;
 
   rj::Document doc;
   constexpr unsigned kFlags = rj::kParseTrailingCommasFlag | rj::kParseCommentsFlag;
@@ -177,6 +184,56 @@ error_code EnableKeepAlive(int fd) {
   return std::error_code{};
 }
 
+error_code ConfigureMetadataClient(fb2::ProactorBase* pb, http::Client* client) {
+  client->set_connect_timeout_ms(1000);
+  static const char kMetaDataHost[] = "metadata.google.internal";
+  return client->Connect(kMetaDataHost, "80");
+}
+
+error_code ReadGCPConfigFromMetadata(fb2::ProactorBase* pb, string* account_id, string* project_id,
+                                     TokenTtl* token) {
+  http::Client client(pb);
+  RETURN_ERROR(ConfigureMetadataClient(pb, &client));
+
+  const char kEmailUrl[] = "/computeMetadata/v1/instance/service-accounts/default/email";
+  h2::request<h2::empty_body> req{h2::verb::get, kEmailUrl, 11};
+  req.set("Metadata-Flavor", "Google");
+
+  h2::response<h2::string_body> resp;
+  RETURN_ERROR(client.Send(req, &resp));
+  if (resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << string(resp.reason()) << ", Body: ", resp.body();
+    return make_error_code(errc::permission_denied);
+  }
+
+  *account_id = std::move(resp.body());
+  resp.clear();
+
+  const char kProjectIdUrl[] = "/computeMetadata/v1/project/project-id";
+  req.target(kProjectIdUrl);
+  RETURN_ERROR(client.Send(req, &resp));
+  if (resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << string(resp.reason()) << ", Body: ", resp.body();
+    return make_error_code(errc::permission_denied);
+  }
+
+  *project_id = std::move(resp.body());
+  resp.clear();
+
+  req.target(kInstanceTokenUrl);
+  RETURN_ERROR(client.Send(req, &resp));
+  if (resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << string(resp.reason()) << ", Body: ", resp.body();
+    return make_error_code(errc::permission_denied);
+  }
+  io::Result<TokenTtl> token_res = ParseTokenResponse(std::move(resp.body()));
+  if (!token_res)
+    return token_res.error();
+  *token = std::move(*token_res);
+
+  return {};
+}
+
 #define FETCH_ARRAY_MEMBER(val)                \
   if (!(val).IsArray())                        \
     return make_error_code(errc::bad_message); \
@@ -203,9 +260,21 @@ error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
     is_cloud_env = true;
   }
 
+  connect_ms_ = connect_ms;
+
   if (is_cloud_env) {
     use_instance_metadata_ = true;
-    LOG(FATAL) << "TBD: do not support reading from instance metadata";
+    VLOG(1) << "Reading from instance metadata";
+    TokenTtl token_ttl;
+    RETURN_ERROR(ReadGCPConfigFromMetadata(pb, &account_id_, &project_id_, &token_ttl));
+
+    string inject_token = absl::GetFlag(FLAGS_gcs_auth_token);
+    if (!inject_token.empty()) {
+      token_ttl.first = inject_token;
+    }
+    folly::RWSpinLock::WriteHolder lock(lock_);
+    access_token_ = token_ttl.first;
+    expire_time_.store(time(nullptr) + token_ttl.second, std::memory_order_release);
   } else {
     RETURN_ERROR(LoadGCPConfig(&account_id_, &project_id_));
 
@@ -221,43 +290,54 @@ error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
       LOG(WARNING) << "Bad ADC file " << adc_file;
       return make_error_code(errc::bad_message);
     }
+
+    // At this point we should have all the data to get an access token.
+    RETURN_ERROR(RefreshToken(pb));
   }
 
-  // At this point we should have all the data to get an access token.
-  connect_ms_ = connect_ms;
-  return RefreshToken(pb);
+  return {};
 }
 
 error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
-  constexpr char kDomain[] = "oauth2.googleapis.com";
-
-  http::TlsClient https_client(pb);
-  https_client.set_connect_timeout_ms(connect_ms_);
-  SSL_CTX* context = http::TlsClient::CreateSslContext();
-  error_code ec = https_client.Connect(kDomain, "443", context);
-  http::TlsClient::FreeContext(context);
-
-  if (ec) {
-    VLOG(1) << "Could not connect to " << kDomain;
-    return ec;
-  }
-  h2::request<h2::string_body> req{h2::verb::post, "/token", 11};
-  req.set(h2::field::host, kDomain);
-  req.set(h2::field::content_type, "application/x-www-form-urlencoded");
-
-  string& body = req.body();
-  body = absl::StrCat("grant_type=refresh_token&client_secret=", client_secret_,
-                      "&refresh_token=", refresh_token_);
-  absl::StrAppend(&body, "&client_id=", client_id_);
-  req.prepare_payload();
-  VLOG(1) << "Req: " << req;
-
   h2::response<h2::string_body> resp;
-  RETURN_ERROR(https_client.Send(req, &resp));
 
-  if (resp.result() != h2::status::ok) {
-    LOG(WARNING) << "Http error: " << string(resp.reason()) << ", Body: ", resp.body();
-    return make_error_code(errc::permission_denied);
+  if (use_instance_metadata_) {
+    http::Client client(pb);
+    RETURN_ERROR(ConfigureMetadataClient(pb, &client));
+
+    h2::request<h2::empty_body> req{h2::verb::get, kInstanceTokenUrl, 11};
+    req.set("Metadata-Flavor", "Google");
+    RETURN_ERROR(client.Send(req, &resp));
+  } else {
+    constexpr char kDomain[] = "oauth2.googleapis.com";
+
+    http::TlsClient https_client(pb);
+    https_client.set_connect_timeout_ms(connect_ms_);
+    SSL_CTX* context = http::TlsClient::CreateSslContext();
+    error_code ec = https_client.Connect(kDomain, "443", context);
+    http::TlsClient::FreeContext(context);
+
+    if (ec) {
+      VLOG(1) << "Could not connect to " << kDomain;
+      return ec;
+    }
+    h2::request<h2::string_body> req{h2::verb::post, "/token", 11};
+    req.set(h2::field::host, kDomain);
+    req.set(h2::field::content_type, "application/x-www-form-urlencoded");
+
+    string& body = req.body();
+    body = absl::StrCat("grant_type=refresh_token&client_secret=", client_secret_,
+                        "&refresh_token=", refresh_token_);
+    absl::StrAppend(&body, "&client_id=", client_id_);
+    req.prepare_payload();
+    VLOG(1) << "Req: " << req;
+
+    RETURN_ERROR(https_client.Send(req, &resp));
+
+    if (resp.result() != h2::status::ok) {
+      LOG(WARNING) << "Http error: " << string(resp.reason()) << ", Body: ", resp.body();
+      return make_error_code(errc::permission_denied);
+    }
   }
 
   io::Result<TokenTtl> token = ParseTokenResponse(std::move(resp.body()));
@@ -273,19 +353,17 @@ error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
 
 GCS::GCS(GCPCredsProvider* provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
     : creds_provider_(*provider), ssl_ctx_(ssl_cntx) {
-  client_.reset(new http::TlsClient(pb));
-}
-
-GCS::~GCS() {
-}
-
-std::error_code GCS::Connect(unsigned msec) {
-  client_->set_connect_timeout_ms(msec);
-  client_->AssignOnConnect([](int fd) {
+  client_pool_.reset(new http::ClientPool(GCS_API_DOMAIN, ssl_ctx_, pb));
+  client_pool_->SetOnConnect([](int fd) {
     auto ec = EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
   });
-  return client_->Connect(GCS_API_DOMAIN, "443", ssl_ctx_);
+
+  // TODO: to make it configurable.
+  client_pool_->set_connect_timeout(2000);
+}
+
+GCS::~GCS() {
 }
 
 error_code GCS::ListBuckets(ListBucketCb cb) {
@@ -296,15 +374,20 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
 
   rj::Document doc;
 
-  RobustSender sender(2, &creds_provider_);
+  RobustSender sender(client_pool_.get(), &creds_provider_);
 
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &empty_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(2, &empty_req);
     if (!parse_res)
       return parse_res.error();
     RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
     h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
-    RETURN_ERROR(client_->Recv(&resp));
+    auto res = client_pool_->GetHandle();
+    if (!res)
+      return res.error();
+    auto client = std::move(*res);
+
+    RETURN_ERROR(client->Recv(&resp));
 
     auto msg = resp.release();
 
@@ -352,15 +435,20 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
   detail::EmptyRequestImpl empty_req(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
-  RobustSender sender(2, &creds_provider_);
+  RobustSender sender(client_pool_.get(), &creds_provider_);
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(client_.get(), &empty_req);
+    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(2, &empty_req);
     if (!parse_res)
       return parse_res.error();
     RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
-
     h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
-    RETURN_ERROR(client_->Recv(&resp));
+
+    auto res = client_pool_->GetHandle();
+    if (!res)
+      return res.error();
+    auto client = std::move(*res);
+
+    RETURN_ERROR(client->Recv(&resp));
 
     auto msg = resp.release();
 
@@ -404,12 +492,6 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
     empty_req.SetUrl(absl::StrCat(url, "&pageToken=", page_token));
   }
   return {};
-}
-
-unique_ptr<http::ClientPool> GCS::CreateConnectionPool() const {
-  unique_ptr<http::ClientPool> res(
-      new http::ClientPool(GCS_API_DOMAIN, ssl_ctx_, client_->proactor()));
-  return res;
 }
 
 }  // namespace cloud

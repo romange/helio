@@ -4,10 +4,12 @@
 #pragma once
 
 #include <boost/beast/http/empty_body.hpp>
+#include <boost/beast/http/dynamic_body.hpp>
+#include <boost/beast/http/parser.hpp>
 #include <memory>
 
 #include "io/io.h"
-#include "util/http/http_client.h"
+#include "util/http/https_client_pool.h"
 
 namespace util::cloud {
 class GCPCredsProvider;
@@ -99,12 +101,12 @@ class RobustSender {
   using HeaderParserPtr =
       std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>>;
 
-  RobustSender(unsigned num_iterations, GCPCredsProvider* provider);
+  RobustSender(http::ClientPool* pool, GCPCredsProvider* provider);
 
-  io::Result<HeaderParserPtr> Send(http::Client* client, detail::HttpRequestBase* req);
+  io::Result<HeaderParserPtr> Send(unsigned num_iterations, detail::HttpRequestBase* req);
 
  private:
-  unsigned num_iterations_;
+  http::ClientPool* pool_;
   GCPCredsProvider* provider_;
 };
 

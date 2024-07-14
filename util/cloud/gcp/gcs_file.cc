@@ -7,6 +7,7 @@
 #include <absl/strings/strip.h>
 
 #include <boost/beast/http/empty_body.hpp>
+#include <boost/beast/http/write.hpp>   // for operator<<
 #include <boost/beast/http/string_body.hpp>
 
 #include "base/flags.h"
@@ -14,6 +15,7 @@
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
 #include "util/http/http_common.h"
+#include "util/http/http_client.h"
 
 ABSL_FLAG(bool, gcs_dry_upload, false, "");
 
@@ -100,9 +102,8 @@ error_code GcsWriteFile::Close() {
 
   string body;
   if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(3, creds_provider_);
-    auto client_handle = pool_->GetHandle();
-    io::Result<HeaderParserPtr> res = sender.Send(client_handle.get(), req.get());
+    RobustSender sender(pool_, creds_provider_);
+    io::Result<HeaderParserPtr> res = sender.Send(3, req.get());
     if (!res) {
       LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
                  << req->GetHeaders() << ", status " << res.error().message();
@@ -110,9 +111,15 @@ error_code GcsWriteFile::Close() {
     }
     HeaderParserPtr head_parser = std::move(*res);
     h2::response_parser<h2::string_body> resp(std::move(*head_parser));
+    auto handle_res = pool_->GetHandle();
+    if (!handle_res)
+      return handle_res.error();
+
+    auto client_handle = std::move(*handle_res);
     auto ec = client_handle->Recv(&resp);
     if (ec)
       return ec;
+
     body = std::move(resp.get().body());
 
     /*
@@ -188,11 +195,11 @@ error_code GcsWriteFile::Upload() {
   error_code res;
   if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
     // TODO: RobustSender must access the entire pool, not just a single client.
-    RobustSender sender(3, creds_provider_);
-    auto client_handle = pool_->GetHandle();
-    io::Result<HeaderParserPtr> res = sender.Send(client_handle.get(), req.get());
+    RobustSender sender(pool_, creds_provider_);
+    io::Result<HeaderParserPtr> res = sender.Send(3, req.get());
     if (!res)
       return res.error();
+    // auto client_handle = pool_->GetHandle();
 
     VLOG(1) << "Uploaded range " << uploaded_ << "/" << to << " for " << upload_id_;
     HeaderParserPtr parser_ptr = std::move(*res);
@@ -236,9 +243,8 @@ io::Result<io::WriteFile*> OpenWriteGcsFile(const string& bucket, const string& 
   detail::EmptyRequestImpl empty_req(h2::verb::post, url, token);
   empty_req.Finalize();  // it's post request so it's required.
 
-  RobustSender sender(3, creds_provider);
-  auto client_handle = pool->GetHandle();
-  io::Result<HeaderParserPtr> res = sender.Send(client_handle.get(), &empty_req);
+  RobustSender sender(pool, creds_provider);
+  io::Result<HeaderParserPtr> res = sender.Send(3, &empty_req);
   if (!res) {
     return nonstd::make_unexpected(res.error());
   }

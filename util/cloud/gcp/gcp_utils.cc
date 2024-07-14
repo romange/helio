@@ -8,7 +8,9 @@
 #include <boost/beast/http/string_body.hpp>
 
 #include "base/logging.h"
+
 #include "util/cloud/gcp/gcp_creds_provider.h"
+#include "util/http/http_client.h"
 
 namespace util::cloud {
 using namespace std;
@@ -66,20 +68,26 @@ std::error_code DynamicBodyRequestImpl::Send(http::Client* client) {
 
 }  // namespace detail
 
-RobustSender::RobustSender(unsigned num_iterations, GCPCredsProvider* provider)
-    : num_iterations_(num_iterations), provider_(provider) {
+RobustSender::RobustSender(http::ClientPool* pool, GCPCredsProvider* provider)
+    : pool_(pool), provider_(provider) {
 }
 
-auto RobustSender::Send(http::Client* client,
+auto RobustSender::Send(unsigned num_iterations,
                         detail::HttpRequestBase* req) -> io::Result<HeaderParserPtr> {
   error_code ec;
-  for (unsigned i = 0; i < num_iterations_; ++i) {  // Iterate for possible token refresh.
-    VLOG(1) << "HttpReq " << client->host() << ": " << req->GetHeaders() << ", ["
-            << client->native_handle() << "]";
+  for (unsigned i = 0; i < num_iterations; ++i) {  // Iterate for possible token refresh.
+    auto res = pool_->GetHandle();
+    if (!res)
+      return nonstd::make_unexpected(res.error());
 
-    RETURN_UNEXPECTED(req->Send(client));
+    auto client_handle = std::move(res.value());
+
+    VLOG(1) << "HttpReq " << client_handle->host() << ": " << req->GetHeaders() << ", ["
+            << client_handle->native_handle() << "]";
+
+    RETURN_UNEXPECTED(req->Send(client_handle.get()));
     HeaderParserPtr parser(new h2::response_parser<h2::empty_body>());
-    RETURN_UNEXPECTED(client->ReadHeader(parser.get()));
+    RETURN_UNEXPECTED(client_handle->ReadHeader(parser.get()));
     {
       const auto& msg = parser->get();
       VLOG(1) << "RespHeader" << i << ": " << msg;
@@ -95,18 +103,19 @@ auto RobustSender::Send(http::Client* client,
 
     // We have some kind of error, possibly with body that needs to be drained.
     h2::response_parser<h2::string_body> drainer(std::move(*parser));
-    RETURN_UNEXPECTED(client->Recv(&drainer));
+    RETURN_UNEXPECTED(client_handle->Recv(&drainer));
     const auto& msg = drainer.get();
 
     if (DoesServerPushback(msg.result())) {
-      LOG(INFO) << "Retrying(" << client->native_handle() << ") with " << msg;
+      LOG(INFO) << "Retrying(" << client_handle->native_handle() << ") with " << msg;
 
       ThisFiber::SleepFor(100ms);
       continue;
     }
 
     if (IsUnauthorized(msg)) {
-      RETURN_UNEXPECTED(provider_->RefreshToken(client->proactor()));
+      VLOG(1) << "Refreshing token";
+      RETURN_UNEXPECTED(provider_->RefreshToken(client_handle->proactor()));
       req->SetHeader(h2::field::authorization, AuthHeader(provider_->access_token()));
 
       continue;

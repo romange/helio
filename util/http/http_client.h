@@ -136,6 +136,7 @@ template <typename Req, typename Resp> auto Client::Send(const Req& req, Resp* r
 template <typename Req> auto Client::Send(const Req& req) -> BoostError {
   BoostError ec;
   AsioStreamAdapter<> adapter(*socket_);
+  assert(socket_);
 
   for (uint32_t i = 0; i < retry_cnt_; ++i) {
     ::boost::beast::http::write(adapter, req, ec);

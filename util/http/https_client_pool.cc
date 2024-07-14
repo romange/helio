@@ -37,7 +37,7 @@ ClientPool::~ClientPool() {
   }
 }
 
-auto ClientPool::GetHandle() -> ClientHandle {
+auto ClientPool::GetHandle() -> io::Result<ClientHandle> {
   while (!available_handles_.empty()) {
     // Pulling the oldest handles first.
     std::unique_ptr<Client> ptr{std::move(available_handles_.front())};
@@ -60,10 +60,14 @@ auto ClientPool::GetHandle() -> ClientHandle {
   // TODO: create tls/Non-tls clients based on whether ssl_cntx_ is null.
   std::unique_ptr<TlsClient> client(new TlsClient{&proactor_});
   client->set_retry_count(retry_cnt_);
-
+  if (on_connect_) {
+    client->AssignOnConnect(on_connect_);
+  }
   auto ec = client->Connect(domain_, "443", ssl_cntx_);
 
   LOG_IF(WARNING, ec) << "ClientPool: Could not connect " << ec;
+  if (ec)
+    return nonstd::make_unexpected(ec);
   ++existing_handles_;
 
   return ClientHandle{client.release(), HandleGuard{this}};
