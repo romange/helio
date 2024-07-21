@@ -608,6 +608,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0;
   uint32_t busy_sq_cnt = 0;
+  uint32_t skip_sleep_process = 0;
   Tasklet task;
 
   FiberInterface* dispatcher = detail::FiberActive();
@@ -719,9 +720,12 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
+    if ((has_cpu_work || io_uring_sq_ready(&ring_) > 0) && skip_sleep_process < 10) {
+      ++skip_sleep_process;
       continue;
     }
+
+    skip_sleep_process = 0;
 
     ///
     /// End of the tight loop that processes tasks, ready fibers, and submits sqes.
@@ -732,6 +736,9 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         continue;
       }
     }
+
+    if (has_cpu_work || io_uring_sq_ready(&ring_) > 0)
+      continue;
 
     DCHECK(!scheduler->HasReady());
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
