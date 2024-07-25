@@ -240,6 +240,9 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
+  // Returns true if we have not processed sleep fibers for too long.
+  bool HasSleepFibersStarved() const;
+
   // Returns number of sleeping fibers being activated.
   unsigned ProcessSleepFibers(detail::Scheduler* scheduler);
 
@@ -250,8 +253,8 @@ class ProactorBase {
   bool is_stopped_ = true;
 
   std::atomic_uint32_t tq_seq_{0};
-  std::atomic_uint32_t tq_full_ev_{0};   // task queue full events.
-  std::atomic_uint32_t tq_wakeup_ev_{0};  // task queue wakeup events.
+  std::atomic_uint32_t tq_full_ev_{0};            // task queue full events.
+  std::atomic_uint32_t tq_wakeup_ev_{0};          // task queue wakeup events.
   std::atomic_uint32_t tq_wakeup_skipped_ev_{0};  // task queue wakeup prevented events.
 
   Stats stats_;

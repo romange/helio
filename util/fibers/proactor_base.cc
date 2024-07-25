@@ -216,8 +216,7 @@ void ProactorBase::Migrate(ProactorBase* dest) {
     auto cb = [fiber] { fiber->AttachScheduler(); };
 
     // We can not use DispatchBrief because it may block dispatch fiber, which is forbidden.
-    // While this state is theoretically possible but it's very improbable, so we should not reach
-    // usleep in the normal state.
+    // This state is rarely reached in high load situations.
     while (!dest->EmplaceTaskQueue(cb)) {
       tq_full_ev_.fetch_add(1, std::memory_order_relaxed);
       LOG_FIRST_N(WARNING, 10000) << "Retrying task emplace";
@@ -256,7 +255,16 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
   }
 }
 
+// The threshold is set to ~2.5ms.
+bool ProactorBase::HasSleepFibersStarved() const {
+  uint64_t now = GetCPUCycleCount();
+  return now > last_sleep_cycle_ + 256 * cycles_per_10us;
+}
+
 unsigned ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
+  if (!scheduler->HasSleepingFibers())
+    return 0;
+
   // avoid calling steady_clock::now() too much.
   // Cycles count can reset, for example when CPU is suspended, therefore we also allow
   // "returning  into past". False positive is possible but it's not a big deal.

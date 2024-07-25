@@ -279,6 +279,7 @@ TEST_F(AcceptServerTest, Shutdown) {
     vector<unique_ptr<FiberSocketBase>> socks;
     constexpr unsigned kNumSocks = 2000;
     unsigned called = 0;
+    fb2::CondVarAny cond;
 
     for (unsigned i = 0; i < kNumSocks; ++i) {
       socks.emplace_back(proactor->CreateSocket());
@@ -288,13 +289,15 @@ TEST_F(AcceptServerTest, Shutdown) {
       socks.back()->RegisterOnErrorCb([&](int err) {
         EXPECT_EQ(err, kHupMask);
         ++called;
+        cond.notify_one();
       });
     }
 
     for (unsigned i = 0; i < socks.size(); ++i) {
       std::ignore = socks[i]->Shutdown(SHUT_RDWR);
     }
-    ThisFiber::SleepFor(1us);
+    fb2::NoOpLock lock;
+    ASSERT_TRUE(cond.wait_for(lock, 1s, [&] {return called == kNumSocks;}));
 
     // Please note that in perfect conditions like with this unit test,
     // we will get ErrorCb trigerred for every socket because both the server and the client

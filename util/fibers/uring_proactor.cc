@@ -608,7 +608,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0;
   uint32_t busy_sq_cnt = 0;
-  uint32_t skip_sleep_process = 0;
   Tasklet task;
 
   FiberInterface* dispatcher = detail::FiberActive();
@@ -717,24 +716,23 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       // do now execute any syscalls. Therefore we count how many completions we handled
       // and reap the same amount.
       ReapCompletions(cqe_count, cqes, dispatcher);
+
+      if (HasSleepFibersStarved()) {
+        ProcessSleepFibers(scheduler);
+      }
       continue;
     }
 
-    if ((has_cpu_work || io_uring_sq_ready(&ring_) > 0) && skip_sleep_process < 10) {
-      ++skip_sleep_process;
+    if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
       continue;
     }
-
-    skip_sleep_process = 0;
 
     ///
     /// End of the tight loop that processes tasks, ready fibers, and submits sqes.
     ///
-    if (scheduler->HasSleepingFibers()) {
-      unsigned activated = ProcessSleepFibers(scheduler);
-      if (activated > 0) {  // If we have ready fibers - restart the loop.
-        continue;
-      }
+    unsigned activated = ProcessSleepFibers(scheduler);
+    if (activated > 0) {  // If we have ready fibers - restart the loop.
+      continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0)
