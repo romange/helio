@@ -454,8 +454,12 @@ void Scheduler::PrintAllFiberStackTraces() {
                            chrono::steady_clock::now().time_since_epoch().count());
     }
 
+    string print_cb_str;
+#ifndef NDEBUG
+    print_cb_str = fb->stacktrace_print_cb_ ? fb->stacktrace_print_cb_() : string{};
+#endif
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
-              << GetStacktrace();
+              << print_cb_str << GetStacktrace();
   };
 
   ExecuteOnAllFiberStacks(print_fn);

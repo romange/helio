@@ -206,6 +206,15 @@ class FiberInterface {
     return stack_size_;
   }
 
+  // Assigns a print callback that is called by Scheduler::PrintAllFiberStackTraces.
+  // Please note that there can be at most one callback at any time during the lifetime of fiber.
+  void SetPrintStacktraceCb(std::function<std::string()> cb) {
+    (void)cb;
+#ifndef NDEBUG
+    stacktrace_print_cb_ = std::move(cb);
+#endif
+  }
+
   uint64_t DEBUG_remote_epoch = 0;
 
  protected:
@@ -245,6 +254,9 @@ class FiberInterface {
   char name_[24];
   uint32_t stack_size_ = 0;
  private:
+#ifndef NDEBUG
+  std::function<std::string()> stacktrace_print_cb_;
+#endif
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();

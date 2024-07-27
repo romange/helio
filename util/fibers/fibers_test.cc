@@ -875,6 +875,11 @@ TEST_P(ProactorTest, DumpFiberStacks) {
 
   Fiber fb = proactor()->LaunchFiber([&] {
     ThisFiber::SetName("migrated");
+    int i = 42;
+    ThisFiber::PrintLocalsCallback locals([&] {
+      return absl::StrCat("i=", i, "\n");
+    });
+
     proactor()->Migrate(pth.get());
     ThisFiber::SleepFor(30ms);
   });
