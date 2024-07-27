@@ -19,6 +19,13 @@ class Waiter {
   }
 
  public:
+  // For some boost versions/distributions, the default move c'tor does not work well,
+  // so we implement it explicitly.
+  Waiter(Waiter&& o) : cntx_(o.cntx_) {
+    o.wait_hook.swap_nodes(wait_hook);
+    o.cntx_ = nullptr;
+  }
+
   using ListHookType =
       boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
