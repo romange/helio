@@ -170,6 +170,18 @@ inline std::string_view GetName() {
   return fb2::detail::FiberActive()->name();
 }
 
+class PrintLocalsCallback {
+public:
+  template<typename Fn>
+  PrintLocalsCallback(Fn&& fn) {
+    fb2::detail::FiberActive()->SetPrintStacktraceCb(std::forward<Fn>(fn));
+  }
+
+  ~PrintLocalsCallback() {
+    fb2::detail::FiberActive()->SetPrintStacktraceCb(nullptr);
+  }
+};
+
 };  // namespace ThisFiber
 
 class FiberAtomicGuard {
