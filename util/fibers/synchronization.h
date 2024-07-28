@@ -588,7 +588,7 @@ std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::t
   // lock back.
   lt.lock();
   std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
-
+  assert(!waiter.IsLinked());
   return status;
 }
 

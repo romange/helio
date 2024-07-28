@@ -276,25 +276,36 @@ TEST_F(AcceptServerTest, Shutdown) {
   constexpr auto kHupMask = POLLHUP;
 #endif
 
-    vector<unique_ptr<FiberSocketBase>> socks;
     constexpr unsigned kNumSocks = 2000;
+
+    vector<unique_ptr<FiberSocketBase>> socks;
+    vector<bool> error_notification(kNumSocks, false);
+
     unsigned called = 0;
+    fb2::CondVarAny cond;
 
     for (unsigned i = 0; i < kNumSocks; ++i) {
       socks.emplace_back(proactor->CreateSocket());
       error_code ec = socks.back()->Connect(ep_);
       EXPECT_FALSE(ec);
 
-      socks.back()->RegisterOnErrorCb([&](int err) {
+      socks.back()->RegisterOnErrorCb([&, i](int err) {
         EXPECT_EQ(err, kHupMask);
-        ++called;
+
+        // MacOs can send multiple notifications per socket.
+        if (!error_notification[i]) {
+          ++called;
+          error_notification[i] = true;
+        }
+        cond.notify_one();
       });
     }
 
     for (unsigned i = 0; i < socks.size(); ++i) {
       std::ignore = socks[i]->Shutdown(SHUT_RDWR);
     }
-    ThisFiber::SleepFor(1us);
+    fb2::NoOpLock lock;
+    ASSERT_TRUE(cond.wait_for(lock, 1s, [&] {return called == kNumSocks;})) << called;
 
     // Please note that in perfect conditions like with this unit test,
     // we will get ErrorCb trigerred for every socket because both the server and the client
