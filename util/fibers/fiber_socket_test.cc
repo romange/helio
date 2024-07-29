@@ -384,6 +384,27 @@ TEST_P(FiberSocketTest, NotEmpty) {
 
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
+
+TEST_P(FiberSocketTest, OpenMany) {
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "OpenMany requires iouring";
+    return;
+  }
+
+  proactor_->Await([&] {
+    for (unsigned i = 0; i < 10000; ++i) {
+      UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+      UringSocket sock(up);
+      auto ec = sock.Create(AF_INET);
+      ASSERT_FALSE(ec);
+      ec = sock.Close();
+      ASSERT_FALSE(ec);
+      usleep(100);
+    }
+  });
+}
+
 #endif
 
 }  // namespace fb2

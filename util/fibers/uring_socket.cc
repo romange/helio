@@ -22,6 +22,9 @@ using nonstd::make_unexpected;
 
 namespace {
 
+// Disable direct fd for sockets due to https://github.com/axboe/liburing/issues/1192
+constexpr bool kEnableDirect = false;
+
 inline ssize_t posix_err_wrap(ssize_t res, UringSocket::error_code* ec) {
   if (res == -1) {
     *ec = UringSocket::error_code(errno, system_category());
@@ -63,7 +66,7 @@ error_code UringSocket::Create(unsigned short protocol_family) {
   CHECK(proactor && is_direct_fd_ == 0);
   DCHECK(proactor->InMyThread());
 
-  if (proactor->HasDirectFD()) {
+  if (kEnableDirect && proactor->HasDirectFD()) {
     int source_fd = ShiftedFd();  // linux fd.
     unsigned direct_fd = proactor->RegisterFd(source_fd);
     if (direct_fd != UringProactor::kInvalidDirectFd) {
@@ -427,7 +430,7 @@ auto UringSocket::native_handle() const -> native_handle_type {
 void UringSocket::OnSetProactor() {
   UringProactor* proactor = GetProactor();
 
-  if (proactor->HasDirectFD() && is_direct_fd_ == 0 && fd_ >= 0) {
+  if (kEnableDirect && proactor->HasDirectFD() && is_direct_fd_ == 0 && fd_ >= 0) {
     // Using direct descriptors has consistent positive impact on CPU usage of the server.
     // Checked with echo_server with server side sockets.
     int source_fd = ShiftedFd();  // linux fd.
