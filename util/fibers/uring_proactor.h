@@ -77,7 +77,7 @@ class UringProactor : public ProactorBase {
   }
 
   bool HasDirectFD() const {
-    return direct_fd_;
+    return !register_fds_.empty();
   }
 
   int ring_fd() const {
@@ -151,9 +151,8 @@ class UringProactor : public ProactorBase {
 
   uint8_t msgring_f_ : 1;
   uint8_t poll_first_ : 1;
-  uint8_t direct_fd_ : 1;
   uint8_t buf_ring_f_ : 1;
-  uint8_t : 4;
+  uint8_t : 5;
 
   EventCount sqe_avail_;
 
