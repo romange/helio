@@ -59,7 +59,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
   static bool IsConnClosed(const error_code& ec) {
-    return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset);
+    return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset) ||
+           (ec == std::errc::broken_pipe);
   }
 
   virtual void SetProactor(ProactorBase* p);
