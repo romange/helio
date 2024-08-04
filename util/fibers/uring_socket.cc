@@ -210,9 +210,6 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
         continue;
 
-      if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-        res = ECONNABORTED;
-
       break;
     }
   } else {  // len > 1
@@ -235,9 +232,6 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       res = -res;
       if (res == EAGAIN)  // EAGAIN can happen in case of CQ overflow.
         continue;
-
-      if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-        res = ECONNABORTED;
 
       break;
     };
@@ -272,9 +266,6 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb c
       cb(res);
       return;
     }
-
-    if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-      res = ECONNABORTED;
 
     cb(make_unexpected(error_code{-res, generic_category()}));
   };

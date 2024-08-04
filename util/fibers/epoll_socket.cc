@@ -273,7 +273,7 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
-      res = ECONNABORTED;
+      res = EPIPE;
       break;
     }
 
@@ -298,9 +298,6 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
                << RemoteEndpoint();
   }
-
-  if (res == EPIPE)  // We do not care about EPIPE that can happen when we shutdown our socket.
-    res = ECONNABORTED;
 
   std::error_code ec(res, std::system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
@@ -328,7 +325,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   error_code ec;
   while (true) {
     if (fd_ & IS_SHUTDOWN) {
-      res = ECONNABORTED;
+      res = EPIPE;
       break;
     }
 
