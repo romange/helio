@@ -89,6 +89,11 @@ class Fiber {
 
   void Detach();
 
+  // Returns true if this is the active (calling) fiber.
+  bool IsActive() const {
+    return impl_.get() == detail::FiberActive();
+  }
+
  private:
   void Start(Launch launch) {
     impl_->Start(launch);
