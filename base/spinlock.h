@@ -8,21 +8,21 @@
 
 namespace base {
 
-class SpinLock {
+class ABSL_LOCKABLE SpinLock {
  public:
   SpinLock() = default;
   SpinLock(const SpinLock&) = delete;
   SpinLock& operator=(const SpinLock&) = delete;
 
-  void lock() {
+  void lock() ABSL_EXCLUSIVE_LOCK_FUNCTION() {
     lock_.Lock();
   }
 
-  void unlock() {
+  void unlock() ABSL_UNLOCK_FUNCTION() {
     lock_.Unlock();
   }
 
-  bool try_lock() {
+  bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
     return lock_.TryLock();
   }
 

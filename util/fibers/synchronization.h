@@ -99,7 +99,7 @@ class EventCount {
 
 class CondVar;
 
-class Mutex {
+class ABSL_LOCKABLE Mutex {
  private:
   friend class CondVar;
 
@@ -117,11 +117,11 @@ class Mutex {
   Mutex(Mutex const&) = delete;
   Mutex& operator=(Mutex const&) = delete;
 
-  void lock();
+  void lock() ABSL_EXCLUSIVE_LOCK_FUNCTION();
 
-  bool try_lock();
+  bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true);
 
-  void unlock();
+  void unlock() ABSL_UNLOCK_FUNCTION();
 };
 
 class CondVarAny {
@@ -388,18 +388,18 @@ class BlockingCounter {
   std::shared_ptr<EmbeddedBlockingCounter> counter_;
 };
 
-class SharedMutex {
+class ABSL_LOCKABLE SharedMutex {
  public:
-  bool try_lock() {
+  bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
     uint32_t expect = 0;
     return state_.compare_exchange_strong(expect, WRITER, std::memory_order_acq_rel);
   }
 
-  void lock() {
+  void lock() ABSL_EXCLUSIVE_LOCK_FUNCTION() {
     ec_.await([this] { return try_lock(); });
   }
 
-  bool try_lock_shared() {
+  bool try_lock_shared() ABSL_SHARED_TRYLOCK_FUNCTION(true) {
     uint32_t value = state_.fetch_add(READER, std::memory_order_acquire);
     if (value & WRITER) {
       state_.fetch_add(-READER, std::memory_order_release);
@@ -408,16 +408,16 @@ class SharedMutex {
     return true;
   }
 
-  void lock_shared() {
+  void lock_shared() ABSL_SHARED_LOCK_FUNCTION() {
     ec_.await([this] { return try_lock_shared(); });
   }
 
-  void unlock() {
+  void unlock() ABSL_UNLOCK_FUNCTION() {
     state_.fetch_and(~(WRITER), std::memory_order_relaxed);
     ec_.notifyAll();
   }
 
-  void unlock_shared() {
+  void unlock_shared() ABSL_UNLOCK_FUNCTION() {
     state_.fetch_add(-READER, std::memory_order_relaxed);
     ec_.notifyAll();
   }
