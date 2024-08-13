@@ -99,6 +99,21 @@ class EventCount {
 
 class CondVar;
 
+// Replacement of std::LockGuard that allows -Wthread-safety
+template <typename Mutex> class ABSL_SCOPED_LOCKABLE LockGuard {
+ public:
+  explicit LockGuard(Mutex& m) ABSL_EXCLUSIVE_LOCK_FUNCTION(m) : m_(m) {
+    m_.lock();
+  }
+
+  ~LockGuard() ABSL_UNLOCK_FUNCTION() {
+    m_.unlock();
+  }
+
+ private:
+  Mutex& m_;
+};
+
 class ABSL_LOCKABLE Mutex {
  private:
   friend class CondVar;
