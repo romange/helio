@@ -691,8 +691,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       // and reap the same amount.
       ReapCompletions(cqe_count, cqes, dispatcher);
 
-      if (HasSleepFibersStarved()) {
-        ProcessSleepFibers(scheduler);
+      if (ShouldPollL2Tasks()) {
+        RunL2Tasks(scheduler);
       }
       continue;
     }
@@ -704,12 +704,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ///
     /// End of the tight loop that processes tasks, ready fibers, and submits sqes.
     ///
-    unsigned activated = ProcessSleepFibers(scheduler);
-    if (activated > 0) {  // If we have ready fibers - restart the loop.
+    bool activated = RunL2Tasks(scheduler);
+    if (activated) {  // If we have ready fibers - restart the loop.
       continue;
     }
 
-    if (has_cpu_work || io_uring_sq_ready(&ring_) > 0)
+    DCHECK(!has_cpu_work);
+    DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
+
+    if (io_uring_sq_ready(&ring_) > 0)
       continue;
 
     DCHECK(!scheduler->HasReady());

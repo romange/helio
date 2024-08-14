@@ -240,11 +240,13 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
-  // Returns true if we have not processed sleep fibers for too long.
-  bool HasSleepFibersStarved() const;
+  // Returns true if we should poll scheduler tasks that run periodically but not too often.
+  bool ShouldPollL2Tasks() const;
 
-  // Returns number of sleeping fibers being activated.
-  unsigned ProcessSleepFibers(detail::Scheduler* scheduler);
+  // Runs all the tasks that should run periodically but not too often. Skips the run if
+  // they recently run.
+  // Returns true if there are fibers that became ready as a result.
+  bool RunL2Tasks(detail::Scheduler* scheduler);
 
   pthread_t thread_id_ = 0U;
   int sys_thread_id_ = 0;
@@ -303,7 +305,7 @@ class ProactorBase {
     return false;
   }
 
-  uint64_t last_sleep_cycle_ = 0;
+  uint64_t last_level2_cycle_ = 0;
 };
 
 class ProactorDispatcher : public DispatchPolicy {
