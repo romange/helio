@@ -50,7 +50,7 @@ void FiberQueue::Run() {
 
 void FiberQueue::Shutdown() {
   is_closed_.store(true, memory_order_seq_cst);
-  pull_ec_.notify();
+  pull_ec_.notifyAll();
 }
 
 FiberQueueThreadPool::FiberQueueThreadPool(unsigned num_threads, unsigned queue_size) {
@@ -80,8 +80,7 @@ void FiberQueueThreadPool::Shutdown() {
     return;
 
   for (size_t i = 0; i < worker_size_; ++i) {
-    workers_[i].q->is_closed_.store(true, memory_order_seq_cst);
-    workers_[i].q->pull_ec_.notifyAll();
+    workers_[i].q->Shutdown();
   }
 
   for (size_t i = 0; i < worker_size_; ++i) {
