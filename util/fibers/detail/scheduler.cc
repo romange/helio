@@ -294,6 +294,7 @@ void Scheduler::ScheduleTermination(FiberInterface* cntx) {
 }
 
 void Scheduler::DestroyTerminated() {
+  unsigned i = 0;
   while (!terminate_queue_.empty()) {
     FiberInterface* tfi = &terminate_queue_.front();
     terminate_queue_.pop_front();
@@ -303,6 +304,10 @@ void Scheduler::DestroyTerminated() {
 
     // maybe someone holds a Fiber handle and waits for the fiber to join.
     intrusive_ptr_release(tfi);
+    ++i;
+  }
+  if (i > 10) {
+    DVLOG(1) << "Destroyed " << i << " fibers";
   }
 }
 

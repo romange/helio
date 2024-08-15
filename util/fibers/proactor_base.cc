@@ -256,30 +256,30 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
 }
 
 // The threshold is set to ~2.5ms.
-bool ProactorBase::HasSleepFibersStarved() const {
+bool ProactorBase::ShouldPollL2Tasks() const {
   uint64_t now = GetCPUCycleCount();
-  return now > last_sleep_cycle_ + 256 * cycles_per_10us;
+  return now > last_level2_cycle_ + 256 * cycles_per_10us;
 }
 
-unsigned ProactorBase::ProcessSleepFibers(detail::Scheduler* scheduler) {
-  if (!scheduler->HasSleepingFibers())
-    return 0;
-
+bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
   // avoid calling steady_clock::now() too much.
   // Cycles count can reset, for example when CPU is suspended, therefore we also allow
   // "returning  into past". False positive is possible but it's not a big deal.
   uint64_t now = GetCPUCycleCount();
-  if (ABSL_PREDICT_FALSE(now < last_sleep_cycle_)) {
+  if (ABSL_PREDICT_FALSE(now < last_level2_cycle_)) {
     // LOG_FIRST_N - otherwise every adjustment will trigger num-threads messages.
     LOG_FIRST_N(WARNING, 1) << "The cycle clock was adjusted backwards by "
-                            << last_sleep_cycle_ - now << " cycles";
-    now = last_sleep_cycle_ + cycles_per_10us;
+                            << last_level2_cycle_ - now << " cycles";
+    now = last_level2_cycle_ + cycles_per_10us;
   }
 
-  unsigned result = 0;
-  if (now >= last_sleep_cycle_ + cycles_per_10us) {
-    last_sleep_cycle_ = now;
-    result = scheduler->ProcessSleep();
+  bool result = false;
+  if (now >= last_level2_cycle_ + cycles_per_10us) {
+    last_level2_cycle_ = now;
+    scheduler->DestroyTerminated();
+    if (scheduler->HasSleepingFibers()) {
+      result = scheduler->ProcessSleep() > 0;
+    }
   }
   return result;
 }

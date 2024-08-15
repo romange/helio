@@ -294,9 +294,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       };
     }
 
-    if (scheduler->HasSleepingFibers()) {
-      ProcessSleepFibers(scheduler);
-    }
+    RunL2Tasks(scheduler);
 
     // must be if and not while - see uring_proactor.cc for more details.
     if (scheduler->HasReady()) {
