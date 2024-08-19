@@ -323,6 +323,39 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return make_unexpected(std::move(ec));
 }
 
+error_code UringSocket::WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) {
+  Proactor* p = GetProactor();
+
+  if (!p->BufRingExists(buf_group_id))
+    return make_error_code(errc::no_buffer_space);
+
+  int fd = ShiftedFd();
+
+  FiberCall fc(p, timeout());
+  fc->PrepRecv(fd, nullptr, 0, 0);
+  fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+	fc->sqe()->buf_group = buf_group_id;
+  IoResult res = fc.Get();
+
+  if (res > 0) {
+    uint32_t flags = fc.flags();
+    // should not happen unless there is a bug in kernel.
+    if (uring_unlikely((IORING_CQE_F_BUFFER & flags) == 0))
+      return make_error_code(errc::io_error);
+    has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
+    unsigned bid = flags >> IORING_CQE_BUFFER_SHIFT;
+    uint8_t* start = p->GetBufRingPtr(buf_group_id, bid);
+    *mb = {start, size_t(res)};
+    return {};
+  }
+
+  if (res == 0) {
+    return make_error_code(errc::connection_aborted);
+  }
+
+  return error_code{-res, system_category()};
+}
+
 io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
   int fd = ShiftedFd();
   Proactor* p = GetProactor();

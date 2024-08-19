@@ -365,6 +365,22 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
+std::error_code EpollSocket::WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) {
+  DCHECK(read_context_ == NULL);
+  *mb = {};
+
+  if (epoll_mask_) {
+    // we may return false positives.
+    return {};
+  }
+
+  read_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
+  error_code ec;
+  SuspendMyself(read_context_, &ec);
+  return ec;
+}
+
 io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {
   msghdr msg;
   memset(&msg, 0, sizeof(msg));

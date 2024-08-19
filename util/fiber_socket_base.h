@@ -56,6 +56,16 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
                    : Recv(io::MutableBytes{reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len}, 0);
   }
 
+  // Waits for input. Returns error if socket had an I/O error.
+  // For raw io_uring sockers, with a valid, registerd buf_group_id, the socket may provide.
+  // reference to data owned by kernel via `mb`. In any case, if no error is returned,
+  // and mb is empty, the socket has data available that can be read by the following Recv
+  // cal.
+  // WaitForRecv can return no_buffer_space if io_uring socket does not have provided buffers
+  // currently available. This error can be ignored and be followed by Recv.
+  // It is returned so that a caller could track such events.
+  virtual std::error_code WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) = 0;
+
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
   static bool IsConnClosed(const error_code& ec) {

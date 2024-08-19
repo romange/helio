@@ -347,6 +347,54 @@ TEST_P(FiberSocketTest, UDS) {
   LOG(INFO) << "Finished";
 }
 
+TEST_P(FiberSocketTest, WaitRecv) {
+  constexpr unsigned kBufGroupId = 0;
+  constexpr unsigned kBufLen = 40;
+#ifdef __linux__
+  bool use_uring = GetParam() == "uring";
+
+  UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+  if (use_uring) {
+    up->Await([up] {
+      up->RegisterBufferRing(kBufGroupId, 4 /*nentries*/, kBufLen);
+    });
+  }
+#endif
+
+  unique_ptr<FiberSocketBase> sock;
+  error_code ec;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    ec = sock->Connect(listen_ep_);
+  });
+  ASSERT_FALSE(ec);
+  io::MutableBytes mb;
+
+  auto recv_fb = proactor_->LaunchFiber([&] {
+    ec = conn_socket_->WaitForRecv(kBufGroupId, &mb);
+  });
+
+  uint8_t buf[128];
+  memset(buf, 'x', sizeof(buf));
+
+  proactor_->Await([&] {
+    auto wrt_ec = sock->Write(io::Bytes(buf));
+    ASSERT_FALSE(wrt_ec);
+  });
+  recv_fb.Join();
+  ASSERT_FALSE(ec) << ec;
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+
+#ifdef __linux__
+  if (use_uring) {
+    ASSERT_EQ(mb.size(), kBufLen);
+    LOG(INFO) << "MB Size: " << mb.size();
+    ASSERT_EQ(0, memcmp(buf, mb.data(), mb.size()));
+    up->ReplenishBuffers(kBufGroupId, mb);
+  }
+#endif
+}
+
 #ifdef __linux__
 TEST_P(FiberSocketTest, NotEmpty) {
   bool use_uring = GetParam() == "uring";
