@@ -55,6 +55,7 @@ class TlsSocket final : public FiberSocketBase {
 
   io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final;
   io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
+  std::error_code WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) override;
 
   ::io::Result<size_t> WriteSome(const iovec* ptr, uint32_t len) final;
   void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) final;

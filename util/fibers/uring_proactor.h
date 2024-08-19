@@ -76,6 +76,10 @@ class UringProactor : public ProactorBase {
     return poll_first_;
   }
 
+  bool HasBundleSupport() const {
+    return bundle_f_;
+  }
+
   bool HasDirectFD() const {
     return !register_fds_.empty();
   }
@@ -113,13 +117,21 @@ class UringProactor : public ProactorBase {
   int RegisterBuffers(const struct iovec* iovecs, unsigned nr_vecs);
   int UnregisterBuffers();
 
-  // Experimental. should not be called in production.
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
-  // Registers a predefined 16K buffer ring with specified buffer group_id.
+  // Available from kernel 5.19.
+  // Registers a buffer ring with specified buffer group_id.
   // Returns 0 on success, errno on failure.
-  int RegisterBufferRing(unsigned group_id);
+  int RegisterBufferRing(unsigned group_id, unsigned nentries, unsigned esize);
   uint8_t* GetBufRingPtr(unsigned group_id, unsigned bufid);
-  void ConsumeBufRing(unsigned group_id, unsigned len);
+
+  // Return 1 or more buffers to the bufring. slice.data() should point to a buffer returned by
+  // GetBufRingPtr and its length should be within the range of the buffers handled by group_id.
+  void ReplenishBuffers(unsigned group_id, io::Bytes slice);
+  bool BufRingExists(unsigned group_id) const {
+    return group_id < bufring_groups_.size();
+  }
+
+  unsigned BufRingAvailable(unsigned group_id) const;
 
   // Returns 0 on success, errno on failure.
   // See io_uring_prep_cancel(3) for flags.
@@ -153,7 +165,8 @@ class UringProactor : public ProactorBase {
   uint8_t msgring_f_ : 1;
   uint8_t poll_first_ : 1;
   uint8_t buf_ring_f_ : 1;
-  uint8_t : 5;
+  uint8_t bundle_f_ : 1;
+  uint8_t : 4;
 
   EventCount sqe_avail_;
 
@@ -176,8 +189,11 @@ class UringProactor : public ProactorBase {
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;
     uint8_t* buf = nullptr;
+    uint16_t nentries = 0;
+    uint16_t reserved;
+    uint32_t entry_size = 0;
   };
-
+  static_assert(sizeof(BufRingGroup) == 24);
   std::vector<BufRingGroup> bufring_groups_;
 
   // Keeps track of requested buffers
