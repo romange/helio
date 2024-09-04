@@ -99,7 +99,8 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
-  // Register buffer with given size and allocate backing, calls io_uring_register_buffers
+  // Register buffer with given size and allocate backing, calls io_uring_register_buffers.
+  // Returns 0 on success, -errno on error.
   int RegisterBuffers(size_t size);
 
   // Request buffer of given size, returns none if there's no space left in the backing.
