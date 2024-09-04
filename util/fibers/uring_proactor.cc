@@ -321,23 +321,33 @@ int UringProactor::RegisterBuffers(size_t size) {
 
   // Use mmap to create the backing
   void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (ptr == MAP_FAILED)
+  if (ptr == MAP_FAILED) {
+    LOG(ERROR) << "Could not mmap " << size << " bytes";
     return -errno;
+  }
+
+  iovec vec{ptr, size};
+  int res = io_uring_register_buffers(&ring_, &vec, 1);
+  if (res < 0) {
+    LOG(ERROR) << "Error calling io_uring_register_buffers: " << SafeErrorMessage(-res);
+    munmap(ptr, size);
+    return res;
+  }
 
   buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
   buf_pool_.segments.Grow(size / UringBuf::kAlign);
 
-  iovec vec{buf_pool_.backing, size};
-  return io_uring_register_buffers(&ring_, &vec, 1);
+  return 0;
 }
 
 std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
-  DCHECK(buf_pool_.backing);
-  // We keep track not of bytes, but 4kb segments and round up
-  size_t segments = (size + UringBuf::kAlign - 1) / UringBuf::kAlign;
-  if (auto offset = buf_pool_.segments.Request(segments)) {
-    uint8_t* ptr = buf_pool_.backing + *offset * UringBuf::kAlign;
-    return UringBuf{{ptr, segments * UringBuf::kAlign}, 0};
+  if (buf_pool_.backing) {
+    // We keep track not of bytes, but 4kb segments and round up
+    size_t segment_cnt = (size + UringBuf::kAlign - 1) / UringBuf::kAlign;
+    if (auto offset = buf_pool_.segments.Request(segment_cnt)) {
+      uint8_t* ptr = buf_pool_.backing + *offset * UringBuf::kAlign;
+      return UringBuf{{ptr, segment_cnt * UringBuf::kAlign}, 0};
+    }
   }
   return std::nullopt;
 }

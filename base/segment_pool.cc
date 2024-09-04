@@ -10,20 +10,26 @@
 
 namespace base {
 
-std::optional<unsigned> SegmentPool::Request(unsigned length) {
-  if (taken_.empty())
-    return taken_.emplace_back(0, length).first;
+using namespace std;
 
-  // If possible, squeeze segment before first occupied segment
+optional<unsigned> SegmentPool::Request(unsigned length) {
+  // Invariant: elem.first + elem.second <= size_ for any elem in the queue.
+  if (taken_.empty()) {
+    if (length > size_)
+      return nullopt;
+    return taken_.emplace_back(0, length).first;
+  }
+
+  // If possible, squeeze segment before first occupied segment.
   if (size_t head_mark = taken_.front().first; length <= head_mark)
     return taken_.emplace_front(head_mark - length, length).first;
 
-  // Otherwise, try appending after last occupied segment
+  // Otherwise, try appending after last occupied segment.
   size_t tail_mark = taken_.back().first + taken_.back().second;
-  if (size_ - tail_mark >= length)
+  if (tail_mark + length <= size_)
     return taken_.emplace_back(tail_mark, length).first;
 
-  return std::nullopt;
+  return nullopt;
 }
 
 void SegmentPool::Return(unsigned offset) {
@@ -32,7 +38,7 @@ void SegmentPool::Return(unsigned offset) {
   if (taken_.front().first == offset)  // fast path
     it = taken_.begin();
   else
-    it = std::lower_bound(taken_.begin(), taken_.end(), std::make_pair(offset, 0u));
+    it = lower_bound(taken_.begin(), taken_.end(), make_pair(offset, 0u));
   DCHECK(it != taken_.end());
 
   it->second = 0;  // clear length
