@@ -99,6 +99,9 @@ void SimpleChannel<T, Q>::Push(Args&&... args) noexcept {
     if (TryPush(std::forward<Args>(args)...)) {
       break;
     }
+    if (IsClosing()) {
+      break;
+    }
     push_ec_.wait(key.epoch());
   }
 }
@@ -124,6 +127,7 @@ template <typename T, typename Q> bool SimpleChannel<T, Q>::Pop(T& dest) {
 template <typename T, typename Q> void SimpleChannel<T, Q>::StartClosing() {
   is_closing_.fetch_add(1, std::memory_order_acq_rel);
   pop_ec_.notifyAll();
+  push_ec_.notifyAll();
 }
 
 namespace detail {
