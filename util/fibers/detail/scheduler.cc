@@ -235,7 +235,7 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
        FiberInterface::kScheduleRemote) != 0) {
-    LOG(DFATAL) << "Already scheduled remotely " << cntx->name();
+    LOG(DFATAL) << "Already scheduled remotely " << cntx->name() << " " << cntx->DEBUG_use_count();
     return;
   }
 
@@ -252,10 +252,6 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   } else {
     cntx->DEBUG_remote_epoch = remote_epoch_.fetch_add(1, memory_order_relaxed);
     remote_ready_queue_.Push(cntx);
-
-
-    // clear the bit after we pushed to the queue.
-    cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
 
     DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
@@ -342,7 +338,7 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
                      << iteration << " remote_empty: " << qempty << ", current_epoch: " << epoch
                      << ", push_epoch: " << active->DEBUG_remote_epoch
                      << ", next:" << (uint64_t)next;
-
+          LOG(ERROR) << "Stacktrace: " << GetStacktrace();
           if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
             if (iteration < 100) {
               // Work around the inconsistency by retrying.
@@ -362,6 +358,9 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
     fi->DEBUG_remote_epoch = 0;
+
+    // clear the bit after we pulled from the queue.
+    fi->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
 
     DVLOG(2) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
