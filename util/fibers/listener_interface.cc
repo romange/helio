@@ -117,6 +117,7 @@ void ListenerInterface::RunAcceptLoop() {
       if (ec != errc::connection_aborted) {
         LOG(ERROR) << "Error calling accept " << ec << "/" << ec.message();
       }
+      VLOG(1) << "Breaking RunAcceptLoop()";
       break;
     }
 
@@ -185,6 +186,8 @@ void ListenerInterface::RunAcceptLoop() {
     // we iterate over list but Shutdown serves as a preemption point so we must handle the
     // invalidation case inside the loop;
     auto iter = clist->list.begin();
+    VLOG(1) << "Cleaning up " << clist->list.size() << " connections from thread "
+            << pb->thread_id();
     while (iter != clist->list.end()) {
       Connection& conn = *iter;
 
@@ -193,10 +196,12 @@ void ListenerInterface::RunAcceptLoop() {
       if (guard->hook_.is_linked()) {
         ++iter;
       } else {
+        VLOG(1) << "Iterator reset for pb with thread_id " << pb->thread_id();
         iter = clist->list.begin();  // reset the iteration.
       }
       DVSOCK(1, conn) << "Shutdown";
     }
+    VLOG(1) << "Done shutting down connections for thread " << pb->thread_id();
     cur_conn_cnt.fetch_add(clist->list.size(), memory_order_relaxed);
   });
 
@@ -339,7 +344,6 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   VLOG(1) << "Migrating " << conn << " from " << src_proactor->sys_tid() << "(" << src_index << ") "
           << src_conn_map << " to " << dest->sys_tid();
 
-
   constexpr uint64_t kTraverseMask = (1ULL << 32) - 1;
 
   conn->OnPreMigrateThread();
@@ -369,7 +373,8 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
 
   ListenerConnMap* dest_conn_map = GetSafeTlsConnMap();
   int dest_index = dest->GetPoolIndex();
-  VLOG(1) << "Migrated " << conn << " from " << src_index << " to " << dest_index << " " << dest_conn_map;
+  VLOG(1) << "Migrated " << conn << " from " << src_index << " to " << dest_index << " "
+          << dest_conn_map;
 
   CHECK_NE(dest_conn_map, src_conn_map);
   auto it = dest_conn_map->find(this);
