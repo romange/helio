@@ -210,6 +210,12 @@ auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
   RETURN_RESULT(result);
 }
 
+auto Engine::Peek(uint8_t* dest, size_t len) -> OpResult  {
+  int result = SSL_peek(ssl_, dest, len);
+
+  RETURN_RESULT(result);
+}
+
 // returns -1 if failed to load any CA certificates, 0 if loaded successfully
 int SslProbeSetDefaultCALocation(SSL_CTX* ctx) {
   /* The probe paths are based on:

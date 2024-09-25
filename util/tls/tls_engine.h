@@ -73,6 +73,8 @@ class Engine {
   // Read bytes from the SSL session.
   OpResult Read(uint8_t* dest, size_t len);
 
+  OpResult Peek(uint8_t* dest, size_t len);
+
   //! Returns output (read) buffer. This operation is destructive, i.e. after calling
   //! this function the buffer is being consumed.
   //! See OutputPending() for checking if there is a output buffer to consume.
