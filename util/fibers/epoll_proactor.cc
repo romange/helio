@@ -237,7 +237,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     // 3. Task queue is empty otherwise we should spin more to unload it.
     if (task_queue_exhausted && !scheduler->HasReady() && spin_loops >= kMaxSpinLimit) {
       spin_loops = 0;
-
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
         // We check stop condition when all the pending events were processed.
         // It's up to the app-user to make sure that the incoming flow of events is stopped before
@@ -256,6 +255,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       auto now = chrono::steady_clock::now();
       if (now < tp) {
         auto ns = chrono::duration_cast<chrono::nanoseconds>(tp - now).count();
+
         // epoll_wait() uses millisecond precision. If we block for less than the precise deadline,
         // we cause unnesessary spinning and an elevated CPU usage. Therefore, we round up.
         timeout = (ns + 1000'000 - 1) / 1000'000;
@@ -314,10 +314,11 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    // TODO: to handle idle tasks.
     scheduler->DestroyTerminated();
-    Pause(spin_loops);
-    ++spin_loops;
+    if (!RunOnIdleTasks()) {
+      Pause(spin_loops);
+      ++spin_loops;
+    }
   }
 
   VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << stats_.loop_cnt << "/"
