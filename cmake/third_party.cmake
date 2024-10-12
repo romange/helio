@@ -342,7 +342,7 @@ add_third_party(
 
 add_third_party(
   uring
-  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.6.tar.gz
+  URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.7.tar.gz
 
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/uring
   BUILD_COMMAND make -C src
@@ -379,7 +379,7 @@ endif()
 
 add_third_party(
   cares
-  URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.31.0
+  URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.34.1
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )

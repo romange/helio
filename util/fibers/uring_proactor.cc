@@ -66,9 +66,6 @@ constexpr uint16_t kMsgRingSubmitTag = 1;
 constexpr uint16_t kTimeoutSubmitTag = 2;
 constexpr uint16_t kCqeBatchLen = 128;
 
-constexpr size_t kBufRingEntriesCnt = 8192;
-constexpr size_t kBufRingEntrySize = 64;  // TODO: should be configurable.
-
 }  // namespace
 
 UringProactor::UringProactor() : ProactorBase() {
@@ -85,8 +82,8 @@ UringProactor::~UringProactor() {
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
-        io_uring_free_buf_ring(&ring_, group.ring, kBufRingEntriesCnt, i);
-        delete group.buf;
+        io_uring_free_buf_ring(&ring_, group.ring, group.nentries, i);
+        delete[] group.buf;
       }
     }
 
@@ -117,6 +114,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   msgring_f_ = 0;
   poll_first_ = 0;
   buf_ring_f_ = 0;
+  bundle_f_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -167,6 +165,12 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
   CHECK_EQ(req_feats, params.features & req_feats)
       << "required feature feature is not present in the kernel";
+
+#ifdef IORING_FEAT_RECVSEND_BUNDLE
+  if (params.features & IORING_FEAT_RECVSEND_BUNDLE) {
+    bundle_f_ = 1;
+  }
+#endif
 
   int res = io_uring_register_ring_fd(&ring_);
   VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
@@ -359,7 +363,11 @@ void UringProactor::ReturnBuffer(UringBuf buf) {
   buf_pool_.segments.Return(segments);
 }
 
-int UringProactor::RegisterBufferRing(unsigned group_id) {
+int UringProactor::RegisterBufferRing(unsigned group_id, unsigned nentries, unsigned esize) {
+  CHECK_LT(nentries, 32768u);
+  CHECK_EQ(0u, nentries & (nentries - 1));  // power of 2.
+  DCHECK(InMyThread());
+
   if (buf_ring_f_ == 0)
     return EOPNOTSUPP;
 
@@ -367,41 +375,77 @@ int UringProactor::RegisterBufferRing(unsigned group_id) {
     bufring_groups_.resize(group_id + 1);
   }
 
-  auto& ring_group = bufring_groups_[group_id];
-  CHECK(ring_group.ring == nullptr);
+  auto& buf_group = bufring_groups_[group_id];
+  CHECK(buf_group.ring == nullptr);
 
   int err = 0;
 
-  ring_group.ring = io_uring_setup_buf_ring(&ring_, kBufRingEntriesCnt, group_id, 0, &err);
-  if (ring_group.ring == nullptr) {
+  buf_group.ring = io_uring_setup_buf_ring(&ring_, nentries, group_id, 0, &err);
+  if (buf_group.ring == nullptr) {
     return -err;  // err is negative.
   }
 
-  unsigned mask = kBufRingEntriesCnt - 1;
-  ring_group.buf = new uint8_t[kBufRingEntriesCnt * kBufRingEntrySize];
-  uint8_t* next = ring_group.buf;
-  for (unsigned i = 0; i < kBufRingEntriesCnt; ++i) {
-    io_uring_buf_ring_add(ring_group.ring, next, kBufRingEntrySize, i, mask, i);
-    next += 64;
+  unsigned mask = io_uring_buf_ring_mask(nentries);
+  buf_group.buf = new uint8_t[nentries * esize];
+  buf_group.nentries = nentries;
+  buf_group.entry_size = esize;
+  uint8_t* next = buf_group.buf;
+
+  // buffers are ordered nicely at first, in sequential order inside a single range
+  // but when we return them back to bufring, then will be reordered because
+  // CQEs complete in arbitrary order, moreover the ownership over buffers is passed back
+  // to bufring in arbitrary order inside ConsumeBufRing.
+  for (unsigned i = 0; i < nentries; ++i) {
+    io_uring_buf_ring_add(buf_group.ring, next, esize, i, mask, i);
+    next += esize;
   }
-  io_uring_buf_ring_advance(ring_group.ring, kBufRingEntriesCnt);
+
+  // return the ownership to the ring.
+  io_uring_buf_ring_advance(buf_group.ring, nentries);
 
   return 0;
 }
 
 uint8_t* UringProactor::GetBufRingPtr(unsigned group_id, unsigned bufid) {
   DCHECK_LT(group_id, bufring_groups_.size());
-  DCHECK_LT(bufid, kBufRingEntriesCnt);
+  auto& buf_group = bufring_groups_[group_id];
+
+  DCHECK_LT(bufid, buf_group.nentries);
   DCHECK(bufring_groups_[group_id].buf);
-  return bufring_groups_[group_id].buf + bufid * kBufRingEntrySize;
+  return bufring_groups_[group_id].buf + bufid * buf_group.entry_size;
 }
 
-void UringProactor::ConsumeBufRing(unsigned group_id, unsigned len) {
+void UringProactor::ReplenishBuffers(unsigned group_id, io::Bytes slice) {
   DCHECK_LT(group_id, bufring_groups_.size());
-  DCHECK_LE(len, kBufRingEntriesCnt);
-  DCHECK(bufring_groups_[group_id].ring);
+  DCHECK(!slice.empty());
 
-  io_uring_buf_ring_advance(bufring_groups_[group_id].ring, len);
+  auto& buf_group = bufring_groups_[group_id];
+  size_t total_len = size_t(buf_group.nentries) * size_t(buf_group.entry_size);
+  DCHECK(slice.end() <= buf_group.buf + total_len);
+  off_t offs = slice.data() - buf_group.buf;
+  DCHECK_GE(offs, 0);
+  DCHECK(offs % buf_group.entry_size == 0);
+
+  // Add 1 or more buffers back to the ring. ReplenishBuffers calls can come OOO, therefore
+  // we expect to see reshuffling of buffers within the ring.
+  unsigned bid = offs / buf_group.entry_size;
+  size_t replenished = 0;
+  uint8_t* cur_buf = buf_group.buf + bid * buf_group.entry_size;
+  unsigned mask = io_uring_buf_ring_mask(buf_group.nentries);
+  unsigned offset = 0;
+  while (replenished < slice.size()) {
+    io_uring_buf_ring_add(buf_group.ring, cur_buf, buf_group.entry_size, bid, mask, offset++);
+    replenished += buf_group.entry_size;
+  }
+
+  io_uring_buf_ring_advance(bufring_groups_[group_id].ring, offset);
+}
+
+unsigned UringProactor::BufRingAvailable(unsigned group_id) const {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  auto& buf_group = bufring_groups_[group_id];
+
+  return io_uring_buf_ring_available(const_cast<io_uring*>(&ring_), buf_group.ring, group_id);
 }
 
 int UringProactor::CancelRequests(int fd, unsigned flags) {
