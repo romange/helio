@@ -29,6 +29,8 @@ class EpollSocket : public LinuxSocketBase {
   void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
+
+  std::error_code WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) override;
   Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
   error_code Shutdown(int how) override;

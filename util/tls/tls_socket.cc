@@ -283,6 +283,31 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   return read_total;
 }
 
+std::error_code TlsSocket::WaitForRecv(uint16_t buf_group_id, io::MutableBytes* mb) {
+  int res = SSL_has_pending(engine_->native_handle());
+  *mb = {};
+  if (res)
+    return {};
+
+  uint8_t buf[8];
+  while (true) {
+    Engine::OpResult op_result = engine_->Peek(buf, 1);
+    if (!op_result) {
+      return SSL2Error(op_result.error());
+    }
+
+    int op_val = *op_result;
+    if (op_val > 0) {
+      return {};
+    }
+
+    error_code ec = HandleOp(op_val);
+    if (ec)
+      return ec;
+  }
+  return {};
+}
+
 io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
   msghdr msg;
   memset(&msg, 0, sizeof(msg));
