@@ -127,10 +127,17 @@ class UringProactor : public ProactorBase {
   // Return 1 or more buffers to the bufring. slice.data() should point to a buffer returned by
   // GetBufRingPtr and its length should be within the range of the buffers handled by group_id.
   void ReplenishBuffers(unsigned group_id, io::Bytes slice);
-  bool BufRingExists(unsigned group_id) const {
-    return group_id < bufring_groups_.size();
+
+  // Returns bufring entry size for the given group_id.
+  // -1 if group_id is invalid.
+  int BufRingEntrySize(unsigned group_id) const {
+    return group_id < bufring_groups_.size() ? bufring_groups_[group_id].entry_size : -1;
   }
 
+  // Returns number of available entries at the time of the call.
+  // Every time a kernel event with IORING_CQE_F_BUFFER is processed,
+  // it consumes one or more entries from the buffer ring and available decreases.
+  // ReplenishBuffers returns the entries back to the ring.
   unsigned BufRingAvailable(unsigned group_id) const;
 
   // Returns 0 on success, errno on failure.
