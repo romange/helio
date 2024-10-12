@@ -68,6 +68,10 @@ class LocalWriteFile : public WriteFile {
 
   error_code Open();
 
+  int fd() const {
+    return fd_;
+  }
+
  protected:
   int fd_ = -1;
   int flags_;
@@ -219,12 +223,24 @@ expected<WriteFile*, error_code> OpenWrite(std::string_view file_name, WriteFile
     flags |= O_APPEND;
   else
     flags |= O_TRUNC;
+
+#ifndef _MAC_OS_
+  if (opts.direct)
+    flags |= O_DIRECT;
+#endif
+
   LocalWriteFile* ptr = new LocalWriteFile(file_name, flags);
   error_code ec = ptr->Open();
   if (ec) {
     delete ptr;
     return make_unexpected(ec);
   }
+
+#ifdef _MAC_OS_
+  // Instructs MacOS not to store file data in the system-wide buffer cache.
+  fcntl(ptr->fd(), F_NOCACHE, 1);
+#endif
+
   return ptr;
 }
 

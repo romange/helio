@@ -52,4 +52,20 @@ TEST_F(FileTest, LineReader) {
   EXPECT_EQ(48, lr.line_num());
 }
 
+TEST_F(FileTest, Direct) {
+  string path = base::GetTestTempPath("write.bin");
+  WriteFile::Options opts;
+  opts.direct = true;
+  auto res = OpenWrite(path, opts);
+  ASSERT_TRUE(res);
+  WriteFile* file =  *res;
+
+  auto ec = file->Write(string(4096, 'a'));
+  ASSERT_FALSE(ec) << ec;
+
+  ec = file->Close();
+  ASSERT_FALSE(ec);
+}
+
+
 }  // namespace io
