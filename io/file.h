@@ -68,6 +68,7 @@ class WriteFile : public Sink {
  public:
   struct Options {
     bool append = false;  // if true - does not overwrite the existing file on open.
+    bool direct = false;
   };
 
   virtual ~WriteFile();
