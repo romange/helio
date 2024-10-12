@@ -39,7 +39,7 @@ class UringFileTest : public testing::Test {
 
 TEST_F(UringFileTest, Basic) {
   string path = base::GetTestTempPath("1.log");
-  proactor_->Await([this, path] {
+  proactor_->Await([path] {
     auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
     ASSERT_TRUE(res);
     LinuxFile* wf = (*res).get();

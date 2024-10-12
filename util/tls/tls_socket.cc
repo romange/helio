@@ -10,6 +10,7 @@
 
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
+#include "util/fibers/proactor_base.h"
 #include "util/tls/tls_engine.h"
 
 namespace util {
@@ -496,6 +497,17 @@ void TlsSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
 
 void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
+}
+
+io::Result<unsigned> TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+  LOG(DFATAL) << "Not implemented";
+
+  return nonstd::make_unexpected(make_error_code(errc::operation_not_supported));
+}
+
+void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
+  proactor()->ReturnBuffer(
+      io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
 }
 
 bool TlsSocket::IsUDS() const {

@@ -66,7 +66,8 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
   DynamicBodyRequest req_;
 
  public:
-  DynamicBodyRequestImpl(DynamicBodyRequestImpl&&) = default;
+  DynamicBodyRequestImpl(DynamicBodyRequestImpl&& other) : req_(std::move(other.req_)) {
+  }
 
   explicit DynamicBodyRequestImpl(std::string_view url)
       : req_(boost::beast::http::verb::post, boost::string_view{url.data(), url.size()}, 11) {

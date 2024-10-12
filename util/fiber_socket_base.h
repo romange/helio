@@ -58,6 +58,19 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
+  struct ProvidedBuffer {
+    io::Bytes buffer;
+    uint32_t allocated;
+    uint8_t cookie;  // Used by the socket to identify the buffer.
+  };
+
+  // Unlike Recv/ReadSome, this method returns a buffer managed by the socket.
+  // They should be returned back to the socket after the data is read.
+  // small is an optional buffer that can be used for small messages.
+  virtual ::io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) = 0;
+
+  virtual void ReturnProvided(const ProvidedBuffer& pbuf) = 0;
+
   static bool IsConnClosed(const error_code& ec) {
     return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset) ||
            (ec == std::errc::broken_pipe);

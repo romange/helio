@@ -33,6 +33,9 @@ class EpollSocket : public LinuxSocketBase {
 
   error_code Shutdown(int how) override;
 
+  io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
+  void ReturnProvided(const ProvidedBuffer& pbuf) final;
+
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
   void CancelOnErrorCb() final;
 
@@ -56,6 +59,10 @@ class EpollSocket : public LinuxSocketBase {
   int32_t arm_index_ = -1;
   uint16_t epoll_mask_ = 0;
   uint16_t kev_error_ = 0;
+
+  static constexpr uint32_t kMaxBufSize = 1 << 16;
+  static constexpr uint32_t kMinBufSize = 1 << 4;
+  uint32_t bufreq_sz_ = kMinBufSize;
 
   std::function<void(uint32_t)> error_cb_;
 };

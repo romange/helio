@@ -146,6 +146,10 @@ class ProactorBase {
     return fb;
   }
 
+  // Returns a buffer of size at least min_size.
+  io::MutableBytes AllocateBuffer(size_t min_size);
+  void ReturnBuffer(io::MutableBytes buf);
+
   using OnIdleTask = std::function<uint32_t()>;
   using PeriodicTask = std::function<void()>;
 

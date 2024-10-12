@@ -95,7 +95,7 @@ class Client {
 
   BoostError HandleError(BoostError ec) {
     if (IsIoError(ec)) {
-      socket_->Close();
+      std::ignore = socket_->Close();
     }
     return ec;
   }

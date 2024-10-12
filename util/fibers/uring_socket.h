@@ -54,6 +54,11 @@ class UringSocket : public LinuxSocketBase {
     return has_recv_data_;
   }
 
+  static void InitProvidedBuffers(unsigned num_bufs, unsigned buf_size, UringProactor* proactor);
+
+  io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
+  void ReturnProvided(const ProvidedBuffer& pbuf) final;
+
  private:
   UringProactor* GetProactor() {
     return static_cast<Proactor*>(proactor());

@@ -651,7 +651,7 @@ TEST_P(ProactorTest, NotifyRemote2) {
 
   for (unsigned i = 0; i < kNumThreads; ++i) {
     for (unsigned j = 0; j < 20; ++j) {
-      fbs.push_back(ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [i, j, &ths] {
+      fbs.push_back(ths[i]->proactor->LaunchFiber(StrCat("test", i, "/", j), [i, &ths] {
         for (unsigned iter = 0; iter < 1000; ++iter) {
           unsigned idx = (i + iter) % kNumThreads;
 

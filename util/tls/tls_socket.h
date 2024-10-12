@@ -67,6 +67,9 @@ class TlsSocket final : public FiberSocketBase {
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) override;
   void CancelOnErrorCb() override;
 
+  io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
+  void ReturnProvided(const ProvidedBuffer& pbuf) final;
+
   bool IsUDS() const override;
 
   using FiberSocketBase::native_handle_type;
@@ -100,12 +103,7 @@ class TlsSocket final : public FiberSocketBase {
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
 
-  enum {
-    WRITE_IN_PROGRESS = 1,
-    READ_IN_PROGRESS = 2,
-    SHUTDOWN_IN_PROGRESS = 4,
-    SHUTDOWN_DONE = 8
-  };
+  enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
 };
 

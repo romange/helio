@@ -24,6 +24,7 @@ namespace {
 
 // Disable direct fd for sockets due to https://github.com/axboe/liburing/issues/1192
 constexpr bool kEnableDirect = false;
+constexpr uint16_t kUringSockBufGroup = 1;
 
 inline ssize_t posix_err_wrap(ssize_t res, UringSocket::error_code* ec) {
   if (res == -1) {
@@ -149,7 +150,8 @@ auto UringSocket::Accept() -> AcceptResult {
   return fs;
 }
 
-auto UringSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect) -> error_code {
+auto UringSocket::Connect(const endpoint_type& ep,
+                          std::function<void(int)> on_pre_connect) -> error_code {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -416,6 +418,72 @@ auto UringSocket::native_handle() const -> native_handle_type {
     fd = GetProactor()->TranslateDirectFd(fd);
   }
   return fd;
+}
+
+void UringSocket::InitProvidedBuffers(unsigned num_bufs, unsigned buf_size,
+                                      UringProactor* proactor) {
+  proactor->RegisterBufferRing(kUringSockBufGroup, num_bufs, buf_size);
+}
+
+io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+  DCHECK_GT(buf_len, 0u);
+
+  int fd = ShiftedFd();
+  Proactor* p = GetProactor();
+  DCHECK(ProactorBase::me() == p);
+  DCHECK(p->BufRingExists(kUringSockBufGroup));
+
+  ssize_t res;
+  while (true) {
+    FiberCall fc(p, timeout());
+
+    fc->PrepRecv(fd, nullptr, 0, 0);
+    fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+    fc->sqe()->buf_group = kUringSockBufGroup;
+    if (has_pollfirst_ && !has_recv_data_) {
+      fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
+    }
+    res = fc.Get();
+
+    if (res > 0) {
+      uint32_t flags = fc.flags();
+      CHECK_NE(IORING_CQE_F_BUFFER & flags, 0u);
+
+      has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
+      DVSOCK(2) << "Received " << res << " bytes";
+      uint8_t* start = p->GetBufRingPtr(kUringSockBufGroup, flags >> IORING_CQE_BUFFER_SHIFT);
+      dest[0].buffer = io::MutableBytes{start, static_cast<size_t>(res)};
+      dest[0].cookie = 2;
+
+      return 1;
+    }
+
+    DVSOCK(2) << "Got " << res;
+
+    res = -res;
+
+    // EAGAIN can happen in case of CQ overflow.
+    if (res == EAGAIN) {
+      continue;
+    }
+
+    if (res == 0)
+      res = ECONNABORTED;
+    break;
+  }
+
+  error_code ec(res, system_category());
+  VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
+
+  return make_unexpected(std::move(ec));
+}
+
+void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
+  CHECK_EQ(pbuf.cookie, 2);
+  CHECK(!pbuf.buffer.empty());
+
+  Proactor* p = GetProactor();
+  p->ReplenishBuffers(kUringSockBufGroup, pbuf.buffer);
 }
 
 void UringSocket::OnSetProactor() {

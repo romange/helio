@@ -91,7 +91,7 @@ class AcceptServerTest : public testing::Test {
   void SetUp() override;
 
   void TearDown() override {
-    client_sock_->proactor()->Await([&] { client_sock_->Close(); });
+    client_sock_->proactor()->Await([&] { std::ignore = client_sock_->Close(); });
     as_->Stop(true);
     watchdog_done_.Notify();
     watchdog_fiber_.Join();
