@@ -67,7 +67,8 @@ INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
                                          ,
                                          "uring"
 #endif
-                                         ));
+                                         ),
+                         [](const auto& info) { return string(info.param); });
 
 void FiberSocketTest::SetUp() {
 #if __linux__
@@ -231,9 +232,7 @@ TEST_P(FiberSocketTest, Poll) {
   accept_fb_.Join();
 
   LOG(INFO) << "Before close";
-  proactor_->Await([&] {
-    std::ignore = sock->Close();
-  });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
   usleep(1000);
 
   // POLLRDHUP is linux specific
@@ -345,6 +344,65 @@ TEST_P(FiberSocketTest, UDS) {
   proactor_->Await([&] { std::ignore = sock->Close(); });
 
   LOG(INFO) << "Finished";
+}
+
+TEST_P(FiberSocketTest, RecvProvided) {
+  constexpr unsigned kBufLen = 40;
+#ifdef __linux__
+  bool use_uring = GetParam() == "uring";
+
+  UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+  if (use_uring) {
+    up->Await([up] { UringSocket::InitProvidedBuffers(4, kBufLen, up); });
+  }
+#endif
+
+  unique_ptr<FiberSocketBase> sock;
+  error_code ec;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    ec = sock->Connect(listen_ep_);
+  });
+  ASSERT_FALSE(ec);
+
+  io::Result<unsigned> res;
+  FiberSocketBase::ProvidedBuffer pbuf[8];
+
+  auto recv_fb = proactor_->LaunchFiber([&] {
+    res = conn_socket_->RecvProvided(8, pbuf);
+#ifdef __linux__
+    if (use_uring) {
+      bool has_more = static_cast<UringSocket*>(conn_socket_.get())->HasRecvData();
+      EXPECT_TRUE(has_more);
+    }
+#endif
+  });
+
+  uint8_t buf[128];
+  memset(buf, 'x', sizeof(buf));
+
+  proactor_->Await([&] {
+    auto wrt_ec = sock->Write(io::Bytes(buf));
+    ASSERT_FALSE(wrt_ec);
+  });
+
+  recv_fb.Join();
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+  ASSERT_TRUE(res);
+
+  ASSERT_TRUE(*res > 0 && *res < 8);
+  size_t total_size = 0;
+  for (unsigned i = 0; i < *res; ++i) {
+    total_size += pbuf[i].buffer.size();
+  }
+
+  ASSERT_LE(total_size, sizeof(buf));
+
+  proactor_->Await([&] {
+    for (unsigned i = 0; i < *res; ++i) {
+      conn_socket_->ReturnProvided(pbuf[i]);
+    }
+  });
 }
 
 #ifdef __linux__

@@ -73,21 +73,18 @@ class Engine {
   // Read bytes from the SSL session.
   OpResult Read(uint8_t* dest, size_t len);
 
-  //! Returns output (read) buffer. This operation is destructive, i.e. after calling
-  //! this function the buffer is being consumed.
-  //! See OutputPending() for checking if there is a output buffer to consume.
-  Buffer FetchOutputBuf();
-
   //! Returns output buffer which is the read buffer of tls engine.
-  //! This operation is not destructive.
+  //! This operation is not destructive. The buffer contains the encrypted data that
+  //! should be written to the upstream socket.
   Buffer PeekOutputBuf();
 
-  //! Tells the engine that sz bytes were consumed from the output buffer.
+  //! Tells the engine that sz bytes were consumed from the output (read) buffer.
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
   void ConsumeOutputBuf(unsigned sz);
 
   //! Writes the buffer into input ssl buffer.
   //! Returns number of written bytes or the error.
+  //! TODO: should be replaced with PeekInputBuf, memcpy, CommitInput sequence.
   OpResult WriteBuf(const Buffer& buf);
 
   // We usually use this function to write from the raw socket to SSL engine.
@@ -98,7 +95,7 @@ class Engine {
   // than the buffer size from PeekInputBuf() call
   void CommitInput(unsigned sz);
 
-  // Returns size of pending data that needs to be flushed out from SSL to I/O.
+  // Returns size of pending encrypted data that needs to be flushed out from SSL to I/O.
   // See https://www.openssl.org/docs/man1.0.2/man3/BIO_new_bio_pair.html
   // Specifically, warning that says: "An application must not rely on the error value of
   // SSL_operation() but must assure that the write buffer is always flushed first".
@@ -106,6 +103,7 @@ class Engine {
     return BIO_ctrl(external_bio_, BIO_CTRL_PENDING, 0, NULL);
   }
 
+  //! Returns number of pending (encrypted) bytes written to the engine but not yet processed by it.
   //! It's a bit confusing but when we write into external_bio_ it's like
   //! and input buffer to the engine.
   size_t InputPending() const {

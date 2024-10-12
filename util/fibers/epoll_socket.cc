@@ -365,6 +365,110 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
+io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+  DCHECK_GT(buf_len, 0u);
+
+  int fd = native_handle();
+  read_context_ = detail::FiberActive();
+  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
+
+  ssize_t res;
+  error_code ec;
+  while (true) {
+    if (fd_ & IS_SHUTDOWN) {
+      res = EPIPE;
+      break;
+    }
+
+    io::MutableBytes buf = proactor()->AllocateBuffer(bufreq_sz_);
+    res = recv(fd, buf.data(), buf.size(), 0);
+    if (res > 0) {  // if res is 0, that means a peer closed the socket.
+      size_t ures = res;
+      dest[0].cookie = 1;
+
+      // Handle buffer shrinkage.
+      if (bufreq_sz_ > kMinBufSize && ures < bufreq_sz_ / 2) {
+        bufreq_sz_ = absl::bit_ceil(ures);
+        io::MutableBytes buf2 = proactor()->AllocateBuffer(ures);
+        DCHECK_GE(buf2.size(), ures);
+
+        memcpy(buf2.data(), buf.data(), ures);
+        proactor()->ReturnBuffer(buf);
+        dest[0].buffer = {buf2.data(), ures};
+        dest[0].allocated = buf2.size();
+        return 1;
+      }
+
+      dest[0].buffer = {buf.data(), ures};
+      dest[0].allocated = buf.size();
+
+      // Handle buffer expansion.
+      unsigned num_bufs = 1;
+      while (buf.size() == bufreq_sz_) {
+        if (bufreq_sz_ < kMaxBufSize) {
+          bufreq_sz_ *= 2;
+        }
+
+        if (num_bufs == buf_len)
+          break;
+
+        buf = proactor()->AllocateBuffer(bufreq_sz_);
+        res = recv(fd, buf.data(), buf.size(), 0);
+        if (res <= 0) {
+          proactor()->ReturnBuffer(buf);
+          break;
+        }
+        ures = res;
+        dest[num_bufs].buffer = {buf.data(), ures};
+        dest[num_bufs].allocated = buf.size();
+        dest[num_bufs].cookie = 1;
+        ++num_bufs;
+      }
+
+      return num_bufs;
+    }  // res > 0
+
+    proactor()->ReturnBuffer(buf);
+
+    if (res == 0 || errno != EAGAIN) {
+      break;
+    }
+
+    if (SuspendMyself(read_context_, &ec) && ec) {
+      return nonstd::make_unexpected(std::move(ec));
+    }
+  }
+
+  // Error handling - finale part.
+  if (res == -1) {
+    res = errno;
+  } else if (res == 0) {
+    res = ECONNABORTED;
+  }
+
+  DVSOCK(1) << "Got " << res;
+
+  // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
+  // TCP connection did indeed stopped getting tcp keep alive packets.
+  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
+    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
+               << RemoteEndpoint();
+  }
+
+  ec = std::error_code(res, std::system_category());
+  VSOCK(1) << "Error on " << RemoteEndpoint() << ": " << ec.message();
+
+  return nonstd::make_unexpected(std::move(ec));
+}
+
+void EpollSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
+  DCHECK_EQ(pbuf.cookie, 1);
+  DCHECK(!pbuf.buffer.empty());
+
+  proactor()->ReturnBuffer(
+      io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
+}
+
 io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {
   msghdr msg;
   memset(&msg, 0, sizeof(msg));

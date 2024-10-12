@@ -140,19 +140,19 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
     VLOG(1) << opts.name << " OpResult: " << *op_result;
     unsigned output_pending = src->OutputPending();
     if (output_pending > 0) {
-      if (opts.drain_output)
-        src->FetchOutputBuf();
-      else {
-        auto buffer = src->PeekOutputBuf();
-        VLOG(1) << opts.name << " wrote " << buffer.size() << " bytes";
-        CHECK(!buffer.empty());
+      auto buffer = src->PeekOutputBuf();
+      VLOG(1) << opts.name << " wrote " << buffer.size() << " bytes";
+      CHECK(!buffer.empty());
 
-        if (opts.mutate_indx) {
-          uint8_t* mem = const_cast<uint8_t*>(buffer.data());
-          mem[opts.mutate_indx % buffer.size()] = opts.mutate_val;
-          opts.mutate_indx = 0;
-        }
+      if (opts.mutate_indx) {
+        uint8_t* mem = const_cast<uint8_t*>(buffer.data());
+        mem[opts.mutate_indx % buffer.size()] = opts.mutate_val;
+        opts.mutate_indx = 0;
+      }
 
+      if (opts.drain_output) {
+        src->ConsumeOutputBuf(buffer.size());
+      } else {
         auto write_result = dest->WriteBuf(buffer);
         if (!write_result) {
           return write_result.error();
@@ -161,6 +161,7 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
         src->ConsumeOutputBuf(*write_result);
       }
     }
+
     if (*op_result >= 0) {  // Shutdown or empty read/write may return 0.
       return 0;
     }

@@ -117,6 +117,15 @@ bool ProactorBase::InMyThread() const {
   return pthread_self() == thread_id_;
 }
 
+io::MutableBytes ProactorBase::AllocateBuffer(size_t hint_sz) {
+  uint8_t* res = new uint8_t[hint_sz];
+  return io::MutableBytes{res, hint_sz};
+}
+
+void ProactorBase::ReturnBuffer(io::MutableBytes buf) {
+  operator delete[](buf.data());
+}
+
 uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f) {
   DCHECK(InMyThread());
 

@@ -106,24 +106,10 @@ Engine::~Engine() {
   ssl_ = nullptr;
 }
 
-
-auto Engine::FetchOutputBuf() -> Buffer {
-  char* buf = nullptr;
-
-  int res = BIO_nread(external_bio_, &buf, INT_MAX);
-  if (res < 0) {
-    unsigned long error = ::ERR_get_error();
-    LOG(DFATAL) << "Unexpected result " << res << " " << error;
-
-    return Buffer{};
-  }
-
-  return Buffer(reinterpret_cast<const uint8_t*>(buf), res);
-}
-
 auto Engine::PeekOutputBuf() -> Buffer {
   char* buf = nullptr;
 
+  // BIO_nread0 just calls BIO_ctrl(, BIO_C_NREAD0).
   long res = BIO_ctrl(external_bio_, BIO_C_NREAD0, 0, &buf);
   if (res == -1) {  // no data
     res = 0;

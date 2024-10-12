@@ -350,7 +350,7 @@ size_t Driver::Run(base::Histogram* dest) {
       break;
   }
 
-  socket_->Shutdown(SHUT_RDWR);
+  std::ignore = socket_->Shutdown(SHUT_RDWR);
   dest->Merge(hist);
 
   return i;
