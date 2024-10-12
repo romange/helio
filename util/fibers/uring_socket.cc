@@ -431,7 +431,7 @@ io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);
-  DCHECK(p->BufRingExists(kUringSockBufGroup));
+  DCHECK_GT(p->BufRingEntrySize(kUringSockBufGroup), 0);
 
   ssize_t res;
   while (true) {
@@ -462,9 +462,21 @@ io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
 
     res = -res;
 
-    // EAGAIN can happen in case of CQ overflow.
-    if (res == EAGAIN) {
-      continue;
+    if (res == ENOBUFS) {
+      int entry_size = p->BufRingEntrySize(kUringSockBufGroup);
+      DCHECK_GT(entry_size, 0);
+      io::MutableBytes buf = p->AllocateBuffer(entry_size);
+      int real_handle = native_handle();
+      int recv_res = recv(real_handle, buf.data(), buf.size(), 0);
+      if (recv_res > 0) {
+        dest[0].buffer = io::MutableBytes{buf.data(), static_cast<size_t>(res)};
+        dest[0].allocated = buf.size();
+        dest[0].cookie = 1;
+        return 1;
+      }
+
+      p->DeallocateBuffer(buf);
+      res = recv_res < 0 ? errno : ECONNABORTED;
     }
 
     if (res == 0)
@@ -479,11 +491,14 @@ io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
 }
 
 void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  CHECK_EQ(pbuf.cookie, 2);
-  CHECK(!pbuf.buffer.empty());
-
+  DCHECK(!pbuf.buffer.empty());
   Proactor* p = GetProactor();
-  p->ReplenishBuffers(kUringSockBufGroup, pbuf.buffer);
+  if (pbuf.cookie == 2) {
+    p->ReplenishBuffers(kUringSockBufGroup, pbuf.buffer);
+  } else {
+    DCHECK_EQ(pbuf.cookie, 1);
+    p->DeallocateBuffer({const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
+  }
 }
 
 void UringSocket::OnSetProactor() {
