@@ -23,15 +23,6 @@
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
 
-#define URING_CHECK(x)                                                        \
-  do {                                                                        \
-    int __res_val = (x);                                                      \
-    if (ABSL_PREDICT_FALSE(__res_val < 0)) {                                  \
-      LOG(FATAL) << "Error " << (-__res_val)                                  \
-                 << " evaluating '" #x "': " << SafeErrorMessage(-__res_val); \
-    }                                                                         \
-  } while (false)
-
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
 using namespace std;
@@ -639,6 +630,14 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   Tasklet task;
 
   FiberInterface* dispatcher = detail::FiberActive();
+  enum {
+    JUMP_FROM_INIT,
+    JUMP_FROM_READY,
+    JUMP_FROM_L2,
+    JUMP_FROM_SPIN,
+    JUMP_FROM_TOTAL
+  } jump_from = JUMP_FROM_INIT;
+  unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
 
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
@@ -652,7 +651,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   // 4. ProcessSleep does not have to be called every loop cycle since it does not really
   //    expect usec precision.
   // 6. ProcessSleep and ProcessRemoteReady may introduce ready fibers.
-
   while (true) {
     ++stats_.loop_cnt;
     bool has_cpu_work = false;
@@ -666,18 +664,19 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     int num_submitted = io_uring_submit_and_get_events(&ring_);
     bool ring_busy = false;
 
-    if (num_submitted >= 0) {
-      stats_.uring_submit_calls += (num_submitted != 0);
-      if (num_submitted) {
-        DVLOG(3) << "Submitted " << num_submitted;
-      }
+    if (num_submitted > 0) {
+      ++stats_.uring_submit_calls;
+      DVLOG(3) << "Submitted " << num_submitted;
     } else if (num_submitted == -EBUSY) {
       VLOG(1) << "EBUSY " << io_uring_sq_ready(&ring_);
       ring_busy = true;
       num_submitted = 0;
       ++busy_sq_cnt;
-    } else {
-      URING_CHECK(num_submitted);
+    } else if (num_submitted == 0) {
+      jump_counts[jump_from]++;
+    } else if (num_submitted != -ETIME) {
+      LOG(DFATAL) << "Error submitting to iouring: " << -num_submitted;
+      continue;
     }
 
     tq_seq = tq_seq_.load(memory_order_acquire);
@@ -712,6 +711,20 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
     scheduler->ProcessRemoteReady(nullptr);
 
+    uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
+    if (cqe_count) {
+      ++stats_.completions_fetches;
+
+      // cqe tail (ring->cq.ktail) can be updated asynchronously by the kernel even if we
+      // do now execute any syscalls. Therefore we count how many completions we handled
+      // and reap the same amount.
+      ReapCompletions(cqe_count, cqes, dispatcher);
+
+      if (ShouldPollL2Tasks()) {
+        RunL2Tasks(scheduler);
+      }
+    }
+
     // Traverses one or more fibers because a worker fiber does not necessarily returns
     // straight back to the dispatcher. Instead it chooses the next ready worker fiber
     // from the ready queue.
@@ -729,29 +742,14 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       fi->SwitchTo();
 
       if (scheduler->HasReady()) {
-        has_cpu_work = true;
-      } else {
         // all our ready fibers have been processed. Lets try to submit more sqes.
+        jump_from = JUMP_FROM_READY;
         continue;
       }
     }
 
-    uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
-    if (cqe_count) {
-      ++stats_.completions_fetches;
-
-      // cqe tail (ring->cq.ktail) can be updated asynchronously by the kernel even if we
-      // do now execute any syscalls. Therefore we count how many completions we handled
-      // and reap the same amount.
-      ReapCompletions(cqe_count, cqes, dispatcher);
-
-      if (ShouldPollL2Tasks()) {
-        RunL2Tasks(scheduler);
-      }
-      continue;
-    }
-
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
       continue;
     }
 
@@ -760,23 +758,24 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ///
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
+      jump_from = JUMP_FROM_L2;
       continue;
     }
 
-    DCHECK(!has_cpu_work);
+    DCHECK(!has_cpu_work && !scheduler->HasReady());
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
 
-    if (io_uring_sq_ready(&ring_) > 0)
+    if (io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
       continue;
-
-    DCHECK(!scheduler->HasReady());
-    DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
+    }
 
     // DCHECK_EQ(io_uring_cq_ready(&ring_), 0u) does not hold because completions
     // can be updated asynchronously by the kernel (unless IORING_SETUP_DEFER_TASKRUN is set).
 
     bool should_spin = RunOnIdleTasks();
     if (should_spin) {
+      jump_from = JUMP_FROM_SPIN;
       continue;  // continue spinning until on_idle_map_ is empty.
     }
 
@@ -788,7 +787,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
-
+      jump_from = JUMP_FROM_SPIN;
       continue;
     }
 
@@ -838,6 +837,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
   VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << stats_.loop_cnt << "/" << stats_.num_stalls
           << "/" << stats_.completions_fetches << "/" << stats_.uring_submit_calls;
+  VPRO(1) << "jump_counts: ";
+  for (unsigned i = 0; i < JUMP_FROM_TOTAL; ++i) {
+    VPRO(1) << i << ": " << jump_counts[i];
+  }
   if (stats_.completions_fetches > 0)
     VPRO(1) << "AvgCqe/ReapCall: " << double(reaped_cqe_cnt_) / stats_.completions_fetches;
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
