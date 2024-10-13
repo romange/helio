@@ -49,7 +49,6 @@ class GCPCredsProvider {
   bool use_instance_metadata_ = false;
   unsigned connect_ms_ = 0;
 
-  fb2::ProactorBase* pb_ = nullptr;
   std::string account_id_;
   std::string project_id_;
 
