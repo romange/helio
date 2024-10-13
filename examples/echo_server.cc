@@ -6,9 +6,12 @@
 #include <sys/time.h>
 #include <sys/mman.h>
 
+#include <queue>
+
 // clang-format on
 
 #include <absl/strings/str_cat.h>
+
 #include <boost/asio/read.hpp>
 
 #include "base/histogram.h"
@@ -20,6 +23,10 @@
 #include "util/fibers/synchronization.h"
 #include "util/http/http_handler.h"
 #include "util/varz.h"
+
+#ifdef __linux__
+#include "util/fibers/uring_socket.h"
+#endif
 
 using namespace util;
 
@@ -65,21 +72,30 @@ class EchoConnection : public Connection {
 
   std::error_code ReadMsg(size_t* sz);
 
-  std::unique_ptr<uint8_t[]> work_buf_;
+  std::queue<FiberSocketBase::ProvidedBuffer> prov_buffers_;
+  size_t pending_read_bytes_ = 0, first_buf_offset_ = 0;
   size_t req_len_ = 0;
 };
 
 std::error_code EchoConnection::ReadMsg(size_t* sz) {
-  io::MutableBytes mb(work_buf_.get(), req_len_);
+  FiberSocketBase::ProvidedBuffer pb[8];
 
-  auto res = socket_->Recv(mb, 0);
-  if (res) {
-    *sz = *res;
-    CHECK_EQ(*sz, req_len_);
-    return {};
+  while (pending_read_bytes_ < req_len_) {
+    auto res = socket_->RecvProvided(8, pb);
+    if (!res)
+      return res.error();
+    unsigned num_buf = *res;
+
+    for (unsigned i = 0; i < num_buf; ++i) {
+      prov_buffers_.push(pb[i]);
+      pending_read_bytes_ += pb[i].buffer.size();
+    }
+    if (pending_read_bytes_ > req_len_) {
+      DVLOG(1) << "Waited for " << req_len_ << " but got " << pending_read_bytes_;
+    }
   }
 
-  return res.error();
+  return {};
 }
 
 static thread_local base::Histogram send_hist;
@@ -89,8 +105,9 @@ void EchoConnection::HandleRequests() {
 
   std::error_code ec;
   size_t sz;
-  iovec vec[2];
+  vector<iovec> vec;
   uint8_t buf[8];
+  vec.resize(2);
 
   int yes = 1;
   if (GetFlag(FLAGS_tcp_nodelay)) {
@@ -129,7 +146,7 @@ void EchoConnection::HandleRequests() {
   }
 
   CHECK_LE(req_len_, 1UL << 26);
-  work_buf_.reset(new uint8_t[req_len_]);
+  vector<FiberSocketBase::ProvidedBuffer> returned_buffers;
 
   // after the handshake.
   while (true) {
@@ -144,19 +161,46 @@ void EchoConnection::HandleRequests() {
     vec[0].iov_base = buf;
     vec[0].iov_len = 4;
     absl::little_endian::Store32(buf, sz);
-    vec[1].iov_base = work_buf_.get();
-    vec[1].iov_len = sz;
+    vec.resize(1);
+
+    size_t prepare_len = 0;
+    DCHECK(returned_buffers.empty());
+
+    while (prepare_len < req_len_) {
+      DCHECK(!prov_buffers_.empty());
+      size_t needed = req_len_ - prepare_len;
+      const auto& pbuf = prov_buffers_.front();
+      size_t has_bytes = pbuf.buffer.size() - first_buf_offset_;
+      if (has_bytes <= needed) {
+        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, has_bytes});
+        prepare_len += has_bytes;
+        DCHECK_GE(pending_read_bytes_, has_bytes);
+        pending_read_bytes_ -= has_bytes;
+        returned_buffers.push_back(pbuf);
+        prov_buffers_.pop();
+        first_buf_offset_ = 0;
+      } else {
+        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, needed});
+        first_buf_offset_ += needed;
+        prepare_len += needed;
+        DCHECK_GE(pending_read_bytes_, needed);
+        pending_read_bytes_ -= needed;
+      }
+    }
 
     if (is_raw) {
       auto prev = absl::GetCurrentTimeNanos();
       // send(sock->native_handle(), work_buf_.get(), sz, 0);
-      ec = socket_->Write(vec + 1, 1);
-      // socket_->Send(io::Bytes{work_buf_.get(), sz}, 0);
+      ec = socket_->Write(vec.data() + 1, vec.size() - 1);
       auto now = absl::GetCurrentTimeNanos();
       send_hist.Add((now - prev) / 1000);
     } else {
-      ec = socket_->Write(vec, 2);
+      ec = socket_->Write(vec.data(), vec.size());
     }
+    for (const auto& pb : returned_buffers) {
+      socket_->ReturnProvided(pb);
+    }
+    returned_buffers.clear();
     if (ec)
       break;
   }
@@ -438,6 +482,13 @@ int main(int argc, char* argv[]) {
   pp->Run();
 
   if (absl::GetFlag(FLAGS_connect).empty()) {
+#ifdef __linux__
+    if (!absl::GetFlag(FLAGS_epoll)) {
+      pp->AwaitBrief([](unsigned, auto* pb) {
+        fb2::UringSocket::InitProvidedBuffers(512, 64, static_cast<fb2::UringProactor*>(pb));
+      });
+    }
+#endif
     RunServer(pp.get());
   } else {
     CHECK_GT(absl::GetFlag(FLAGS_size), 0U);
