@@ -38,6 +38,7 @@ void Run(SSL_CTX* ctx) {
     if (GetFlag(FLAGS_write) > 0) {
       auto src = io::ReadFileToString("/proc/self/exe");
       CHECK(src);
+      LOG(INFO) << "Writing " << src->size() << " bytes to " << prefix;
       for (unsigned i = 0; i < GetFlag(FLAGS_write); ++i) {
         string dest_key = absl::StrCat(prefix, "_", i);
         io::Result<io::WriteFile*> dest_res =

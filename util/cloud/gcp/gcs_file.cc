@@ -194,12 +194,11 @@ error_code GcsWriteFile::Upload() {
 
   error_code res;
   if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    // TODO: RobustSender must access the entire pool, not just a single client.
+
     RobustSender sender(pool_, creds_provider_);
     io::Result<HeaderParserPtr> res = sender.Send(3, req.get());
     if (!res)
       return res.error();
-    // auto client_handle = pool_->GetHandle();
 
     VLOG(1) << "Uploaded range " << uploaded_ << "/" << to << " for " << upload_id_;
     HeaderParserPtr parser_ptr = std::move(*res);
