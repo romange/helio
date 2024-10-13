@@ -54,6 +54,7 @@ class EmptyRequestImpl : public HttpRequestBase {
     req_.set(f, boost::string_view{value.data(), value.size()});
   }
 
+  // Request headers.
   const boost::beast::http::header<true>& GetHeaders() const final {
     return req_.base();
   }
@@ -99,12 +100,14 @@ class RobustSender {
   RobustSender& operator=(const RobustSender&) = delete;
 
  public:
-  using HeaderParserPtr =
-      std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>>;
+  struct SenderResult {
+    std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>> eb_parser;
+    http::ClientPool::ClientHandle client_handle;
+  };
 
   RobustSender(http::ClientPool* pool, GCPCredsProvider* provider);
 
-  io::Result<HeaderParserPtr> Send(unsigned num_iterations, detail::HttpRequestBase* req);
+  io::Result<SenderResult> Send(unsigned num_iterations, detail::HttpRequestBase* req);
 
  private:
   http::ClientPool* pool_;

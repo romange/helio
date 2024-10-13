@@ -351,14 +351,18 @@ error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
   return {};
 }
 
-GCS::GCS(GCPCredsProvider* provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
-    : creds_provider_(*provider), ssl_ctx_(ssl_cntx) {
-  client_pool_.reset(new http::ClientPool(GCS_API_DOMAIN, ssl_ctx_, pb));
-  client_pool_->SetOnConnect([](int fd) {
+unique_ptr<http::ClientPool> GCS::CreateApiConnectionPool(SSL_CTX* ssl_ctx, fb2::ProactorBase* pb) {
+  unique_ptr<http::ClientPool> res(new http::ClientPool(GCS_API_DOMAIN, ssl_ctx, pb));
+  res->SetOnConnect([](int fd) {
     auto ec = EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
   });
+  return res;
+}
 
+GCS::GCS(GCPCredsProvider* provider, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
+    : creds_provider_(*provider), ssl_ctx_(ssl_cntx) {
+  client_pool_ = CreateApiConnectionPool(ssl_ctx_, pb);
   // TODO: to make it configurable.
   client_pool_->set_connect_timeout(2000);
 }
@@ -377,15 +381,11 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
   RobustSender sender(client_pool_.get(), &creds_provider_);
 
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(2, &empty_req);
+    io::Result<RobustSender::SenderResult> parse_res = sender.Send(2, &empty_req);
     if (!parse_res)
       return parse_res.error();
-    RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
-    h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
-    auto res = client_pool_->GetHandle();
-    if (!res)
-      return res.error();
-    auto client = std::move(*res);
+    h2::response_parser<h2::string_body> resp(std::move(*parse_res->eb_parser));
+    auto client = std::move(parse_res->client_handle);
 
     RETURN_ERROR(client->Recv(&resp));
 
@@ -437,16 +437,12 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
   rj::Document doc;
   RobustSender sender(client_pool_.get(), &creds_provider_);
   while (true) {
-    io::Result<RobustSender::HeaderParserPtr> parse_res = sender.Send(2, &empty_req);
+    io::Result<RobustSender::SenderResult> parse_res = sender.Send(2, &empty_req);
     if (!parse_res)
       return parse_res.error();
-    RobustSender::HeaderParserPtr empty_parser = std::move(*parse_res);
-    h2::response_parser<h2::string_body> resp(std::move(*empty_parser));
 
-    auto res = client_pool_->GetHandle();
-    if (!res)
-      return res.error();
-    auto client = std::move(*res);
+    h2::response_parser<h2::string_body> resp(std::move(*parse_res->eb_parser));
+    auto client = std::move(parse_res->client_handle);
 
     RETURN_ERROR(client->Recv(&resp));
 

@@ -35,7 +35,12 @@ class GCS {
   std::error_code List(std::string_view bucket, std::string_view prefix, bool recursive,
                        ListObjectCb cb);
 
-  http::ClientPool* GetConnectionPool() { return client_pool_.get(); }
+  http::ClientPool* GetConnectionPool() {
+    return client_pool_.get();
+  }
+
+  static std::unique_ptr<http::ClientPool> CreateApiConnectionPool(SSL_CTX* ssl_ctx,
+                                                                   fb2::ProactorBase* pb);
 
  private:
   GCPCredsProvider& creds_provider_;

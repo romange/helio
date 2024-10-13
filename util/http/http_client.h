@@ -90,7 +90,7 @@ class Client {
  private:
   static bool IsIoError(BoostError ec) {
     using err = ::boost::beast::http::error;
-    return ec && ec != err::need_buffer;
+    return ec && ec != err::need_buffer && ec != err::body_limit;
   }
 
   BoostError HandleError(BoostError ec) {
