@@ -217,6 +217,8 @@ class Driver {
   size_t Run(base::Histogram* dest);
 
  private:
+  void SendSingle();
+
   uint8_t buf_[8];
 };
 
@@ -242,6 +244,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
     LOG_IF(ERROR, delta_msec > 1000) << "Slow connect1 " << index << " " << delta_msec << " ms";
 
     if (is_raw) {
+      SendSingle();
       break;
     }
 
@@ -285,10 +288,20 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
   VLOG(1) << "Driver::Connect-End " << index;
 }
 
+void Driver::SendSingle() {
+  size_t req_size = absl::GetFlag(FLAGS_size);
+  std::unique_ptr<uint8_t[]> msg(new uint8_t[req_size]);
+  error_code ec = socket_->Write(io::Bytes{msg.get(), req_size});
+  CHECK(!ec) << ec.message();
+  auto res = socket_->Read(io::MutableBytes(msg.get(), req_size));
+  CHECK(res) << res.error();
+  CHECK_EQ(res.value(), req_size);
+}
+
 size_t Driver::Run(base::Histogram* dest) {
   base::Histogram hist;
-
-  std::unique_ptr<uint8_t[]> msg(new uint8_t[absl::GetFlag(FLAGS_size)]);
+  size_t req_size = absl::GetFlag(FLAGS_size);
+  std::unique_ptr<uint8_t[]> msg(new uint8_t[req_size]);
 
   iovec vec[2];
   vec[0].iov_len = 4;
@@ -304,7 +317,7 @@ size_t Driver::Run(base::Histogram* dest) {
 
   bool conn_close = false;
   size_t i = 0;
-  size_t req_size = absl::GetFlag(FLAGS_size);
+
   size_t pipeline_cnt = absl::GetFlag(FLAGS_p);
   bool is_raw = GetFlag(FLAGS_raw);
 
