@@ -54,10 +54,6 @@ void SigAction(int signal, siginfo_t*, void*) {
   }
 }
 
-inline uint64_t GetCPUCycleCount() {
-  return absl::base_internal::CycleClock::Now();
-}
-
 unsigned pause_amplifier = 50;
 uint64_t cycles_per_10us = 1000000;  // correctly defined inside ModuleInit.
 std::once_flag module_init;
@@ -293,6 +289,21 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
   return result;
 }
 
+void ProactorBase::IdleEnd(uint64_t start) {
+  uint64_t end = GetCPUCycleCount();
+
+  // Assuming that cpu clock frequency is
+  uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
+  cpu_idle_cycles_ += (end - start);
+
+  if (end > cpu_measure_cycle_start_ + kMinCyclePeriod) {
+    load_numerator_ = cpu_idle_cycles_;
+    load_denominator_ = end - cpu_measure_cycle_start_;
+    cpu_idle_cycles_ = 0;
+    cpu_measure_cycle_start_ = end;
+  }
+}
+
 void ProactorBase::Pause(unsigned count) {
   auto pc = pause_amplifier;
 
@@ -328,6 +339,7 @@ void ProactorBase::ModuleInit() {
 }
 
 void ProactorDispatcher::Run(detail::Scheduler* sched) {
+  proactor_->cpu_measure_cycle_start_ = ProactorBase::GetCPUCycleCount();
   proactor_->MainLoop(sched);
 }
 

@@ -264,7 +264,10 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
+    uint64_t start_cycle = GetCPUCycleCount();
     int epoll_res = EpollWait(epoll_fd_, &ev_batch, timeout);
+    IdleEnd(start_cycle);
+
     if (epoll_res < 0) {
       epoll_res = errno;
       if (epoll_res == EINTR)
