@@ -825,8 +825,9 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       DCHECK(!scheduler->HasReady());
 
       VPRO(2) << "wait_for_cqe " << stats_.loop_cnt;
-
+      uint64_t start_cycle = GetCPUCycleCount();
       wait_for_cqe(&ring_, 1, ts_arg);
+      IdleEnd(start_cycle);
       VPRO(2) << "Woke up after wait_for_cqe ";
 
       ++stats_.num_stalls;

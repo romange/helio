@@ -21,6 +21,10 @@
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
 
+#if !defined(__x86_64__) && !defined(__aarch64__)
+#include <absl/base/internal/cycleclock.h>
+#endif
+
 namespace util {
 class LinuxSocketBase;
 
@@ -204,6 +208,11 @@ class ProactorBase {
     return stats_;
   }
 
+  // Returns the idle ratio of the proactor thread. The number is between 0 and 1.
+  double IdleRatio() const {
+    return double(load_numerator_) / load_denominator_;
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -244,6 +253,7 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
+
   // Returns true if we should poll scheduler tasks that run periodically but not too often.
   bool ShouldPollL2Tasks() const;
 
@@ -251,6 +261,22 @@ class ProactorBase {
   // they recently run.
   // Returns true if there are fibers that became ready as a result.
   bool RunL2Tasks(detail::Scheduler* scheduler);
+
+  static uint64_t GetCPUCycleCount() {
+#if defined(__x86_64__)
+    uint64_t low, high;
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return static_cast<int64_t>((high << 32) | low);
+#elif defined(__aarch64__)
+  int64_t tv;
+  asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
+  return tv;
+#else
+    return absl::base_internal::CycleClock::Now();
+#endif
+  }
+
+  void IdleEnd(uint64_t start);
 
   pthread_t thread_id_ = 0U;
   int sys_thread_id_ = 0;
@@ -310,6 +336,9 @@ class ProactorBase {
   }
 
   uint64_t last_level2_cycle_ = 0;
+
+  uint64_t cpu_measure_cycle_start_ = 0, cpu_idle_cycles_ = 0;
+  uint64_t load_numerator_ = 0, load_denominator_ = 1;
 };
 
 class ProactorDispatcher : public DispatchPolicy {
