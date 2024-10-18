@@ -118,7 +118,7 @@ io::MutableBytes ProactorBase::AllocateBuffer(size_t hint_sz) {
   return io::MutableBytes{res, hint_sz};
 }
 
-void ProactorBase::ReturnBuffer(io::MutableBytes buf) {
+void ProactorBase::DeallocateBuffer(io::MutableBytes buf) {
   operator delete[](buf.data());
 }
 

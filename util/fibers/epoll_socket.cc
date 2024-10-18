@@ -393,7 +393,7 @@ io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
         DCHECK_GE(buf2.size(), ures);
 
         memcpy(buf2.data(), buf.data(), ures);
-        proactor()->ReturnBuffer(buf);
+        proactor()->DeallocateBuffer(buf);
         dest[0].buffer = {buf2.data(), ures};
         dest[0].allocated = buf2.size();
         return 1;
@@ -415,7 +415,7 @@ io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
         buf = proactor()->AllocateBuffer(bufreq_sz_);
         res = recv(fd, buf.data(), buf.size(), 0);
         if (res <= 0) {
-          proactor()->ReturnBuffer(buf);
+          proactor()->DeallocateBuffer(buf);
           break;
         }
         ures = res;
@@ -428,7 +428,7 @@ io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
       return num_bufs;
     }  // res > 0
 
-    proactor()->ReturnBuffer(buf);
+    proactor()->DeallocateBuffer(buf);
 
     if (res == 0 || errno != EAGAIN) {
       break;
@@ -465,7 +465,7 @@ void EpollSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   DCHECK_EQ(pbuf.cookie, 1);
   DCHECK(!pbuf.buffer.empty());
 
-  proactor()->ReturnBuffer(
+  proactor()->DeallocateBuffer(
       io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
 }
 

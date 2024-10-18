@@ -506,7 +506,7 @@ io::Result<unsigned> TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* d
 }
 
 void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  proactor()->ReturnBuffer(
+  proactor()->DeallocateBuffer(
       io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
 }
 
