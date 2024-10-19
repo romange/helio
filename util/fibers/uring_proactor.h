@@ -7,9 +7,9 @@
 #include <liburing.h>
 #include <pthread.h>
 
+#include "base/segment_pool.h"
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/submit_entry.h"
-#include "base/segment_pool.h"
 
 namespace util {
 namespace fb2 {
@@ -131,7 +131,9 @@ class UringProactor : public ProactorBase {
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
   int BufRingEntrySize(unsigned group_id) const {
-    return group_id < bufring_groups_.size() ? bufring_groups_[group_id].entry_size : -1;
+    return group_id < bufring_groups_.size() && bufring_groups_[group_id].ring != nullptr
+               ? bufring_groups_[group_id].entry_size
+               : -1;
   }
 
   // Returns number of available entries at the time of the call.
@@ -156,8 +158,7 @@ class UringProactor : public ProactorBase {
   // Returns a new head.
   void EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t flags, uint16_t* tail);
 
-  // in case of error, returns errno.
-  using MultiShotResult = nonstd::expected<io::Bytes, unsigned>;
+  using MultiShotResult = io::Bytes;
 
   // Pulls a single range of a multishot completion. head must point to a valid id.
   // Once the queue of completions is exhausted, head is set to kMultiShotUndef.
@@ -219,8 +220,8 @@ class UringProactor : public ProactorBase {
     io_uring_buf_ring* ring = nullptr;
     uint8_t* buf = nullptr;
     MultiShot* multishot_arr = nullptr;  // Array of a cardinality of nentries.
-    uint8_t nentries_exp = 0;  // 2^nentries_exp is the number of entries.
-    uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
+    uint8_t nentries_exp = 0;            // 2^nentries_exp is the number of entries.
+    uint8_t multishot_exp = 0;           // 2^multishot_exp is the number of multishot entries.
     uint16_t free_multi_shot_id = 0;
     uint32_t entry_size = 0;
   };
@@ -278,7 +279,7 @@ class FiberCall {
   UringProactor::IoResult io_res_ = 0;
   uint32_t res_flags_ = 0;  // set by waker upon completion.
   bool was_run_ = false;
-  timespec ts_;             // in case of timeout.
+  timespec ts_;  // in case of timeout.
 };
 
 }  // namespace fb2

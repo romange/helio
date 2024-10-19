@@ -61,8 +61,14 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   struct ProvidedBuffer {
     io::Bytes buffer;
     uint32_t allocated;
-    uint16_t err_no;
-    uint8_t cookie;  // Used by the socket to identify the buffer.
+    uint16_t err_no;   // Relevant only if buffer is empty.
+    uint8_t cookie;    // Used by the socket to identify the buffer source.
+
+    void SetError(uint16_t err) {
+      err_no = err;
+      allocated = 0;
+      buffer = {};
+    }
   };
 
   // Unlike Recv/ReadSome, this method returns buffers managed by the socket.

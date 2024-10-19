@@ -516,7 +516,7 @@ void UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult res, 
                                                uint16_t* tail) {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK(flags & IORING_CQE_F_BUFFER) << res;
-  DCHECK_GT(res, 0) << flags;
+  CHECK_GT(res, 0) << flags;
 
   auto& buf_group = bufring_groups_[group_id];
   if (!buf_group.multishot_arr) {
@@ -574,16 +574,9 @@ auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* tail) -
   // link the entry to the free list.
   head_entry.next = buf_group.free_multi_shot_id;
   buf_group.free_multi_shot_id = head_id;
-
-  MultiShotResult res;
-  if (head_entry.res >= 0) {
-    uint8_t* buf = buf_group.buf + head_entry.bid * buf_group.entry_size;
-    res.emplace(io::MutableBytes{buf, size_t(head_entry.res)});
-  } else {
-    res = nonstd::make_unexpected(-head_entry.res);
-  }
-
-  return res;
+  CHECK_GT(head_entry.res, 0);
+  uint8_t* buf = buf_group.buf + head_entry.bid * buf_group.entry_size;
+  return MultiShotResult{buf, size_t(head_entry.res)};
 }
 
 void UringProactor::RegrowCentries() {

@@ -106,16 +106,32 @@ class UringSocket : public LinuxSocketBase {
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
 
   struct MultiShot {
+    detail::FiberInterface* recv_pending = nullptr;
+
     uint16_t tail = UringProactor::kMultiShotUndef;
     uint16_t err_no = 0;
-    uint8_t refcnt = 1; // one for the socket.
-    bool recv_pending = false;
+
+    union {
+      struct {
+        uint8_t refcnt : 4; // range [0-2]: socket + callback or deleted.
+        uint8_t error_raised : 1;
+      };
+      uint8_t flags_;
+    };
 
     // Returns true if this object was deleted.
     bool DecRef();
 
     void Activate(int fd, uint8_t flags, UringProactor* proactor);
+
+    MultiShot() : flags_(0) { refcnt = 1; }
+
+    bool HasBuffers() const {
+      return tail != UringProactor::kMultiShotUndef;
+    }
   };
+
+  static_assert(sizeof(MultiShot) == 16, "");
 
   MultiShot* multishot_ = nullptr;
 
