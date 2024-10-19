@@ -61,13 +61,14 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   struct ProvidedBuffer {
     io::Bytes buffer;
     uint32_t allocated;
+    uint16_t err_no;
     uint8_t cookie;  // Used by the socket to identify the buffer.
   };
 
-  // Unlike Recv/ReadSome, this method returns a buffer managed by the socket.
+  // Unlike Recv/ReadSome, this method returns buffers managed by the socket.
   // They should be returned back to the socket after the data is read.
-  // small is an optional buffer that can be used for small messages.
-  virtual ::io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) = 0;
+  // Returns - number of buffers filled.
+  virtual unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) = 0;
 
   virtual void ReturnProvided(const ProvidedBuffer& pbuf) = 0;
 
