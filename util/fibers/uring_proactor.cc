@@ -4,6 +4,8 @@
 
 #include "util/fibers/uring_proactor.h"
 
+#include <bit>
+
 #include <absl/base/attributes.h>
 #include <liburing.h>
 #include <poll.h>
@@ -73,7 +75,7 @@ UringProactor::~UringProactor() {
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
-        io_uring_free_buf_ring(&ring_, group.ring, group.nentries, i);
+        io_uring_free_buf_ring(&ring_, group.ring, 1U << group.nentries_exp, i);
         delete[] group.buf;
         delete[] group.multishot_arr;
       }
@@ -379,7 +381,8 @@ int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsi
 
   unsigned mask = io_uring_buf_ring_mask(nentries);
   buf_group.buf = new uint8_t[size_t(nentries) * esize];
-  buf_group.nentries = nentries;
+
+  buf_group.nentries_exp = absl::bit_width(nentries) - 1;
   buf_group.entry_size = esize;
   uint8_t* next = buf_group.buf;
 
@@ -402,7 +405,7 @@ uint8_t* UringProactor::GetBufRingPtr(uint16_t group_id, uint16_t bufid) {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  DCHECK_LT(bufid, buf_group.nentries);
+  DCHECK_LT(bufid, 1 << buf_group.nentries_exp);
   DCHECK(bufring_groups_[group_id].buf);
   return bufring_groups_[group_id].buf + size_t(bufid) * buf_group.entry_size;
 }
@@ -412,7 +415,8 @@ void UringProactor::ReplenishBuffers(uint16_t group_id, io::Bytes slice) {
   DCHECK(!slice.empty());
 
   auto& buf_group = bufring_groups_[group_id];
-  size_t total_len = size_t(buf_group.nentries) * size_t(buf_group.entry_size);
+  unsigned nentries = 1U << buf_group.nentries_exp;
+  size_t total_len = size_t(nentries) * size_t(buf_group.entry_size);
   DCHECK(slice.end() <= buf_group.buf + total_len);
   off_t offs = slice.data() - buf_group.buf;
   DCHECK_GE(offs, 0);
@@ -423,7 +427,7 @@ void UringProactor::ReplenishBuffers(uint16_t group_id, io::Bytes slice) {
   unsigned bid = offs / buf_group.entry_size;
   size_t replenished = 0;
   uint8_t* cur_buf = buf_group.buf + bid * buf_group.entry_size;
-  unsigned mask = io_uring_buf_ring_mask(buf_group.nentries);
+  unsigned mask = io_uring_buf_ring_mask(nentries);
   unsigned offset = 0;
   while (replenished < slice.size()) {
     io_uring_buf_ring_add(buf_group.ring, cur_buf, buf_group.entry_size, bid, mask, offset++);
@@ -496,28 +500,33 @@ void UringProactor::EnableMultiShot(uint16_t group_id) {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
   DCHECK(!buf_group.multishot_arr);
-  buf_group.multishot_arr = new MultiShot[buf_group.nentries];
+  buf_group.multishot_exp = buf_group.nentries_exp;
+
+  size_t shot_len = 1U << buf_group.multishot_exp;
+  buf_group.multishot_arr = new MultiShot[shot_len];
   buf_group.free_multi_shot_id = 0;
 
-  for (uint16_t i = 0; i < buf_group.nentries; ++i) {
+  for (uint16_t i = 0; i < shot_len; ++i) {
     buf_group.multishot_arr[i].next = i + 1;
   }
-  buf_group.multishot_arr[buf_group.nentries - 1].next = kMultiShotUndef;
+  buf_group.multishot_arr[shot_len - 1].next = kMultiShotUndef;
 }
 
 void UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t flags,
                                                uint16_t* tail) {
   DCHECK_LT(group_id, bufring_groups_.size());
+  DCHECK(flags & IORING_CQE_F_BUFFER) << res;
+  DCHECK_GT(res, 0) << flags;
+
   auto& buf_group = bufring_groups_[group_id];
   if (!buf_group.multishot_arr) {
     EnableMultiShot(group_id);
   }
 
-  DCHECK_LT(buf_group.free_multi_shot_id, buf_group.nentries);
-  uint16_t next = buf_group.free_multi_shot_id;
+  auto next = buf_group.free_multi_shot_id;
+  DCHECK_LT(next, 1 << buf_group.nentries_exp) << flags;
 
   auto& entry = buf_group.multishot_arr[next];
-  DCHECK_NE(entry.next, kMultiShotUndef);
   buf_group.free_multi_shot_id = entry.next;
 
   entry.bid = flags >> IORING_CQE_BUFFER_SHIFT;

@@ -83,12 +83,15 @@ error_code UringSocket::Create(unsigned short protocol_family) {
 }
 
 auto UringSocket::Close() -> error_code {
-  error_code ec;
   if (fd_ < 0)
-    return ec;
+    return {};
+
   DCHECK(proactor());
   DCHECK(proactor()->InMyThread());
   DVSOCK(1) << "Closing socket";
+  if (multishot_) {
+    ConfigureRecvMultishot(false);
+  }
 
   int fd;
   if (is_direct_fd_) {
@@ -97,18 +100,16 @@ auto UringSocket::Close() -> error_code {
     fd = proactor->UnregisterFd(direct_fd);
     if (fd < 0) {
       LOG(WARNING) << "Error unregistering fd " << direct_fd;
-      return ec;
+      return {};
     }
     is_direct_fd_ = 0;
   } else {
     fd = native_handle();
   }
 
+  error_code ec;
   posix_err_wrap(::close(fd), &ec);
   fd_ = -1;
-  while(multishot_submitted_) {
-    ThisFiber::Yield();
-  }
 
   return ec;
 }
@@ -440,35 +441,6 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   DCHECK_GT(p->BufRingEntrySize(kUringSockBufGroup), 0);
 
   if (recv_multishot_ && !multishot_submitted_) {
-    auto cb = [this, me = detail::FiberActive()](detail::FiberInterface* current, IoResult res,
-                                                 uint32_t flags) {
-      DVLOG(2) << "Multishot completion " << res << " flags: " << flags;
-      bool was_empty = (multishot_tail_ == UringProactor::kMultiShotUndef);
-      if ((flags & IORING_CQE_F_MORE) == 0) {
-        multishot_submitted_ = false;
-      }
-
-      this->GetProactor()->EnqueueMultishotCompletion(kUringSockBufGroup, res, flags,
-                                                      &multishot_tail_);
-      DCHECK_NE(multishot_tail_, UringProactor::kMultiShotUndef);
-      if (was_empty) {
-        ActivateSameThread(current, me);
-      }
-#if 0
-      if (res < 0) {
-        node->pbuf.err_no = -res;
-      } else if (res == 0) {
-        node->pbuf.err_no = ECONNABORTED;
-      } else {
-        uint16_t bid = flags >> IORING_CQE_BUFFER_SHIFT;
-        uint8_t* start = this->GetProactor()->GetBufRingPtr(kUringSockBufGroup, bid);
-        node->pbuf.buffer = io::MutableBytes{start, static_cast<size_t>(res)};
-        node->pbuf.cookie = 2;
-        node->pbuf.err_no = 0;
-      }
-#endif
-    };
-
     fb2::SubmitEntry entry = p->GetSubmitEntry(std::move(cb));
     entry.PrepRecv(fd, nullptr, 0, 0);
     entry.sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
@@ -520,7 +492,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
   if (res > 0) {
     uint32_t flags = fc.flags();
-    DCHECK_NE(IORING_CQE_F_BUFFER & flags, 0u);
+    DCHECK(IORING_CQE_F_BUFFER & flags);
 
     has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
     DVSOCK(2) << "Received " << res << " bytes";
@@ -571,6 +543,47 @@ void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   } else {
     DCHECK_EQ(pbuf.cookie, kHeapType);
     p->DeallocateBuffer({const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
+  }
+}
+
+void UringSocket::ConfigureRecvMultishot(bool enable) {
+  if ((multishot_ != nullptr) == enable)
+    return;
+
+  if (enable) {
+    multishot_ = new MultiShot();
+
+    auto cb = [ms = multishot_, me = detail::FiberActive()](
+                  detail::FiberInterface* current, IoResult res, uint32_t flags) {
+      DVLOG(2) << "Multishot completion " << res << " flags: " << flags;
+      UringProactor* proactor = static_cast<UringProactor*>(ProactorBase::me());
+
+      if ((flags & IORING_CQE_F_MORE) == 0) {
+        if (ms->DecRef())  // Last reference.
+          return;
+
+        // Assumption.
+        CHECK_EQ(flags & IORING_CQE_F_BUFFER, 0u);
+        CHECK_LE(res, 0);
+        ms->err_no = -res;
+        return;
+      }
+
+      CHECK(flags & IORING_CQE_F_BUFFER);
+      proactor->EnqueueMultishotCompletion(kUringSockBufGroup, res, flags, &ms->tail);
+      DVLOG(1) << "Multishot tail " << ms->tail << " " << flags;
+
+      DCHECK_NE(ms->tail, UringProactor::kMultiShotUndef);
+      if (ms->recv_pending) {
+        ActivateSameThread(current, me);
+      }
+    };
+  } else {
+    if (!multishot_->DecRef()) {
+      int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
+      GetProactor()->CancelRequests(ShiftedFd(), flags);
+    }
+    multishot_ = nullptr;
   }
 }
 

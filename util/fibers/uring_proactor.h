@@ -210,14 +210,17 @@ class UringProactor : public ProactorBase {
   struct MultiShot {
     uint16_t next, prev;  // Composes a ring buffer.
     uint16_t bid;         // buffer id.
+    uint16_t reserved;
     IoResult res;
   };
+  static_assert(sizeof(MultiShot) == 12);
 
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;
     uint8_t* buf = nullptr;
     MultiShot* multishot_arr = nullptr;  // Array of a cardinality of nentries.
-    uint16_t nentries = 0;
+    uint8_t nentries_exp = 0;  // 2^nentries_exp is the number of entries.
+    uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
     uint16_t free_multi_shot_id = 0;
     uint32_t entry_size = 0;
   };

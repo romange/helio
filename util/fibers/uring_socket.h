@@ -56,13 +56,12 @@ class UringSocket : public LinuxSocketBase {
 
   static void InitProvidedBuffers(unsigned num_bufs, unsigned buf_size, UringProactor* proactor);
 
-  // 
+  //
   unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
   void ReturnProvided(const ProvidedBuffer& pbuf) final;
 
-  void set_recv_multishot(bool val) {
-    recv_multishot_ = val;
-  }
+  void ConfigureRecvMultishot(bool enable);
+
  private:
   UringProactor* GetProactor() {
     return static_cast<Proactor*>(proactor());
@@ -104,7 +103,23 @@ class UringSocket : public LinuxSocketBase {
   };
 
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
-  uint16_t multishot_tail_ = UringProactor::kMultiShotUndef;
+
+  struct MultiShot {
+    uint16_t tail = UringProactor::kMultiShotUndef;
+    uint16_t err_no = 0;
+    uint8_t refcnt = 2; // one for the socket, one for the completion lambda.
+    bool recv_pending = false;
+
+    bool DecRef() {
+      if (--refcnt > 0)
+        return false;
+
+      delete this;
+      return true;
+    }
+  };
+
+  MultiShot* multishot_ = nullptr;
 
   union {
     uint32_t flags_;
@@ -113,7 +128,6 @@ class UringSocket : public LinuxSocketBase {
       uint32_t has_recv_data_ : 1;
       uint32_t is_direct_fd_ : 1;
       uint32_t recv_multishot_ : 1;
-      uint32_t multishot_submitted_ : 1;
     };
   };
 };
