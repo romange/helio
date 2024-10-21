@@ -155,11 +155,13 @@ class CondVarAny {
   CondVarAny(CondVarAny const&) = delete;
   CondVarAny& operator=(CondVarAny const&) = delete;
 
+  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called under the mutex
   void notify_one() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyOne(detail::FiberActive());
   }
 
+  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called under the mutex
   void notify_all() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyAll(detail::FiberActive());
@@ -207,10 +209,12 @@ class CondVar {
   CondVar(CondVar const&) = delete;
   CondVar& operator=(CondVar const&) = delete;
 
+  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called under the mutex
   void notify_one() noexcept {
     cnd_.notify_one();
   }
 
+  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called under the mutex
   void notify_all() noexcept {
     cnd_.notify_all();
   }
