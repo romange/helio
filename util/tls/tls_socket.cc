@@ -499,10 +499,10 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
-io::Result<unsigned> TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   LOG(DFATAL) << "Not implemented";
 
-  return nonstd::make_unexpected(make_error_code(errc::operation_not_supported));
+  return 0;
 }
 
 void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {

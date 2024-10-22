@@ -240,6 +240,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
   // Check first if we the fiber belongs to the active thread.
   if (other->scheduler_ == scheduler_) {
     DVLOG(1) << "Activating " << other->name() << " from " << this->name();
+    DCHECK_EQ(other->flags_.load(std::memory_order_relaxed) & kTerminatedBit, 0);
 
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
