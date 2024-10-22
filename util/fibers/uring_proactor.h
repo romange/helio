@@ -43,23 +43,23 @@ class UringProactor : public ProactorBase {
   // detail::FiberInterface* is the current fiber.
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
+  // uint32_t - the user tag supplied during event submission. See GetSubmitEntry below.
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
   // using CbType = std::function<void(IoResult, uint32_t)>;
   using CbType =
       fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/,
-                         void(detail::FiberInterface*, IoResult, uint32_t)>;
+                         void(detail::FiberInterface*, IoResult, uint32_t, uint32_t)>;
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
    * @param cb - completion callback.
    * @param submit_type - user tag to be supplied to the completion callback. This is useful to
    *                      distinguish between different CQEs when debugging problems.
-   *                      tags 0-255 are reserved for internal use.
    * @return SubmitEntry with initialized userdata.
    *
    */
-  SubmitEntry GetSubmitEntry(CbType cb, uint16_t submit_tag = 0);
+  SubmitEntry GetSubmitEntry(CbType cb, uint32_t submit_tag = 0);
 
   // Returns number of entries available for submitting to io_uring.
   uint32_t GetSubmitRingAvailability() const {
@@ -140,7 +140,9 @@ class UringProactor : public ProactorBase {
   // Every time a kernel event with IORING_CQE_F_BUFFER is processed,
   // it consumes one or more entries from the buffer ring and available decreases.
   // ReplenishBuffers returns the entries back to the ring.
-  unsigned BufRingAvailable(unsigned group_id) const;
+  // Returns number of available entries or -errno if group_id is invalid or kernel is too old.
+  // Available since kernel 6.8.
+  int BufRingAvailable(unsigned group_id) const;
 
   // Returns 0 on success, errno on failure.
   // See io_uring_prep_cancel(3) for flags.

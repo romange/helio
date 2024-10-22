@@ -374,7 +374,7 @@ TEST_F(FiberTest, Future) {
 TEST_F(FiberTest, AsyncEvent) {
   Done done;
 
-  auto cb = [done](auto*, UringProactor::IoResult, uint32_t) mutable {
+  auto cb = [done](auto*, UringProactor::IoResult, uint32_t, uint32_t) mutable {
     done.Notify();
     LOG(INFO) << "notify";
   };

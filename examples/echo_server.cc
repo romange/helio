@@ -26,6 +26,7 @@
 
 #ifdef __linux__
 #include "util/fibers/uring_socket.h"
+#include "util/fibers/uring_proactor.h"
 #endif
 
 using namespace util;
@@ -520,8 +521,8 @@ int main(int argc, char* argv[]) {
 #ifdef __linux__
     if (!absl::GetFlag(FLAGS_epoll)) {
       pp->AwaitBrief([](unsigned, auto* pb) {
-        fb2::UringSocket::InitProvidedBuffers(absl::GetFlag(FLAGS_bufring_size), 64,
-                                              static_cast<fb2::UringProactor*>(pb));
+        fb2::UringProactor* up = static_cast<fb2::UringProactor*>(pb);
+        up->RegisterBufferRing(0, absl::GetFlag(FLAGS_bufring_size), 64);
       });
     }
 #endif

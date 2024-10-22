@@ -4,8 +4,6 @@
 
 #include "util/fibers/uring_proactor.h"
 
-#include <bit>
-
 #include <absl/base/attributes.h>
 #include <liburing.h>
 #include <poll.h>
@@ -13,6 +11,8 @@
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
+
+#include <bit>
 
 #include "base/flags.h"
 #include "base/histogram.h"
@@ -199,6 +199,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
     io_uring_cqe cqe = *cqes[i];
 
     uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
+    uint32_t user_tag = cqe.user_data >> 32;
     if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
       if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
         base::sys::KernelVersion kver;
@@ -222,7 +223,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
 
       if (cqe.flags & IORING_CQE_F_MORE) {
         // multishot operation. we keep the callback intact.
-        e.cb(current, cqe.res, cqe.flags);
+        e.cb(current, cqe.res, cqe.flags, user_tag);
       } else {
         CbType func = std::move(e.cb);
 
@@ -230,7 +231,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
         e.index = next_free_ce_;
         next_free_ce_ = index;
         --pending_cb_cnt_;
-        func(current, cqe.res, cqe.flags);
+        func(current, cqe.res, cqe.flags, user_tag);
       }
       continue;
     }
@@ -239,7 +240,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
     // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
     // ETIME is when a timer cqe fully completes.
     if (cqe.res < 0 && cqe.res != -ECANCELED && cqe.res != -ETIME) {
-      LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
+      LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << user_tag;
     }
 
     if (user_data == kIgnoreIndex)
@@ -278,7 +279,7 @@ void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
   sqe_avail_.notifyAll();
 }
 
-SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
+SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
   if (res == NULL) {
     ++get_entry_sq_full_;
@@ -437,11 +438,12 @@ void UringProactor::ReplenishBuffers(uint16_t group_id, io::Bytes slice) {
   io_uring_buf_ring_advance(bufring_groups_[group_id].ring, offset);
 }
 
-unsigned UringProactor::BufRingAvailable(unsigned group_id) const {
+int UringProactor::BufRingAvailable(unsigned group_id) const {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  return io_uring_buf_ring_available(const_cast<io_uring*>(&ring_), buf_group.ring, group_id);
+  int res = io_uring_buf_ring_available(const_cast<io_uring*>(&ring_), buf_group.ring, group_id);
+  return res;
 }
 
 int UringProactor::CancelRequests(int fd, unsigned flags) {
@@ -613,9 +615,8 @@ void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   VPRO(2) << "SchedulePeriodic " << id;
 
   SubmitEntry se =
-      GetSubmitEntry([this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags) {
-        this->PeriodicCb(res, id, std::move(item));
-      });
+      GetSubmitEntry([this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags,
+                                      uint32_t) { this->PeriodicCb(res, id, std::move(item)); });
 
   se.PrepTimeout(&item->period, false);
   DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
@@ -641,7 +642,7 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
 
 void UringProactor::CancelPeriodicInternal(PeriodicItem* item) {
   auto* me = detail::FiberActive();
-  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags) {
+  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags, uint32_t) {
     ActivateSameThread(current, me);
   };
   uint32_t val1 = item->val1;
@@ -963,7 +964,7 @@ void UringProactor::WakeRing() {
 }
 
 void UringProactor::EpollAddInternal(EpollIndex id) {
-  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags) {
+  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
     auto& epoll = epoll_entries_[id];
     if (res >= 0) {
       epoll.cb(res);
@@ -996,7 +997,7 @@ void UringProactor::EpollDelInternal(EpollIndex id) {
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
   auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res,
-                      uint32_t flags) {
+                      uint32_t flags, uint32_t) {
     io_res_ = res;
     res_flags_ = flags;
     was_run_ = true;
