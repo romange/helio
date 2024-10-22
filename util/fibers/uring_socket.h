@@ -54,10 +54,17 @@ class UringSocket : public LinuxSocketBase {
     return has_recv_data_;
   }
 
-  static void InitProvidedBuffers(unsigned num_bufs, unsigned buf_size, UringProactor* proactor);
-
-  io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
+  // ProvidedBuffer is a struct that contains a pointer to the buffer and its size or an error code.
+  // When called in Multishot mode, if an error is filled, the multishot mode is
+  // disabled automatically.
+  // If no provided buffers are available, the function will fill in the ENOBUFS error.
+  unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
   void ReturnProvided(const ProvidedBuffer& pbuf) final;
+
+  void EnableRecvMultishot();
+  void set_bufring_id(uint16_t id) {
+    bufring_id_ = id;
+  }
 
  private:
   UringProactor* GetProactor() {
@@ -78,6 +85,8 @@ class UringSocket : public LinuxSocketBase {
   void UpdateDfVal(unsigned val) {
     fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
+
+  void CancelMultiShot();
 
   struct ErrorCbRefWrapper {
     uint32_t error_cb_id = 0;
@@ -101,14 +110,45 @@ class UringSocket : public LinuxSocketBase {
 
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
 
+  struct MultiShot {
+    detail::FiberInterface* poll_pending = nullptr;
+
+    uint16_t tail = UringProactor::kMultiShotUndef;
+    uint16_t err_no = 0;
+
+    union {
+      struct {
+        uint8_t refcnt : 4; // range [0-2]: socket + callback or deleted.
+        uint8_t error_raised : 1;
+      };
+      uint8_t flags_;
+    };
+
+    // Returns true if this object was deleted.
+    bool DecRef();
+
+    void Activate(int fd, uint16_t bufring_id, uint8_t flags, UringProactor* proactor);
+
+    MultiShot() : flags_(0) { refcnt = 1; }
+
+    bool HasBuffers() const {
+      return tail != UringProactor::kMultiShotUndef;
+    }
+  };
+
+  static_assert(sizeof(MultiShot) == 16, "");
+
+  MultiShot* multishot_ = nullptr;
+
   union {
-    uint32_t flags_;
+    uint16_t flags_;
     struct {
-      uint32_t has_pollfirst_ : 1;
-      uint32_t has_recv_data_ : 1;
-      uint32_t is_direct_fd_ : 1;
+      uint16_t has_pollfirst_ : 1;
+      uint16_t has_recv_data_ : 1;
+      uint16_t is_direct_fd_ : 1;
     };
   };
+  uint16_t bufring_id_ = 0;
 };
 
 }  // namespace fb2

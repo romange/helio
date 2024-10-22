@@ -12,6 +12,8 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
+#include <bit>
+
 #include "base/flags.h"
 #include "base/histogram.h"
 #include "base/logging.h"
@@ -73,8 +75,9 @@ UringProactor::~UringProactor() {
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
-        io_uring_free_buf_ring(&ring_, group.ring, group.nentries, i);
+        io_uring_free_buf_ring(&ring_, group.ring, 1U << group.nentries_exp, i);
         delete[] group.buf;
+        delete[] group.multishot_arr;
       }
     }
 
@@ -196,6 +199,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
     io_uring_cqe cqe = *cqes[i];
 
     uint32_t user_data = cqe.user_data & 0xFFFFFFFF;
+    uint32_t user_tag = cqe.user_data >> 32;
     if (user_data >= kUserDataCbIndex) {  // our heap range surely starts higher than 1k.
       if (ABSL_PREDICT_FALSE(cqe.user_data == UINT64_MAX)) {
         base::sys::KernelVersion kver;
@@ -219,7 +223,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
 
       if (cqe.flags & IORING_CQE_F_MORE) {
         // multishot operation. we keep the callback intact.
-        e.cb(current, cqe.res, cqe.flags);
+        e.cb(current, cqe.res, cqe.flags, user_tag);
       } else {
         CbType func = std::move(e.cb);
 
@@ -227,7 +231,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
         e.index = next_free_ce_;
         next_free_ce_ = index;
         --pending_cb_cnt_;
-        func(current, cqe.res, cqe.flags);
+        func(current, cqe.res, cqe.flags, user_tag);
       }
       continue;
     }
@@ -236,7 +240,7 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
     // CQE with ECANCELED for the subsequent linked submission. See io_uring_enter(2) for more info.
     // ETIME is when a timer cqe fully completes.
     if (cqe.res < 0 && cqe.res != -ECANCELED && cqe.res != -ETIME) {
-      LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << (cqe.user_data >> 32);
+      LOG(WARNING) << "CQE error: " << -cqe.res << " cqe_type=" << user_tag;
     }
 
     if (user_data == kIgnoreIndex)
@@ -275,7 +279,7 @@ void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
   sqe_avail_.notifyAll();
 }
 
-SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint16_t submit_tag) {
+SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
   if (res == NULL) {
     ++get_entry_sq_full_;
@@ -354,9 +358,9 @@ void UringProactor::ReturnBuffer(UringBuf buf) {
   buf_pool_.segments.Return(segments);
 }
 
-int UringProactor::RegisterBufferRing(unsigned group_id, unsigned nentries, unsigned esize) {
+int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize) {
   CHECK_LT(nentries, 32768u);
-  CHECK_EQ(0u, nentries & (nentries - 1));  // power of 2.
+  CHECK_EQ(0, nentries & (nentries - 1));  // power of 2.
   DCHECK(InMyThread());
 
   if (buf_ring_f_ == 0)
@@ -377,8 +381,9 @@ int UringProactor::RegisterBufferRing(unsigned group_id, unsigned nentries, unsi
   }
 
   unsigned mask = io_uring_buf_ring_mask(nentries);
-  buf_group.buf = new uint8_t[nentries * esize];
-  buf_group.nentries = nentries;
+  buf_group.buf = new uint8_t[size_t(nentries) * esize];
+
+  buf_group.nentries_exp = absl::bit_width(nentries) - 1;
   buf_group.entry_size = esize;
   uint8_t* next = buf_group.buf;
 
@@ -397,21 +402,22 @@ int UringProactor::RegisterBufferRing(unsigned group_id, unsigned nentries, unsi
   return 0;
 }
 
-uint8_t* UringProactor::GetBufRingPtr(unsigned group_id, unsigned bufid) {
+uint8_t* UringProactor::GetBufRingPtr(uint16_t group_id, uint16_t bufid) {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  DCHECK_LT(bufid, buf_group.nentries);
+  DCHECK_LT(bufid, 1 << buf_group.nentries_exp);
   DCHECK(bufring_groups_[group_id].buf);
-  return bufring_groups_[group_id].buf + bufid * buf_group.entry_size;
+  return bufring_groups_[group_id].buf + size_t(bufid) * buf_group.entry_size;
 }
 
-void UringProactor::ReplenishBuffers(unsigned group_id, io::Bytes slice) {
+void UringProactor::ReplenishBuffers(uint16_t group_id, io::Bytes slice) {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK(!slice.empty());
 
   auto& buf_group = bufring_groups_[group_id];
-  size_t total_len = size_t(buf_group.nentries) * size_t(buf_group.entry_size);
+  unsigned nentries = 1U << buf_group.nentries_exp;
+  size_t total_len = size_t(nentries) * size_t(buf_group.entry_size);
   DCHECK(slice.end() <= buf_group.buf + total_len);
   off_t offs = slice.data() - buf_group.buf;
   DCHECK_GE(offs, 0);
@@ -422,7 +428,7 @@ void UringProactor::ReplenishBuffers(unsigned group_id, io::Bytes slice) {
   unsigned bid = offs / buf_group.entry_size;
   size_t replenished = 0;
   uint8_t* cur_buf = buf_group.buf + bid * buf_group.entry_size;
-  unsigned mask = io_uring_buf_ring_mask(buf_group.nentries);
+  unsigned mask = io_uring_buf_ring_mask(nentries);
   unsigned offset = 0;
   while (replenished < slice.size()) {
     io_uring_buf_ring_add(buf_group.ring, cur_buf, buf_group.entry_size, bid, mask, offset++);
@@ -432,11 +438,12 @@ void UringProactor::ReplenishBuffers(unsigned group_id, io::Bytes slice) {
   io_uring_buf_ring_advance(bufring_groups_[group_id].ring, offset);
 }
 
-unsigned UringProactor::BufRingAvailable(unsigned group_id) const {
+int UringProactor::BufRingAvailable(unsigned group_id) const {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  return io_uring_buf_ring_available(const_cast<io_uring*>(&ring_), buf_group.ring, group_id);
+  int res = io_uring_buf_ring_available(const_cast<io_uring*>(&ring_), buf_group.ring, group_id);
+  return res;
 }
 
 int UringProactor::CancelRequests(int fd, unsigned flags) {
@@ -491,6 +498,89 @@ void UringProactor::EpollDel(EpollIndex id) {
   }
 }
 
+void UringProactor::EnableMultiShot(uint16_t group_id) {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  auto& buf_group = bufring_groups_[group_id];
+  DCHECK(!buf_group.multishot_arr);
+  buf_group.multishot_exp = buf_group.nentries_exp;
+
+  size_t shot_len = 1U << buf_group.multishot_exp;
+  buf_group.multishot_arr = new MultiShot[shot_len];
+  buf_group.free_multi_shot_id = 0;
+
+  for (uint16_t i = 0; i < shot_len; ++i) {
+    buf_group.multishot_arr[i].next = i + 1;
+  }
+  buf_group.multishot_arr[shot_len - 1].next = kMultiShotUndef;
+}
+
+void UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t flags,
+                                               uint16_t* tail) {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  DCHECK(flags & IORING_CQE_F_BUFFER) << res;
+  CHECK_GT(res, 0) << flags;
+
+  auto& buf_group = bufring_groups_[group_id];
+  if (!buf_group.multishot_arr) {
+    EnableMultiShot(group_id);
+  }
+
+  auto next = buf_group.free_multi_shot_id;
+  DCHECK_LT(next, 1 << buf_group.nentries_exp) << flags;
+
+  auto& entry = buf_group.multishot_arr[next];
+  buf_group.free_multi_shot_id = entry.next;
+
+  entry.bid = flags >> IORING_CQE_BUFFER_SHIFT;
+  entry.res = res;
+  uint16_t tail_id = *tail;
+
+  // Add it to the tail of the ring buffer.
+  if (tail_id == kMultiShotUndef) {
+    entry.next = next;  // circular list with one element.
+    entry.prev = next;
+  } else {
+    auto& tail_entry = buf_group.multishot_arr[tail_id];
+    uint16_t head_id = tail_entry.next;
+    entry.next = head_id;
+    entry.prev = tail_id;
+
+    // update the head.
+    tail_entry.next = next;
+    buf_group.multishot_arr[head_id].prev = next;
+  }
+
+  *tail = next;
+}
+
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* tail) -> MultiShotResult {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  auto& buf_group = bufring_groups_[group_id];
+
+  uint16_t tail_id = *tail;
+  DCHECK_NE(tail_id, kMultiShotUndef);
+
+  auto& tail_entry = buf_group.multishot_arr[tail_id];
+
+  // We remove head from the ring buffer.
+  uint16_t head_id = tail_entry.next;
+
+  auto& head_entry = buf_group.multishot_arr[head_id];
+  if (head_id == tail_id) {
+    *tail = kMultiShotUndef;
+  } else {
+    tail_entry.next = head_entry.next;
+    buf_group.multishot_arr[head_entry.next].prev = tail_id;
+  }
+
+  // link the entry to the free list.
+  head_entry.next = buf_group.free_multi_shot_id;
+  buf_group.free_multi_shot_id = head_id;
+  CHECK_GT(head_entry.res, 0);
+  uint8_t* buf = buf_group.buf + head_entry.bid * buf_group.entry_size;
+  return MultiShotResult{buf, size_t(head_entry.res)};
+}
+
 void UringProactor::RegrowCentries() {
   size_t prev = centries_.size();
   VLOG(1) << "RegrowCentries from " << prev << " to " << prev * 2
@@ -525,9 +615,8 @@ void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   VPRO(2) << "SchedulePeriodic " << id;
 
   SubmitEntry se =
-      GetSubmitEntry([this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags) {
-        this->PeriodicCb(res, id, std::move(item));
-      });
+      GetSubmitEntry([this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags,
+                                      uint32_t) { this->PeriodicCb(res, id, std::move(item)); });
 
   se.PrepTimeout(&item->period, false);
   DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
@@ -553,7 +642,7 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
 
 void UringProactor::CancelPeriodicInternal(PeriodicItem* item) {
   auto* me = detail::FiberActive();
-  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags) {
+  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags, uint32_t) {
     ActivateSameThread(current, me);
   };
   uint32_t val1 = item->val1;
@@ -875,7 +964,7 @@ void UringProactor::WakeRing() {
 }
 
 void UringProactor::EpollAddInternal(EpollIndex id) {
-  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags) {
+  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
     auto& epoll = epoll_entries_[id];
     if (res >= 0) {
       epoll.cb(res);
@@ -908,7 +997,7 @@ void UringProactor::EpollDelInternal(EpollIndex id) {
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
   auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res,
-                      uint32_t flags) {
+                      uint32_t flags, uint32_t) {
     io_res_ = res;
     res_flags_ = flags;
     was_run_ = true;

@@ -7,9 +7,9 @@
 #include <liburing.h>
 #include <pthread.h>
 
+#include "base/segment_pool.h"
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/submit_entry.h"
-#include "base/segment_pool.h"
 
 namespace util {
 namespace fb2 {
@@ -43,23 +43,23 @@ class UringProactor : public ProactorBase {
   // detail::FiberInterface* is the current fiber.
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
+  // uint32_t - the user tag supplied during event submission. See GetSubmitEntry below.
   // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
   // using CbType = std::function<void(IoResult, uint32_t)>;
   using CbType =
       fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/,
-                         void(detail::FiberInterface*, IoResult, uint32_t)>;
+                         void(detail::FiberInterface*, IoResult, uint32_t, uint32_t)>;
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
    * @param cb - completion callback.
    * @param submit_type - user tag to be supplied to the completion callback. This is useful to
    *                      distinguish between different CQEs when debugging problems.
-   *                      tags 0-255 are reserved for internal use.
    * @return SubmitEntry with initialized userdata.
    *
    */
-  SubmitEntry GetSubmitEntry(CbType cb, uint16_t submit_tag = 0);
+  SubmitEntry GetSubmitEntry(CbType cb, uint32_t submit_tag = 0);
 
   // Returns number of entries available for submitting to io_uring.
   uint32_t GetSubmitRingAvailability() const {
@@ -118,27 +118,31 @@ class UringProactor : public ProactorBase {
   int UnregisterBuffers();
 
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
-  // Available from kernel 5.19.
+  // Available from kernel 5.19. nentries must be less than 2^15 and should be power of 2.
   // Registers a buffer ring with specified buffer group_id.
   // Returns 0 on success, errno on failure.
-  int RegisterBufferRing(unsigned group_id, unsigned nentries, unsigned esize);
-  uint8_t* GetBufRingPtr(unsigned group_id, unsigned bufid);
+  int RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize);
+  uint8_t* GetBufRingPtr(uint16_t group_id, uint16_t bufid);
 
   // Return 1 or more buffers to the bufring. slice.data() should point to a buffer returned by
   // GetBufRingPtr and its length should be within the range of the buffers handled by group_id.
-  void ReplenishBuffers(unsigned group_id, io::Bytes slice);
+  void ReplenishBuffers(uint16_t group_id, io::Bytes slice);
 
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
   int BufRingEntrySize(unsigned group_id) const {
-    return group_id < bufring_groups_.size() ? bufring_groups_[group_id].entry_size : -1;
+    return group_id < bufring_groups_.size() && bufring_groups_[group_id].ring != nullptr
+               ? bufring_groups_[group_id].entry_size
+               : -1;
   }
 
   // Returns number of available entries at the time of the call.
   // Every time a kernel event with IORING_CQE_F_BUFFER is processed,
   // it consumes one or more entries from the buffer ring and available decreases.
   // ReplenishBuffers returns the entries back to the ring.
-  unsigned BufRingAvailable(unsigned group_id) const;
+  // Returns number of available entries or -errno if group_id is invalid or kernel is too old.
+  // Available since kernel 6.8.
+  int BufRingAvailable(unsigned group_id) const;
 
   // Returns 0 on success, errno on failure.
   // See io_uring_prep_cancel(3) for flags.
@@ -148,6 +152,19 @@ class UringProactor : public ProactorBase {
   using EpollIndex = unsigned;
   EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
   void EpollDel(EpollIndex id);
+
+  static constexpr uint16_t kMultiShotUndef = 0xFFFF;
+
+  void EnableMultiShot(uint16_t group_id);
+
+  // Returns a new head.
+  void EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t flags, uint16_t* tail);
+
+  using MultiShotResult = io::Bytes;
+
+  // Pulls a single range of a multishot completion. head must point to a valid id.
+  // Once the queue of completions is exhausted, head is set to kMultiShotUndef.
+  MultiShotResult PullMultiShotCompletion(uint16_t group_id, uint16_t* tail);
 
  private:
   void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
@@ -193,14 +210,24 @@ class UringProactor : public ProactorBase {
   // TODO: start using IORING_TIMEOUT_MULTISHOT (see io_uring_prep_timeout(3)).
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
+  struct MultiShot {
+    uint16_t next, prev;  // Composes a ring buffer.
+    uint16_t bid;         // buffer id.
+    uint16_t reserved;
+    IoResult res;
+  };
+  static_assert(sizeof(MultiShot) == 12);
+
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;
     uint8_t* buf = nullptr;
-    uint16_t nentries = 0;
-    uint16_t reserved;
+    MultiShot* multishot_arr = nullptr;  // Array of a cardinality of nentries.
+    uint8_t nentries_exp = 0;            // 2^nentries_exp is the number of entries.
+    uint8_t multishot_exp = 0;           // 2^multishot_exp is the number of multishot entries.
+    uint16_t free_multi_shot_id = 0;
     uint32_t entry_size = 0;
   };
-  static_assert(sizeof(BufRingGroup) == 24);
+  static_assert(sizeof(BufRingGroup) == 32);
   std::vector<BufRingGroup> bufring_groups_;
 
   // Keeps track of requested buffers
@@ -254,7 +281,7 @@ class FiberCall {
   UringProactor::IoResult io_res_ = 0;
   uint32_t res_flags_ = 0;  // set by waker upon completion.
   bool was_run_ = false;
-  timespec ts_;             // in case of timeout.
+  timespec ts_;  // in case of timeout.
 };
 
 }  // namespace fb2

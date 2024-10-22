@@ -26,6 +26,7 @@
 
 #ifdef __linux__
 #include "util/fibers/uring_socket.h"
+#include "util/fibers/uring_proactor.h"
 #endif
 
 using namespace util;
@@ -56,6 +57,8 @@ ABSL_FLAG(bool, raw, true,
           "If true, does not send/receive size parameter during "
           "the connection handshake");
 ABSL_FLAG(bool, tcp_nodelay, false, "if true - use tcp_nodelay option for server sockets");
+ABSL_FLAG(bool, multishot, false, "If true, iouring sockets use multishot receives");
+ABSL_FLAG(uint16_t, bufring_size, 256, "Size of the buffer ring for iouring sockets");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -70,23 +73,26 @@ class EchoConnection : public Connection {
  private:
   void HandleRequests() final;
 
-  std::error_code ReadMsg(size_t* sz);
+  std::error_code ReadMsg();
 
   std::queue<FiberSocketBase::ProvidedBuffer> prov_buffers_;
   size_t pending_read_bytes_ = 0, first_buf_offset_ = 0;
   size_t req_len_ = 0;
 };
 
-std::error_code EchoConnection::ReadMsg(size_t* sz) {
+std::error_code EchoConnection::ReadMsg() {
   FiberSocketBase::ProvidedBuffer pb[8];
 
   while (pending_read_bytes_ < req_len_) {
-    auto res = socket_->RecvProvided(8, pb);
-    if (!res)
-      return res.error();
-    unsigned num_buf = *res;
+    unsigned num_bufs = socket_->RecvProvided(8, pb);
 
-    for (unsigned i = 0; i < num_buf; ++i) {
+    for (unsigned i = 0; i < num_bufs; ++i) {
+      if (pb[i].err_no > 0) {
+        DCHECK_EQ(i, 0u);
+        return error_code(pb[i].err_no, system_category());
+      }
+
+      DCHECK(!pb[i].buffer.empty());
       prov_buffers_.push(pb[i]);
       pending_read_bytes_ += pb[i].buffer.size();
     }
@@ -104,7 +110,6 @@ void EchoConnection::HandleRequests() {
   ThisFiber::SetName("HandleRequests");
 
   std::error_code ec;
-  size_t sz;
   vector<iovec> vec;
   uint8_t buf[8];
   vec.resize(2);
@@ -114,6 +119,13 @@ void EchoConnection::HandleRequests() {
     CHECK_EQ(0, setsockopt(socket_->native_handle(), IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)));
   }
 
+#ifdef __linux__
+  bool is_multishot = GetFlag(FLAGS_multishot);
+  bool is_iouring = socket_->proactor()->GetKind() == ProactorBase::IOURING;
+  if (is_multishot && is_iouring) {
+    static_cast<fb2::UringSocket*>(socket_.get())->EnableRecvMultishot();
+  }
+#endif
   connections.IncBy(1);
 
   vec[0].iov_base = buf;
@@ -149,10 +161,11 @@ void EchoConnection::HandleRequests() {
   vector<FiberSocketBase::ProvidedBuffer> returned_buffers;
 
   // after the handshake.
+  uint64_t replies = 0;
   while (true) {
-    ec = ReadMsg(&sz);
+    ec = ReadMsg();
     if (FiberSocketBase::IsConnClosed(ec)) {
-      VLOG(1) << "Closing " << ep;
+      VLOG(1) << "Closing " << ep << " after " << replies << " replies";
       break;
     }
     CHECK(!ec) << ec;
@@ -160,7 +173,7 @@ void EchoConnection::HandleRequests() {
 
     vec[0].iov_base = buf;
     vec[0].iov_len = 4;
-    absl::little_endian::Store32(buf, sz);
+    absl::little_endian::Store32(buf, req_len_);
     vec.resize(1);
 
     size_t prepare_len = 0;
@@ -170,12 +183,14 @@ void EchoConnection::HandleRequests() {
       DCHECK(!prov_buffers_.empty());
       size_t needed = req_len_ - prepare_len;
       const auto& pbuf = prov_buffers_.front();
-      size_t has_bytes = pbuf.buffer.size() - first_buf_offset_;
-      if (has_bytes <= needed) {
-        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, has_bytes});
-        prepare_len += has_bytes;
-        DCHECK_GE(pending_read_bytes_, has_bytes);
-        pending_read_bytes_ -= has_bytes;
+      size_t bytes_count = pbuf.buffer.size() - first_buf_offset_;
+      DCHECK(!pbuf.buffer.empty());
+
+      if (bytes_count <= needed) {
+        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, bytes_count});
+        prepare_len += bytes_count;
+        DCHECK_GE(pending_read_bytes_, bytes_count);
+        pending_read_bytes_ -= bytes_count;
         returned_buffers.push_back(pbuf);
         prov_buffers_.pop();
         first_buf_offset_ = 0;
@@ -201,6 +216,7 @@ void EchoConnection::HandleRequests() {
       socket_->ReturnProvided(pb);
     }
     returned_buffers.clear();
+    ++replies;
     if (ec)
       break;
   }
@@ -253,6 +269,8 @@ class Driver {
   std::unique_ptr<FiberSocketBase> socket_;
 
   Driver(const Driver&) = delete;
+
+  uint64_t send_id_ = 0;
 
  public:
   Driver(ProactorBase* p);
@@ -335,6 +353,9 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
 void Driver::SendSingle() {
   size_t req_size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> msg(new uint8_t[req_size]);
+  memcpy(msg.get(), &send_id_, std::min(sizeof(send_id_), req_size));
+  ++send_id_;
+
   error_code ec = socket_->Write(io::Bytes{msg.get(), req_size});
   CHECK(!ec) << ec.message();
   auto res = socket_->Read(io::MutableBytes(msg.get(), req_size));
@@ -369,6 +390,8 @@ size_t Driver::Run(base::Histogram* dest) {
     auto start = absl::GetCurrentTimeNanos();
 
     for (size_t j = 0; j < pipeline_cnt; ++j) {
+      memcpy(msg.get(), &send_id_, std::min(sizeof(send_id_), req_size));
+      ++send_id_;
       error_code ec = socket_->Write(io::Bytes{msg.get(), req_size});
       if (ec && FiberSocketBase::IsConnClosed(ec)) {
         conn_close = true;
@@ -498,7 +521,8 @@ int main(int argc, char* argv[]) {
 #ifdef __linux__
     if (!absl::GetFlag(FLAGS_epoll)) {
       pp->AwaitBrief([](unsigned, auto* pb) {
-        fb2::UringSocket::InitProvidedBuffers(512, 64, static_cast<fb2::UringProactor*>(pb));
+        fb2::UringProactor* up = static_cast<fb2::UringProactor*>(pb);
+        up->RegisterBufferRing(0, absl::GetFlag(FLAGS_bufring_size), 64);
       });
     }
 #endif

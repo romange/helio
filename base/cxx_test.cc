@@ -144,7 +144,7 @@ TEST_F(CxxTest, UnderDebugger) {
   vector<HasVector> table;
 
   vector<int> ints(1024);
-  table.emplace_back(HasVector{.vals = move(ints)});
+  table.emplace_back(HasVector{.vals = std::move(ints)});
   table.emplace_back();  // verified that HasVector was moved without copying the array.
 }
 

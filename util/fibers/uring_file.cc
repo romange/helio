@@ -396,7 +396,7 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
 void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index,
                                AsyncCb cb) {
   auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t flags) { cb(res); };
+                                       uint32_t flags, uint32_t) { cb(res); };
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
   se.PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
@@ -406,7 +406,7 @@ void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf
 
 void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
   auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t flags) { cb(res); };
+                                       uint32_t flags, uint32_t) { cb(res); };
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
   se.PrepRead(fd_, dest.data(), dest.size(), offset);
@@ -416,7 +416,7 @@ void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
 
 void LinuxFile::WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb) {
   auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t flags) { cb(res); };
+                                       uint32_t, uint32_t) { cb(res); };
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
   se.PrepWriteFixed(fd_, src.data(), src.size(), offset, buf_index);
   if (is_direct_)
@@ -425,7 +425,7 @@ void LinuxFile::WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index,
 
 void LinuxFile::WriteAsync(io::Bytes src, off_t offset, AsyncCb cb) {
   auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                       uint32_t flags) { cb(res); };
+                                       uint32_t, uint32_t) { cb(res); };
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
 
   se.PrepWrite(fd_, src.data(), src.size(), offset);
