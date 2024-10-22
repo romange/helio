@@ -365,7 +365,7 @@ TEST_P(FiberSocketTest, RecvProvided) {
   });
   ASSERT_FALSE(ec);
 
-  io::Result<unsigned> res;
+  unsigned res;
   FiberSocketBase::ProvidedBuffer pbuf[8];
 
   auto recv_fb = proactor_->LaunchFiber([&] {
@@ -388,24 +388,91 @@ TEST_P(FiberSocketTest, RecvProvided) {
 
   recv_fb.Join();
   proactor_->Await([&] { std::ignore = sock->Close(); });
-  ASSERT_TRUE(res);
 
-  ASSERT_TRUE(*res > 0 && *res < 8);
+  ASSERT_TRUE(res > 0 && res < 8);
   size_t total_size = 0;
-  for (unsigned i = 0; i < *res; ++i) {
+  for (unsigned i = 0; i < res; ++i) {
+    ASSERT_FALSE(pbuf[i].buffer.empty());
     total_size += pbuf[i].buffer.size();
   }
 
   ASSERT_LE(total_size, sizeof(buf));
 
   proactor_->Await([&] {
-    for (unsigned i = 0; i < *res; ++i) {
+    for (unsigned i = 0; i < res; ++i) {
       conn_socket_->ReturnProvided(pbuf[i]);
     }
   });
 }
 
 #ifdef __linux__
+TEST_P(FiberSocketTest, RecvMultiShot) {
+  constexpr unsigned kBufLen = 40;
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "RecvMultiShot is supported only on uring";
+    return;
+  }
+
+  UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+  up->Await([up] {
+      UringSocket::InitProvidedBuffers(4, kBufLen, up); });
+
+  unique_ptr<FiberSocketBase> sock;
+  error_code ec;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    ec = sock->Connect(listen_ep_);
+    ASSERT_FALSE(ec);
+  });
+
+  proactor_->Await([&] {
+    while (!conn_socket_) {
+      ThisFiber::SleepFor(1ms);
+    }
+    static_cast<UringSocket*>(conn_socket_.get())->EnableRecvMultishot();
+  });
+
+  unsigned res;
+  FiberSocketBase::ProvidedBuffer pbuf[8];
+
+  auto recv_fb = proactor_->LaunchFiber([&] {
+    res = conn_socket_->RecvProvided(8, pbuf);
+  });
+
+  uint8_t buf[128];
+  memset(buf, 'x', sizeof(buf));
+
+  proactor_->Await([&] {
+    auto wrt_ec = sock->Write(io::Bytes(buf));
+    ASSERT_FALSE(wrt_ec);
+  });
+
+  recv_fb.Join();
+
+  ASSERT_TRUE(res > 0 && res < 8);
+  size_t total_size = 0;
+  for (unsigned i = 0; i < res; ++i) {
+    ASSERT_FALSE(pbuf[i].buffer.empty());
+    total_size += pbuf[i].buffer.size();
+    for (uint8_t b : pbuf[i].buffer) {
+      ASSERT_EQ('x', b);
+    }
+  }
+
+  ASSERT_LE(total_size, sizeof(buf));
+
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+  proactor_->Await([&] {
+    for (unsigned i = 0; i < res; ++i) {
+      conn_socket_->ReturnProvided(pbuf[i]);
+    }
+    res = conn_socket_->RecvProvided(8, pbuf);
+  });
+  ASSERT_EQ(res, 1);
+}
+
+
 TEST_P(FiberSocketTest, NotEmpty) {
   bool use_uring = GetParam() == "uring";
   bool has_poll_first = false;
