@@ -56,8 +56,10 @@ class UringSocket : public LinuxSocketBase {
 
   static void InitProvidedBuffers(unsigned num_bufs, unsigned buf_size, UringProactor* proactor);
 
-  io::Result<unsigned> RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
+  unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
   void ReturnProvided(const ProvidedBuffer& pbuf) final;
+
+  void EnableRecvMultishot();
 
  private:
   UringProactor* GetProactor() {
@@ -78,6 +80,8 @@ class UringSocket : public LinuxSocketBase {
   void UpdateDfVal(unsigned val) {
     fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
+
+  void CancelMultiShot();
 
   struct ErrorCbRefWrapper {
     uint32_t error_cb_id = 0;
@@ -100,6 +104,20 @@ class UringSocket : public LinuxSocketBase {
   };
 
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
+
+  struct MultiShot {
+    uint16_t tail = UringProactor::kMultiShotUndef;
+    uint16_t err_no = 0;
+    uint8_t refcnt = 1; // one for the socket.
+    bool recv_pending = false;
+
+    // Returns true if this object was deleted.
+    bool DecRef();
+
+    void Activate(int fd, uint8_t flags, UringProactor* proactor);
+  };
+
+  MultiShot* multishot_ = nullptr;
 
   union {
     uint32_t flags_;

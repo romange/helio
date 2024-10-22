@@ -39,6 +39,9 @@ auto Unexpected(std::errc e) {
   return make_unexpected(make_error_code(e));
 }
 
+constexpr uint8_t kHeapType = 1;
+constexpr uint8_t kBufRingType = 2;
+
 }  // namespace
 
 UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
@@ -80,12 +83,13 @@ error_code UringSocket::Create(unsigned short protocol_family) {
 }
 
 auto UringSocket::Close() -> error_code {
-  error_code ec;
   if (fd_ < 0)
-    return ec;
+    return {};
+
   DCHECK(proactor());
   DCHECK(proactor()->InMyThread());
   DVSOCK(1) << "Closing socket";
+  CancelMultiShot();
 
   int fd;
   if (is_direct_fd_) {
@@ -94,13 +98,14 @@ auto UringSocket::Close() -> error_code {
     fd = proactor->UnregisterFd(direct_fd);
     if (fd < 0) {
       LOG(WARNING) << "Error unregistering fd " << direct_fd;
-      return ec;
+      return {};
     }
     is_direct_fd_ = 0;
   } else {
     fd = native_handle();
   }
 
+  error_code ec;
   posix_err_wrap(::close(fd), &ec);
   fd_ = -1;
 
@@ -425,7 +430,7 @@ void UringSocket::InitProvidedBuffers(unsigned num_bufs, unsigned buf_size,
   proactor->RegisterBufferRing(kUringSockBufGroup, num_bufs, buf_size);
 }
 
-io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   DCHECK_GT(buf_len, 0u);
 
   int fd = ShiftedFd();
@@ -433,72 +438,163 @@ io::Result<unsigned> UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
   DCHECK(ProactorBase::me() == p);
   DCHECK_GT(p->BufRingEntrySize(kUringSockBufGroup), 0);
 
-  ssize_t res;
-  while (true) {
-    FiberCall fc(p, timeout());
+  // We are in multishot mode.
+  if (multishot_) {
+    unsigned res = 0;
 
-    fc->PrepRecv(fd, nullptr, 0, 0);
-    fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
-    fc->sqe()->buf_group = kUringSockBufGroup;
-    if (has_pollfirst_ && !has_recv_data_) {
-      fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
-    }
-    res = fc.Get();
+    do {
+      UringProactor::MultiShotResult result =
+          GetProactor()->PullMultiShotCompletion(kUringSockBufGroup, &multishot_->tail);
+      auto& pbuf = dest[res++];
+      if (result) {
+        pbuf.buffer = std::move(*result);
+        pbuf.allocated = 0;
+        pbuf.cookie = kBufRingType;
+        if (pbuf.buffer.empty()) {
+          pbuf.err_no = ECONNABORTED;
+        }
+      } else {
+        pbuf.err_no = result.error();
+      }
+    } while (res < buf_len && multishot_->tail != UringProactor::kMultiShotUndef);
 
-    if (res > 0) {
-      uint32_t flags = fc.flags();
-      CHECK_NE(IORING_CQE_F_BUFFER & flags, 0u);
+    return res;
 
-      has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
-      DVSOCK(2) << "Received " << res << " bytes";
-      uint8_t* start = p->GetBufRingPtr(kUringSockBufGroup, flags >> IORING_CQE_BUFFER_SHIFT);
-      dest[0].buffer = io::MutableBytes{start, static_cast<size_t>(res)};
-      dest[0].cookie = 2;
+    // We exited multishot data due to out of buffers.
+    // multishot_submitted_ = 0;
+    // res = ENOBUFS;
+  }
 
+  // Non-multishot mode.
+  FiberCall fc(p, timeout());
+
+  fc->PrepRecv(fd, nullptr, 0, 0);
+  fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+  fc->sqe()->buf_group = kUringSockBufGroup;
+  if (has_pollfirst_ && !has_recv_data_) {
+    fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
+  }
+  ssize_t res = fc.Get();
+
+  if (res > 0) {
+    uint32_t flags = fc.flags();
+    DCHECK(IORING_CQE_F_BUFFER & flags);
+
+    has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
+    DVSOCK(2) << "Received " << res << " bytes";
+    uint8_t* start = p->GetBufRingPtr(kUringSockBufGroup, flags >> IORING_CQE_BUFFER_SHIFT);
+    dest[0].buffer = io::MutableBytes{start, static_cast<size_t>(res)};
+    dest[0].cookie = 2;
+
+    return 1;
+  }
+
+  DVSOCK(2) << "Got " << res;
+
+  res = -res;
+
+  if (res == ENOBUFS) {
+    // Fallback to heap buffer.
+    int entry_size = p->BufRingEntrySize(kUringSockBufGroup);
+    DCHECK_GT(entry_size, 0);
+    io::MutableBytes buf = p->AllocateBuffer(entry_size);
+    int real_handle = native_handle();
+    int recv_res = recv(real_handle, buf.data(), buf.size(), 0);
+    if (recv_res > 0) {
+      dest[0].buffer = io::MutableBytes{buf.data(), static_cast<size_t>(res)};
+      dest[0].allocated = buf.size();
+      dest[0].cookie = kHeapType;
       return 1;
     }
 
-    DVSOCK(2) << "Got " << res;
-
-    res = -res;
-
-    if (res == ENOBUFS) {
-      int entry_size = p->BufRingEntrySize(kUringSockBufGroup);
-      DCHECK_GT(entry_size, 0);
-      io::MutableBytes buf = p->AllocateBuffer(entry_size);
-      int real_handle = native_handle();
-      int recv_res = recv(real_handle, buf.data(), buf.size(), 0);
-      if (recv_res > 0) {
-        dest[0].buffer = io::MutableBytes{buf.data(), static_cast<size_t>(res)};
-        dest[0].allocated = buf.size();
-        dest[0].cookie = 1;
-        return 1;
-      }
-
-      p->DeallocateBuffer(buf);
-      res = recv_res < 0 ? errno : ECONNABORTED;
-    }
-
-    if (res == 0)
-      res = ECONNABORTED;
-    break;
+    p->DeallocateBuffer(buf);
+    res = recv_res < 0 ? errno : ECONNABORTED;
   }
 
-  error_code ec(res, system_category());
-  VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
+  if (res == 0)
+    res = ECONNABORTED;
 
-  return make_unexpected(std::move(ec));
+  dest[0].buffer = {};
+  dest[0].err_no = res;
+  dest[0].allocated = 0;
+
+  return 1;
 }
 
 void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   DCHECK(!pbuf.buffer.empty());
   Proactor* p = GetProactor();
-  if (pbuf.cookie == 2) {
+  if (pbuf.cookie == kBufRingType) {
     p->ReplenishBuffers(kUringSockBufGroup, pbuf.buffer);
   } else {
-    DCHECK_EQ(pbuf.cookie, 1);
+    DCHECK_EQ(pbuf.cookie, kHeapType);
     p->DeallocateBuffer({const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
   }
+}
+
+bool UringSocket::MultiShot::DecRef() {
+  if (--refcnt > 0)
+    return false;
+
+  delete this;
+  return true;
+}
+
+void UringSocket::MultiShot::Activate(int fd, uint8_t flags, UringProactor* proactor) {
+  if (refcnt > 1)
+    return;
+
+  auto cb = [this, me = detail::FiberActive()](detail::FiberInterface* current, IoResult res,
+                                               uint32_t flags) {
+    DVLOG(2) << "Multishot completion " << res << " flags: " << flags;
+    UringProactor* proactor = static_cast<UringProactor*>(ProactorBase::me());
+
+    if ((flags & IORING_CQE_F_MORE) == 0) {
+      if (DecRef())  // Last reference.
+        return;
+
+      // Assumption.
+      CHECK_EQ(flags & IORING_CQE_F_BUFFER, 0u);
+      CHECK_LE(res, 0);
+      err_no = -res;
+      return;
+    }
+
+    CHECK(flags & IORING_CQE_F_BUFFER);
+    proactor->EnqueueMultishotCompletion(kUringSockBufGroup, res, flags, &tail);
+    DVLOG(1) << "Multishot tail " << tail << " " << flags;
+
+    DCHECK_NE(tail, UringProactor::kMultiShotUndef);
+    if (recv_pending) {
+      ActivateSameThread(current, me);
+    }
+  };
+
+  fb2::SubmitEntry entry = proactor->GetSubmitEntry(std::move(cb));
+  entry.PrepRecv(fd, nullptr, 0, 0);
+  entry.sqe()->flags |= (flags | IOSQE_BUFFER_SELECT);
+  entry.sqe()->buf_group = kUringSockBufGroup;
+  entry.sqe()->ioprio |= IORING_RECV_MULTISHOT;
+  ++refcnt;
+}
+
+void UringSocket::EnableRecvMultishot() {
+  if (multishot_)
+    return;
+
+  multishot_ = new MultiShot();
+  multishot_->Activate(ShiftedFd(), register_flag(), GetProactor());
+}
+
+void UringSocket::CancelMultiShot() {
+  if (!multishot_)
+    return;
+
+  if (!multishot_->DecRef()) {  // Still has references because of the armed callback.
+    int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
+    GetProactor()->CancelRequests(ShiftedFd(), flags);
+  }
+  multishot_ = nullptr;
 }
 
 void UringSocket::OnSetProactor() {

@@ -365,7 +365,7 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   return nonstd::make_unexpected(std::move(ec));
 }
 
-io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
+unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   DCHECK_GT(buf_len, 0u);
 
   int fd = native_handle();
@@ -435,7 +435,8 @@ io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
     }
 
     if (SuspendMyself(read_context_, &ec) && ec) {
-      return nonstd::make_unexpected(std::move(ec));
+      res = ec.value();
+      break;
     }
   }
 
@@ -448,17 +449,12 @@ io::Result<unsigned> EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer*
 
   DVSOCK(1) << "Got " << res;
 
-  // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
-  // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
-               << RemoteEndpoint();
-  }
+  dest[0].buffer = {};
+  dest[0].allocated = 0;
+  dest[0].cookie = 1;
+  dest[0].err_no = res;
 
-  ec = std::error_code(res, std::system_category());
-  VSOCK(1) << "Error on " << RemoteEndpoint() << ": " << ec.message();
-
-  return nonstd::make_unexpected(std::move(ec));
+  return 1;
 }
 
 void EpollSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
