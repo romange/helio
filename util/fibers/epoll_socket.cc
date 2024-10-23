@@ -385,6 +385,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
       size_t ures = res;
       dest[0].cookie = 1;
+      dest[0].err_no = 0;
 
       // Handle buffer shrinkage.
       if (bufreq_sz_ > kMinBufSize && ures < bufreq_sz_ / 2) {
@@ -396,6 +397,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
         proactor()->DeallocateBuffer(buf);
         dest[0].buffer = {buf2.data(), ures};
         dest[0].allocated = buf2.size();
+
         return 1;
       }
 
@@ -422,6 +424,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
         dest[num_bufs].buffer = {buf.data(), ures};
         dest[num_bufs].allocated = buf.size();
         dest[num_bufs].cookie = 1;
+        dest[num_bufs].err_no = 0;
         ++num_bufs;
       }
 
@@ -449,10 +452,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
   DVSOCK(1) << "Got " << res;
 
-  dest[0].buffer = {};
-  dest[0].allocated = 0;
-  dest[0].cookie = 1;
-  dest[0].err_no = res;
+  dest[0].SetError(res);
 
   return 1;
 }

@@ -501,6 +501,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
       auto& pbuf = dest[res++];
       pbuf.buffer = result;
       pbuf.allocated = 0;
+      pbuf.err_no = 0;
       pbuf.cookie = kBufRingType;
       if (res == buf_len) {
         return res;
@@ -539,6 +540,8 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
     DVSOCK(2) << "Received " << res << " bytes";
     uint8_t* start = p->GetBufRingPtr(bufring_id_, flags >> IORING_CQE_BUFFER_SHIFT);
     dest[0].buffer = io::MutableBytes{start, static_cast<size_t>(res)};
+    dest[0].err_no = 0;
+
     if (multishot_) {
       multishot_->Activate(fd, bufring_id_, register_flag(), p);
     }

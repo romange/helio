@@ -189,9 +189,9 @@ class SubmitEntry {
     sqe_->rw_flags = 0;
   }
 
-  void PrepCancel(int fd, unsigned flags) {
+  void PrepCancelFd(int fd, unsigned flags) {
     PrepFd(IORING_OP_ASYNC_CANCEL, fd);
-    sqe_->cancel_flags = flags;
+    sqe_->cancel_flags = flags | IORING_ASYNC_CANCEL_FD;
   }
 
   void PrepMadvise(void* addr, off_t len, int advice) {

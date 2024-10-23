@@ -315,14 +315,14 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
   return SubmitEntry{res};
 }
 
-int UringProactor::RegisterBuffers(size_t size) {
+unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + UringBuf::kAlign - 1) / UringBuf::kAlign * UringBuf::kAlign;
 
   // Use mmap to create the backing
   void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (ptr == MAP_FAILED) {
     LOG(ERROR) << "Could not mmap " << size << " bytes";
-    return -errno;
+    return errno;
   }
 
   iovec vec{ptr, size};
@@ -330,7 +330,7 @@ int UringProactor::RegisterBuffers(size_t size) {
   if (res < 0) {
     LOG(ERROR) << "Error calling io_uring_register_buffers: " << SafeErrorMessage(-res);
     munmap(ptr, size);
-    return res;
+    return -res;
   }
 
   buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
