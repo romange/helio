@@ -87,14 +87,14 @@ std::error_code EchoConnection::ReadMsg() {
     unsigned num_bufs = socket_->RecvProvided(8, pb);
 
     for (unsigned i = 0; i < num_bufs; ++i) {
-      if (pb[i].err_no > 0) {
+      if (!pb[i].buffer.empty()) {
+        prov_buffers_.push(pb[i]);
+        pending_read_bytes_ += pb[i].buffer.size();
+      } else {
         DCHECK_EQ(i, 0u);
+        CHECK_GT(pb[i].err_no, 0u);
         return error_code(pb[i].err_no, system_category());
       }
-
-      DCHECK(!pb[i].buffer.empty());
-      prov_buffers_.push(pb[i]);
-      pending_read_bytes_ += pb[i].buffer.size();
     }
     if (pending_read_bytes_ > req_len_) {
       DVLOG(1) << "Waited for " << req_len_ << " but got " << pending_read_bytes_;

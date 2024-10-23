@@ -103,19 +103,15 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
-  // Register buffer with given size and allocate backing, calls io_uring_register_buffers.
-  // Returns 0 on success, -errno on error.
-  int RegisterBuffers(size_t size);
+  // Register buffer with given size and allocate backing storage, calls io_uring_register_buffers.
+  // Returns 0 on success, errno on error.
+  unsigned RegisterBuffers(size_t size);
 
-  // Request buffer of given size, returns none if there's no space left in the backing.
-  // Must be returned with ReturnBuffer
+  // Request buffer of given size from the buffer pool registered with RegisterBuffers.
+  // Returns none if there's no space left in the pool.
+  // Must be returned with ReturnBuffer.
   std::optional<UringBuf> RequestBuffer(size_t size);
   void ReturnBuffer(UringBuf buf);
-
-  // Wrapper interface around io_uring_(un)register_buffers.
-  // Returns 0 on success, -errno on failure.
-  int RegisterBuffers(const struct iovec* iovecs, unsigned nr_vecs);
-  int UnregisterBuffers();
 
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
   // Available from kernel 5.19. nentries must be less than 2^15 and should be power of 2.
