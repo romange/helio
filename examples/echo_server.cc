@@ -59,6 +59,8 @@ ABSL_FLAG(bool, raw, true,
 ABSL_FLAG(bool, tcp_nodelay, false, "if true - use tcp_nodelay option for server sockets");
 ABSL_FLAG(bool, multishot, false, "If true, iouring sockets use multishot receives");
 ABSL_FLAG(uint16_t, bufring_size, 256, "Size of the buffer ring for iouring sockets");
+ABSL_FLAG(bool, use_incoming_cpu, false,
+          "If true uses SO_INCOMING_CPU in order to distribute incoming connections");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -238,7 +240,32 @@ class EchoListener : public ListenerInterface {
   void OnMaxConnectionsReached(FiberSocketBase* sock) override {
     sock->Write(io::Buffer(kMaxConnectionsError));
   }
+
+  ProactorBase* PickConnectionProactor(FiberSocketBase* sock) final;
 };
+
+ProactorBase* EchoListener::PickConnectionProactor(FiberSocketBase* sock) {
+#ifdef __linux__
+  bool use_incoming = GetFlag(FLAGS_use_incoming_cpu);
+  int fd = sock->native_handle();
+
+  int cpu;
+  socklen_t len = sizeof(cpu);
+
+  if (getsockopt(fd, SOL_SOCKET, SO_INCOMING_CPU, &cpu, &len) == 0) {
+    VLOG(1) << "Got socket from cpu " << cpu;
+
+    if (use_incoming) {
+      vector<unsigned> ids = pool()->MapCpuToThreads(cpu);
+      if (!ids.empty()) {
+        VLOG(1) << "Using proactor " << ids.front();
+        return pool()->at(ids.front());
+      }
+    }
+  }
+#endif
+  return pool()->GetNextProactor();
+}
 
 void RunServer(ProactorPool* pp) {
   ping_qps.Init(pp);
