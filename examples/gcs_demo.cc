@@ -17,9 +17,31 @@ using absl::GetFlag;
 
 ABSL_FLAG(string, bucket, "", "");
 ABSL_FLAG(string, prefix, "", "");
-ABSL_FLAG(uint32_t, write, 0, "");
+ABSL_FLAG(uint32_t, write, 0, "If write > 0, then write this many files to GCS");
+ABSL_FLAG(uint32_t, read, 0, "If read > 0, then read this many files from GCS");
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
+
+static io::Result<string> ReadToString(io::ReadonlyFile* file) {
+  string res_str;
+  while (true) {
+    constexpr size_t kBufSize = 1U << 20;
+    size_t offset = res_str.size();
+    res_str.resize(offset + kBufSize);
+    io::MutableBytes mb{reinterpret_cast<uint8_t*>(res_str.data() + offset),
+                        kBufSize};
+    io::Result<size_t> res = file->Read(offset, mb);
+    if (!res) {
+      return nonstd::make_unexpected(res.error());
+    }
+    size_t read_sz = *res;
+    if (read_sz < kBufSize) {
+      res_str.resize(offset + read_sz);
+      break;
+    }
+  }
+  return res_str;
+}
 
 void Run(SSL_CTX* ctx) {
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
@@ -38,10 +60,14 @@ void Run(SSL_CTX* ctx) {
     if (GetFlag(FLAGS_write) > 0) {
       auto src = io::ReadFileToString("/proc/self/exe");
       CHECK(src);
+      LOG(INFO) << "Writing " << src->size() << " bytes to " << prefix;
       for (unsigned i = 0; i < GetFlag(FLAGS_write); ++i) {
         string dest_key = absl::StrCat(prefix, "_", i);
+        cloud::GcsWriteFileOptions opts;
+        opts.creds_provider = &provider;
+        opts.pool = conn_pool;
         io::Result<io::WriteFile*> dest_res =
-            cloud::OpenWriteGcsFile(bucket, dest_key, &provider, conn_pool);
+            cloud::OpenWriteGcsFile(bucket, dest_key, opts);
         CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
         unique_ptr<io::WriteFile> dest(*dest_res);
         error_code ec = dest->Write(*src);
@@ -49,6 +75,23 @@ void Run(SSL_CTX* ctx) {
         ec = dest->Close();
         CHECK(!ec);
         CONSOLE_INFO << "Written " << dest_key;
+      }
+    } else if (GetFlag(FLAGS_read) > 0) {
+      for (unsigned i = 0; i < GetFlag(FLAGS_read); ++i) {
+        string dest_key = prefix;
+        cloud::GcsReadFileOptions opts;
+        opts.creds_provider = &provider;
+        opts.pool = conn_pool;
+        io::Result<io::ReadonlyFile*> dest_res =
+            cloud::OpenReadGcsFile(bucket, dest_key, opts);
+        CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
+        unique_ptr<io::ReadonlyFile> dest(*dest_res);
+        io::Result<string> dest_str = ReadToString(dest.get());
+        if (dest_str) {
+          CONSOLE_INFO << "Read " << dest_str->size() << " bytes from " << dest_key;
+        } else {
+          LOG(ERROR) << "Error reading " << dest_key << " " << dest_str.error().message();
+        }
       }
     } else {
       auto cb = [](cloud::GCS::ObjectItem item) {

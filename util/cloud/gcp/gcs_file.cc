@@ -6,16 +6,17 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 
+#include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
-#include <boost/beast/http/write.hpp>   // for operator<<
 #include <boost/beast/http/string_body.hpp>
+#include <boost/beast/http/write.hpp>  // for operator<<
 
 #include "base/flags.h"
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
-#include "util/http/http_common.h"
 #include "util/http/http_client.h"
+#include "util/http/http_common.h"
 
 ABSL_FLAG(bool, gcs_dry_upload, false, "");
 
@@ -25,7 +26,6 @@ namespace cloud {
 using namespace std;
 namespace h2 = boost::beast::http;
 using boost::beast::multi_buffer;
-using HeaderParserPtr = RobustSender::HeaderParserPtr;
 
 namespace {
 
@@ -50,6 +50,23 @@ string ContentRangeHeader(size_t from, size_t to, ssize_t total) {
   return tmp;
 }
 
+string BuildGetObjUrl(absl::string_view bucket, absl::string_view obj_path) {
+  string read_obj_url{"/storage/v1/b/"};
+  absl::StrAppend(&read_obj_url, bucket, "/o/");
+  strings::AppendUrlEncoded(obj_path, &read_obj_url);
+  absl::StrAppend(&read_obj_url, "?alt=media");
+
+  return read_obj_url;
+}
+
+inline void SetRange(size_t from, size_t to, h2::fields* flds) {
+  string tmp = absl::StrCat("bytes=", from, "-");
+  if (to < kuint64max) {
+    absl::StrAppend(&tmp, to - 1);
+  }
+  flds->set(h2::field::range, std::move(tmp));
+}
+
 // File handle that writes to GCS.
 //
 // This uses multipart uploads, where it will buffer upto the configured part
@@ -64,8 +81,8 @@ class GcsWriteFile : public io::WriteFile {
   // will not be uploaded unless Close is called.
   error_code Close() override;
 
-  GcsWriteFile(const string_view key, string_view upload_id, size_t part_size,
-               http::ClientPool* pool, GCPCredsProvider* creds_provider);
+  GcsWriteFile(const string_view key, string_view upload_id, const GcsWriteFileOptions& opts);
+  ~GcsWriteFile();
 
  private:
   error_code FillBuf(const uint8* buffer, size_t length);
@@ -77,14 +94,56 @@ class GcsWriteFile : public io::WriteFile {
   string upload_id_;
   multi_buffer body_mb_;
   size_t uploaded_ = 0;
-  http::ClientPool* pool_;
-  GCPCredsProvider* creds_provider_;
+  GcsWriteFileOptions opts_;
 };
 
-GcsWriteFile::GcsWriteFile(string_view key, string_view upload_id, size_t part_size,
-                           http::ClientPool* pool, GCPCredsProvider* creds_provider)
-    : io::WriteFile(key), upload_id_(upload_id), body_mb_(part_size), pool_(pool),
-      creds_provider_(creds_provider) {
+class GcsReadFile : public io::ReadonlyFile {
+ public:
+  // does not own gcs object, only wraps it with ReadonlyFile interface.
+  GcsReadFile(string read_obj_url, const GcsReadFileOptions& opts)
+      : read_obj_url_(read_obj_url), opts_(opts) {
+  }
+
+  virtual ~GcsReadFile() final;
+
+  error_code Close() final {
+    return {};
+  }
+
+  io::SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
+
+  size_t Size() const final {
+    return size_;
+  }
+
+  int Handle() const final {
+    return -1;
+  };
+
+ private:
+  const string read_obj_url_;
+
+  using Parser = h2::response_parser<h2::buffer_body>;
+  std::optional<Parser> parser_;
+
+  http::ClientPool::ClientHandle client_handle_;
+  const GcsReadFileOptions opts_;
+
+  size_t size_ = 0, offs_ = 0;
+};
+
+/********************************************************************************************
+                                Implementation
+******************************************************************************************/
+
+GcsWriteFile::GcsWriteFile(string_view key, string_view upload_id, const GcsWriteFileOptions& opts)
+    : io::WriteFile(key), upload_id_(upload_id), body_mb_(opts.part_size), opts_(opts) {
+}
+
+GcsWriteFile::~GcsWriteFile() {
+  if (opts_.pool_owned) {
+    delete opts_.pool;
+  }
 }
 
 io::Result<size_t> GcsWriteFile::WriteSome(const iovec* v, uint32_t len) {
@@ -102,23 +161,18 @@ error_code GcsWriteFile::Close() {
 
   string body;
   if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(pool_, creds_provider_);
-    io::Result<HeaderParserPtr> res = sender.Send(3, req.get());
-    if (!res) {
-      LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
-                 << req->GetHeaders() << ", status " << res.error().message();
-      return res.error();
-    }
-    HeaderParserPtr head_parser = std::move(*res);
-    h2::response_parser<h2::string_body> resp(std::move(*head_parser));
-    auto handle_res = pool_->GetHandle();
-    if (!handle_res)
-      return handle_res.error();
+    RobustSender sender(opts_.pool, opts_.creds_provider);
 
-    auto client_handle = std::move(*handle_res);
-    auto ec = client_handle->Recv(&resp);
-    if (ec)
+    RobustSender::SenderResult send_res;
+    error_code ec = sender.Send(3, req.get(), &send_res);
+    if (ec) {
+      LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
+                 << req->GetHeaders() << ", status " << ec.message();
       return ec;
+    }
+    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+    auto client_handle = std::move(send_res.client_handle);
+    RETURN_ERROR(client_handle->Recv(&resp));
 
     body = std::move(resp.get().body());
 
@@ -194,15 +248,12 @@ error_code GcsWriteFile::Upload() {
 
   error_code res;
   if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    // TODO: RobustSender must access the entire pool, not just a single client.
-    RobustSender sender(pool_, creds_provider_);
-    io::Result<HeaderParserPtr> res = sender.Send(3, req.get());
-    if (!res)
-      return res.error();
-    // auto client_handle = pool_->GetHandle();
+    RobustSender sender(opts_.pool, opts_.creds_provider);
+    RobustSender::SenderResult send_res;
+    RETURN_ERROR(sender.Send(3, req.get(), &send_res));
 
     VLOG(1) << "Uploaded range " << uploaded_ << "/" << to << " for " << upload_id_;
-    HeaderParserPtr parser_ptr = std::move(*res);
+    auto parser_ptr = std::move(send_res.eb_parser);
     const auto& resp_msg = parser_ptr->get();
     auto it = resp_msg.find(h2::field::range);
     CHECK(it != resp_msg.end()) << resp_msg;
@@ -231,33 +282,109 @@ auto GcsWriteFile::PrepareRequest(size_t to, ssize_t total) -> unique_ptr<Upload
   return upload_req;
 }
 
+GcsReadFile::~GcsReadFile() {
+  // Important to release it before we delete the pool.
+  client_handle_.reset();
+
+  if (opts_.pool_owned) {
+    delete opts_.pool;
+  }
+}
+
+io::SizeOrError GcsReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
+  // We do a trick. Instead of pulling a file chunk by chunk, we fetch everything at once.
+  // But then we pull from a socket iteratively, assuming that we read the data fast enough.
+  // the "offset" argument is ignored as this file only reads sequentially.
+  if (!client_handle_) {
+    string token = opts_.creds_provider->access_token();
+    detail::EmptyRequestImpl empty_req(h2::verb::get, read_obj_url_, token);
+
+    RobustSender sender(opts_.pool, opts_.creds_provider);
+    RobustSender::SenderResult send_res;
+    RETURN_UNEXPECTED(sender.Send(3, &empty_req, &send_res));
+
+    client_handle_ = std::move(send_res.client_handle);
+    parser_.emplace(std::move(*send_res.eb_parser));
+    const auto& headers = parser_->get();
+    auto it = headers.find(h2::field::content_length);
+    if (it == headers.end() || !absl::SimpleAtoi(detail::FromBoostSV(it->value()), &size_)) {
+      LOG(ERROR) << "Could not find content-length in " << headers.base();
+      return nonstd::make_unexpected(make_error_code(errc::connection_refused));
+    }
+  }
+
+  size_t total = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    auto& body = parser_->get().body();
+    body.data = reinterpret_cast<char*>(v[i].iov_base);
+    body.size = v[i].iov_len;
+
+    auto boost_ec = client_handle_->Recv(&parser_.value());
+
+    // body.size diminishes after the call.
+    size_t read = v[i].iov_len - body.size;
+    total += read;
+    offs_ += read;
+    if (boost_ec == h2::error::partial_message) {
+      LOG(ERROR) << "Partial message, " << read << " bytes read, tbd ";
+      return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
+    }
+
+    if (boost_ec && boost_ec != h2::error::need_buffer) {
+      LOG(ERROR) << "Error reading from GCS: " << boost_ec.message();
+      return nonstd::make_unexpected(boost_ec);
+    }
+    CHECK(!boost_ec || boost_ec == h2::error::need_buffer);
+    VLOG(1) << "Read " << read << "/" << v[i].iov_len << " bytes from " << read_obj_url_;
+    // We either read everything that can fit the buffers or we reached EOF.
+    CHECK(body.size == 0u || offs_ == size_);
+  }
+
+  return total;
+}
+
 }  // namespace
 
 io::Result<io::WriteFile*> OpenWriteGcsFile(const string& bucket, const string& key,
-                                            GCPCredsProvider* creds_provider,
-                                            http::ClientPool* pool, size_t part_size) {
+                                            const GcsWriteFileOptions& opts) {
+  CHECK(opts.creds_provider);
+  CHECK(opts.pool);
+
   string url = "/upload/storage/v1/b/";
   absl::StrAppend(&url, bucket, "/o?uploadType=resumable&name=");
   strings::AppendUrlEncoded(key, &url);
-  string token = creds_provider->access_token();
+  string token = opts.creds_provider->access_token();
   detail::EmptyRequestImpl empty_req(h2::verb::post, url, token);
   empty_req.Finalize();  // it's post request so it's required.
 
-  RobustSender sender(pool, creds_provider);
-  io::Result<HeaderParserPtr> res = sender.Send(3, &empty_req);
-  if (!res) {
-    return nonstd::make_unexpected(res.error());
+  RobustSender sender(opts.pool, opts.creds_provider);
+  RobustSender::SenderResult send_res;
+  error_code ec = sender.Send(3, &empty_req, &send_res);
+  if (ec) {
+    if (opts.pool_owned) {
+      delete opts.pool;
+    }
+    return nonstd::make_unexpected(ec);
   }
 
-  HeaderParserPtr parser_ptr = std::move(*res);
+  auto parser_ptr = std::move(send_res.eb_parser);
   const auto& headers = parser_ptr->get();
   auto it = headers.find(h2::field::location);
   if (it == headers.end()) {
     LOG(ERROR) << "Could not find location in " << headers;
+    if (opts.pool_owned) {
+      delete opts.pool;
+    }
     return nonstd::make_unexpected(make_error_code(errc::connection_refused));
   }
 
-  return new GcsWriteFile(key, detail::FromBoostSV(it->value()), part_size, pool, creds_provider);
+  return new GcsWriteFile(key, detail::FromBoostSV(it->value()), opts);
+}
+
+io::Result<io::ReadonlyFile*> OpenReadGcsFile(const std::string& bucket, const std::string& key,
+                                              const GcsReadFileOptions& opts) {
+  string url = BuildGetObjUrl(bucket, key);
+  return new GcsReadFile(url, opts);
 }
 
 }  // namespace cloud

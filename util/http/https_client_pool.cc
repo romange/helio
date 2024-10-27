@@ -12,6 +12,7 @@ namespace util {
 namespace http {
 
 void ClientPool::HandleGuard::operator()(Client* client) {
+  DVLOG(1) << "HandleGuard dtor " << client << " pool_ " << pool_;
   CHECK(client);
 
   CHECK_GT(pool_->existing_handles_, 0);
@@ -32,6 +33,7 @@ ClientPool::ClientPool(const std::string& domain, SSL_CTX* ssl_ctx, fb2::Proacto
 }
 
 ClientPool::~ClientPool() {
+  DVLOG(1) << "ClientPool dtor " << this;
   for (auto* ptr : available_handles_) {
     delete ptr;
   }

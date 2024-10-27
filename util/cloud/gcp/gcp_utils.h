@@ -54,6 +54,7 @@ class EmptyRequestImpl : public HttpRequestBase {
     req_.set(f, boost::string_view{value.data(), value.size()});
   }
 
+  // Request headers.
   const boost::beast::http::header<true>& GetHeaders() const final {
     return req_.base();
   }
@@ -99,12 +100,14 @@ class RobustSender {
   RobustSender& operator=(const RobustSender&) = delete;
 
  public:
-  using HeaderParserPtr =
-      std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>>;
+  struct SenderResult {
+    std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>> eb_parser;
+    http::ClientPool::ClientHandle client_handle;
+  };
 
   RobustSender(http::ClientPool* pool, GCPCredsProvider* provider);
 
-  io::Result<HeaderParserPtr> Send(unsigned num_iterations, detail::HttpRequestBase* req);
+  std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req, SenderResult* result);
 
  private:
   http::ClientPool* pool_;
@@ -120,6 +123,15 @@ std::string AuthHeader(std::string_view access_token);
       VLOG(1) << "Failed " << #x << ": " << ec.message();  \
       return nonstd::make_unexpected(ec);                  \
     }                                                      \
+  } while (false)
+
+#define RETURN_ERROR(x)                                          \
+  do {                                                           \
+    auto ec = (x);                                               \
+    if (ec) {                                                    \
+      VLOG(1) << "Error calling " << #x << ": " << ec.message(); \
+      return ec;                                                 \
+    }                                                            \
   } while (false)
 
 }  // namespace util::cloud
