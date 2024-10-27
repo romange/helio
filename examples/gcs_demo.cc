@@ -6,6 +6,8 @@
 #include "base/init.h"
 #include "base/logging.h"
 #include "io/file_util.h"
+
+#include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/gcp/gcs.h"
 #include "util/cloud/gcp/gcs_file.h"
 #include "util/fibers/pool.h"
@@ -21,6 +23,7 @@ ABSL_FLAG(uint32_t, write, 0, "If write > 0, then write this many files to GCS")
 ABSL_FLAG(uint32_t, read, 0, "If read > 0, then read this many files from GCS");
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
+ABSL_FLAG(bool, azure, false, "Whether to use Azure instead of GCS");
 
 static io::Result<string> ReadToString(io::ReadonlyFile* file) {
   string res_str;
@@ -125,7 +128,17 @@ int main(int argc, char** argv) {
   pp->Run();
 
   SSL_CTX* ctx = util::http::TlsClient::CreateSslContext();
-  pp->GetNextProactor()->Await([ctx] { Run(ctx); });
+  bool azure = GetFlag(FLAGS_azure);
+  if (azure) {
+    util::cloud::azure::CredsProvider provider;
+    pp->GetNextProactor()->Await([&] {
+      error_code ec = provider.Init();
+      CHECK(!ec) << "Could not load credentials " << ec.message();
+      provider.List();
+    });
+  } else {
+    pp->GetNextProactor()->Await([ctx] { Run(ctx); });
+  }
   util::http::TlsClient::FreeContext(ctx);
 
   return 0;

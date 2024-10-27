@@ -49,20 +49,12 @@ string AuthHeader(string_view access_token) {
 
 namespace detail {
 
-EmptyRequestImpl::EmptyRequestImpl(h2::verb req_verb, std::string_view url,
-                                   const string_view access_token)
-    : req_{req_verb, boost::beast::string_view{url.data(), url.size()}, 11} {
-  req_.set(h2::field::host, GCS_API_DOMAIN);
-  req_.set(h2::field::authorization, AuthHeader(access_token));
-  // ? req_.keep_alive(true);
-}
-
-std::error_code EmptyRequestImpl::Send(http::Client* client) {
-  return client->Send(req_);
-}
-
-std::error_code DynamicBodyRequestImpl::Send(http::Client* client) {
-  return client->Send(req_);
+EmptyRequestImpl CreateGCPEmptyRequest(boost::beast::http::verb req_verb, std::string_view url,
+                                       const std::string_view access_token) {
+  EmptyRequestImpl res(req_verb, url);
+  res.SetHeader(h2::field::host, GCS_API_DOMAIN);
+  res.SetHeader(h2::field::authorization, AuthHeader(access_token));
+  return res;
 }
 
 }  // namespace detail
