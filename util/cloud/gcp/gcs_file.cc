@@ -297,7 +297,8 @@ io::SizeOrError GcsReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   // the "offset" argument is ignored as this file only reads sequentially.
   if (!client_handle_) {
     string token = opts_.creds_provider->access_token();
-    detail::EmptyRequestImpl empty_req(h2::verb::get, read_obj_url_, token);
+    detail::EmptyRequestImpl empty_req =
+        detail::CreateGCPEmptyRequest(h2::verb::get, read_obj_url_, token);
 
     RobustSender sender(opts_.pool, opts_.creds_provider);
     RobustSender::SenderResult send_res;
@@ -354,7 +355,7 @@ io::Result<io::WriteFile*> OpenWriteGcsFile(const string& bucket, const string& 
   absl::StrAppend(&url, bucket, "/o?uploadType=resumable&name=");
   strings::AppendUrlEncoded(key, &url);
   string token = opts.creds_provider->access_token();
-  detail::EmptyRequestImpl empty_req(h2::verb::post, url, token);
+  detail::EmptyRequestImpl empty_req = detail::CreateGCPEmptyRequest(h2::verb::post, url, token);
   empty_req.Finalize();  // it's post request so it's required.
 
   RobustSender sender(opts.pool, opts.creds_provider);

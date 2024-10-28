@@ -35,7 +35,6 @@ auto Unexpected(std::errc code) {
 
 const char kInstanceTokenUrl[] = "/computeMetadata/v1/instance/service-accounts/default/token";
 
-
 io::Result<string> ExpandFilePath(string_view path) {
   io::Result<io::StatShortVec> res = io::StatFiles(path);
 
@@ -366,7 +365,8 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
   string url = absl::StrCat("/storage/v1/b?project=", creds_provider_.project_id());
   absl::StrAppend(&url, "&maxResults=50&fields=items/id,nextPageToken");
 
-  detail::EmptyRequestImpl empty_req(h2::verb::get, url, creds_provider_.access_token());
+  detail::EmptyRequestImpl empty_req =
+      detail::CreateGCPEmptyRequest(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
 
@@ -424,7 +424,8 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
     absl::StrAppend(&url, "&delimiter=%2f");
   }
 
-  detail::EmptyRequestImpl empty_req(h2::verb::get, url, creds_provider_.access_token());
+  detail::EmptyRequestImpl empty_req =
+      detail::CreateGCPEmptyRequest(h2::verb::get, url, creds_provider_.access_token());
 
   rj::Document doc;
   RobustSender sender(client_pool_.get(), &creds_provider_);
