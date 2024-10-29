@@ -781,7 +781,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       tl_info_.monotonic_time = task_start;
       do {
         task();
-        ++stats_.num_task_runs;
         ++cnt;
         tl_info_.monotonic_time = GetClockNanos();
         if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
@@ -917,7 +916,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       uint64_t start_cycle = GetCPUCycleCount();
       wait_for_cqe(&ring_, 1, ts_arg);
       IdleEnd(start_cycle);
-      VPRO(2) << "Woke up after wait_for_cqe ";
+      VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load()
+              << " tasks:" << stats_.num_task_runs;
 
       ++stats_.num_stalls;
       tq_seq = 0;
@@ -996,8 +996,8 @@ void UringProactor::EpollDelInternal(EpollIndex id) {
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
-  auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res,
-                      uint32_t flags, uint32_t) {
+  auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res, uint32_t flags,
+                      uint32_t) {
     io_res_ = res;
     res_flags_ = flags;
     was_run_ = true;
