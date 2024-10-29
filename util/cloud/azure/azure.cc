@@ -1,8 +1,12 @@
 // Copyright 2024, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/escaping.h>
 #include <absl/strings/str_cat.h>
+
+#include <boost/beast/http/string_body.hpp>
+#include <pugixml.hpp>
 
 #include "base/logging.h"
 #include "util/cloud/azure/creds_provider.h"
@@ -29,6 +33,10 @@ error_code CredsProvider::Init() {
   account_key_ = secret_key;
 
   return {};
+}
+
+auto UnexpectedError(errc code) {
+  return nonstd::make_unexpected(make_error_code(code));
 }
 
 void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
@@ -80,8 +88,38 @@ string Sign(string_view account, const boost::beast::http::header<true>& req_hea
   return signature;
 }
 
-void CredsProvider::List() {
+io::Result<vector<string>> ParseXmlListBuckets(string_view xml_resp) {
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
+
+  if (!result) {
+    LOG(ERROR) << "Could not parse xml response " << result.description();
+    return UnexpectedError(errc::bad_message);
+  }
+
+  pugi::xml_node root = doc.child("EnumerationResults");
+  if (root.type() != pugi::node_element) {
+    LOG(ERROR) << "Could not find root node " << xml_resp;
+    return UnexpectedError(errc::bad_message);
+  }
+
+  pugi::xml_node buckets = root.child("Containers");
+  if (buckets.type() != pugi::node_element) {
+    LOG(ERROR) << "Could not find buckets node " << xml_resp;
+    return UnexpectedError(errc::bad_message);
+  }
+
+  vector<string> res;
+  for (pugi::xml_node bucket = buckets.child("Container"); bucket; bucket = bucket.next_sibling()) {
+    res.push_back(bucket.child_value("Name"));
+  }
+  return res;
+}
+
+error_code CredsProvider::ListContainers(function<void(ContainerItem)> cb) {
   SSL_CTX* ctx = util::http::TlsClient::CreateSslContext();
+  absl::Cleanup cleanup([ctx] { util::http::TlsClient::FreeContext(ctx); });
+
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
   CHECK(pb);
   string endpoint = account_name_ + ".blob.core.windows.net";
@@ -110,8 +148,20 @@ void CredsProvider::List() {
   ec = client->get()->ReadHeader(&parser);
   CHECK(!ec) << ec;
   DVLOG(1) << "Response: " << parser.get().base();
+  h2::response_parser<h2::string_body> resp(std::move(parser));
+  client->get()->Recv(&resp);
 
-  util::http::TlsClient::FreeContext(ctx);
+  auto msg = resp.release();
+  DVLOG(1) << "Body: " << msg.body();
+  auto res = ParseXmlListBuckets(msg.body());
+  if (!res) {
+    return res.error();
+  }
+
+  for (const auto& b : *res) {
+    cb(b);
+  }
+  return {};
 }
 
 }  // namespace cloud::azure
