@@ -358,12 +358,16 @@ class ProactorDispatcher : public DispatchPolicy {
 //
 
 inline void ProactorBase::WakeupIfNeeded() {
-  auto current = tq_seq_.fetch_add(2, std::memory_order_relaxed);
+  // memory_order_relaxed does not provide the "latest" value guarantees! If we do not use
+  // memory_order_acquire, it may happen that a store in the other thread is not yet visible here,
+  // and we will miss WAIT_SECTION_STATE.
+  // Similarly, we use release because we want to make sure that the notification is
+  // visible to the other thread before it decides to suspend.
+  auto current = tq_seq_.fetch_add(2, std::memory_order_acq_rel);
   if (current == WAIT_SECTION_STATE) {
     // We protect WakeRing using tq_seq_. That means only one thread at a time
     // can enter here. Moreover tq_seq_ == WAIT_SECTION_STATE only when
     // proactor enters WAIT section, therefore we do not race over SQE ring with proactor thread.
-    std::atomic_thread_fence(std::memory_order_acquire);
     WakeRing();
   } else {
     tq_wakeup_skipped_ev_.fetch_add(1, std::memory_order_relaxed);

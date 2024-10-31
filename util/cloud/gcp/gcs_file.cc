@@ -59,6 +59,7 @@ string BuildGetObjUrl(absl::string_view bucket, absl::string_view obj_path) {
   return read_obj_url;
 }
 
+#if 0
 inline void SetRange(size_t from, size_t to, h2::fields* flds) {
   string tmp = absl::StrCat("bytes=", from, "-");
   if (to < kuint64max) {
@@ -66,6 +67,7 @@ inline void SetRange(size_t from, size_t to, h2::fields* flds) {
   }
   flds->set(h2::field::range, std::move(tmp));
 }
+#endif
 
 // File handle that writes to GCS.
 //
@@ -97,26 +99,26 @@ class GcsWriteFile : public io::WriteFile {
   GcsWriteFileOptions opts_;
 };
 
-class GcsReadFile : public io::ReadonlyFile {
+class GcsReadFile final : public io::ReadonlyFile  {
  public:
   // does not own gcs object, only wraps it with ReadonlyFile interface.
   GcsReadFile(string read_obj_url, const GcsReadFileOptions& opts)
       : read_obj_url_(read_obj_url), opts_(opts) {
   }
 
-  virtual ~GcsReadFile() final;
+  virtual ~GcsReadFile();
 
-  error_code Close() final {
+  error_code Close() {
     return {};
   }
 
-  io::SizeOrError Read(size_t offset, const iovec* v, uint32_t len) final;
+  io::SizeOrError Read(size_t offset, const iovec* v, uint32_t len);
 
-  size_t Size() const final {
+  size_t Size() const {
     return size_;
   }
 
-  int Handle() const final {
+  int Handle() const {
     return -1;
   };
 
