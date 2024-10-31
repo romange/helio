@@ -16,7 +16,8 @@ class CredsProvider {
   const std::string& account_name() const { return account_name_; }
   const std::string& account_key() const { return account_key_; }
 
-  void List();
+  using ContainerItem = std::string_view;
+  std::error_code ListContainers(std::function<void(ContainerItem)>);
 
  private:
   std::string account_name_;

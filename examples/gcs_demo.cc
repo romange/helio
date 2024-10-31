@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
     pp->GetNextProactor()->Await([&] {
       error_code ec = provider.Init();
       CHECK(!ec) << "Could not load credentials " << ec.message();
-      provider.List();
+      provider.ListContainers([](std::string_view item) { CONSOLE_INFO << item << endl; });
     });
   } else {
     pp->GetNextProactor()->Await([ctx] { Run(ctx); });

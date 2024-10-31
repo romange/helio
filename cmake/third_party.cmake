@@ -360,7 +360,7 @@ add_third_party(
 
 add_third_party(
   pugixml
-  URL https://github.com/zeux/pugixml/archive/refs/tags/v1.13.tar.gz
+  URL https://github.com/zeux/pugixml/archive/refs/tags/v1.14.tar.gz
 )
 
 if (WITH_AWS)
