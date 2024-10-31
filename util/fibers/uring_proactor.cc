@@ -899,14 +899,23 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then
      * EmplaceTaskQueue succeeded and we might have more tasks to execute - lets
-     * run the loop again. Otherwise, set tq_seq_ to WAIT_SECTION_STATE, hinting that
-     * we are going to stall now. Other threads will need to wake-up the ring
-     * (see WakeRing()) but only one will actually call the syscall.
+     * run the loop again. Otherwise, set tq_seq_ to WAIT_SECTION_STATE, marking that
+     * we are going to stall now. Other threads will have to wake up the ring
+     * (see WakeRing()) but only one will actually call WakeRing.
+     * Important:
+     *
+     * 1. the task_queue_.empty() check is an optimization to avoid unnecessary stalls.
+     * 2. It's possible that we may use weaker ordering than memory_order_acq_rel,
+     *    but it's not worth the risk. We had a bug with missed notifications before, see
+     *    WakeupIfNeeded() for details.
+     * 3. In case compare fails, we do not care about the ordering because we reset tq_seq again
+     *    at the beginning of the loop.
      */
     if (task_queue_.empty() &&
-        tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, std::memory_order_acquire)) {
+        tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
+                                      memory_order_relaxed)) {
       if (is_stopped_) {
-        tq_seq_.store(0, std::memory_order_release);  // clear WAIT section
+        tq_seq_.store(0, memory_order_release);  // clear WAIT section
         break;
       }
 
@@ -916,8 +925,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       uint64_t start_cycle = GetCPUCycleCount();
       wait_for_cqe(&ring_, 1, ts_arg);
       IdleEnd(start_cycle);
-      VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load()
-              << " tasks:" << stats_.num_task_runs;
+      VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load(memory_order_relaxed)
+              << " tasks:" << stats_.num_task_runs << " " << stats_.loop_cnt;
 
       ++stats_.num_stalls;
       tq_seq = 0;

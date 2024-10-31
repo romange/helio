@@ -358,12 +358,19 @@ class ProactorDispatcher : public DispatchPolicy {
 //
 
 inline void ProactorBase::WakeupIfNeeded() {
-  auto current = tq_seq_.fetch_add(2, std::memory_order_relaxed);
+  // fetch_add(relaxed) or any RMW(relaxed) should be able to synchronize with CAS (any other RMW)
+  // in proactors. So relaxed ordering should be enough here.
+  // See https://eel.is/c++draft/atomics.order#10 for more details,
+  // and https://stackoverflow.com/q/79144285/2280111 for the whole debate.
+  // However, we observed missed notifications on ARM64 with relaxed ordering that seems to
+  // disappear with acq_rel ordering. Maybe likely the bug is somewhere else, but we keep
+  // memory_order_acq_rel until further notice.
+  auto current = tq_seq_.fetch_add(2, std::memory_order_acq_rel);
   if (current == WAIT_SECTION_STATE) {
+
     // We protect WakeRing using tq_seq_. That means only one thread at a time
     // can enter here. Moreover tq_seq_ == WAIT_SECTION_STATE only when
     // proactor enters WAIT section, therefore we do not race over SQE ring with proactor thread.
-    std::atomic_thread_fence(std::memory_order_acquire);
     WakeRing();
   } else {
     tq_wakeup_skipped_ev_.fetch_add(1, std::memory_order_relaxed);
