@@ -7,15 +7,10 @@
 #include <boost/beast/http/file_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 
+#include "util/http/http_common.h"
+
 namespace util {
 namespace http {
-
-// URL consists of path and query delimited by '?'.
-// query can be broken into query args delimited by '&'.
-// Each query arg can be a pair of "key=value" values.
-// In case there is not '=' delimiter, only the first field is filled.
-using QueryParam = std::pair<std::string_view, std::string_view>;
-typedef std::vector<QueryParam> QueryArgs;
 
 typedef ::boost::beast::http::response<::boost::beast::http::string_body> StringResponse;
 

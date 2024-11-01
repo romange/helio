@@ -2,11 +2,11 @@
 // See LICENSE for licensing terms.
 
 #include <absl/strings/str_cat.h>
+
 #include "base/flags.h"
 #include "base/init.h"
 #include "base/logging.h"
 #include "io/file_util.h"
-
 #include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/gcp/gcs.h"
 #include "util/cloud/gcp/gcs_file.h"
@@ -31,8 +31,7 @@ static io::Result<string> ReadToString(io::ReadonlyFile* file) {
     constexpr size_t kBufSize = 1U << 20;
     size_t offset = res_str.size();
     res_str.resize(offset + kBufSize);
-    io::MutableBytes mb{reinterpret_cast<uint8_t*>(res_str.data() + offset),
-                        kBufSize};
+    io::MutableBytes mb{reinterpret_cast<uint8_t*>(res_str.data() + offset), kBufSize};
     io::Result<size_t> res = file->Read(offset, mb);
     if (!res) {
       return nonstd::make_unexpected(res.error());
@@ -69,8 +68,7 @@ void Run(SSL_CTX* ctx) {
         cloud::GcsWriteFileOptions opts;
         opts.creds_provider = &provider;
         opts.pool = conn_pool;
-        io::Result<io::WriteFile*> dest_res =
-            cloud::OpenWriteGcsFile(bucket, dest_key, opts);
+        io::Result<io::WriteFile*> dest_res = cloud::OpenWriteGcsFile(bucket, dest_key, opts);
         CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
         unique_ptr<io::WriteFile> dest(*dest_res);
         error_code ec = dest->Write(*src);
@@ -85,8 +83,7 @@ void Run(SSL_CTX* ctx) {
         cloud::GcsReadFileOptions opts;
         opts.creds_provider = &provider;
         opts.pool = conn_pool;
-        io::Result<io::ReadonlyFile*> dest_res =
-            cloud::OpenReadGcsFile(bucket, dest_key, opts);
+        io::Result<io::ReadonlyFile*> dest_res = cloud::OpenReadGcsFile(bucket, dest_key, opts);
         CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
         unique_ptr<io::ReadonlyFile> dest(*dest_res);
         io::Result<string> dest_str = ReadToString(dest.get());
@@ -110,6 +107,24 @@ void Run(SSL_CTX* ctx) {
   CHECK(!ec) << ec.message();
 }
 
+void RunAzure(SSL_CTX* ctx) {
+  util::cloud::azure::CredsProvider provider;
+  util::cloud::azure::Storage storage(&provider);
+
+  error_code ec = provider.Init();
+  CHECK(!ec) << "Could not load credentials " << ec.message();
+  auto bucket = GetFlag(FLAGS_bucket);
+  if (bucket.empty()) {
+    ec = storage.ListContainers([](std::string_view item) { CONSOLE_INFO << item << endl; });
+    CHECK(!ec) << ec.message();
+    return;
+  }
+
+  storage.List(bucket, [](const util::cloud::azure::Storage::ObjectItem& item) {
+    CONSOLE_INFO << "Object: " << item << endl;
+  });
+}
+
 int main(int argc, char** argv) {
   MainInitGuard guard(&argc, &argv);
 
@@ -130,12 +145,7 @@ int main(int argc, char** argv) {
   SSL_CTX* ctx = util::http::TlsClient::CreateSslContext();
   bool azure = GetFlag(FLAGS_azure);
   if (azure) {
-    util::cloud::azure::CredsProvider provider;
-    pp->GetNextProactor()->Await([&] {
-      error_code ec = provider.Init();
-      CHECK(!ec) << "Could not load credentials " << ec.message();
-      provider.ListContainers([](std::string_view item) { CONSOLE_INFO << item << endl; });
-    });
+    pp->GetNextProactor()->Await([&] { RunAzure(ctx); });
   } else {
     pp->GetNextProactor()->Await([ctx] { Run(ctx); });
   }
