@@ -116,9 +116,8 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
 
     if (IsUnauthorized(msg)) {
       VLOG(1) << "Refreshing token";
-      RETURN_ERROR(provider_->RefreshToken(client_handle->proactor()));
-      req->SetHeader(h2::field::authorization, AuthHeader(provider_->access_token()));
-
+      RETURN_ERROR(provider_->RefreshToken());
+      provider_->Sign(req);
       continue;
     }
 

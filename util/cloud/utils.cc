@@ -21,5 +21,37 @@ std::error_code DynamicBodyRequestImpl::Send(http::Client* client) {
   return client->Send(req_);
 }
 
+constexpr unsigned kTcpKeepAliveInterval = 30;
+
+error_code EnableKeepAlive(int fd) {
+  int val = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = kTcpKeepAliveInterval;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  val = kTcpKeepAliveInterval;
+#ifdef __APPLE__
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#else
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#endif
+
+  val = 3;
+  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+
+  return std::error_code{};
+}
+
 }  // namespace detail
 }  // namespace util::cloud

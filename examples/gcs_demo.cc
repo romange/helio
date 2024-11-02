@@ -8,6 +8,7 @@
 #include "base/logging.h"
 #include "io/file_util.h"
 #include "util/cloud/azure/creds_provider.h"
+#include "util/cloud/azure/storage.h"
 #include "util/cloud/gcp/gcs.h"
 #include "util/cloud/gcp/gcs_file.h"
 #include "util/fibers/pool.h"
@@ -49,7 +50,7 @@ void Run(SSL_CTX* ctx) {
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
   cloud::GCPCredsProvider provider;
   unsigned connect_ms = GetFlag(FLAGS_connect_ms);
-  error_code ec = provider.Init(connect_ms, pb);
+  error_code ec = provider.Init(connect_ms);
   CHECK(!ec) << "Could not load credentials " << ec.message();
 
   cloud::GCS gcs(&provider, ctx, pb);
@@ -108,10 +109,10 @@ void Run(SSL_CTX* ctx) {
 }
 
 void RunAzure(SSL_CTX* ctx) {
-  util::cloud::azure::CredsProvider provider;
-  util::cloud::azure::Storage storage(&provider);
+  cloud::azure::Credentials provider;
+  cloud::azure::Storage storage(&provider);
 
-  error_code ec = provider.Init();
+  error_code ec = provider.Init(1000);
   CHECK(!ec) << "Could not load credentials " << ec.message();
   auto bucket = GetFlag(FLAGS_bucket);
   if (bucket.empty()) {
@@ -120,9 +121,10 @@ void RunAzure(SSL_CTX* ctx) {
     return;
   }
 
-  storage.List(bucket, [](const util::cloud::azure::Storage::ObjectItem& item) {
+  ec = storage.List(bucket, 100, [](const util::cloud::azure::Storage::ObjectItem& item) {
     CONSOLE_INFO << "Object: " << item << endl;
   });
+  LOG_IF(ERROR, ec) << "Error listing " << bucket << " " << ec.message();
 }
 
 int main(int argc, char** argv) {
