@@ -4,6 +4,7 @@
 #pragma once
 
 #include "base/RWSpinLock.h"
+#include "util/cloud/utils.h"
 
 namespace util {
 
@@ -13,14 +14,21 @@ class ProactorBase;
 
 namespace cloud {
 
-class GCPCredsProvider {
+class GCPCredsProvider : public CredentialsProvider {
   GCPCredsProvider(const GCPCredsProvider&) = delete;
   GCPCredsProvider& operator=(const GCPCredsProvider&) = delete;
 
  public:
   GCPCredsProvider() = default;
 
-  std::error_code Init(unsigned connect_ms, fb2::ProactorBase* pb);
+  std::error_code Init(unsigned connect_ms) final;
+
+  void Sign(detail::HttpRequestBase* req) const final;
+
+  // Thread-safe method issues refresh of the token.
+  // Right now will do the refresh unconditonally.
+  // TODO: to use expire_time_ to skip the refresh if expire time is far away.
+  std::error_code RefreshToken();
 
   const std::string& project_id() const {
     return project_id_;
@@ -39,11 +47,6 @@ class GCPCredsProvider {
   time_t expire_time() const {
     return expire_time_.load(std::memory_order_acquire);
   }
-
-  // Thread-safe method issues refresh of the token.
-  // Right now will do the refresh unconditonally.
-  // TODO: to use expire_time_ to skip the refresh if expire time is far away.
-  std::error_code RefreshToken(fb2::ProactorBase* pb);
 
  private:
   bool use_instance_metadata_ = false;

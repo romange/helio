@@ -6,12 +6,14 @@
 #include <string>
 #include <system_error>
 
+#include "util/cloud/utils.h"
+
 namespace util {
 namespace cloud::azure {
 
-class CredsProvider {
+class Credentials : public CredentialsProvider {
  public:
-  std::error_code Init();
+  std::error_code Init(unsigned) final;
 
   const std::string& account_name() const {
     return account_name_;
@@ -20,25 +22,13 @@ class CredsProvider {
     return account_key_;
   }
 
+  void Sign(detail::HttpRequestBase* req) const final;
+  std::error_code RefreshToken() final;
+
  private:
   std::string account_name_;
   std::string account_key_;
 };
 
-class Storage {
- public:
-  Storage(CredsProvider* creds) : creds_(creds) {
-  }
-
-  using ContainerItem = std::string_view;
-  using ObjectItem = std::string_view;
-
-  std::error_code ListContainers(std::function<void(const ContainerItem&)> cb);
-  std::error_code List(std::string_view container, std::function<void(const ObjectItem&)> cb);
-
- private:
-  CredsProvider* creds_;
-};
-
-};  // namespace cloud::azure
+}  // namespace cloud::azure
 }  // namespace util

@@ -143,38 +143,6 @@ io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
   return result;
 }
 
-constexpr unsigned kTcpKeepAliveInterval = 30;
-
-error_code EnableKeepAlive(int fd) {
-  int val = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, sizeof(val)) < 0) {
-    return std::error_code(errno, std::system_category());
-  }
-
-  val = kTcpKeepAliveInterval;
-  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, sizeof(val)) < 0) {
-    return std::error_code(errno, std::system_category());
-  }
-
-  val = kTcpKeepAliveInterval;
-#ifdef __APPLE__
-  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &val, sizeof(val)) < 0) {
-    return std::error_code(errno, std::system_category());
-  }
-#else
-  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, sizeof(val)) < 0) {
-    return std::error_code(errno, std::system_category());
-  }
-#endif
-
-  val = 3;
-  if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, sizeof(val)) < 0) {
-    return std::error_code(errno, std::system_category());
-  }
-
-  return std::error_code{};
-}
-
 error_code ConfigureMetadataClient(fb2::ProactorBase* pb, http::Client* client) {
   client->set_connect_timeout_ms(1000);
   static const char kMetaDataHost[] = "metadata.google.internal";
@@ -232,7 +200,7 @@ error_code ReadGCPConfigFromMetadata(fb2::ProactorBase* pb, string* account_id, 
 
 }  // namespace
 
-error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
+error_code GCPCredsProvider::Init(unsigned connect_ms) {
   CHECK_GT(connect_ms, 0u);
 
   io::Result<string> root_path = ExpandFilePath("~/.config/gcloud");
@@ -257,6 +225,7 @@ error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
     use_instance_metadata_ = true;
     VLOG(1) << "Reading from instance metadata";
     TokenTtl token_ttl;
+    fb2::ProactorBase* pb = fb2::ProactorBase::me();
     RETURN_ERROR(ReadGCPConfigFromMetadata(pb, &account_id_, &project_id_, &token_ttl));
 
     string inject_token = absl::GetFlag(FLAGS_gcs_auth_token);
@@ -283,15 +252,16 @@ error_code GCPCredsProvider::Init(unsigned connect_ms, fb2::ProactorBase* pb) {
     }
 
     // At this point we should have all the data to get an access token.
-    RETURN_ERROR(RefreshToken(pb));
+    RETURN_ERROR(RefreshToken());
   }
 
   return {};
 }
 
-error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
+error_code GCPCredsProvider::RefreshToken() {
   h2::response<h2::string_body> resp;
 
+  fb2::ProactorBase* pb = fb2::ProactorBase::me();
   if (use_instance_metadata_) {
     http::Client client(pb);
     RETURN_ERROR(ConfigureMetadataClient(pb, &client));
@@ -342,10 +312,14 @@ error_code GCPCredsProvider::RefreshToken(fb2::ProactorBase* pb) {
   return {};
 }
 
+void GCPCredsProvider::Sign(detail::HttpRequestBase* req) const {
+  req->SetHeader(h2::field::authorization, AuthHeader(access_token()));
+}
+
 unique_ptr<http::ClientPool> GCS::CreateApiConnectionPool(SSL_CTX* ssl_ctx, fb2::ProactorBase* pb) {
   unique_ptr<http::ClientPool> res(new http::ClientPool(GCS_API_DOMAIN, ssl_ctx, pb));
   res->SetOnConnect([](int fd) {
-    auto ec = EnableKeepAlive(fd);
+    auto ec = detail::EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
   });
   return res;

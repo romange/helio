@@ -95,6 +95,19 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
   }
 };
 
+std::error_code EnableKeepAlive(int fd);
+
 }  // namespace detail
+
+
+class CredentialsProvider {
+ public:
+  virtual ~CredentialsProvider() = default;
+
+  virtual std::error_code Init(unsigned connect_ms) = 0;
+
+  virtual void Sign(detail::HttpRequestBase* req) const = 0;
+  virtual std::error_code RefreshToken() = 0;
+};
 
 }  // namespace util::cloud
