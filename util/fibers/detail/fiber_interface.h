@@ -175,7 +175,7 @@ class FiberInterface {
 #endif
   friend void
   MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
-    dest->remote_next_.store(next_node, std::memory_order_relaxed);
+    dest->remote_next_.store(next_node, std::memory_order_release);
   }
 
   friend FiberInterface* MPSC_intrusive_load_next(const FiberInterface& src) {
@@ -214,8 +214,6 @@ class FiberInterface {
     stacktrace_print_cb_ = std::move(cb);
 #endif
   }
-
-  uint64_t DEBUG_remote_epoch = 0;
 
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
