@@ -413,6 +413,7 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
     RETURN_ERROR(client->Recv(&resp));
 
     auto msg = resp.release();
+    VLOG(1) << "List response: " << msg.body();
 
     doc.ParseInsitu(&msg.body().front());
     if (doc.HasParseError()) {
@@ -424,7 +425,28 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
       FETCH_ARRAY_MEMBER(it->value);
 
       for (size_t i = 0; i < array.Size(); ++i) {
-        const auto& item = array[i];
+        const rapidjson::Value& item = array[i];
+
+/*
+   "kind": "storage#object",
+      "id": "mybucket/mypath/1730099621171118",
+      "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/mypath",
+      "mediaLink": "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/mypath?generation=1730099621171118&alt=media",
+      "name": "mypath",
+      "bucket": "mybucket",
+      "generation": "1730099621171118",
+      "metageneration": "1",
+      "storageClass": "STANDARD",
+      "size": "28466176",
+      "md5Hash": "...",
+      "crc32c": "...",
+      "etag": "....",
+      "timeCreated": "2024-10-28T07:13:41.174Z",
+      "updated": "2024-10-28T07:13:41.174Z",
+      "timeStorageClassUpdated": "2024-10-28T07:13:41.174Z"
+
+*/
+
         auto it = item.FindMember("name");
         CHECK(it != item.MemberEnd());
         absl::string_view key_name(it->value.GetString(), it->value.GetStringLength());
@@ -433,7 +455,18 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
         absl::string_view sz_str(it->value.GetString(), it->value.GetStringLength());
         size_t item_size = 0;
         CHECK(absl::SimpleAtoi(sz_str, &item_size));
-        cb(ObjectItem{item_size, key_name, false});
+        it = item.FindMember("updated");
+        CHECK(it != item.MemberEnd());
+        absl::string_view mtime_str(it->value.GetString(), it->value.GetStringLength());
+        absl::Time time;
+        string err;
+        int64_t time_ns = 0;
+        if (absl::ParseTime(absl::RFC3339_full, mtime_str, &time, &err)) {
+          time_ns = absl::ToUnixNanos(time);
+        } else {
+          LOG(ERROR) << "Failed to parse time: " << mtime_str << " " << err;
+        }
+        cb(ObjectItem{item_size, key_name, time_ns, false});
       }
     }
     it = doc.FindMember("prefixes");
@@ -442,7 +475,7 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
       for (size_t i = 0; i < array.Size(); ++i) {
         const auto& item = array[i];
         absl::string_view str(item.GetString(), item.GetStringLength());
-        cb(ObjectItem{0, str, true});
+        cb(ObjectItem{0, str, 0, true});
       }
     }
 

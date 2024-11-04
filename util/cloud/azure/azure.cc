@@ -6,6 +6,7 @@
 #include <absl/strings/strip.h>
 
 #include "base/logging.h"
+#include "strings/escaping.h"
 #include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/utils.h"
 #include "util/http/http_client.h"
@@ -73,7 +74,11 @@ string ComputeSignature(string_view account, const boost::beast::http::header<tr
   sort(args.begin(), args.end());
   string query_canon;
   for (const auto& p : args) {
-    absl::StrAppend(&query_canon, "\n", p.first, ":", p.second);
+    string val;
+    if (!strings::AppendUrlDecoded(p.second, &val)) {
+      val = p.second;
+    }
+    absl::StrAppend(&query_canon, "\n", p.first, ":",  val);
   }
 
   string canonic_resource = absl::StrCat("/", account, path, query_canon);

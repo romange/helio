@@ -19,11 +19,7 @@ namespace cloud {
 class GCS {
  public:
   using BucketItem = std::string_view;
-  struct ObjectItem {
-    size_t size;
-    std::string_view key;
-    bool is_prefix;
-  };
+  using ObjectItem = StorageListItem;
 
   using ListBucketCb = std::function<void(BucketItem)>;
   using ListObjectCb = std::function<void(const ObjectItem&)>;

@@ -1,6 +1,7 @@
 // Copyright 2024, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 
+#include <absl/strings/match.h>
 #include <absl/strings/str_cat.h>
 
 #include "base/flags.h"
@@ -59,6 +60,11 @@ void Run(SSL_CTX* ctx) {
   string bucket = GetFlag(FLAGS_bucket);
 
   if (!bucket.empty()) {
+    if (absl::StartsWith(bucket, "gs://")) {
+      LOG(INFO) << "Stripping gs:// from bucket";
+      bucket = bucket.substr(5);
+    }
+
     auto conn_pool = gcs.GetConnectionPool();
     if (GetFlag(FLAGS_write) > 0) {
       auto src = io::ReadFileToString("/proc/self/exe");
@@ -96,9 +102,10 @@ void Run(SSL_CTX* ctx) {
       }
     } else {
       auto cb = [](cloud::GCS::ObjectItem item) {
-        cout << "Object: " << item.key << ", size: " << item.size << endl;
+        cout << "Object: " << item.key << ", size: " << item.size
+             << " mtime: " << absl::FromUnixNanos(item.mtime_ns) << endl;
       };
-      ec = gcs.List(GetFlag(FLAGS_bucket), prefix, false, cb);
+      ec = gcs.List(bucket, prefix, false, cb);
     }
   } else {
     auto cb = [](std::string_view bname) { CONSOLE_INFO << bname; };
@@ -121,9 +128,11 @@ void RunAzure(SSL_CTX* ctx) {
     return;
   }
 
-  ec = storage.List(bucket, 100, [](const util::cloud::azure::Storage::ObjectItem& item) {
-    CONSOLE_INFO << "Object: " << item << endl;
-  });
+  string prefix = GetFlag(FLAGS_prefix);
+  ec = storage.List(
+      bucket, prefix, false, 100, [](const util::cloud::azure::Storage::ListItem& item) {
+        CONSOLE_INFO << "Object: " << item.key << " " << item.size << " " << item.mtime_ns << endl;
+      });
   LOG_IF(ERROR, ec) << "Error listing " << bucket << " " << ec.message();
 }
 

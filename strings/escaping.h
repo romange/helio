@@ -9,5 +9,6 @@
 namespace strings {
 
 void AppendUrlEncoded(const std::string_view src, std::string* dest);
+bool AppendUrlDecoded(const std::string_view src, std::string* dest);
 
 }  // namespace strings
