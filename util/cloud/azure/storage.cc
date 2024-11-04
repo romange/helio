@@ -5,11 +5,13 @@
 
 #include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
+#include <absl/strings/strip.h>
 
 #include <boost/beast/http/string_body.hpp>
 #include <pugixml.hpp>
 
 #include "base/logging.h"
+#include "strings/escaping.h"
 #include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/utils.h"
 #include "util/http/http_client.h"
@@ -81,7 +83,7 @@ ContainerName="mycontainer"> <Blobs> <Blob> <Name>my/path.txt</Name> <Properties
                 </Blob>
     .....
 */
-io::Result<vector<string>> ParseXmlListBlobs(string_view xml_resp) {
+io::Result<vector<StorageListItem>> ParseXmlListBlobs(string_view xml_resp) {
   pugi::xml_document doc;
   pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
 
@@ -92,7 +94,7 @@ io::Result<vector<string>> ParseXmlListBlobs(string_view xml_resp) {
 
   pugi::xml_node root = doc.child("EnumerationResults");
   if (root.type() != pugi::node_element) {
-    LOG(ERROR) << "Could not find root node ";
+    LOG(ERROR) << "Could not find root node " << xml_resp;
     return UnexpectedError(errc::bad_message);
   }
 
@@ -101,10 +103,36 @@ io::Result<vector<string>> ParseXmlListBlobs(string_view xml_resp) {
     LOG(ERROR) << "Could not find Blobs node ";
     return UnexpectedError(errc::bad_message);
   }
+  VLOG(2) << "ListBlobs Response: " << xml_resp;
+  vector<Storage::ListItem> res;
+  for (pugi::xml_node blob = blobs.child("Blob"); blob; blob = blob.next_sibling()) {
+    Storage::ListItem item;
+    item.key = blob.child_value("Name");
+    pugi::xml_node prop = blob.child("Properties");
+    if (!prop) {
+      LOG(ERROR) << "Could not find Properties node ";
+      continue;
+    }
+    item.size = prop.child("Content-Length").text().as_ullong();
+    string_view lmstr = prop.child("Last-Modified").text().as_string();
+    item.mtime_ns = 0;
 
-  vector<string> res;
-  for (pugi::xml_node bucket = blobs.child("Blob"); bucket; bucket = bucket.next_sibling()) {
-    res.push_back(bucket.child_value("Name"));
+    absl::Time time;
+    string err;
+    const char kRfc1123[] = "%a, %d %b %Y %H:%M:%S";
+    lmstr = absl::StripSuffix(lmstr, " GMT");
+
+    if (absl::ParseTime(kRfc1123, lmstr, &time, &err)) {
+      item.mtime_ns = absl::ToUnixNanos(time);
+    } else {
+      LOG(ERROR) << "Failed to parse time: " << lmstr << " " << err;
+    }
+    res.push_back(item);
+  }
+  for (pugi::xml_node blob = blobs.child("BlobPrefix"); blob; blob = blob.next_sibling()) {
+    Storage::ListItem item;
+    item.key = blob.child_value("Name");
+    res.push_back(item);
   }
   return res;
 }
@@ -147,15 +175,21 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   detail::EmptyRequestImpl req = FillRequest(endpoint, "/?comp=list", creds_);
 
   DVLOG(1) << "Request: " << req.GetHeaders();
-  auto ec = req.Send(client->get());
-  CHECK(!ec) << ec;
+  RETURN_ERROR(req.Send(client->get()));
 
   h2::response_parser<h2::empty_body> parser;
-  ec = client->get()->ReadHeader(&parser);
-  CHECK(!ec) << ec;
-  DVLOG(1) << "Response: " << parser.get().base();
+  RETURN_ERROR(client->get()->ReadHeader(&parser));
+
+  const auto& head_resp = parser.get();
+  DVLOG(1) << "Response: " << head_resp;
+
+  if (head_resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << head_resp.reason();
+    return make_error_code(errc::permission_denied);
+  }
+
   h2::response_parser<h2::string_body> resp(std::move(parser));
-  client->get()->Recv(&resp);
+  RETURN_ERROR(client->get()->Recv(&resp));
 
   auto msg = resp.release();
   DVLOG(1) << "Body: " << msg.body();
@@ -170,8 +204,8 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   return {};
 }
 
-error_code Storage::List(string_view container, unsigned max_results,
-                         function<void(const ObjectItem&)> cb) {
+error_code Storage::List(string_view container, std::string_view prefix, bool recursive,
+                         unsigned max_results, function<void(const ListItem&)> cb) {
   SSL_CTX* ctx = http::TlsClient::CreateSslContext();
   absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
 
@@ -182,20 +216,31 @@ error_code Storage::List(string_view container, unsigned max_results,
   CHECK(client);
   string url = absl::StrCat("/", container, "?restype=container&comp=list");
   absl::StrAppend(&url, "&maxresults=", max_results);
+  if (!prefix.empty()) {
+    absl::StrAppend(&url, "&prefix=");
+    strings::AppendUrlEncoded(prefix, &url);
+  }
+  if (!recursive) {
+    absl::StrAppend(&url, "&delimiter=%2f");
+  }
+
   detail::EmptyRequestImpl req = FillRequest(endpoint, url, creds_);
 
   DVLOG(1) << "Request: " << req.GetHeaders();
-  auto ec = req.Send(client->get());
-  CHECK(!ec) << ec;
+  RETURN_ERROR(req.Send(client->get()));
 
   h2::response_parser<h2::empty_body> parser;
-  ec = client->get()->ReadHeader(&parser);
-  CHECK(!ec) << ec;
-  DVLOG(1) << "Response: " << parser.get().base();
+  RETURN_ERROR(client->get()->ReadHeader(&parser));
+
+  const auto& head_resp = parser.get();
+  VLOG(1) << "Response: " << head_resp << " " << head_resp.result();
+  if (head_resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << head_resp.reason();
+    return make_error_code(errc::permission_denied);
+  }
+
   h2::response_parser<h2::string_body> resp(std::move(parser));
-  auto be = client->get()->Recv(&resp);
-  if (be)
-    return be;
+  RETURN_ERROR(client->get()->Recv(&resp));
 
   auto msg = resp.release();
   auto blobs = ParseXmlListBlobs(msg.body());

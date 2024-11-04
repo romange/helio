@@ -9,6 +9,17 @@
 
 #include "util/http/http_client.h"
 
+
+#define RETURN_ERROR(x)                                          \
+  do {                                                           \
+    auto ec = (x);                                               \
+    if (ec) {                                                    \
+      VLOG(1) << "Error calling " << #x << ": " << ec.message(); \
+      return ec;                                                 \
+    }                                                            \
+  } while (false)
+
+
 namespace util::cloud {
 
 namespace detail {
@@ -108,6 +119,13 @@ class CredentialsProvider {
 
   virtual void Sign(detail::HttpRequestBase* req) const = 0;
   virtual std::error_code RefreshToken() = 0;
+};
+
+struct StorageListItem {
+  size_t size = 0;
+  std::string_view key;
+  int64_t mtime_ns = 0;
+  bool is_prefix = false;
 };
 
 }  // namespace util::cloud

@@ -7,6 +7,8 @@
 #include <string_view>
 #include <system_error>
 
+#include "util/cloud/utils.h"
+
 namespace util {
 namespace cloud::azure {
 
@@ -18,15 +20,15 @@ class Storage {
   }
 
   using ContainerItem = std::string_view;
-  using ObjectItem = std::string_view;
 
+  using ListItem = StorageListItem;
   std::error_code ListContainers(std::function<void(const ContainerItem&)> cb);
-  std::error_code List(std::string_view container, unsigned max_results,
-                       std::function<void(const ObjectItem&)> cb);
+  std::error_code List(std::string_view container, std::string_view prefix, bool recursive,
+                       unsigned max_results, std::function<void(const ListItem&)> cb);
 
  private:
   Credentials* creds_;
 };
 
-} // namespace cloud::azure
+}  // namespace cloud::azure
 }  // namespace util

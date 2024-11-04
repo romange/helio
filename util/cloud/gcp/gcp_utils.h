@@ -52,13 +52,4 @@ std::string AuthHeader(std::string_view access_token);
     }                                                      \
   } while (false)
 
-#define RETURN_ERROR(x)                                          \
-  do {                                                           \
-    auto ec = (x);                                               \
-    if (ec) {                                                    \
-      VLOG(1) << "Error calling " << #x << ": " << ec.message(); \
-      return ec;                                                 \
-    }                                                            \
-  } while (false)
-
 }  // namespace util::cloud
