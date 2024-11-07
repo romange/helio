@@ -63,7 +63,7 @@ template <typename T> class MPSCIntrusiveQueue {
     // For more details see the linked article above!
     // Until (*) completes, the chain is cut at `prev` and Pop can not reach the item
     // and its subsequent items.
-    MPSC_intrusive_store_next(prev, item);  // release (*)
+    MPSC_intrusive_store_next(prev, item);  // (*)
   }
 
   // Pops the first item at the head or returns nullptr if the queue is empty.
@@ -106,21 +106,16 @@ template <typename T> std::pair<T*, bool> MPSCIntrusiveQueue<T>::PopWeak() noexc
       // the stub.
       //
       // More comments: if we had a single Push that is not completed yet, then returning
-      // an empty state is fine. The problem arises when we have multiple pushes in parallel
-      // and the first one has not completed yet, but others did.
-      // Moreover, one of the pushes could even be linearized with this PopWeak call
-      // using locks/barriers, and still would not be be observed.
+      // an empty state is fine. The problem arises when we have multiple pushes in parallel,
+      // the first one has not completed yet, others completed but they are absolutely
+      // invisible to the consumer.
       //
       // To disambiguite, we load the tail_ and check if it is the same as the head.
-      // MO is not important because for operations that are externally linearized,
-      // the order is already guaranteed.
       // To sum up:
       // 1. if tail is not head, it is quaranteed that the queue is not empty.
-      // 2. If Push(Item) has finished, and was linearized with PopWeak somehow,
-      //    is guaranteed that we will observe the updated tail_.
-      // 3. Otherwise, it's just an optimization that may or may not return the updated tail.
-      //    Remember that standard guarantees that stores will eventually be visible with any MO,
-      //    therefore we may see here stale (head), or the updated tail even if Push has finished.
+      // 2. Otherwise, it's most likely empty, due to eventual consistency semantics of
+      //    load/store operations.
+      // 3. If store is guaranted to be visible due to external conditions, (2) becomes exact.
       T* tail = tail_.load(std::memory_order_relaxed);
       return {nullptr, tail == head};
     }
