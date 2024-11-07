@@ -250,7 +250,6 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
   } else {
-    cntx->DEBUG_remote_epoch = remote_epoch_.fetch_add(1, memory_order_relaxed);
     remote_ready_queue_.Push(cntx);
 
     DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
@@ -324,7 +323,6 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
   unsigned iteration = 0;
-  uint64_t epoch = active ? remote_epoch_.load(memory_order_relaxed) : 0;
 
   while (true) {
     auto [fi, qempty] = remote_ready_queue_.PopWeak();
@@ -335,9 +333,7 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
           FiberInterface* next = active->remote_next_.load(std::memory_order_acquire);
           bool qempty = remote_ready_queue_.Empty();
           LOG(ERROR) << "Failed to pull active fiber from remote_ready_queue, iteration "
-                     << iteration << " remote_empty: " << qempty << ", current_epoch: " << epoch
-                     << ", push_epoch: " << active->DEBUG_remote_epoch
-                     << ", next:" << (uint64_t)next;
+                     << iteration << " remote_empty: " << qempty << ", next:" << (uint64_t)next;
           LOG(ERROR) << "Stacktrace: " << GetStacktrace();
           if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
             if (iteration < 100) {
@@ -357,7 +353,6 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
-    fi->DEBUG_remote_epoch = 0;
 
     // clear the bit after we pulled from the queue.
     fi->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);

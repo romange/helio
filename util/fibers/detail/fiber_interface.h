@@ -215,8 +215,6 @@ class FiberInterface {
 #endif
   }
 
-  uint64_t DEBUG_remote_epoch = 0;
-
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;

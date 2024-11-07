@@ -17,7 +17,7 @@ struct TestNode {
 };
 
 void MPSC_intrusive_store_next(TestNode* dest, TestNode* next_node) {
-  dest->next.store(next_node, std::memory_order_relaxed);
+  dest->next.store(next_node, std::memory_order_release);
 }
 
 TestNode* MPSC_intrusive_load_next(const TestNode& src) {
