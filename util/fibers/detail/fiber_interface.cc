@@ -173,6 +173,7 @@ ctx::fiber_context FiberInterface::Terminate() {
   join_q_.NotifyAll(this);
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
+  switch_fn_ = {};
 
   // usually Preempt returns empty fc but here we return the value of where
   // to switch to when this fiber completes. See intrusive_ptr_release for more info.
@@ -271,12 +272,16 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = SwitchSetup();
 
   // pass pointer to the context that resumes `this`
-  return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
+  auto res = std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
+
+  if (prev->switch_fn_)
+    prev->switch_fn_(false);  // notifies that we resumed
+  return res;
 }
 
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
@@ -292,6 +297,8 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   });
 
   // We resumed.
+  if (prev->switch_fn_)
+    prev->switch_fn_(false);
   DCHECK(FiberActive() == prev);
   DCHECK(!prev->entry_);
 }
@@ -336,6 +343,11 @@ FiberInterface* FiberInterface::SwitchSetup() {
 
   auto& fb_initializer = FbInitializer();
   std::swap(fb_initializer.active, prev);
+
+  // Now prev points to the fiber that was active before this call and is suspending now.
+  if (prev->switch_fn_) {
+    prev->switch_fn_(true);
+  }
 
   uint64_t tsc = CycleClock::Now();
 

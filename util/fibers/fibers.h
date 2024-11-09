@@ -175,6 +175,12 @@ inline std::string_view GetName() {
   return fb2::detail::FiberActive()->name();
 }
 
+// Registers a function that is called with 'true' when the calling fiber switches to another fiber
+// and when it switches back (with 'false').
+inline void RegisterSwitchFn(std::function<void(bool)> fn) {
+  fb2::detail::FiberActive()->RegisterSwitchFn(std::move(fn));
+}
+
 class PrintLocalsCallback {
 public:
   template<typename Fn>
