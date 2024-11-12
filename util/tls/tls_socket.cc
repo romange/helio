@@ -13,6 +13,11 @@
 #include "util/fibers/proactor_base.h"
 #include "util/tls/tls_engine.h"
 
+#define VSOCK(verbosity)                                                      \
+  VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(state_) \
+                  << ", write_total:" << upstream_write_ << " " << " pending output: " \
+                  << engine_->OutputPending() << " "
+
 namespace util {
 namespace tls {
 
@@ -128,6 +133,7 @@ auto TlsSocket::Accept() -> AcceptResult {
     // it is important to send output (protocol errors) before we return from this function.
     error_code ec = MaybeSendOutput();
     if (ec) {
+      VSOCK(1) << "MaybeSendOutput failed " << ec;
       return make_unexpected(ec);
     }
 
@@ -411,16 +417,17 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
     return error_code{};
   }
 
-  return HandleSocketWrite();
+  return HandleUpstreamWrite();
 }
 
-auto TlsSocket::HandleSocketRead() -> error_code {
+auto TlsSocket::HandleUpstreamRead() -> error_code {
   RETURN_ON_ERROR(MaybeSendOutput());
 
   if (state_ & READ_IN_PROGRESS) {
     // We need to Yield because otherwise we might end up in an infinite loop.
     // See also comments in MaybeSendOutput.
     ThisFiber::Yield();
+    VSOCK(1) << "HandleUpstreamRead: Yielded";
     return error_code{};
   }
 
@@ -429,24 +436,29 @@ auto TlsSocket::HandleSocketRead() -> error_code {
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
   state_ &= ~READ_IN_PROGRESS;
   if (!esz) {
+    // log any errors as well as situations where we have unflushed output.
+    if (esz.error() != errc::connection_aborted || engine_->OutputPending() > 0) {
+      VSOCK(1) << "HandleUpstreamRead failed " << esz.error();
+      return esz.error();
+    }
     return esz.error();
   }
 
-  DVLOG(1) << "TlsSocket:Read " << *esz << " bytes";
+  DVLOG(1) << "HandleUpstreamRead " << *esz << " bytes";
 
   engine_->CommitInput(*esz);
 
   return error_code{};
 }
 
-error_code TlsSocket::HandleSocketWrite() {
+error_code TlsSocket::HandleUpstreamWrite() {
   Engine::Buffer buffer = engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
 
   if (buffer.empty())
     return {};
 
-  DVLOG(2) << "HandleSocketWrite " << buffer.size();
+  DVLOG(2) << "HandleUpstreamWrite " << buffer.size();
   // we do not allow concurrent writes from multiple fibers.
   state_ |= WRITE_IN_PROGRESS;
   while (!buffer.empty()) {
@@ -456,13 +468,23 @@ error_code TlsSocket::HandleSocketWrite() {
     if (!write_result) {
       state_ &= ~WRITE_IN_PROGRESS;
 
+      // broken_pipe - happens when the other side closes the connection. do not log this.
+      if (write_result.error() != errc::broken_pipe) {
+        VSOCK(1) << "HandleUpstreamWrite failed " << write_result.error();
+      }
+
       return write_result.error();
     }
     CHECK_GT(*write_result, 0u);
+    upstream_write_ += *write_result;
     engine_->ConsumeOutputBuf(*write_result);
     buffer.remove_prefix(*write_result);
   }
-  DCHECK_EQ(engine_->OutputPending(), 0u);
+
+  if (engine_->OutputPending() > 0) {
+    LOG(INFO) << "ssl buffer is not empty with " << engine_->OutputPending()
+              << " bytes. short write detected";
+  }
 
   state_ &= ~WRITE_IN_PROGRESS;
 
@@ -472,9 +494,10 @@ error_code TlsSocket::HandleSocketWrite() {
 error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
+      VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
       return make_error_code(errc::connection_reset);
     case Engine::NEED_READ_AND_MAYBE_WRITE:
-      return HandleSocketRead();
+      return HandleUpstreamRead();
     case Engine::NEED_WRITE:
       return MaybeSendOutput();
     default:
