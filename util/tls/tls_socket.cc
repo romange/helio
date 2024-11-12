@@ -57,8 +57,9 @@ error_condition error_category::default_error_condition(int ev) const noexcept {
 
 error_category tls_category;
 
-inline error_code SSL2Error(unsigned long err) {
+inline error_code SSL2Error(unsigned lineno, unsigned long err) {
   CHECK_LT(err, unsigned(INT_MAX));
+  VLOG(1) << "SSL2Error at line " << lineno << ": " << error_category{}.message(int(err));
 
   return error_code{int(err), tls_category};
 }
@@ -139,7 +140,7 @@ auto TlsSocket::Accept() -> AcceptResult {
 
     // now check the result of the handshake.
     if (!op_result) {
-      return make_unexpected(SSL2Error(op_result.error()));
+      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
     }
 
     int op_val = *op_result;
@@ -249,7 +250,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 
     Engine::OpResult op_result = engine_->Read(dest.data(), read_len);
     if (!op_result) {
-      return make_unexpected(SSL2Error(op_result.error()));
+      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
     }
 
     int op_val = *op_result;
@@ -346,7 +347,7 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
   while (true) {
     Engine::OpResult op_result = engine_->Write(buf);
     if (!op_result) {
-      return make_unexpected(SSL2Error(op_result.error()));
+      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
     }
 
     int op_val = *op_result;
@@ -439,7 +440,6 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
     // log any errors as well as situations where we have unflushed output.
     if (esz.error() != errc::connection_aborted || engine_->OutputPending() > 0) {
       VSOCK(1) << "HandleUpstreamRead failed " << esz.error();
-      return esz.error();
     }
     return esz.error();
   }
