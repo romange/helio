@@ -24,7 +24,6 @@ namespace {
 
 const char kVersion[] = "2025-01-05";
 
-
 void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
   // HMAC_xxx are deprecated since openssl 3.0
   // Ubuntu 20.04 uses openssl 1.1.
@@ -78,7 +77,7 @@ string ComputeSignature(string_view account, const boost::beast::http::header<tr
     if (!strings::AppendUrlDecoded(p.second, &val)) {
       val = p.second;
     }
-    absl::StrAppend(&query_canon, "\n", p.first, ":",  val);
+    absl::StrAppend(&query_canon, "\n", p.first, ":", val);
   }
 
   string canonic_resource = absl::StrCat("/", account, path, query_canon);
@@ -108,6 +107,10 @@ error_code Credentials::Init(unsigned) {
   return {};
 }
 
+string Credentials::GetEndpoint() const {
+  return absl::StrCat(account_name_, ".blob.core.windows.net");
+}
+
 void Credentials::Sign(detail::HttpRequestBase* req) const {
   const absl::TimeZone utc_tz = absl::UTCTimeZone();
   string date = absl::FormatTime("%a, %d %b %Y %H:%M:%S GMT", absl::Now(), utc_tz);
@@ -122,7 +125,6 @@ std::error_code Credentials::RefreshToken() {
   // TBD
   return {};
 }
-
 
 }  // namespace cloud::azure
 }  // namespace util

@@ -7,6 +7,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 
+#include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <pugixml.hpp>
 
@@ -161,13 +162,131 @@ detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url, Cred
   return req;
 }
 
+class ReadFile final : public io::ReadonlyFile {
+ public:
+  // does not own gcs object, only wraps it with ReadonlyFile interface.
+  ReadFile(string read_obj_url, AzureReadFileOptions opts)
+      : read_obj_url_(read_obj_url), opts_(opts) {
+  }
+
+  virtual ~ReadFile();
+
+  error_code Close() {
+    return {};
+  }
+
+  io::SizeOrError Read(size_t offset, const iovec* v, uint32_t len);
+
+  size_t Size() const {
+    return size_;
+  }
+
+  int Handle() const {
+    return -1;
+  };
+
+ private:
+  error_code InitRead();
+
+  const string read_obj_url_;
+  AzureReadFileOptions opts_;
+
+  using Parser = h2::response_parser<h2::buffer_body>;
+  std::optional<Parser> parser_;
+
+  http::ClientPool::ClientHandle client_handle_;
+  unique_ptr<http::ClientPool> pool_;
+
+  size_t size_ = 0, offs_ = 0;
+};
+
+ReadFile::~ReadFile() {
+}
+
+error_code ReadFile::InitRead() {
+  string endpoint = opts_.creds_provider->GetEndpoint();
+  pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
+
+  auto c_h = pool_->GetHandle();
+  if (!c_h) {
+    return c_h.error();
+  }
+
+  detail::EmptyRequestImpl req = FillRequest(endpoint, read_obj_url_, opts_.creds_provider);
+  RETURN_ERROR(req.Send(c_h->get()));
+
+  h2::response_parser<h2::empty_body> parser;
+  auto boost_ec = c_h->get()->ReadHeader(&parser);
+
+  // Unfortunately earlier versions of boost (1.74-) have a bug that do not support the body_limit
+  // directive. So, we clear it here.
+  if (boost_ec == h2::error::body_limit) {
+    boost_ec.clear();
+  }
+  RETURN_ERROR(boost_ec);
+
+  const auto& head_resp = parser.get();
+  DVLOG(1) << "Response: " << head_resp;
+
+  if (head_resp.result() != h2::status::ok) {
+    LOG(WARNING) << "Http error: " << head_resp.reason();
+    return make_error_code(errc::permission_denied);
+  }
+
+  client_handle_ = std::move(c_h.value());
+  parser_.emplace(std::move(parser));
+
+  return {};
+}
+
+io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
+  // We do a trick. Instead of pulling a file chunk by chunk, we fetch everything at once.
+  // But then we pull from a socket iteratively, assuming that we read the data fast enough.
+  // the "offset" argument is ignored as this file only reads sequentially.
+  if (!client_handle_) {
+    error_code ec = InitRead();
+    if (ec) {
+      return nonstd::make_unexpected(ec);
+    }
+  }
+
+  size_t total = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    auto& body = parser_->get().body();
+    body.data = reinterpret_cast<char*>(v[i].iov_base);
+    body.size = v[i].iov_len;
+
+    auto boost_ec = client_handle_->Recv(&parser_.value());
+
+    // body.size diminishes after the call.
+    size_t read = v[i].iov_len - body.size;
+    total += read;
+    offs_ += read;
+    if (boost_ec == h2::error::partial_message) {
+      LOG(ERROR) << "Partial message, " << read << " bytes read, tbd ";
+      return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
+    }
+
+    if (boost_ec && boost_ec != h2::error::need_buffer) {
+      LOG(ERROR) << "Error reading from GCS: " << boost_ec.message();
+      return nonstd::make_unexpected(boost_ec);
+    }
+    CHECK(!boost_ec || boost_ec == h2::error::need_buffer);
+    VLOG(1) << "Read " << read << "/" << v[i].iov_len << " bytes from " << read_obj_url_;
+    // We either read everything that can fit the buffers or we reached EOF.
+    CHECK(body.size == 0u || offs_ == size_);
+  }
+
+  return total;
+}
+
 }  // namespace
 
 error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   SSL_CTX* ctx = http::TlsClient::CreateSslContext();
   absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
 
-  string endpoint = creds_->account_name() + ".blob.core.windows.net";
+  string endpoint = creds_->GetEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
   auto client = pool->GetHandle();
@@ -209,7 +328,7 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   SSL_CTX* ctx = http::TlsClient::CreateSslContext();
   absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
 
-  string endpoint = creds_->account_name() + ".blob.core.windows.net";
+  string endpoint = creds_->GetEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
   auto client = pool->GetHandle();
@@ -252,6 +371,19 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   }
 
   return {};
+}
+
+string BuildGetObjUrl(const string& container, const string& key) {
+  string url = absl::StrCat("/", container, "/", key);
+  return url;
+}
+
+io::Result<io::ReadonlyFile*> OpenReadAzureFile(const std::string& container,
+                                                const std::string& key,
+                                                const AzureReadFileOptions& opts) {
+  DCHECK(opts.creds_provider && opts.ssl_cntx);
+  string url = BuildGetObjUrl(container, key);
+  return new ReadFile(url, opts);
 }
 
 }  // namespace cloud::azure

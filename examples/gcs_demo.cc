@@ -129,11 +129,33 @@ void RunAzure(SSL_CTX* ctx) {
   }
 
   string prefix = GetFlag(FLAGS_prefix);
-  ec = storage.List(
-      bucket, prefix, false, 100, [](const util::cloud::azure::Storage::ListItem& item) {
-        CONSOLE_INFO << "Object: " << item.key << " " << item.size << " " << item.mtime_ns << endl;
-      });
-  LOG_IF(ERROR, ec) << "Error listing " << bucket << " " << ec.message();
+
+  if (GetFlag(FLAGS_read) > 0) {
+    for (unsigned i = 0; i < GetFlag(FLAGS_read); ++i) {
+      string dest_key = prefix;
+      cloud::azure::AzureReadFileOptions opts;
+      opts.creds_provider = &provider;
+      opts.ssl_cntx = ctx;
+
+      io::Result<io::ReadonlyFile*> dest_res =
+          cloud::azure::OpenReadAzureFile(bucket, dest_key, opts);
+      CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
+      unique_ptr<io::ReadonlyFile> dest(*dest_res);
+      io::Result<string> dest_str = ReadToString(dest.get());
+      if (dest_str) {
+        CONSOLE_INFO << "Read " << dest_str->size() << " bytes from " << dest_key;
+      } else {
+        LOG(ERROR) << "Error reading " << dest_key << " " << dest_str.error().message();
+      }
+    }
+  } else {
+    ec = storage.List(bucket, prefix, false, 100,
+                      [](const util::cloud::azure::Storage::ListItem& item) {
+                        CONSOLE_INFO << "Object: " << item.key << " " << item.size << " "
+                                     << item.mtime_ns << endl;
+                      });
+    LOG_IF(ERROR, ec) << "Error listing " << bucket << " " << ec.message();
+  }
 }
 
 int main(int argc, char** argv) {
