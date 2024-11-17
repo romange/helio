@@ -49,9 +49,11 @@ static ssize_t InternalUrlDecode(absl::string_view src, char* dest) {
       *dest++ = ch_c;
       continue;
     }
-    if (i + 3 < src.size()) {
+
+    if (i + 3 > src.size()) {
       return -1;
     }
+
     if (!absl::ascii_isxdigit(src[i + 1]) || !absl::ascii_isxdigit(src[i + 2])) {
       return -1;
     }

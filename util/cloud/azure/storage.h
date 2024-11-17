@@ -7,7 +7,10 @@
 #include <string_view>
 #include <system_error>
 
+#include "io/file.h"
 #include "util/cloud/utils.h"
+
+typedef struct ssl_ctx_st SSL_CTX;
 
 namespace util {
 namespace cloud::azure {
@@ -29,6 +32,15 @@ class Storage {
  private:
   Credentials* creds_;
 };
+
+struct AzureReadFileOptions {
+  Credentials* creds_provider = nullptr;
+  SSL_CTX* ssl_cntx;
+};
+
+io::Result<io::ReadonlyFile*> OpenReadAzureFile(const std::string& container,
+                                                const std::string& key,
+                                                const AzureReadFileOptions& opts);
 
 }  // namespace cloud::azure
 }  // namespace util
