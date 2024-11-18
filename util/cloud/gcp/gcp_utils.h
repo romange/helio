@@ -22,24 +22,6 @@ namespace detail {
 
 } // namespace detail
 
-class RobustSender {
-  RobustSender(const RobustSender&) = delete;
-  RobustSender& operator=(const RobustSender&) = delete;
-
- public:
-  struct SenderResult {
-    std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>> eb_parser;
-    http::ClientPool::ClientHandle client_handle;
-  };
-
-  RobustSender(http::ClientPool* pool, GCPCredsProvider* provider);
-
-  std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req, SenderResult* result);
-
- private:
-  http::ClientPool* pool_;
-  GCPCredsProvider* provider_;
-};
 
 std::string AuthHeader(std::string_view access_token);
 

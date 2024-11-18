@@ -8,7 +8,7 @@
 #include <boost/beast/http/parser.hpp>
 
 #include "util/http/http_client.h"
-
+#include "util/http/https_client_pool.h"
 
 #define RETURN_ERROR(x)                                          \
   do {                                                           \
@@ -126,6 +126,25 @@ struct StorageListItem {
   std::string_view key;
   int64_t mtime_ns = 0;
   bool is_prefix = false;
+};
+
+class RobustSender {
+  RobustSender(const RobustSender&) = delete;
+  RobustSender& operator=(const RobustSender&) = delete;
+
+ public:
+  struct SenderResult {
+    std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>> eb_parser;
+    http::ClientPool::ClientHandle client_handle;
+  };
+
+  RobustSender(http::ClientPool* pool, CredentialsProvider* provider);
+
+  std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req, SenderResult* result);
+
+ private:
+  http::ClientPool* pool_;
+  CredentialsProvider* provider_;
 };
 
 }  // namespace util::cloud
