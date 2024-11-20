@@ -18,10 +18,10 @@ using namespace boost;
 using namespace std;
 
 AcceptServer::AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool break_on_int)
-    : pool_(pool), mr_(mr), ref_bc_(0) {
+    : pool_(pool), mr_(mr), ref_bc_(0), break_on_int_(break_on_int) {
   if (break_on_int) {
     ProactorBase* proactor = pool_->GetNextProactor();
-    proactor->RegisterSignal({SIGINT, SIGTERM}, [this](int signal) {
+    ProactorBase::RegisterSignal({SIGINT, SIGTERM}, proactor, [this](int signal) {
       LOG(INFO) << "Exiting on signal " << strsignal(signal);
       if (on_break_hook_) {
         on_break_hook_();
@@ -32,6 +32,9 @@ AcceptServer::AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool
 }
 
 AcceptServer::~AcceptServer() {
+  if (break_on_int_) {
+    ProactorBase::ClearSignal({SIGINT, SIGTERM});
+  }
   list_interface_.clear();
 }
 
