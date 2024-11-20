@@ -230,7 +230,8 @@ void ProactorBase::Migrate(ProactorBase* dest) {
   });
 }
 
-void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> cb) {
+void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, ProactorBase* proactor,
+                                  std::function<void(int)> cb) {
   auto* state = get_signal_state();
 
   struct sigaction sa;
@@ -243,7 +244,7 @@ void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, std::functi
     for (uint16_t val : l) {
       CHECK(!state->signal_map[val].cb) << "Signal " << val << " was already registered";
       state->signal_map[val].cb = cb;
-      state->signal_map[val].proactor = this;
+      state->signal_map[val].proactor = proactor;
 
       CHECK_EQ(0, sigaction(val, &sa, NULL));
     }

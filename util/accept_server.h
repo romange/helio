@@ -71,6 +71,7 @@ class AcceptServer {
   fb2::BlockingCounter ref_bc_;  // to synchronize listener threads during the shutdown.
 
   bool was_run_ = false;
+  bool break_on_int_;
 
   uint16_t backlog_ = 128;
 };

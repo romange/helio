@@ -91,10 +91,11 @@ class ProactorBase {
     return tl_info_.owner;
   }
 
-  void RegisterSignal(std::initializer_list<uint16_t> l, std::function<void(int)> cb);
+  static void RegisterSignal(std::initializer_list<uint16_t> l, ProactorBase* proactor,
+                             std::function<void(int)> cb);
 
-  void ClearSignal(std::initializer_list<uint16_t> l) {
-    RegisterSignal(l, nullptr);
+  static void ClearSignal(std::initializer_list<uint16_t> l) {
+    RegisterSignal(l, nullptr, nullptr);
   }
 
   // Returns an approximate (cached) time with nano-sec granularity.
@@ -253,7 +254,6 @@ class ProactorBase {
     return absl::GetCurrentTimeNanos();
   }
 
-
   // Returns true if we should poll scheduler tasks that run periodically but not too often.
   bool ShouldPollL2Tasks() const;
 
@@ -265,12 +265,12 @@ class ProactorBase {
   static uint64_t GetCPUCycleCount() {
 #if defined(__x86_64__)
     uint64_t low, high;
-  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-  return static_cast<int64_t>((high << 32) | low);
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    return static_cast<int64_t>((high << 32) | low);
 #elif defined(__aarch64__)
-  int64_t tv;
-  asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
-  return tv;
+    int64_t tv;
+    asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
+    return tv;
 #else
     return absl::base_internal::CycleClock::Now();
 #endif
@@ -367,7 +367,6 @@ inline void ProactorBase::WakeupIfNeeded() {
   // memory_order_acq_rel until further notice.
   auto current = tq_seq_.fetch_add(2, std::memory_order_acq_rel);
   if (current == WAIT_SECTION_STATE) {
-
     // We protect WakeRing using tq_seq_. That means only one thread at a time
     // can enter here. Moreover tq_seq_ == WAIT_SECTION_STATE only when
     // proactor enters WAIT section, therefore we do not race over SQE ring with proactor thread.
