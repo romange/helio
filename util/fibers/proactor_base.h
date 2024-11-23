@@ -91,12 +91,12 @@ class ProactorBase {
     return tl_info_.owner;
   }
 
-  static void RegisterSignal(std::initializer_list<uint16_t> l, ProactorBase* proactor,
+  static void RegisterSignal(std::initializer_list<uint16_t> signals, ProactorBase* proactor,
                              std::function<void(int)> cb);
 
-  static void ClearSignal(std::initializer_list<uint16_t> l) {
-    RegisterSignal(l, nullptr, nullptr);
-  }
+  // Unregisters any callbacks assigned the the signals.
+  // If ignore is true, installs SIG_IGN handler for the signals, otherwise SIG_DFL.
+  static void ClearSignal(std::initializer_list<uint16_t> signals, bool install_ignore);
 
   // Returns an approximate (cached) time with nano-sec granularity.
   // The caller must run in the same thread as the proactor.
@@ -265,12 +265,12 @@ class ProactorBase {
   static uint64_t GetCPUCycleCount() {
 #if defined(__x86_64__)
     uint64_t low, high;
-    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-    return static_cast<int64_t>((high << 32) | low);
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return static_cast<int64_t>((high << 32) | low);
 #elif defined(__aarch64__)
-    int64_t tv;
-    asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
-    return tv;
+  int64_t tv;
+  asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
+  return tv;
 #else
     return absl::base_internal::CycleClock::Now();
 #endif

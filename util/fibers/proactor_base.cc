@@ -232,32 +232,41 @@ void ProactorBase::Migrate(ProactorBase* dest) {
 
 void ProactorBase::RegisterSignal(std::initializer_list<uint16_t> l, ProactorBase* proactor,
                                   std::function<void(int)> cb) {
+  CHECK(cb);
   auto* state = get_signal_state();
 
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
 
-  if (cb) {
-    sa.sa_flags = SA_SIGINFO;
-    sa.sa_sigaction = &SigAction;
+  sa.sa_flags = SA_SIGINFO;
+  sa.sa_sigaction = &SigAction;
 
-    for (uint16_t val : l) {
-      CHECK(!state->signal_map[val].cb) << "Signal " << val << " was already registered";
-      state->signal_map[val].cb = cb;
-      state->signal_map[val].proactor = proactor;
+  for (uint16_t val : l) {
+    CHECK(!state->signal_map[val].cb) << "Signal " << val << " was already registered";
+    state->signal_map[val].cb = cb;
+    state->signal_map[val].proactor = proactor;
 
-      CHECK_EQ(0, sigaction(val, &sa, NULL));
+    CHECK_EQ(0, sigaction(val, &sa, NULL));
+  }
+}
+
+void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool install_ignore) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+
+  sa.sa_handler = install_ignore ? SIG_IGN : SIG_DFL;
+
+  auto* state = get_signal_state();
+  for (uint16_t val : signals) {
+    // This can happen if say, Proactor is destroyed before the signal is cleared.
+    if (!state->signal_map[val].cb) {
+      LOG(WARNING) << "Signal " << val << " was already cleared";
+      continue;
     }
-  } else {
-    sa.sa_handler = SIG_DFL;
 
-    for (uint16_t val : l) {
-      CHECK(state->signal_map[val].cb) << "Signal " << val << " was already registered";
-      state->signal_map[val].cb = nullptr;
-      state->signal_map[val].proactor = nullptr;
-
-      CHECK_EQ(0, sigaction(val, &sa, NULL));
-    }
+    state->signal_map[val].cb = nullptr;
+    state->signal_map[val].proactor = nullptr;
+    CHECK_EQ(0, sigaction(val, &sa, NULL));
   }
 }
 
