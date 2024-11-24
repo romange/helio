@@ -33,7 +33,7 @@ AcceptServer::AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool
 
 AcceptServer::~AcceptServer() {
   if (break_on_int_) {
-    ProactorBase::ClearSignal({SIGINT, SIGTERM});
+    ProactorBase::ClearSignal({SIGINT, SIGTERM}, true);
   }
   list_interface_.clear();
 }
