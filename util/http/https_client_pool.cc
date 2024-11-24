@@ -34,6 +34,7 @@ ClientPool::ClientPool(const std::string& domain, SSL_CTX* ssl_ctx, fb2::Proacto
 
 ClientPool::~ClientPool() {
   DVLOG(1) << "ClientPool dtor " << this;
+  DCHECK_EQ(unsigned(existing_handles_), available_handles_.size());
   for (auto* ptr : available_handles_) {
     delete ptr;
   }

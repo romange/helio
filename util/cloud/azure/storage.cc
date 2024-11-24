@@ -194,8 +194,8 @@ class ReadFile final : public io::ReadonlyFile {
   using Parser = h2::response_parser<h2::buffer_body>;
   std::optional<Parser> parser_;
 
+  unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
   http::ClientPool::ClientHandle client_handle_;
-  unique_ptr<http::ClientPool> pool_;
 
   size_t size_ = 0, offs_ = 0;
 };
@@ -233,7 +233,13 @@ error_code ReadFile::InitRead() {
     return make_error_code(errc::permission_denied);
   }
 
-  client_handle_ = std::move(c_h.value());
+  auto it = head_resp.find(h2::field::content_length);
+  if (it == head_resp.end() || !absl::SimpleAtoi(detail::FromBoostSV(it->value()), &size_)) {
+    LOG(ERROR) << "Could not find content-length in " << head_resp;
+    return make_error_code(errc::connection_refused);
+  }
+
+  client_handle_.swap(c_h.value());
   parser_.emplace(std::move(parser));
 
   return {};
@@ -249,6 +255,7 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
       return nonstd::make_unexpected(ec);
     }
   }
+
 
   size_t total = 0;
   for (uint32_t i = 0; i < len; ++i) {
@@ -273,8 +280,15 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
     }
     CHECK(!boost_ec || boost_ec == h2::error::need_buffer);
     VLOG(1) << "Read " << read << "/" << v[i].iov_len << " bytes from " << read_obj_url_;
-    // We either read everything that can fit the buffers or we reached EOF.
-    CHECK(body.size == 0u || offs_ == size_);
+
+    if (body.size != 0u) {
+      // We have not filled the whole buffer, which means we reached EOF.
+      // Verify we read everything.
+      if (offs_ != size_) {
+        LOG(ERROR) << "Read " << offs_ << " bytes, expected " << size_;
+        return nonstd::make_unexpected(make_error_code(errc::message_size));
+      }
+    }
   }
 
   return total;
