@@ -69,8 +69,6 @@ class FiberInterface {
   // the difference between fiber_context and continuation is that continuation is launched
   // straight away via callcc and fiber is created without switching to it.
 
-  // TODO: I still do not know how continuation_fcontext and fiber_fcontext achieve this
-  // difference because their code looks very similar except some renaming.
   //
   // Important: this should be the first data member in the class,
   // because it should be destroyed the last:
@@ -215,6 +213,13 @@ class FiberInterface {
 #endif
   }
 
+  // Once registered, the function will be called  with argument=true every time the fiber suspends
+  // and when called again before it resumes with argument=false.
+  // fn should not preempt.
+  void RegisterSwitchFn(std::function<void(bool suspend)> fn) {
+    switch_fn_ = std::move(fn);
+  }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -255,6 +260,8 @@ class FiberInterface {
 #ifndef NDEBUG
   std::function<std::string()> stacktrace_print_cb_;
 #endif
+  std::function<void(bool)> switch_fn_;
+
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();

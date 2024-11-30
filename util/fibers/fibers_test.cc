@@ -465,6 +465,9 @@ TEST_F(FiberTest, SwitchAndExecute) {
   Fiber fb2("fb2", [&] {
     second.Resolve(detail::FiberActive());
     detail::FiberInterface* other = first.Get();
+    unsigned switch_cnt[2] = {0, 0};
+
+    detail::FiberActive()->RegisterSwitchFn([&](bool suspend) { switch_cnt[suspend]++; });
 
     for (unsigned i = 0; i < 10; ++i) {
       other->SwitchTo();
@@ -474,6 +477,8 @@ TEST_F(FiberTest, SwitchAndExecute) {
     do {
       ThisFiber::Yield();
     } while (cnt1 < 10);
+    ASSERT_GE(switch_cnt[0], 10);
+    ASSERT_GE(switch_cnt[1], 10);
   });
 
   fb1.Join();
