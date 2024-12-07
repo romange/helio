@@ -13,7 +13,7 @@ namespace fb2 {
 
 class ProactorBase;
 // Resolve addresss - either ipv4 or ipv6. dest_ip must be able to hold INET6_ADDRSTRLEN
-std::error_code DnsResolve(std::string host, uint32_t wait_ms, char dest_ip[],
+std::error_code DnsResolve(const std::string& host, uint32_t wait_ms, char dest_ip[],
                            ProactorBase* proactor);
 
 }  // namespace fb2

@@ -384,6 +384,16 @@ void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
 }
 
+
+void PrintFiberStackMargin(const void* bottom, const char* name) {
+  uint8_t* stack_bottom = (uint8_t*)bottom;
+  uint8_t* ptr = stack_bottom;
+  while (*ptr == 0xAB) {
+    ++ptr;
+  }
+  VLOG(1) << "Stack margin for " << name << ": " << (ptr - stack_bottom) << " bytes";
+}
+
 }  // namespace detail
 
 void SetCustomDispatcher(DispatchPolicy* policy) {

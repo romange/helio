@@ -59,6 +59,11 @@ using FI_SleepHook =
 
 class Scheduler;
 
+// Enable this define via cmake option
+#ifdef CHECK_FIBER_STACK_SIZE_USAGE
+  void PrintFiberStackMargin(const void* bottom, const char* name);
+#endif
+
 class FiberInterface {
   friend class Scheduler;
 
@@ -269,7 +274,13 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
                   StackAlloc&& salloc, Fn&& fn, Arg&&... arg)
       : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)),
         arg_(std::forward<Arg>(arg)...) {
-    stack_size_ = palloc.sctx.size;
+    stack_size_ = palloc.sctx.size;  // The whole stack size that was allocated for this fiber.
+
+#ifdef CHECK_FIBER_STACK_SIZE_USAGE
+      stack_bottom_ = reinterpret_cast<uint8_t*>(palloc.sp) - palloc.size;
+      memset(stack_bottom_, 0xAB, palloc.size);
+#endif
+
     entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                     [this](FbCntx&& caller) { return run_(std::move(caller)); });
 #if defined(BOOST_USE_UCONTEXT)
@@ -292,13 +303,19 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
 
       std::apply(std::move(fn), std::move(arg));
     }
-
+#ifdef CHECK_FIBER_STACK_SIZE_USAGE
+    PrintFiberStackMargin(stack_bottom_, name_);
+#endif
     return Terminate();
   }
 
   // Without decay - fn_ can be a reference, depending how a function is passed to the constructor.
   typename std::decay<Fn>::type fn_;
   std::tuple<std::decay_t<Arg>...> arg_;
+
+#ifdef CHECK_FIBER_STACK_SIZE_USAGE
+  void* stack_bottom_;
+#endif
 };
 
 template <typename FbImpl>
@@ -308,8 +325,8 @@ boost::context::preallocated MakePreallocated(const boost::context::stack_contex
   uintptr_t fb_impl_ptr =
       (reinterpret_cast<uintptr_t>(sctx.sp) - sizeof(FbImpl)) & ~static_cast<uintptr_t>(0xff);
 
-  // stack_bottom is the real pointer allocated inside salloc.allocate()
-  // sctx.sp, on the other hand, points to the top (right boundary) of the allocated region.
+  // stack_bottom is the real pointer allocated by salloc.allocate()
+  // sctx.sp, points to the top (right boundary) of the allocated region.
   // The deeper the stack grows, the closer it gets to the stack_bottom.
   uintptr_t stack_bottom = reinterpret_cast<uintptr_t>(sctx.sp) - static_cast<uintptr_t>(sctx.size);
   const std::size_t size = fb_impl_ptr - stack_bottom;  // effective stack size.
@@ -329,7 +346,8 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, S
 
   void* obj_ptr = palloc.sp;  // copy because we move palloc.
 
-  // placement new of context on top of fiber's stack
+  // placement new of context on top of fiber's stack.
+  // note, that obj_ptr is not real top of the stack, because boost places more records below it.
   WorkerImpl* fctx =
       new (obj_ptr) WorkerImpl{name, std::move(palloc), std::forward<StackAlloc>(salloc),
                                std::forward<Fn>(fn), std::forward<Arg>(arg)...};

@@ -14,6 +14,11 @@ add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc
             ${FB_LINUX_SRCS})
 
+option(HELIO_ENABLE_STACK_MEASURE "Enable stack size measuring" OFF)
+if (HELIO_ENABLE_STACK_MEASURE)
+  target_compile_definitions(fibers2 PUBLIC -DCHECK_FIBER_STACK_SIZE_USAGE)
+endif()
+
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
 cxx_test(fibers_test fibers2 LABELS CI)
