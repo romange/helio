@@ -159,7 +159,8 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
 
 }  // namespace
 
-error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBase* proactor) {
+error_code DnsResolve(const string& host, uint32_t wait_ms, char dest_ip[],
+                      ProactorBase* proactor) {
   DCHECK(ProactorBase::me() == proactor) << "must call from the proactor thread";
   VLOG(1) << "DnsResolveStart";
 
@@ -175,7 +176,6 @@ error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBas
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
-
 
   // Same hints as for  hostentares_gethostbyname
   ares_addrinfo_hints hints{ARES_AI_CANONNAME, AF_UNSPEC, 0, 0};

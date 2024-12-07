@@ -71,7 +71,7 @@ std::error_code Client::Reconnect() {
   }
 
   char ip[INET6_ADDRSTRLEN];
-  error_code ec = fb2::DnsResolve(host_.data(), 2000, ip, proactor_);
+  error_code ec = fb2::DnsResolve(host_, 2000, ip, proactor_);
   if (ec) {
     return ec;
   }
