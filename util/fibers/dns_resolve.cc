@@ -159,7 +159,8 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
 
 }  // namespace
 
-error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBase* proactor) {
+error_code DnsResolve(const string& host, uint32_t wait_ms, char dest_ip[],
+                      ProactorBase* proactor) {
   DCHECK(ProactorBase::me() == proactor) << "must call from the proactor thread";
   VLOG(1) << "DnsResolveStart";
 
@@ -170,12 +171,15 @@ error_code DnsResolve(string host, uint32_t wait_ms, char dest_ip[], ProactorBas
   options.sock_state_cb = &UpdateSocketsCallback;
   options.sock_state_cb_data = &state;
 
+  ThisFiber::SleepFor(10ms);
   ares_channel channel;
+  auto* top_stack = fb2::detail::FiberActive();
+  DVLOG(1) << "Distance from the stack top: " << uintptr_t(top_stack) - uintptr_t(&channel);
+
   CHECK_EQ(ares_init_options(&channel, &options, ARES_OPT_SOCK_STATE_CB), ARES_SUCCESS);
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
-
 
   // Same hints as for  hostentares_gethostbyname
   ares_addrinfo_hints hints{ARES_AI_CANONNAME, AF_UNSPEC, 0, 0};

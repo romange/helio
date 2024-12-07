@@ -381,7 +381,7 @@ add_third_party(
   cares
   URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.34.1
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
-                    -DCMAKE_INSTALL_LIBDIR=lib"
+                    -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_BUILD_TYPE:STRING=Debug"
 )
 
 add_library(TRDP::rapidjson INTERFACE IMPORTED)

@@ -54,10 +54,12 @@ void* StdMallocResource::do_allocate(size_t size, size_t align) {
   if (res == nullptr) {
     throw bad_alloc();
   }
+  DVLOG(1) << "Allocated " << size << " bytes at " << res;
   return res;
 }
 
 void StdMallocResource::do_deallocate(void* ptr, size_t size, size_t align) {
+  DVLOG(1) << "Deallocating " << size << " bytes at " << ptr;
   free(ptr);
 }
 
