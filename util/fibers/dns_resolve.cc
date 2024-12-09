@@ -95,6 +95,8 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 #ifdef __linux__
         UringProactor* uring = (UringProactor*)state->proactor;
         auto cb = [state](uint32_t event_mask) {
+          VLOG(2) << "ArmCb: " << event_mask << " " << state->fiber_ctx << " "
+                  << state->sockets_state.size();
           if (state->fiber_ctx) {
             ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
           }
@@ -109,6 +111,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 void DnsResolveCallback(void* ares_arg, int status, int timeouts, struct ares_addrinfo* res) {
   auto* cb_args = static_cast<DnsResolveCallbackArgs*>(ares_arg);
   cb_args->done = true;
+  VLOG(1) << "DnsResolveCallback: " << status << " " << timeouts << " " << res->nodes;
 
   if (status != ARES_SUCCESS || res->nodes == nullptr) {
     cb_args->ec = make_error_code(errc::address_not_available);
@@ -149,10 +152,11 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
     myself->Suspend();
     state->fiber_ctx = nullptr;
 
-    for (const auto& [socket, socket_state] : state->sockets_state) {
-      int read_sock = HasReads(socket_state.mask) ? socket : ARES_SOCKET_BAD;
-      int write_sock = HasWrites(socket_state.mask) ? socket : ARES_SOCKET_BAD;
-      ares_process_fd(channel, read_sock, write_sock);
+    for (const auto& [socket_fd, socket_state] : state->sockets_state) {
+      int read_fd = HasReads(socket_state.mask) ? socket_fd : ARES_SOCKET_BAD;
+      int write_fd = HasWrites(socket_state.mask) ? socket_fd : ARES_SOCKET_BAD;
+      VLOG(2) << "ares_process_fd: " << read_fd << " " << write_fd;
+      ares_process_fd(channel, read_fd, write_fd);
     }
   }
 }
