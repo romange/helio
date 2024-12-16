@@ -164,7 +164,6 @@ detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url, Cred
 
 class ReadFile final : public io::ReadonlyFile {
  public:
-  // does not own gcs object, only wraps it with ReadonlyFile interface.
   ReadFile(string read_obj_url, AzureReadFileOptions opts)
       : read_obj_url_(read_obj_url), opts_(opts) {
   }
@@ -207,40 +206,21 @@ error_code ReadFile::InitRead() {
   string endpoint = opts_.creds_provider->GetEndpoint();
   pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
 
-  auto c_h = pool_->GetHandle();
-  if (!c_h) {
-    return c_h.error();
-  }
-
   detail::EmptyRequestImpl req = FillRequest(endpoint, read_obj_url_, opts_.creds_provider);
-  RETURN_ERROR(req.Send(c_h->get()));
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, &req, &send_res));
 
-  h2::response_parser<h2::empty_body> parser;
-  auto boost_ec = c_h->get()->ReadHeader(&parser);
-
-  // Unfortunately earlier versions of boost (1.74-) have a bug that do not support the body_limit
-  // directive. So, we clear it here.
-  if (boost_ec == h2::error::body_limit) {
-    boost_ec.clear();
-  }
-  RETURN_ERROR(boost_ec);
-
-  const auto& head_resp = parser.get();
-  DVLOG(1) << "Response: " << head_resp;
-
-  if (head_resp.result() != h2::status::ok) {
-    LOG(WARNING) << "Http error: " << head_resp.reason();
-    return make_error_code(errc::permission_denied);
-  }
-
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& head_resp = parser_ptr->get();
   auto it = head_resp.find(h2::field::content_length);
   if (it == head_resp.end() || !absl::SimpleAtoi(detail::FromBoostSV(it->value()), &size_)) {
     LOG(ERROR) << "Could not find content-length in " << head_resp;
     return make_error_code(errc::connection_refused);
   }
 
-  client_handle_.swap(c_h.value());
-  parser_.emplace(std::move(parser));
+  client_handle_.swap(send_res.client_handle);
+  parser_.emplace(std::move(*parser_ptr));
 
   return {};
 }
@@ -255,7 +235,6 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
       return nonstd::make_unexpected(ec);
     }
   }
-
 
   size_t total = 0;
   for (uint32_t i = 0; i < len; ++i) {
@@ -275,7 +254,7 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
     }
 
     if (boost_ec && boost_ec != h2::error::need_buffer) {
-      LOG(ERROR) << "Error reading from GCS: " << boost_ec.message();
+      LOG(ERROR) << "Error reading from azure: " << boost_ec.message();
       return nonstd::make_unexpected(boost_ec);
     }
     CHECK(!boost_ec || boost_ec == h2::error::need_buffer);
@@ -303,26 +282,13 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   string endpoint = creds_->GetEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  auto client = pool->GetHandle();
-  CHECK(client);
   detail::EmptyRequestImpl req = FillRequest(endpoint, "/?comp=list", creds_);
+  RobustSender sender(pool.get(), creds_);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, &req, &send_res));
 
-  DVLOG(1) << "Request: " << req.GetHeaders();
-  RETURN_ERROR(req.Send(client->get()));
-
-  h2::response_parser<h2::empty_body> parser;
-  RETURN_ERROR(client->get()->ReadHeader(&parser));
-
-  const auto& head_resp = parser.get();
-  DVLOG(1) << "Response: " << head_resp;
-
-  if (head_resp.result() != h2::status::ok) {
-    LOG(WARNING) << "Http error: " << head_resp.reason();
-    return make_error_code(errc::permission_denied);
-  }
-
-  h2::response_parser<h2::string_body> resp(std::move(parser));
-  RETURN_ERROR(client->get()->Recv(&resp));
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
   auto msg = resp.release();
   DVLOG(1) << "Body: " << msg.body();
@@ -345,8 +311,6 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   string endpoint = creds_->GetEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  auto client = pool->GetHandle();
-  CHECK(client);
   string url = absl::StrCat("/", container, "?restype=container&comp=list");
   absl::StrAppend(&url, "&maxresults=", max_results);
   if (!prefix.empty()) {
@@ -358,22 +322,12 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   }
 
   detail::EmptyRequestImpl req = FillRequest(endpoint, url, creds_);
+  RobustSender sender(pool.get(), creds_);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, &req, &send_res));
 
-  DVLOG(1) << "Request: " << req.GetHeaders();
-  RETURN_ERROR(req.Send(client->get()));
-
-  h2::response_parser<h2::empty_body> parser;
-  RETURN_ERROR(client->get()->ReadHeader(&parser));
-
-  const auto& head_resp = parser.get();
-  VLOG(1) << "Response: " << head_resp << " " << head_resp.result();
-  if (head_resp.result() != h2::status::ok) {
-    LOG(WARNING) << "Http error: " << head_resp.reason();
-    return make_error_code(errc::permission_denied);
-  }
-
-  h2::response_parser<h2::string_body> resp(std::move(parser));
-  RETURN_ERROR(client->get()->Recv(&resp));
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
   auto msg = resp.release();
   auto blobs = ParseXmlListBlobs(msg.body());
@@ -392,12 +346,17 @@ string BuildGetObjUrl(const string& container, const string& key) {
   return url;
 }
 
-io::Result<io::ReadonlyFile*> OpenReadAzureFile(const std::string& container,
-                                                const std::string& key,
-                                                const AzureReadFileOptions& opts) {
+io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
+                                           const AzureReadFileOptions& opts) {
   DCHECK(opts.creds_provider && opts.ssl_cntx);
   string url = BuildGetObjUrl(container, key);
   return new ReadFile(url, opts);
+}
+
+io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,
+                                         const AzureWriteFileOptions& opts) {
+  DCHECK(opts.creds_provider && opts.ssl_cntx);
+  return UnexpectedError(errc::function_not_supported);
 }
 
 }  // namespace cloud::azure

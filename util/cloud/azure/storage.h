@@ -38,9 +38,14 @@ struct AzureReadFileOptions {
   SSL_CTX* ssl_cntx;
 };
 
-io::Result<io::ReadonlyFile*> OpenReadAzureFile(const std::string& container,
-                                                const std::string& key,
-                                                const AzureReadFileOptions& opts);
+using AzureWriteFileOptions = AzureReadFileOptions;
+
+io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container,
+                                           const std::string& key,
+                                           const AzureReadFileOptions& opts);
+
+io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,
+                                         const AzureWriteFileOptions& opts);
 
 }  // namespace cloud::azure
 }  // namespace util

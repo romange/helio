@@ -144,28 +144,9 @@ function(add_third_party name)
   endif()
 endfunction()
 
-#gflags
-# FetchContent_Declare(
-#   gflags
-#   URL https://github.com/gflags/gflags/archive/v2.2.2.zip
-#   # SOURCE_DIR gflags
-#   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/gflags-v2.2.2.patch"
-# )
-
-# FetchContent_GetProperties(gflags)
-# if (NOT gflags_POPULATED)
-#     FetchContent_Populate(gflags)
-#     set(BUILD_gflags_nothreads_LIB OFF)
-#     set(BUILD_gflags_LIB ON)
-#     set(GFLAGS_INSTALL_STATIC_LIBS ON)
-
-#     add_subdirectory(${gflags_SOURCE_DIR} ${gflags_BINARY_DIR})
-# endif ()
-
-
 FetchContent_Declare(
   gtest
-  URL https://github.com/google/googletest/archive/v1.14.0.tar.gz
+  URL https://github.com/google/googletest/archive/v1.15.2.tar.gz
 )
 
 FetchContent_GetProperties(gtest)
@@ -176,7 +157,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.8.4.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.9.1.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)

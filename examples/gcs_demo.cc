@@ -137,8 +137,7 @@ void RunAzure(SSL_CTX* ctx) {
       opts.creds_provider = &provider;
       opts.ssl_cntx = ctx;
 
-      io::Result<io::ReadonlyFile*> dest_res =
-          cloud::azure::OpenReadAzureFile(bucket, dest_key, opts);
+      io::Result<io::ReadonlyFile*> dest_res = cloud::azure::OpenReadFile(bucket, dest_key, opts);
       CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
       unique_ptr<io::ReadonlyFile> dest(*dest_res);
       io::Result<string> dest_str = ReadToString(dest.get());
