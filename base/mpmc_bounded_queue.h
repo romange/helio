@@ -152,7 +152,7 @@ template <typename T> class mpmc_bounded_queue {
  private:
   struct cell_t {
     std::atomic<size_t> sequence;
-    std::aligned_storage_t<sizeof(T)> storage;
+    alignas(T) char storage[sizeof(T)];
   };
 
   typedef char cacheline_pad_t[64];
