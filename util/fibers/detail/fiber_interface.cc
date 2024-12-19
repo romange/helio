@@ -157,6 +157,23 @@ ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(this == FiberActive());
   DCHECK(!list_hook.is_linked());
 
+#ifdef CHECK_FIBER_STACK_MARGIN
+  {
+    const uint8_t* ptr = stack_bottom_;
+    constexpr uint32_t kHardLimit = (CHECK_FIBER_STACK_MARGIN);
+    while (*ptr == 0xAB) {
+      ++ptr;
+    }
+    uint32_t margin = ptr - stack_bottom_;
+
+    CHECK_GE(margin, kHardLimit) << "Low stack margin for " << name_;
+
+    // Log if margins are within the the orange zone.
+    LOG_IF(INFO, margin < kHardLimit * 1.5)
+        << "Stack margin for " << name_ << ": " << margin << " bytes";
+  }
+#endif
+
   scheduler_->ScheduleTermination(this);
   DVLOG(2) << "Terminating " << name_;
 
@@ -177,6 +194,14 @@ ctx::fiber_context FiberInterface::Terminate() {
   // usually Preempt returns empty fc but here we return the value of where
   // to switch to when this fiber completes. See intrusive_ptr_release for more info.
   return scheduler_->Preempt();
+}
+
+void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
+  stack_bottom_ = stack_bottom;
+
+#ifdef CHECK_FIBER_STACK_MARGIN
+  memset(stack_bottom_, 0xAB, stack_size);
+#endif
 }
 
 void FiberInterface::Start(Launch launch) {
@@ -307,7 +332,7 @@ void FiberInterface::PullMyselfFromRemoteReadyQueue() {
   if (IsScheduledRemotely()) {
     LOG(FATAL) << "Failed to pull " << name_ << " from remote_ready_queue. res=" << res
                << " remotenext: " << uint64_t(remote_next_.load(std::memory_order_relaxed))
-               <<  " remotempty: " << scheduler_->RemoteEmpty();
+               << " remotempty: " << scheduler_->RemoteEmpty();
   }
 }
 
@@ -382,16 +407,6 @@ void PrintAllFiberStackTraces() {
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
-}
-
-
-void PrintFiberStackMargin(const void* bottom, const char* name) {
-  uint8_t* stack_bottom = (uint8_t*)bottom;
-  uint8_t* ptr = stack_bottom;
-  while (*ptr == 0xAB) {
-    ++ptr;
-  }
-  VLOG(1) << "Stack margin for " << name << ": " << (ptr - stack_bottom) << " bytes";
 }
 
 void ActivateSameThread(FiberInterface* active, FiberInterface* other) {

@@ -59,10 +59,6 @@ using FI_SleepHook =
 
 class Scheduler;
 
-// Enable this define via cmake option
-#ifdef CHECK_FIBER_STACK_SIZE_USAGE
-  void PrintFiberStackMargin(const void* bottom, const char* name);
-#endif
 
 class FiberInterface {
   friend class Scheduler;
@@ -220,6 +216,10 @@ class FiberInterface {
 #endif
   }
 
+  uintptr_t stack_bottom() const {
+    return reinterpret_cast<uintptr_t>(stack_bottom_);
+  }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -228,6 +228,7 @@ class FiberInterface {
   static constexpr uint16_t kScheduleRemote = 0x4;
 
   ::boost::context::fiber_context Terminate();
+  void InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size);
 
   std::atomic<uint32_t> use_count_;  // used for intrusive_ptr refcounting.
 
@@ -256,10 +257,12 @@ class FiberInterface {
   uint64_t cpu_tsc_ = 0;
   char name_[24];
   uint32_t stack_size_ = 0;
+  uint8_t* stack_bottom_ = nullptr;
  private:
 #ifndef NDEBUG
   std::function<std::string()> stacktrace_print_cb_;
 #endif
+
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();
@@ -275,11 +278,7 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
       : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)),
         arg_(std::forward<Arg>(arg)...) {
     stack_size_ = palloc.sctx.size;  // The whole stack size that was allocated for this fiber.
-
-#ifdef CHECK_FIBER_STACK_SIZE_USAGE
-      stack_bottom_ = reinterpret_cast<uint8_t*>(palloc.sp) - palloc.size;
-      memset(stack_bottom_, 0xAB, palloc.size);
-#endif
+    InitStackBottom(reinterpret_cast<uint8_t*>(palloc.sp) - palloc.size, palloc.size);
 
     entry_ = FbCntx(std::allocator_arg, palloc, std::forward<StackAlloc>(salloc),
                     [this](FbCntx&& caller) { return run_(std::move(caller)); });
@@ -300,22 +299,15 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
 #if defined(BOOST_USE_UCONTEXT)
       std::move(c).resume();
 #endif
-
       std::apply(std::move(fn), std::move(arg));
     }
-#ifdef CHECK_FIBER_STACK_SIZE_USAGE
-    PrintFiberStackMargin(stack_bottom_, name_);
-#endif
+
     return Terminate();
   }
 
   // Without decay - fn_ can be a reference, depending how a function is passed to the constructor.
   typename std::decay<Fn>::type fn_;
   std::tuple<std::decay_t<Arg>...> arg_;
-
-#ifdef CHECK_FIBER_STACK_SIZE_USAGE
-  void* stack_bottom_;
-#endif
 };
 
 template <typename FbImpl>
