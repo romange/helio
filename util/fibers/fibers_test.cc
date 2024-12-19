@@ -747,6 +747,8 @@ TEST_P(ProactorTest, NotifyRemote) {
   fb2.Join();
 }
 
+// Disable EXPECT_DEATH because it messes up with info logs.
+#if 0
 TEST_P(ProactorTest, BriefDontBlock) {
   Done done;
 
@@ -756,6 +758,7 @@ TEST_P(ProactorTest, BriefDontBlock) {
 #endif
   });
 }
+#endif
 
 TEST_P(ProactorTest, Timeout) {
   EventCount ec;
