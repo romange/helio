@@ -130,10 +130,29 @@ void RunAzure(SSL_CTX* ctx) {
 
   string prefix = GetFlag(FLAGS_prefix);
 
-  if (GetFlag(FLAGS_read) > 0) {
+  if (GetFlag(FLAGS_write) > 0) {
+    auto src = io::ReadFileToString("/proc/self/exe");
+    CHECK(src);
+    LOG(INFO) << "Writing " << src->size() << " bytes to " << prefix;
+    for (unsigned i = 0; i < GetFlag(FLAGS_write); ++i) {
+      string dest_key = absl::StrCat(prefix, "_", i);
+
+      cloud::azure::WriteFileOptions opts;
+      opts.creds_provider = &provider;
+      opts.ssl_cntx = ctx;
+      io::Result<io::WriteFile*> dest_res = cloud::azure::OpenWriteFile(bucket, dest_key, opts);
+      CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
+      unique_ptr<io::WriteFile> dest(*dest_res);
+      error_code ec = dest->Write(*src);
+      CHECK(!ec);
+      ec = dest->Close();
+      CHECK(!ec);
+      CONSOLE_INFO << "Written " << dest_key;
+    }
+  } else if (GetFlag(FLAGS_read) > 0) {
     for (unsigned i = 0; i < GetFlag(FLAGS_read); ++i) {
       string dest_key = prefix;
-      cloud::azure::AzureReadFileOptions opts;
+      cloud::azure::ReadFileOptions opts;
       opts.creds_provider = &provider;
       opts.ssl_cntx = ctx;
 

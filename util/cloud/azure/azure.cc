@@ -41,16 +41,10 @@ void HMAC(absl::string_view key, absl::string_view msg, uint8_t dest[32]) {
   CHECK_EQ(len, 32u);
 }
 
-string ComputeSignature(string_view account, const boost::beast::http::header<true>& req_header,
+string ComputeSignature(string_view account, h2::verb verb, const h2::header<true>& req_header,
                         string_view account_key) {
   string key_bin;
   CHECK(absl::Base64Unescape(account_key, &key_bin));
-
-  // see here:
-  // https://learn.microsoft.com/en-us/rest/api/storageservices/authorize-with-shared-key#blob-queue-and-file-services-shared-key-authorization
-  string new_lines;
-  for (unsigned i = 0; i < 12; ++i)
-    absl::StrAppend(&new_lines, "\n");
 
   vector<pair<string_view, string_view>> x_head;
   for (const auto& h : req_header) {
@@ -59,7 +53,23 @@ string ComputeSignature(string_view account, const boost::beast::http::header<tr
     }
   }
   sort(x_head.begin(), x_head.end());
-  string to_sign = absl::StrCat("GET", new_lines);
+  string_view verb_str = detail::FromBoostSV(h2::to_string(verb));
+
+  auto it = req_header.find(h2::field::content_length);
+  string content_length;
+  if (it != req_header.end() && it->value() != "0") {
+    absl::StrAppend(&content_length, detail::FromBoostSV(it->value()), "\n");
+  } else {
+    content_length = "\n";
+  }
+
+  // see here:
+  // https://learn.microsoft.com/en-us/rest/api/storageservices/authorize-with-shared-key#blob-queue-and-file-services-shared-key-authorization
+  string new_lines;
+  for (unsigned i = 0; i < 8; ++i)
+    absl::StrAppend(&new_lines, "\n");
+
+  string to_sign = absl::StrCat(verb_str, "\n\n\n", content_length, new_lines);
   for (const auto& p : x_head) {
     absl::StrAppend(&to_sign, p.first, ":", p.second, "\n");
   }
@@ -117,7 +127,8 @@ void Credentials::Sign(detail::HttpRequestBase* req) const {
   req->SetHeader("x-ms-date", date);
   req->SetHeader("x-ms-version", kVersion);
 
-  string signature = ComputeSignature(account_name_, req->GetHeaders(), account_key_);
+  string signature =
+      ComputeSignature(account_name_, req->GetMethod(), req->GetHeaders(), account_key_);
   req->SetHeader("Authorization", absl::StrCat("SharedKey ", account_name_, ":", signature));
 }
 
