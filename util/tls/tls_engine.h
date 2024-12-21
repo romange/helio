@@ -42,7 +42,7 @@ class Engine {
   // if value == NEED_XXX then it means that it should either write data to IO and then read or just
   // write. In any case for non-error OpResult a caller must check OutputPending and write the
   // output buffer to the appropriate channel.
-  using OpResult = io::Result<int, unsigned long>;
+  using OpResult = int;
 
   // Construct a new engine for the specified context.
   explicit Engine(SSL_CTX* context);
@@ -63,14 +63,16 @@ class Engine {
 
   // Perform an SSL handshake using either SSL_connect (client-side) or
   // SSL_accept (server-side).
+  // Returns 1 if succeeded or negative opcodes to execute upon.
   OpResult Handshake(HandshakeType type);
 
+  // Returns 1 if succeeded or negative opcodes to execute upon.
   OpResult Shutdown();
 
-  // Write bytes to the SSL session. Non-negative value - says how much was written.
+  // Write decrypted bytes to the SSL session. Non-negative value - says how much was written.
   OpResult Write(const Buffer& data);
 
-  // Read bytes from the SSL session.
+  // Read bytes from the SSL session (decrypted side).
   OpResult Read(uint8_t* dest, size_t len);
 
   //! Returns output buffer which is the read buffer of tls engine.
@@ -82,10 +84,10 @@ class Engine {
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
   void ConsumeOutputBuf(unsigned sz);
 
-  //! Writes the buffer into input ssl buffer.
+  //! Writes encrypted data into input ssl buffer.
   //! Returns number of written bytes or the error.
   //! TODO: should be replaced with PeekInputBuf, memcpy, CommitInput sequence.
-  OpResult WriteBuf(const Buffer& buf);
+  unsigned WriteBuf(const Buffer& buf);
 
   // We usually use this function to write from the raw socket to SSL engine.
   // Returns direct reference to the input (write) buffer. This operation is not destructive.
@@ -118,6 +120,13 @@ class Engine {
   // Perform one operation. Returns > 0 on success.
   using EngineOp = int (Engine::*)(void*, std::size_t);
 
+  OpResult ToOpResult(int result, const char* location);
+
+  enum StateMask {
+    FATAL_ERROR = 1,
+  };
+
+  uint8_t state_ = 0;
   SSL* ssl_;
   BIO* external_bio_;
 };

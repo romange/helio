@@ -89,7 +89,16 @@ class TlsSocket final : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
-  io::Result<size_t> SendBuffer(Buffer buf);
+
+  struct PushResult {
+    size_t written = 0;
+    int engine_opcode = 0;  // Engine::OpCode
+  };
+
+  // Pushes the buffers into input ssl buffer until either everything is written,
+  // or an error occurs or the engine needs to flush its output. Does not interact with the network,
+  // just with the engine. It's up to the caller to send the output buffer to the network.
+  io::Result<PushResult> PushToEngine(const iovec* ptr, uint32_t len);
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();

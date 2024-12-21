@@ -15,8 +15,8 @@
 
 #define VSOCK(verbosity)                                                      \
   VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(state_) \
-                  << ", write_total:" << upstream_write_ << " " << " pending output: " \
-                  << engine_->OutputPending() << " "
+                  << ", write_total:" << upstream_write_ << " "               \
+                  << " pending output: " << engine_->OutputPending() << " "
 
 namespace util {
 namespace tls {
@@ -91,8 +91,7 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   engine_.reset(new Engine{context});
   if (!prefix.empty()) {
     Engine::OpResult op_result = engine_->WriteBuf(prefix);
-    CHECK(op_result);
-    CHECK_EQ(unsigned(*op_result), prefix.size());
+    CHECK_EQ(unsigned(op_result), prefix.size());
   }
 }
 
@@ -131,6 +130,24 @@ auto TlsSocket::Accept() -> AcceptResult {
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::SERVER);
 
+    if (op_result == Engine::EOF_STREAM) {
+      return make_unexpected(make_error_code(errc::connection_aborted));
+    }
+
+    if (op_result == 1) {  // Success.
+      if (VLOG_IS_ON(1)) {
+        const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
+        string_view proto_version = SSL_get_version(engine_->native_handle());
+
+        // IANA mapping https://testssl.sh/openssl-iana.mapping.html
+        uint16_t protocol_id = SSL_CIPHER_get_protocol_id(cipher);
+
+        LOG(INFO) << "SSL accept success, chosen " << SSL_CIPHER_get_name(cipher) << "/"
+                  << proto_version << " " << protocol_id;
+      }
+      break;
+    }
+
     // it is important to send output (protocol errors) before we return from this function.
     error_code ec = MaybeSendOutput();
     if (ec) {
@@ -138,18 +155,7 @@ auto TlsSocket::Accept() -> AcceptResult {
       return make_unexpected(ec);
     }
 
-    // now check the result of the handshake.
-    if (!op_result) {
-      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
-    }
-
-    int op_val = *op_result;
-
-    if (op_val >= 0) {  // Shutdown or empty read/write may return 0.
-      break;
-    }
-
-    ec = HandleOp(op_val);
+    ec = HandleOp(op_result);
     if (ec)
       return make_unexpected(ec);
   }
@@ -160,29 +166,25 @@ auto TlsSocket::Accept() -> AcceptResult {
 error_code TlsSocket::Connect(const endpoint_type& endpoint,
                               std::function<void(int)> on_pre_connect) {
   DCHECK(engine_);
-  Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
-  if (!op_result) {
-    return std::error_code(op_result.error(), std::system_category());
-  }
-
-  // If the socket is already open, we should not call connect on it
-  if (!IsOpen()) {
-    RETURN_ON_ERROR(next_sock_->Connect(endpoint, std::move(on_pre_connect)));
-  }
-
-  // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
-  int op_val = *op_result;
-
-  // it should guide us to write and then read.
-  DCHECK_EQ(op_val, Engine::NEED_READ_AND_MAYBE_WRITE);
-  while (op_val < 0) {
-    RETURN_ON_ERROR(HandleOp(op_val));
-
-    op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
-    if (!op_result) {
-      return std::error_code(op_result.error(), std::system_category());
+  while (true) {
+    Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
+    if (op_result == 1) {
+      break;
     }
-    op_val = *op_result;
+
+    if (op_result == Engine::EOF_STREAM) {
+      return make_error_code(errc::connection_refused);
+    }
+
+    // If the socket is already open, we should not call connect on it
+    if (!IsOpen()) {
+      RETURN_ON_ERROR(next_sock_->Connect(endpoint, std::move(on_pre_connect)));
+    }
+
+    // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
+    int op_val = op_result;
+
+    RETURN_ON_ERROR(HandleOp(op_val));
   }
 
   const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
@@ -241,7 +243,6 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 
   Engine::MutableBuffer dest{reinterpret_cast<uint8_t*>(io->iov_base), io->iov_len};
   size_t read_total = 0;
-  SpinCounter spin_count(20);
 
   while (true) {
     DCHECK(!dest.empty());
@@ -249,21 +250,12 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     size_t read_len = std::min(dest.size(), size_t(INT_MAX));
 
     Engine::OpResult op_result = engine_->Read(dest.data(), read_len);
-    if (!op_result) {
-      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
-    }
 
-    int op_val = *op_result;
+    int op_val = op_result;
+
     DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
 
-    if (spin_count.Check(op_val <= 0)) {
-      // Once every 30 seconds.
-      LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
-                               << " Spin: " << spin_count.Spins();
-    }
-
     if (op_val > 0) {
-      spin_count.Reset();
       read_total += op_val;
 
       // I do not understand this code and what the hell I meant to do here. Seems to work
@@ -304,84 +296,79 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
+  while (true) {
+    io::Result<PushResult> push_res = PushToEngine(ptr, len);
+    if (!push_res) {
+      return make_unexpected(push_res.error());
+    }
+
+    if (push_res->engine_opcode < 0) {
+      auto ec = HandleOp(push_res->engine_opcode);
+      if (ec) {
+        VLOG(1) << "HandleOp failed " << ec.message();
+        return make_unexpected(ec);
+      }
+    }
+
+    if (push_res->written > 0) {
+      auto ec = MaybeSendOutput();
+      if (ec) {
+        VLOG(1) << "MaybeSendOutput failed " << ec.message();
+        return make_unexpected(ec);
+      }
+      return push_res->written;
+    }
+  }
+}
+
+io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint32_t len) {
+  PushResult res;
+
   // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
   // IP - max 24 bytes. TCP - max 60 bytes. TLS - max 21 bytes.
-  constexpr size_t kBufferSize = 1392;
-  io::Result<size_t> res;
-  size_t total_sent = 0;
+  static constexpr size_t kBatchSize = 1392;
 
   while (len) {
-    if (ptr->iov_len > kBufferSize || len == 1) {
-      res = SendBuffer(Engine::Buffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len});
+    Engine::OpResult op_result;
+    Engine::Buffer buf;
+
+    if (ptr->iov_len >= kBatchSize || len == 1) {
+      buf = {reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
+      op_result = engine_->Write(buf);
       ptr++;
       len--;
     } else {
-      alignas(64) uint8_t scratch[kBufferSize];
-      size_t buffered_size = 0;
-      while (len && (buffered_size + ptr->iov_len) <= kBufferSize) {
-        std::memcpy(scratch + buffered_size, ptr->iov_base, ptr->iov_len);
-        buffered_size += ptr->iov_len;
+      size_t batch_size = 0;
+      uint8_t batch_buf[kBatchSize];
+
+      do {
+        std::memcpy(batch_buf + batch_size, ptr->iov_base, ptr->iov_len);
+        batch_size += ptr->iov_len;
         ptr++;
         len--;
-      }
-      res = SendBuffer({scratch, buffered_size});
+      } while (len && (batch_size + ptr->iov_len) <= kBatchSize);
+
+      buf = {batch_buf, batch_size};
+
+      // In general we should pass the same arguments in case of retries, but since we
+      // configure the engine with SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, we can change the
+      // buffer between retries.
+      op_result = engine_->Write(buf);
     }
-    if (!res) {
+
+    int op_val = op_result;
+    if (op_val < 0) {
+      res.engine_opcode = op_val;
       return res;
     }
-    total_sent += *res;
-  }
-  return total_sent;
-}
 
-io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
-  DVLOG(2) << "TlsSocket::SendBuffer " << buf.size() << " bytes";
-
-  // Sending buffer into ssl.
-  DCHECK(engine_);
-  DCHECK_GT(buf.size(), 0u);
-
-  size_t send_total = 0;
-  SpinCounter spin_count(20);
-
-  while (true) {
-    Engine::OpResult op_result = engine_->Write(buf);
-    if (!op_result) {
-      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
+    CHECK_GT(op_val, 0);
+    res.written += op_val;
+    if (unsigned(op_val) != buf.size()) {
+      break;  // need to flush the SSL output buffer to the underlying socket.
     }
-
-    int op_val = *op_result;
-
-    if (op_val > 0) {
-      send_total += op_val;
-
-      if (size_t(op_val) == buf.size()) {
-        break;
-      }
-      spin_count.Reset();
-      buf.remove_prefix(op_val);
-      continue;
-    }
-
-    if (spin_count.Check(op_val <= 0)) {
-      // Once every 30 seconds.
-      LOG_EVERY_T(WARNING, 30) << "IO loop spin limit reached. Limit: " << spin_count.Limit()
-                               << " Spins: " << spin_count.Spins();
-    }
-
-    error_code ec = HandleOp(op_val);
-    if (ec)
-      return make_unexpected(ec);
   }
-
-  // Usually we want to batch writes as much as possible, but here we can not now if more writes
-  // will follow. We must flush the output buffer, so that data will be sent down the socket.
-  error_code ec = MaybeSendOutput();
-  if (ec) {
-    return make_unexpected(ec);
-  }
-
-  return send_total;
+  return res;
 }
 
 // TODO: to implement async functionality.
@@ -495,7 +482,7 @@ error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
       VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
-      return make_error_code(errc::connection_reset);
+      return make_error_code(errc::connection_aborted);
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
     case Engine::NEED_WRITE:
