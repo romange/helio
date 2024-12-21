@@ -36,29 +36,30 @@ static void ClearSslError() {
 static Engine::OpResult ToOpResult(const SSL* ssl, int result, const char* location) {
   DCHECK_LE(result, 0);
 
-  unsigned long error = ERR_get_error();
-  if (error != 0) {
-    return nonstd::make_unexpected(error);
-  }
-
   int ssl_error = SSL_get_error(ssl, result);
-  int io_err = errno;
+  unsigned long queue_error = 0;
 
   switch (ssl_error) {
-    case SSL_ERROR_ZERO_RETURN:
+    case SSL_ERROR_ZERO_RETURN:  // graceful shutdown of TLS connection.
       break;
     case SSL_ERROR_WANT_READ:
       return Engine::NEED_READ_AND_MAYBE_WRITE;
     case SSL_ERROR_WANT_WRITE:
       return Engine::NEED_WRITE;
     case SSL_ERROR_SYSCALL:
-      LOG(WARNING) << "SSL syscall error " << io_err << ":" << result << " " << location;
+      queue_error = ERR_get_error();
+      LOG(WARNING) << "SSL syscall error " << errno << ":" << result << " " << queue_error << " "
+                   << location;
       break;
     case SSL_ERROR_SSL:
-      LOG(WARNING) << "SSL protocol error " << io_err << ":" << result << " " << location;
+      queue_error = ERR_get_error();
+      LOG(WARNING) << "SSL protocol error " << errno << ":" << result << " " << queue_error << " "
+                   << location;
       break;
     default:
-      LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result << " " << location;
+      queue_error = ERR_get_error();
+      LOG(WARNING) << "Unexpected SSL error " << errno << ":" << result << " " << queue_error << " "
+                   << location;
       break;
   }
 
@@ -180,11 +181,11 @@ auto Engine::Shutdown() -> OpResult {
 }
 
 auto Engine::Write(const Buffer& buf) -> OpResult {
-  if (buf.empty())
-    return 0;
+  CHECK(!buf.empty());
   int sz = buf.size() < INT_MAX ? buf.size() : INT_MAX;
   int result = SSL_write(ssl_, buf.data(), sz);
-  RETURN_RESULT(result);
+
+  RETURN_RESULT(result);  // Should never return 0.
 }
 
 auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {

@@ -15,8 +15,8 @@
 
 #define VSOCK(verbosity)                                                      \
   VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(state_) \
-                  << ", write_total:" << upstream_write_ << " " << " pending output: " \
-                  << engine_->OutputPending() << " "
+                  << ", write_total:" << upstream_write_ << " "               \
+                  << " pending output: " << engine_->OutputPending() << " "
 
 namespace util {
 namespace tls {
@@ -304,34 +304,83 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 }
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
+  while (true) {
+    io::Result<PushResult> push_res = PushToEngine(ptr, len);
+    if (!push_res) {
+      return make_unexpected(push_res.error());
+    }
+
+    if (push_res->engine_opcode < 0) {
+      auto ec = HandleOp(push_res->engine_opcode);
+      if (ec) {
+        VLOG(1) << "HandleOp failed " << ec.message();
+        return make_unexpected(ec);
+      }
+    }
+
+    if (push_res->written > 0) {
+      auto ec = MaybeSendOutput();
+      if (ec) {
+        VLOG(1) << "MaybeSendOutput failed " << ec.message();
+        return make_unexpected(ec);
+      }
+      return push_res->written;
+    }
+  }
+}
+
+io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint32_t len) {
+  PushResult res;
+
   // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
   // IP - max 24 bytes. TCP - max 60 bytes. TLS - max 21 bytes.
-  constexpr size_t kBufferSize = 1392;
-  io::Result<size_t> res;
-  size_t total_sent = 0;
+  static constexpr size_t kBatchSize = 1392;
 
   while (len) {
-    if (ptr->iov_len > kBufferSize || len == 1) {
-      res = SendBuffer(Engine::Buffer{reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len});
+    Engine::OpResult op_result;
+    Engine::Buffer buf;
+
+    if (ptr->iov_len >= kBatchSize || len == 1) {
+      buf = {reinterpret_cast<uint8_t*>(ptr->iov_base), ptr->iov_len};
+      op_result = engine_->Write(buf);
       ptr++;
       len--;
     } else {
-      alignas(64) uint8_t scratch[kBufferSize];
-      size_t buffered_size = 0;
-      while (len && (buffered_size + ptr->iov_len) <= kBufferSize) {
-        std::memcpy(scratch + buffered_size, ptr->iov_base, ptr->iov_len);
-        buffered_size += ptr->iov_len;
+      size_t batch_size = 0;
+      uint8_t batch_buf[kBatchSize];
+
+      do {
+        std::memcpy(batch_buf + batch_size, ptr->iov_base, ptr->iov_len);
+        batch_size += ptr->iov_len;
         ptr++;
         len--;
-      }
-      res = SendBuffer({scratch, buffered_size});
+      } while (len && (batch_size + ptr->iov_len) <= kBatchSize);
+
+      buf = {batch_buf, batch_size};
+
+      // In general we should pass the same arguments in case of retries, but since we
+      // configure the engine with SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, we can change the
+      // buffer between retries.
+      op_result = engine_->Write(buf);
     }
-    if (!res) {
+
+    if (!op_result) {
+      return make_unexpected(SSL2Error(__LINE__, op_result.error()));
+    }
+
+    int op_val = *op_result;
+    if (op_val < 0) {
+      res.engine_opcode = op_val;
       return res;
     }
-    total_sent += *res;
+
+    CHECK_GT(op_val, 0);
+    res.written += op_val;
+    if (unsigned(op_val) != buf.size()) {
+      break;  // need to flush the SSL output buffer to the underlying socket.
+    }
   }
-  return total_sent;
+  return res;
 }
 
 io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
@@ -374,8 +423,8 @@ io::Result<size_t> TlsSocket::SendBuffer(Engine::Buffer buf) {
       return make_unexpected(ec);
   }
 
-  // Usually we want to batch writes as much as possible, but here we can not now if more writes
-  // will follow. We must flush the output buffer, so that data will be sent down the socket.
+  // Usually we want to batch writes as much as possible, but here we can not know if more writes
+  // follow. We must flush the output buffer, so that data will be sent down the socket.
   error_code ec = MaybeSendOutput();
   if (ec) {
     return make_unexpected(ec);

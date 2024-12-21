@@ -11,7 +11,6 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
-#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace tls {
