@@ -33,19 +33,19 @@ class Storage {
   Credentials* creds_;
 };
 
-struct AzureReadFileOptions {
+struct ReadFileOptions {
   Credentials* creds_provider = nullptr;
   SSL_CTX* ssl_cntx;
 };
 
-using AzureWriteFileOptions = AzureReadFileOptions;
+using WriteFileOptions = ReadFileOptions;
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container,
                                            const std::string& key,
-                                           const AzureReadFileOptions& opts);
+                                           const ReadFileOptions& opts);
 
 io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,
-                                         const AzureWriteFileOptions& opts);
+                                         const WriteFileOptions& opts);
 
 }  // namespace cloud::azure
 }  // namespace util

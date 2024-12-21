@@ -8,7 +8,6 @@
 #include <boost/beast/http/parser.hpp>
 #include <memory>
 
-#include "io/io.h"
 #include "util/cloud/utils.h"
 #include "util/http/https_client_pool.h"
 
@@ -24,14 +23,5 @@ namespace detail {
 
 
 std::string AuthHeader(std::string_view access_token);
-
-#define RETURN_UNEXPECTED(x)                               \
-  do {                                                     \
-    auto ec = (x);                                         \
-    if (ec) {                                              \
-      VLOG(1) << "Failed " << #x << ": " << ec.message();  \
-      return nonstd::make_unexpected(ec);                  \
-    }                                                      \
-  } while (false)
 
 }  // namespace util::cloud

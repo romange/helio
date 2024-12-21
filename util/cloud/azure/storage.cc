@@ -164,8 +164,7 @@ detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url, Cred
 
 class ReadFile final : public io::ReadonlyFile {
  public:
-  ReadFile(string read_obj_url, AzureReadFileOptions opts)
-      : read_obj_url_(read_obj_url), opts_(opts) {
+  ReadFile(string read_obj_url, ReadFileOptions opts) : read_obj_url_(read_obj_url), opts_(opts) {
   }
 
   virtual ~ReadFile();
@@ -188,7 +187,7 @@ class ReadFile final : public io::ReadonlyFile {
   error_code InitRead();
 
   const string read_obj_url_;
-  AzureReadFileOptions opts_;
+  ReadFileOptions opts_;
 
   using Parser = h2::response_parser<h2::buffer_body>;
   std::optional<Parser> parser_;
@@ -197,6 +196,31 @@ class ReadFile final : public io::ReadonlyFile {
   http::ClientPool::ClientHandle client_handle_;
 
   size_t size_ = 0, offs_ = 0;
+};
+
+// File handle that writes to Azure.
+//
+// This uses multipart uploads, where it will buffer upto the configured part
+// size before uploading.
+class WriteFile : public detail::AbstractStorageFile {
+ public:
+  WriteFile(string_view container, string_view key, const WriteFileOptions& opts);
+  ~WriteFile();
+
+  // Closes the object and completes the multipart upload. Therefore the object
+  // will not be uploaded unless Close is called.
+  error_code Close() override;
+
+ private:
+  error_code Upload();
+
+  using UploadRequest = detail::DynamicBodyRequestImpl;
+  unique_ptr<UploadRequest> PrepareRequest();
+
+  unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
+  string target_;
+  unsigned block_id_ = 1;
+  WriteFileOptions opts_;
 };
 
 ReadFile::~ReadFile() {
@@ -273,6 +297,52 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   return total;
 }
 
+WriteFile::WriteFile(string_view container, string_view key, const WriteFileOptions& opts)
+    : detail::AbstractStorageFile(key, 1UL << 23), opts_(opts) {
+  string endpoint = opts_.creds_provider->GetEndpoint();
+  pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
+  target_ = absl::StrCat("/", container, "/", key);
+}
+
+WriteFile::~WriteFile() {
+}
+
+error_code WriteFile::Close() {
+  return {};
+}
+
+error_code WriteFile::Upload() {
+  size_t body_size = body_mb_.size();
+  CHECK_GT(body_size, 0u);
+
+  auto req = PrepareRequest();
+
+  error_code res;
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, req.get(), &send_res));
+
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& resp_msg = parser_ptr->get();
+  VLOG(1) << "Upload response: " << resp_msg;
+
+  return {};
+}
+
+auto WriteFile::PrepareRequest() -> unique_ptr<UploadRequest> {
+  string url =
+      absl::StrCat(target_, "?comp=block&blockid=", absl::Dec(block_id_++, absl::kZeroPad4));
+  unique_ptr<UploadRequest> upload_req(new UploadRequest(url, h2::verb::put));
+
+  upload_req->SetBody(std::move(body_mb_));
+
+  upload_req->SetHeader(h2::field::host, opts_.creds_provider->GetEndpoint());
+  upload_req->Finalize();
+  opts_.creds_provider->Sign(upload_req.get());
+
+  return upload_req;
+}
+
 }  // namespace
 
 error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
@@ -347,16 +417,17 @@ string BuildGetObjUrl(const string& container, const string& key) {
 }
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
-                                           const AzureReadFileOptions& opts) {
+                                           const ReadFileOptions& opts) {
   DCHECK(opts.creds_provider && opts.ssl_cntx);
   string url = BuildGetObjUrl(container, key);
   return new ReadFile(url, opts);
 }
 
 io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,
-                                         const AzureWriteFileOptions& opts) {
+                                         const WriteFileOptions& opts) {
   DCHECK(opts.creds_provider && opts.ssl_cntx);
-  return UnexpectedError(errc::function_not_supported);
+
+  return new WriteFile(container, key, opts);
 }
 
 }  // namespace cloud::azure

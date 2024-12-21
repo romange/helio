@@ -9,6 +9,7 @@
 
 #include "util/http/http_client.h"
 #include "util/http/https_client_pool.h"
+#include "io/file.h"
 
 #define RETURN_ERROR(x)                                          \
   do {                                                           \
@@ -19,6 +20,14 @@
     }                                                            \
   } while (false)
 
+#define RETURN_UNEXPECTED(x)                              \
+  do {                                                    \
+    auto ec = (x);                                        \
+    if (ec) {                                             \
+      VLOG(1) << "Failed " << #x << ": " << ec.message(); \
+      return nonstd::make_unexpected(ec);                 \
+    }                                                     \
+  } while (false)
 
 namespace util::cloud {
 
@@ -49,6 +58,8 @@ class HttpRequestBase {
                              boost::string_view{value.data(), value.size()});
   }
 
+  virtual boost::beast::http::verb GetMethod() const = 0;
+
  protected:
   virtual boost::beast::http::header<true>& GetHeadersInternal() = 0;
 };
@@ -72,6 +83,10 @@ class EmptyRequestImpl : public HttpRequestBase {
 
   std::error_code Send(http::Client* client) final;
 
+  boost::beast::http::verb GetMethod() const final {
+    return req_.method();
+  }
+
  protected:
   boost::beast::http::header<true>& GetHeadersInternal() final {
     return req_.base();
@@ -86,8 +101,8 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
   DynamicBodyRequestImpl(DynamicBodyRequestImpl&& other) : req_(std::move(other.req_)) {
   }
 
-  explicit DynamicBodyRequestImpl(std::string_view url)
-      : req_(boost::beast::http::verb::post, boost::string_view{url.data(), url.size()}, 11) {
+  explicit DynamicBodyRequestImpl(std::string_view url, boost::beast::http::verb verb)
+      : req_(verb, boost::string_view{url.data(), url.size()}, 11) {
   }
 
   template <typename BodyArgs> void SetBody(BodyArgs&& body_args) {
@@ -100,6 +115,10 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
 
   std::error_code Send(http::Client* client) final;
 
+  boost::beast::http::verb GetMethod() const final {
+    return req_.method();
+  }
+
  protected:
   boost::beast::http::header<true>& GetHeadersInternal() final {
     return req_.base();
@@ -108,8 +127,30 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
 
 std::error_code EnableKeepAlive(int fd);
 
-}  // namespace detail
+// File handle that writes to cloud storage.
+//
+// This uses multipart uploads, where it will buffer upto the configured part
+// size before uploading.
+class AbstractStorageFile : public io::WriteFile {
+ public:
+  AbstractStorageFile(std::string_view create_file_name, size_t part_size)
+      : WriteFile(create_file_name), body_mb_(part_size) {
+  }
 
+  // Writes bytes to the cloud object. This will either buffer internally or
+  // write a part to the cloud.
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
+
+ private:
+  std::error_code FillBuf(const uint8_t* buffer, size_t length);
+
+ protected:
+  virtual std::error_code Upload() = 0;
+
+  boost::beast::multi_buffer body_mb_;
+};
+
+}  // namespace detail
 
 class CredentialsProvider {
  public:

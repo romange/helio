@@ -4,6 +4,7 @@
 #include "util/cloud/utils.h"
 
 #include <boost/beast/http/string_body.hpp>
+
 #include "base/logging.h"
 
 namespace util::cloud {
@@ -32,7 +33,8 @@ inline bool DoesServerPushback(h2::status st) {
 bool IsResponseOK(h2::status st) {
   // Partial content can appear because of the previous reconnect.
   // For multipart uploads kResumeIncomplete can be returned.
-  return st == h2::status::ok || st == h2::status::partial_content || st == kResumeIncomplete;
+  return st == h2::status::ok || st == h2::status::partial_content || st == kResumeIncomplete ||
+         st == h2::status::created /* returned by azure blob upload */;
 }
 
 }  // namespace
@@ -80,6 +82,46 @@ error_code EnableKeepAlive(int fd) {
   }
 
   return std::error_code{};
+}
+
+io::Result<size_t> AbstractStorageFile::WriteSome(const iovec* v, uint32_t len) {
+  size_t total = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    RETURN_UNEXPECTED(FillBuf(reinterpret_cast<const uint8_t*>(v->iov_base), v->iov_len));
+    total += v->iov_len;
+  }
+  return total;
+}
+
+error_code AbstractStorageFile::FillBuf(const uint8_t* buffer, size_t length) {
+  while (length >= body_mb_.max_size() - body_mb_.size()) {
+    size_t prepare_size = body_mb_.max_size() - body_mb_.size();
+    auto mbs = body_mb_.prepare(prepare_size);
+    size_t offs = 0;
+    for (auto mb : mbs) {
+      memcpy(mb.data(), buffer + offs, mb.size());
+      offs += mb.size();
+    }
+    DCHECK_EQ(offs, prepare_size);
+    body_mb_.commit(prepare_size);
+
+    auto ec = Upload();
+    if (ec)
+      return ec;
+
+    length -= prepare_size;
+    buffer += prepare_size;
+  }
+
+  if (length) {
+    auto mbs = body_mb_.prepare(length);
+    for (auto mb : mbs) {
+      memcpy(mb.data(), buffer, mb.size());
+      buffer += mb.size();
+    }
+    body_mb_.commit(length);
+  }
+  return {};
 }
 
 }  // namespace detail
