@@ -11,7 +11,6 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
-#include "util/tls/tls_socket.h"
 
 namespace util {
 namespace tls {
@@ -50,17 +49,17 @@ SSL_CTX* CreateSslCntx() {
 }
 
 static void* TestMalloc(size_t num, const char* file, int line) {
-  VLOG(1) << "MyTestMalloc " << num << " " << file << ":" << line;
+  DVLOG(2) << "MyTestMalloc " << num << " " << file << ":" << line;
   return malloc(num);
 }
 
 static void* TestRealloc(void* addr, size_t num, const char* file, int line) {
-  VLOG(1) << "MyTestRealloc " << num << " " << file << ":" << line;
+  DVLOG(2) << "MyTestRealloc " << num << " " << file << ":" << line;
   return realloc(addr, num);
 }
 
 static void TestFree(void* addr, const char* file, int line) {
-  VLOG(1) << "TestFree " << file << ":" << line << " " << addr;
+  DVLOG(2) << "TestFree " << file << ":" << line << " " << addr;
   free(addr);
 }
 
@@ -120,6 +119,7 @@ void SslStreamTest::SetUp() {
 
   srv_handshake_ = [](Engine* eng) { return eng->Handshake(Engine::SERVER); };
   client_handshake_ = [](Engine* eng) { return eng->Handshake(Engine::CLIENT); };
+
   read_op_ = [this](Engine* eng) { return eng->Read(tmp_buf_.get(), TMP_CAPACITY); };
   shutdown_op_ = [](Engine* eng) { return eng->Shutdown(); };
   write_op_ = [this](Engine* eng) {
@@ -129,56 +129,63 @@ void SslStreamTest::SetUp() {
   ERR_print_errors_fp(stderr);  // Empties the queue.
 }
 
+void TransmitData(Engine* src, Engine* dest, SslStreamTest::Options* opts) {
+  auto buffer = src->PeekOutputBuf();
+  VLOG(1) << opts->name << " wrote " << buffer.size() << " bytes";
+  CHECK(!buffer.empty());
+
+  if (opts->mutate_indx) {
+    uint8_t* mem = const_cast<uint8_t*>(buffer.data());
+    mem[opts->mutate_indx % buffer.size()] = opts->mutate_val;
+    opts->mutate_indx = 0;
+  }
+
+  if (opts->drain_output) {
+    src->ConsumeOutputBuf(buffer.size());
+  } else {
+    auto dest_buf = dest->PeekInputBuf();
+    CHECK_LT(buffer.size(), dest_buf.size());
+    memcpy(dest_buf.data(), buffer.data(), buffer.size());
+    dest->CommitInput(buffer.size());
+    src->ConsumeOutputBuf(buffer.size());
+  }
+}
+
 static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb, Engine* src,
                              Engine* dest) {
-  unsigned input_pending = 1;
   while (true) {
-    auto op_result = cb(src);
-    if (!op_result) {
-      return op_result.error();
-    }
-    VLOG(1) << opts.name << " OpResult: " << *op_result;
-    unsigned output_pending = src->OutputPending();
-    if (output_pending > 0) {
-      auto buffer = src->PeekOutputBuf();
-      VLOG(1) << opts.name << " wrote " << buffer.size() << " bytes";
-      CHECK(!buffer.empty());
+    Engine::OpResult op_result = cb(src);
 
-      if (opts.mutate_indx) {
-        uint8_t* mem = const_cast<uint8_t*>(buffer.data());
-        mem[opts.mutate_indx % buffer.size()] = opts.mutate_val;
-        opts.mutate_indx = 0;
+    VLOG(1) << opts.name << " OpResult: " << op_result;
+    if (op_result > 0) {  // Successful op
+      if (src->OutputPending()) {
+        TransmitData(src, dest, &opts);
       }
-
-      if (opts.drain_output) {
-        src->ConsumeOutputBuf(buffer.size());
-      } else {
-        auto write_result = dest->WriteBuf(buffer);
-        if (!write_result) {
-          return write_result.error();
-        }
-        CHECK_GT(*write_result, 0);
-        src->ConsumeOutputBuf(*write_result);
-      }
+      return op_result;
     }
 
-    if (*op_result >= 0) {  // Shutdown or empty read/write may return 0.
-      return 0;
+    if (op_result == Engine::NEED_READ_AND_MAYBE_WRITE) {
+      ThisFiber::Yield();  // another peer will write.
+      if (src->OutputPending())
+        op_result = Engine::NEED_WRITE;
     }
-    if (*op_result == Engine::EOF_STREAM) {
+
+    bool dirty = false;
+    if (op_result == Engine::NEED_WRITE) {
+      dirty = true;
+      TransmitData(src, dest, &opts);
+    }
+
+    if (op_result == Engine::EOF_STREAM) {
       LOG(WARNING) << opts.name << " stream truncated";
       return 0;
     }
 
-    if (input_pending == 0 && output_pending == 0) {  // dropped connection
-      LOG(INFO) << "Dropped connections for " << opts.name;
-
-      return ERR_PACK(ERR_LIB_USER, 0, ERR_R_OPERATION_FAIL);
-    }
     ThisFiber::Yield();
-
-    input_pending = src->InputPending();
-    VLOG(1) << "Input size: " << input_pending;
+    if (!dirty && src->InputPending() == 0) {
+      return 0;
+    }
+    VLOG(1) << opts.name << ", input size: " << src->InputPending();
   }
 }
 
@@ -252,8 +259,8 @@ TEST_F(SslStreamTest, Handshake) {
 
   client_fb.Join();
   server_fb.Join();
-  ASSERT_EQ(0, cl_err);
-  ASSERT_EQ(0, srv_err);
+  ASSERT_EQ(1, cl_err);
+  ASSERT_EQ(1, srv_err);
 }
 
 TEST_F(SslStreamTest, HandshakeErrServer) {
@@ -276,7 +283,7 @@ TEST_F(SslStreamTest, HandshakeErrServer) {
   LOG(INFO) << SSLError(cl_err);
   LOG(INFO) << SSLError(srv_err);
 
-  ASSERT_NE(0, cl_err);
+  ASSERT_EQ(0, cl_err);
 }
 
 TEST_F(SslStreamTest, ReadShutdown) {
@@ -293,8 +300,8 @@ TEST_F(SslStreamTest, ReadShutdown) {
   client_fb.Join();
   server_fb.Join();
 
-  ASSERT_EQ(0, cl_err);
-  ASSERT_EQ(0, srv_err);
+  EXPECT_EQ(1, cl_err);
+  EXPECT_EQ(1, srv_err);
 
   client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, shutdown_op_, client_engine_.get(), server_engine_.get());
@@ -305,13 +312,13 @@ TEST_F(SslStreamTest, ReadShutdown) {
 
   server_fb.Join();
   client_fb.Join();
-  ASSERT_EQ(0, cl_err);
-  ASSERT_EQ(0, srv_err);
+  EXPECT_EQ(0, cl_err);
+  EXPECT_EQ(0, srv_err);
 
   int shutdown_srv = SSL_get_shutdown(server_engine_->native_handle());
   int shutdown_client = SSL_get_shutdown(client_engine_->native_handle());
-  ASSERT_EQ(SSL_RECEIVED_SHUTDOWN, shutdown_srv);
-  ASSERT_EQ(SSL_SENT_SHUTDOWN, shutdown_client);
+  EXPECT_EQ(SSL_RECEIVED_SHUTDOWN, shutdown_srv);
+  EXPECT_EQ(SSL_SENT_SHUTDOWN, shutdown_client);
 
   client_fb = Fiber([&] {
     cl_err = RunPeer(client_opts_, shutdown_op_, client_engine_.get(), server_engine_.get());
@@ -323,13 +330,13 @@ TEST_F(SslStreamTest, ReadShutdown) {
   server_fb.Join();
   client_fb.Join();
 
-  ASSERT_EQ(0, cl_err) << SSLError(cl_err);
-  ASSERT_EQ(0, srv_err);
+  EXPECT_EQ(1, cl_err) << SSLError(cl_err);
+  EXPECT_EQ(1, srv_err);
 
   shutdown_srv = SSL_get_shutdown(server_engine_->native_handle());
   shutdown_client = SSL_get_shutdown(client_engine_->native_handle());
-  ASSERT_EQ(SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN, shutdown_srv);
-  ASSERT_EQ(shutdown_client, shutdown_srv);
+  EXPECT_EQ(SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN, shutdown_srv);
+  EXPECT_EQ(shutdown_client, shutdown_srv);
 }
 
 TEST_F(SslStreamTest, Write) {
@@ -348,7 +355,7 @@ TEST_F(SslStreamTest, Write) {
   client_opts_.drain_output = true;
   for (size_t i = 0; i < 10; ++i) {
     cl_err = RunPeer(client_opts_, write_op_, client_engine_.get(), server_engine_.get());
-    ASSERT_EQ(0, cl_err);
+    ASSERT_EQ(TMP_CAPACITY, cl_err);
   }
 }
 

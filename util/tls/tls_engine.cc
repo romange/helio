@@ -33,38 +33,6 @@ static void ClearSslError() {
   } while (l);
 }
 
-static Engine::OpResult ToOpResult(const SSL* ssl, int result, const char* location) {
-  DCHECK_LE(result, 0);
-
-  unsigned long error = ERR_get_error();
-  if (error != 0) {
-    return nonstd::make_unexpected(error);
-  }
-
-  int ssl_error = SSL_get_error(ssl, result);
-  int io_err = errno;
-
-  switch (ssl_error) {
-    case SSL_ERROR_ZERO_RETURN:
-      break;
-    case SSL_ERROR_WANT_READ:
-      return Engine::NEED_READ_AND_MAYBE_WRITE;
-    case SSL_ERROR_WANT_WRITE:
-      return Engine::NEED_WRITE;
-    case SSL_ERROR_SYSCALL:
-      LOG(WARNING) << "SSL syscall error " << io_err << ":" << result << " " << location;
-      break;
-    case SSL_ERROR_SSL:
-      LOG(WARNING) << "SSL protocol error " << io_err << ":" << result << " " << location;
-      break;
-    default:
-      LOG(WARNING) << "Unexpected SSL error " << io_err << ":" << result << " " << location;
-      break;
-  }
-
-  return Engine::EOF_STREAM;
-}
-
 #define S1(x) #x
 #define S2(x) S1(x)
 #define LOCATION __FILE__ " : " S2(__LINE__)
@@ -72,7 +40,7 @@ static Engine::OpResult ToOpResult(const SSL* ssl, int result, const char* locat
 #define RETURN_RESULT(res) \
   if (res > 0)             \
     return res;            \
-  return ToOpResult(ssl_, res, LOCATION)
+  return ToOpResult(res, LOCATION)
 
 Engine::Engine(SSL_CTX* context) : ssl_(::SSL_new(context)) {
   CHECK(ssl_);
@@ -135,15 +103,13 @@ void Engine::ConsumeOutputBuf(unsigned sz) {
   CHECK_EQ(unsigned(res), sz);
 }
 
-auto Engine::WriteBuf(const Buffer& buf) -> OpResult {
+unsigned Engine::WriteBuf(const Buffer& buf) {
   DCHECK(!buf.empty());
 
   char* cbuf = nullptr;
   int res = BIO_nwrite(external_bio_, &cbuf, buf.size());
-  if (res < 0) {
-    unsigned long error = ::ERR_get_error();
-    return nonstd::make_unexpected(error);
-  } else if (res > 0) {
+  CHECK_GE(res, 0);
+  if (res > 0) {
     memcpy(cbuf, buf.data(), res);
   }
   return res;
@@ -171,20 +137,25 @@ auto Engine::Handshake(HandshakeType type) -> OpResult {
 }
 
 auto Engine::Shutdown() -> OpResult {
+  if (state_ & FATAL_ERROR)
+    return 1;
+
   int result = SSL_shutdown(ssl_);
   // See https://www.openssl.org/docs/man1.1.1/man3/SSL_shutdown.html
-  if (result == 0)  // First step of Shutdown (close_notify) returns 0.
-    return result;
+
+  if (result == 0) { // First step of Shutdown (close_notify) returns 0.
+    result = SSL_shutdown(ssl_);  // Initiate the second step.
+  }
 
   RETURN_RESULT(result);
 }
 
 auto Engine::Write(const Buffer& buf) -> OpResult {
-  if (buf.empty())
-    return 0;
+  CHECK(!buf.empty());
   int sz = buf.size() < INT_MAX ? buf.size() : INT_MAX;
   int result = SSL_write(ssl_, buf.data(), sz);
-  RETURN_RESULT(result);
+
+  RETURN_RESULT(result);  // Should never return 0.
 }
 
 auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
@@ -243,6 +214,42 @@ int SslProbeSetDefaultCALocation(SSL_CTX* ctx) {
   }
 
   return -1;
+}
+
+
+auto Engine::ToOpResult(int result, const char* location) -> OpResult {
+  DCHECK_LE(result, 0);
+
+  int ssl_error = SSL_get_error(ssl_, result);
+  unsigned long queue_error = 0;
+
+#define ERROR_DETAILS errno << ":" << queue_error << " "  \
+                   << ERR_reason_error_string(queue_error) << " " << location
+
+  switch (ssl_error) {
+    case SSL_ERROR_ZERO_RETURN:  // graceful shutdown of TLS connection.
+      break;
+    case SSL_ERROR_WANT_READ:
+      return Engine::NEED_READ_AND_MAYBE_WRITE;
+    case SSL_ERROR_WANT_WRITE:
+      return Engine::NEED_WRITE;
+    case SSL_ERROR_SYSCALL:  // fatal error in system call.
+      queue_error = ERR_get_error();
+      VLOG(1) << "SSL syscall error " << ERROR_DETAILS;
+      break;
+    case SSL_ERROR_SSL:
+      state_ |= FATAL_ERROR;
+      queue_error = ERR_get_error();
+      LOG(WARNING) << "SSL protocol error " << ERROR_DETAILS;
+      break;
+    default:
+      queue_error = ERR_get_error();
+      state_ |= FATAL_ERROR;
+      LOG(WARNING) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS;
+      break;
+  }
+
+  return Engine::EOF_STREAM;
 }
 
 }  // namespace tls
