@@ -7,6 +7,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 
+#include <boost/asio/buffer.hpp>
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <pugixml.hpp>
@@ -215,7 +216,10 @@ class WriteFile : public detail::AbstractStorageFile {
   error_code Upload();
 
   using UploadRequest = detail::DynamicBodyRequestImpl;
-  unique_ptr<UploadRequest> PrepareRequest();
+  using UploadBlockListRequest = detail::DynamicBodyRequestImpl;
+
+  unique_ptr<UploadRequest> PrepareUploadBlockReq();
+  unique_ptr<UploadBlockListRequest> PrepareBlockListReq();
 
   unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
   string target_;
@@ -308,6 +312,21 @@ WriteFile::~WriteFile() {
 }
 
 error_code WriteFile::Close() {
+  if (body_mb_.size() > 0) {
+    RETURN_ERROR(Upload());
+  }
+  DCHECK_EQ(body_mb_.size(), 0u);
+  auto req = PrepareBlockListReq();
+
+  error_code res;
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, req.get(), &send_res));
+
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& resp_msg = parser_ptr->get();
+  VLOG(1) << "Close response: " << resp_msg;
+
   return {};
 }
 
@@ -315,7 +334,7 @@ error_code WriteFile::Upload() {
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
 
-  auto req = PrepareRequest();
+  auto req = PrepareUploadBlockReq();
 
   error_code res;
   RobustSender sender(pool_.get(), opts_.creds_provider);
@@ -329,12 +348,39 @@ error_code WriteFile::Upload() {
   return {};
 }
 
-auto WriteFile::PrepareRequest() -> unique_ptr<UploadRequest> {
+auto WriteFile::PrepareUploadBlockReq() -> unique_ptr<UploadRequest> {
   string url =
       absl::StrCat(target_, "?comp=block&blockid=", absl::Dec(block_id_++, absl::kZeroPad4));
   unique_ptr<UploadRequest> upload_req(new UploadRequest(url, h2::verb::put));
 
   upload_req->SetBody(std::move(body_mb_));
+
+  upload_req->SetHeader(h2::field::host, opts_.creds_provider->GetEndpoint());
+  upload_req->Finalize();
+  opts_.creds_provider->Sign(upload_req.get());
+
+  return upload_req;
+}
+
+auto WriteFile::PrepareBlockListReq() -> unique_ptr<UploadBlockListRequest> {
+  string url = absl::StrCat(target_, "?comp=blocklist");
+  unique_ptr<UploadBlockListRequest> upload_req(new UploadBlockListRequest(url, h2::verb::put));
+
+  boost::beast::multi_buffer mb;
+
+  string body = R"(<?xml version="1.0" encoding="utf-8"?><BlockList>)";
+
+  for (unsigned i = 1; i < block_id_; ++i) {
+    absl::StrAppend(&body, "\n<Uncommitted>", absl::Dec(i, absl::kZeroPad4), "</Uncommitted>");
+  }
+  absl::StrAppend(&body, "\n</BlockList>\n");
+
+  auto buf_list = mb.prepare(body.size());
+  size_t res = boost::asio::buffer_copy(buf_list, boost::asio::buffer(body));
+  DCHECK_EQ(res, body.size());
+  mb.commit(body.size());
+
+  upload_req->SetBody(std::move(mb));
 
   upload_req->SetHeader(h2::field::host, opts_.creds_provider->GetEndpoint());
   upload_req->Finalize();
