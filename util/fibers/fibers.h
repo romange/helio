@@ -175,6 +175,10 @@ inline std::string_view GetName() {
   return fb2::detail::FiberActive()->name();
 }
 
+inline void CheckSafetyMargin() {
+  fb2::detail::FiberActive()->CheckStackMargin();
+}
+
 class PrintLocalsCallback {
 public:
   template<typename Fn>

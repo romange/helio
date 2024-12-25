@@ -14,14 +14,6 @@ add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc
             ${FB_LINUX_SRCS})
 
-set(HELIO_STACK_CHECK "" CACHE  STRING
-    "Enables fiber stack overflow checks. If set, shoult be a positive integer, that enforces the minimum available margin in bytes.")
-
-if (HELIO_STACK_CHECK)
-  set_property(SOURCE detail/fiber_interface.cc APPEND PROPERTY COMPILE_DEFINITIONS
-               CHECK_FIBER_STACK_MARGIN=${HELIO_STACK_CHECK})
-endif()
-
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
 cxx_test(fibers_test fibers2 LABELS CI)

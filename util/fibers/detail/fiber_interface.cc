@@ -7,9 +7,14 @@
 
 #include <mutex>  // for g_scheduler_lock
 
+#include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/utils.h"
+
+ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
+          "If > 0, ensures the stack each fiber has at least this margin. "
+          "The check is done at fiber destruction time.");
 
 namespace util {
 namespace fb2 {
@@ -157,23 +162,7 @@ ctx::fiber_context FiberInterface::Terminate() {
   DCHECK(this == FiberActive());
   DCHECK(!list_hook.is_linked());
 
-#ifdef CHECK_FIBER_STACK_MARGIN
-  {
-    const uint8_t* ptr = stack_bottom_;
-    constexpr uint32_t kHardLimit = (CHECK_FIBER_STACK_MARGIN);
-    while (*ptr == 0xAB) {
-      ++ptr;
-    }
-    uint32_t margin = ptr - stack_bottom_;
-
-    CHECK_GE(margin, kHardLimit) << "Low stack margin for " << name_;
-
-    // Log if margins are within the the orange zone.
-    LOG_IF(INFO, margin < kHardLimit * 1.5)
-        << "Stack margin for " << name_ << ": " << margin << " bytes";
-  }
-#endif
-
+  CheckStackMargin();
   scheduler_->ScheduleTermination(this);
   DVLOG(2) << "Terminating " << name_;
 
@@ -196,12 +185,30 @@ ctx::fiber_context FiberInterface::Terminate() {
   return scheduler_->Preempt();
 }
 
+void FiberInterface::CheckStackMargin() {
+  uint32_t check_margin = absl::GetFlag(FLAGS_fiber_safety_margin);
+  if (check_margin == 0)
+    return;
+
+  const uint8_t* ptr = stack_bottom_;
+  while (*ptr == 0xAB) {
+    ++ptr;
+  }
+  uint32_t margin = ptr - stack_bottom_;
+
+  CHECK_GE(margin, check_margin) << "Low stack margin for " << name_;
+
+  // Log if margins are within the the orange zone.
+  LOG_IF(INFO, margin < check_margin * 1.5)
+      << "Stack margin for " << name_ << ": " << margin << " bytes";
+}
+
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
   stack_bottom_ = stack_bottom;
 
-#ifdef CHECK_FIBER_STACK_MARGIN
-  memset(stack_bottom_, 0xAB, stack_size);
-#endif
+  if (absl::GetFlag(FLAGS_fiber_safety_margin) > 0) {
+    memset(stack_bottom_, 0xAB, stack_size);
+  }
 }
 
 void FiberInterface::Start(Launch launch) {
