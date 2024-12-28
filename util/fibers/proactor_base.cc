@@ -177,7 +177,11 @@ bool ProactorBase::RemoveOnIdleTask(uint32_t id) {
     return false;
 
   on_idle_arr_[id].task = OnIdleTask{};
-
+  while (!on_idle_arr_.back().task) {
+    on_idle_arr_.pop_back();
+    if (on_idle_arr_.empty())
+      break;
+  }
   return true;
 }
 

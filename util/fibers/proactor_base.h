@@ -160,12 +160,12 @@ class ProactorBase {
 
   /**
    * @brief Adds a task that should run when Proactor loop is idle. The task should return
-   *        true if keep it running or false if it finished its job.
-   *
-   *        Must be called from the proactor thread.
+   *        a freqency level to run - between 0 and kOnIdleMaxLevel, with 0 being most relaxed and
+   *        kOnIdleMaxLevel the most intense. The task will keep running until RemoveOnIdleTask
+   *        is called. Must be called from the proactor thread.
    * @tparam Func
    * @param f
-   * @return uint32_t an unique ids denoting this task. Can be used for cancellation.
+   * @return uint32_t an unique ids denoting this task. Should be passed to RemoveOnIdleTask().
    */
   uint32_t AddOnIdleTask(OnIdleTask f);
 
