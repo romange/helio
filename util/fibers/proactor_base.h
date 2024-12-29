@@ -155,17 +155,19 @@ class ProactorBase {
   io::MutableBytes AllocateBuffer(size_t min_size);
   void DeallocateBuffer(io::MutableBytes buf);
 
-  using OnIdleTask = std::function<uint32_t()>;
+  using OnIdleTask = std::function<int32_t()>;
   using PeriodicTask = std::function<void()>;
 
   /**
    * @brief Adds a task that should run when Proactor loop is idle. The task should return
-   *        true if keep it running or false if it finished its job.
-   *
-   *        Must be called from the proactor thread.
+   *        a freqency level to run - between -1 and kOnIdleMaxLevel. A negative level will
+   *        unregister the task. The level 0 is the least intense. The higher the level,
+   *        the more frequenty the task will run with kOnIdleMaxLevel being the most intense.
+   *        Another way to remove the task is to call RemoveOnIdleTask with the task id returned
+   *        by this function.
    * @tparam Func
    * @param f
-   * @return uint32_t an unique ids denoting this task. Can be used for cancellation.
+   * @return uint32_t an unique ids denoting this task. Should be passed to RemoveOnIdleTask().
    */
   uint32_t AddOnIdleTask(OnIdleTask f);
 
@@ -243,6 +245,9 @@ class ProactorBase {
   virtual void CancelPeriodicInternal(PeriodicItem* item) = 0;
 
   // Returns true if we should continue spinning or false otherwise.
+  // TODO: this function assumes that the io loop progresses if it returns false.
+  //       We should fix it by returning the next call time and handle it in the loop
+  //       accordingly.
   bool RunOnIdleTasks();
 
   static void Pause(unsigned strength);

@@ -149,21 +149,30 @@ bool ProactorBase::RunOnIdleTasks() {
     if (on_idle.task && on_idle.next_ts <= curr_ts) {
       tl_info_.monotonic_time = curr_ts;
 
-      uint32_t level = on_idle.task();  // run the task
+      int32_t level = on_idle.task();  // run the task
 
+      if (level < 0) {
+        on_idle.task = {};
+        if (on_idle_next_ + 1 == on_idle_arr_.size()) {
+          do {
+            on_idle_arr_.pop_back();
+          } while (!on_idle_arr_.empty() && !on_idle_arr_.back().task);
+          break;
+        }
+      }
       curr_ts = GetClockNanos();
 
-      if (level >= kOnIdleMaxLevel) {
+      if (unsigned(level) >= kOnIdleMaxLevel) {
         level = kOnIdleMaxLevel;
         should_spin = true;
-      } else {
+      } else if (on_idle_next_ < on_idle_arr_.size()) {  // check if the array has not been shrunk.
         uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
         on_idle.next_ts = curr_ts + delta_ns;
       }
     }
 
     ++on_idle_next_;
-    if (on_idle_next_ == on_idle_arr_.size()) {
+    if (on_idle_next_ >= on_idle_arr_.size()) {
       on_idle_next_ = 0;
       break;
     }
@@ -177,7 +186,11 @@ bool ProactorBase::RemoveOnIdleTask(uint32_t id) {
     return false;
 
   on_idle_arr_[id].task = OnIdleTask{};
-
+  while (!on_idle_arr_.back().task) {
+    on_idle_arr_.pop_back();
+    if (on_idle_arr_.empty())
+      break;
+  }
   return true;
 }
 
