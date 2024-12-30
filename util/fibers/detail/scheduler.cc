@@ -204,7 +204,6 @@ ctx::fiber_context Scheduler::Preempt() {
   DCHECK(!IsFiberAtomicSection()) << "Preempting inside of atomic section";
   DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
 
-  DCHECK(!ready_queue_.empty());
   FiberInterface* fi = &ready_queue_.front();
   ready_queue_.pop_front();
 
