@@ -376,6 +376,7 @@ int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsi
   int err = 0;
 
   buf_group.ring = io_uring_setup_buf_ring(&ring_, nentries, group_id, 0, &err);
+
   if (buf_group.ring == nullptr) {
     return -err;  // err is negative.
   }
