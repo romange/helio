@@ -26,7 +26,10 @@ class EpollSocket : public LinuxSocketBase {
 
   // Really need here expected.
   Result<size_t> WriteSome(const iovec* ptr, uint32_t len) override;
-  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) override;
+
+  // TODO: to implement async functionality.
+  void AsyncWriteSome(const iovec* v, uint32_t len, WriteProgressCb cb) override;
+  void AsyncReadSome(const iovec* v, uint32_t len, ReadProgressCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
   Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;

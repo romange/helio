@@ -37,7 +37,8 @@ class UringSocket : public LinuxSocketBase {
   ABSL_MUST_USE_RESULT error_code Close() final;
 
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
-  void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) override;
+  void AsyncWriteSome(const iovec* v, uint32_t len, WriteProgressCb cb) override;
+  void AsyncReadSome(const iovec* v, uint32_t len, ReadProgressCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
   Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
