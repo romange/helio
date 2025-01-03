@@ -372,8 +372,15 @@ io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint
 }
 
 // TODO: to implement async functionality.
-void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) {
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   io::Result<size_t> res = WriteSome(v, len);
+  cb(res);
+}
+
+
+// TODO: to implement async functionality.
+void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  io::Result<size_t> res = ReadSome(v, len);
   cb(res);
 }
 

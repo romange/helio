@@ -18,7 +18,10 @@ namespace fb2 {
 class ProactorBase;
 }  // namespace fb2
 
-class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source {
+class FiberSocketBase : public io::Sink,
+                        public io::AsyncSink,
+                        public io::Source,
+                        public io::AsyncSource {
   FiberSocketBase(const FiberSocketBase&) = delete;
   void operator=(const FiberSocketBase&) = delete;
   FiberSocketBase(FiberSocketBase&& other) = delete;
@@ -32,7 +35,6 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   using endpoint_type = ::boost::asio::ip::tcp::endpoint;
   using error_code = std::error_code;
   using AcceptResult = ::io::Result<FiberSocketBase*>;
-  using io::AsyncSink::AsyncProgressCb;
   using ProactorBase = fb2::ProactorBase;
 
   ABSL_MUST_USE_RESULT virtual error_code Shutdown(int how) = 0;
@@ -61,8 +63,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
   struct ProvidedBuffer {
     io::Bytes buffer;
     uint32_t allocated;
-    uint16_t err_no;   // Relevant only if buffer is empty.
-    uint8_t cookie;    // Used by the socket to identify the buffer source.
+    uint16_t err_no;  // Relevant only if buffer is empty.
+    uint8_t cookie;   // Used by the socket to identify the buffer source.
 
     void SetError(uint16_t err) {
       err_no = err;
@@ -99,6 +101,8 @@ class FiberSocketBase : public io::Sink, public io::AsyncSink, public io::Source
 
   using AsyncSink::AsyncWrite;
   using AsyncSink::AsyncWriteSome;
+  using AsyncSource::AsyncRead;
+  using AsyncSource::AsyncReadSome;
 
   virtual endpoint_type LocalEndpoint() const = 0;
   virtual endpoint_type RemoteEndpoint() const = 0;

@@ -303,7 +303,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   return make_unexpected(std::move(ec));
 }
 
-void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) {
+void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   if (fd_ & IS_SHUTDOWN) {
     cb(Unexpected(errc::connection_aborted));
     return;
@@ -332,6 +332,36 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb c
 
   SubmitEntry se = proactor->GetSubmitEntry(std::move(mycb));
   se.PrepSendMsg(fd, msg, MSG_NOSIGNAL);
+  se.sqe()->flags |= register_flag();
+}
+
+void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  if (fd_ & IS_SHUTDOWN) {
+    cb(Unexpected(errc::connection_aborted));
+    return;
+  }
+
+  msghdr* msg = new msghdr;
+  memset(msg, 0, sizeof(msghdr));
+  msg->msg_iov = const_cast<iovec*>(v);
+  msg->msg_iovlen = len;
+
+  int fd = ShiftedFd();
+  Proactor* proactor = GetProactor();
+  auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
+                                        uint32_t flags, uint32_t) {
+    delete msg;
+
+    if (res >= 0) {
+      cb(res);
+      return;
+    }
+
+    cb(make_unexpected(error_code{-res, generic_category()}));
+  };
+
+  SubmitEntry se = proactor->GetSubmitEntry(std::move(mycb));
+  se.PrepRecvMsg(fd, msg, 0);
   se.sqe()->flags |= register_flag();
 }
 

@@ -30,13 +30,27 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
 
 struct AsyncWriteState {
   absl::FixedArray<iovec, 4> arr;
-  AsyncSink::AsyncCb cb;
+  AsyncResultCb cb;
   iovec* cur;
   AsyncSink* owner;
 
   AsyncWriteState(AsyncSink* sink, const iovec* v, uint32_t length) : arr(length), owner(sink) {
     cur = arr.data();
     std::copy(v, v + length, cur);
+  }
+
+  void OnCb(Result<size_t> res);
+};
+
+struct AsyncReadState {
+  absl::FixedArray<iovec, 4> arr;
+  AsyncResultCb cb;
+  iovec* cur;
+  AsyncSource* owner;
+
+  AsyncReadState(AsyncSource* source, const iovec* v, uint32_t length)
+      : arr(length), owner(source) {
+    std::copy(v, v + length, arr.data());
   }
 
   void OnCb(Result<size_t> res);
@@ -70,6 +84,36 @@ void AsyncWriteState::OnCb(Result<size_t> res) {
 
   // continue issuing requests.
   owner->AsyncWriteSome(cur, arr.end() - cur, [this](Result<size_t> res) { this->OnCb(res); });
+}
+
+void AsyncReadState::OnCb(Result<size_t> res) {
+  if (!res) {
+    cb(res.error());
+    delete this;
+    return;
+  }
+
+  size_t sz = *res;
+  while (cur->iov_len <= sz) {
+    sz -= cur->iov_len;
+    ++cur;
+
+    if (cur == arr.end()) {  // Successfully finished all the operations.
+      DCHECK_EQ(0u, sz);
+
+      cb(error_code{});
+
+      delete this;
+      return;
+    }
+  }
+
+  char* base = (char*)cur->iov_base;
+  cur->iov_len -= sz;
+  cur->iov_base = base + sz;
+
+  // continue issuing requests.
+  owner->AsyncReadSome(cur, arr.end() - cur, [this](Result<size_t> res) { this->OnCb(res); });
 }
 
 // Read some bytes from source starting at given offset offs and update it.
@@ -165,10 +209,16 @@ Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
   return res;
 }
 
-void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, AsyncCb cb) {
+void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, AsyncResultCb cb) {
   AsyncWriteState* state = new AsyncWriteState(this, v, len);
   state->cb = std::move(cb);
   AsyncWriteSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });
+}
+
+void AsyncSource::AsyncRead(const iovec* v, uint32_t len, AsyncResultCb cb) {
+  AsyncReadState* state = new AsyncReadState(this, v, len);
+  state->cb = std::move(cb);
+  AsyncReadSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });
 }
 
 }  // namespace io
