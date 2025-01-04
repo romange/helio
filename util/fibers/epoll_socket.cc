@@ -24,11 +24,12 @@ namespace util {
 namespace fb2 {
 
 using namespace std;
+using nonstd::make_unexpected;
 
 namespace {
 
 inline EpollSocket::error_code from_errno() {
-  return EpollSocket::error_code(errno, std::system_category());
+  return EpollSocket::error_code(errno, system_category());
 }
 
 inline ssize_t posix_err_wrap(ssize_t res, EpollSocket::error_code* ec) {
@@ -41,7 +42,7 @@ inline ssize_t posix_err_wrap(ssize_t res, EpollSocket::error_code* ec) {
 }
 
 nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
-  return nonstd::make_unexpected(make_error_code(code));
+  return make_unexpected(make_error_code(code));
 }
 
 #ifdef __linux__
@@ -107,7 +108,85 @@ void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
 
 }  // namespace
 
-EpollSocket::EpollSocket(int fd) : LinuxSocketBase(fd, nullptr) {
+class EpollSocket::PendingReq {
+  error_code ec_;
+  detail::FiberInterface* context_;
+  PendingReq** dest_;
+
+ public:
+  PendingReq(PendingReq** dest) : context_(detail::FiberActive()), dest_(dest) {
+    *dest_ = this;
+  }
+
+  ~PendingReq() {
+    *dest_ = nullptr;
+  }
+
+  bool IsSuspended() const {
+    return !context_->list_hook.is_linked();
+  }
+
+  string_view name() const {
+    return context_->name();
+  }
+
+  error_code Suspend(uint32_t timeout);
+
+  void Activate(error_code ec);
+};
+
+
+error_code EpollSocket::PendingReq::Suspend(uint32_t timeout) {
+  bool timed_out = false;
+  if (timeout == UINT32_MAX) {
+    context_->Suspend();
+  } else {
+    timed_out = context_->WaitUntil(chrono::steady_clock::now() + chrono::milliseconds(timeout));
+  }
+
+  if (timed_out)
+    return make_error_code(errc::operation_canceled);
+
+  return this->ec_;
+}
+
+void EpollSocket::PendingReq::Activate(error_code ec) {
+  ec_ = ec;
+
+  ActivateSameThread(detail::FiberActive(), context_);
+}
+
+bool EpollSocket::AsyncReq::Run(int fd, bool is_send) {
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_iov = vec;
+  msg.msg_iovlen = len;
+
+  ssize_t res;
+  res = is_send ? sendmsg(fd, &msg, MSG_NOSIGNAL) : recvmsg(fd, &msg, 0);
+
+  if (res > 0) {
+    cb(res);
+    return true;
+  }
+
+  if (res == 0) {
+    CHECK(!is_send);  // can only happen with recvmsg
+    cb(MakeUnexpected(errc::connection_aborted));
+    return true;
+  }
+
+  if (errno == EAGAIN)
+    return false;
+
+  error_code ec = from_errno();
+  cb(make_unexpected(ec));
+  return true;
+}
+
+EpollSocket::EpollSocket(int fd)
+    : LinuxSocketBase(fd, nullptr), async_write_pending_(0), async_read_pending_(0) {
+  write_req_ = read_req_ = nullptr;
 }
 
 EpollSocket::~EpollSocket() {
@@ -159,13 +238,9 @@ auto EpollSocket::Accept() -> AcceptResult {
   error_code ec;
 
   int real_fd = native_handle();
-  CHECK(read_context_ == NULL);
+  CHECK(read_req_ == NULL);
 
-  read_context_ = detail::FiberActive();
-  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
-  DVSOCK(2) << "Accepting from " << read_context_->name();
-
-  while (true) {
+  do {
     if (fd_ & IS_SHUTDOWN) {
       return MakeUnexpected(errc::connection_aborted);
     }
@@ -184,9 +259,11 @@ auto EpollSocket::Accept() -> AcceptResult {
       break;
     }
 
-    read_context_->Suspend();
-  }
-  return nonstd::make_unexpected(ec);
+    PendingReq req(&read_req_);
+    ec = req.Suspend(UINT32_MAX);
+  } while (!ec);
+
+  return make_unexpected(ec);
 }
 
 error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect) {
@@ -199,34 +276,27 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
-  CHECK(read_context_ == NULL);
-  CHECK(write_context_ == NULL);
+  CHECK(read_req_ == NULL);
+  CHECK(write_req_ == NULL);
 
   fd_ = (fd << kFdShift);
   OnSetProactor();
-
-  write_context_ = detail::FiberActive();
-  absl::Cleanup clean = [this]() { write_context_ = nullptr; };
 
   if (on_pre_connect) {
     on_pre_connect(fd);
   }
 
+  // Unlike with other socket operations, connect does not require a repeated attempt, and
+  // in case of EINPROGRESS. It is enough to wait for the completion write event.
   DVSOCK(2) << "Connecting";
 
-  while (true) {
-    int res = connect(fd, (const sockaddr*)ep.data(), ep.size());
-    if (res == 0) {
-      break;
-    }
-
-    if (errno != EINPROGRESS) {
+  int res = connect(fd, (const sockaddr*)ep.data(), ep.size());
+  if (res == -1) {
+    if (errno == EINPROGRESS) {
+      PendingReq req(&write_req_);
+      ec = req.Suspend(timeout());
+    } else {
       ec = from_errno();
-      break;
-    }
-
-    if (SuspendMyself(write_context_, &ec)) {
-      break;
     }
   }
 
@@ -243,6 +313,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
     }
   }
 #endif
+
   if (ec) {
     GetProactor()->Disarm(fd, arm_index_);
     if (close(fd) < 0) {
@@ -258,60 +329,65 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   CHECK(proactor());
   CHECK_GT(len, 0U);
   CHECK_GE(fd_, 0);
-
-  CHECK(write_context_ == NULL);
+  DCHECK(!async_write_pending_);
 
   msghdr msg;
   memset(&msg, 0, sizeof(msg));
   msg.msg_iov = const_cast<iovec*>(ptr);
   msg.msg_iovlen = len;
 
-  ssize_t res;
   int fd = native_handle();
-  write_context_ = detail::FiberActive();
-  absl::Cleanup clean = [this]() { write_context_ = nullptr; };
+  error_code ec;
 
-  while (true) {
+  do {
     if (fd_ & IS_SHUTDOWN) {
-      res = EPIPE;
+      ec = make_error_code(errc::broken_pipe);
       break;
     }
 
-    res = sendmsg(fd, &msg, MSG_NOSIGNAL);
+    ssize_t res = sendmsg(fd, &msg, MSG_NOSIGNAL);
     if (res >= 0) {
       return res;
     }
 
     DCHECK_EQ(res, -1);
-    res = errno;
 
     if (res != EAGAIN) {
+      ec = from_errno();
       break;
     }
-    DVLOG(1) << "Suspending " << fd << "/" << write_context_->name();
-    write_context_->Suspend();
-  }
+    PendingReq req(&write_req_);
+
+    ec = req.Suspend(timeout());
+  } while (!ec);
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
-               << RemoteEndpoint();
+  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET})) {
+    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << ec.message() << " " << RemoteEndpoint();
   }
 
-  std::error_code ec(res, std::system_category());
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
-
-  return nonstd::make_unexpected(std::move(ec));
+  return make_unexpected(std::move(ec));
 }
 
-// TODO: to implement async functionality.
-void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, WriteProgressCb cb) {
-  auto res = WriteSome(v, len);
-  cb(res);
+void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  if (fd_ & IS_SHUTDOWN) {
+    cb(make_unexpected(make_error_code(errc::broken_pipe)));
+    return;
+  }
+
+  CHECK(async_write_req_ == nullptr);  // we do not allow queuing multiple async requests.
+
+  AsyncReq req{const_cast<iovec*>(v), len, std::move(cb)};
+  if (req.Run(native_handle(), true))
+    return;
+
+  async_write_req_ = new AsyncReq(std::move(req));
+  async_write_pending_ = 1;
 }
 
-void EpollSocket::AsyncReadSome(const iovec* v, uint32_t len, ReadProgressCb cb) {
+void EpollSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   auto res = ReadSome(v, len);
   cb(res);
 }
@@ -321,73 +397,61 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   CHECK_GE(fd_, 0);
   CHECK_GT(size_t(msg.msg_iovlen), 0U);
 
-  CHECK(read_context_ == NULL);
+  CHECK(read_req_ == NULL);
 
   int fd = native_handle();
-  read_context_ = detail::FiberActive();
-  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
-
-  ssize_t res;
   error_code ec;
-  while (true) {
+  do {
     if (fd_ & IS_SHUTDOWN) {
-      res = EPIPE;
+      ec = make_error_code(errc::connection_aborted);
       break;
     }
 
-    res = recvmsg(fd, const_cast<msghdr*>(&msg), flags);
+    ssize_t res = recvmsg(fd, const_cast<msghdr*>(&msg), flags);
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
       return res;
     }
 
-    if (res == 0 || errno != EAGAIN) {
+    if (res == 0) {
+      ec = make_error_code(errc::connection_aborted);
       break;
     }
 
-    if (SuspendMyself(read_context_, &ec) && ec) {
-      return nonstd::make_unexpected(std::move(ec));
+    if (errno != EAGAIN) {
+      ec = from_errno();
+      break;
     }
-  }
 
-  // Error handling - finale part.
-  if (res == -1) {
-    res = errno;
-  } else if (res == 0) {
-    res = ECONNABORTED;
-  }
+    PendingReq req(&read_req_);
+    ec = req.Suspend(timeout());
+  } while (!ec);
 
-  DVSOCK(1) << "Got " << res;
+  DVSOCK(1) << "Got " << ec.message();
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(res, {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << res << "/" << strerror(res) << " "
-               << RemoteEndpoint();
+  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
+    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << ec.message() << " " << RemoteEndpoint();
   }
 
-  ec = std::error_code(res, std::system_category());
   VSOCK(1) << "Error on " << RemoteEndpoint() << ": " << ec.message();
 
-  return nonstd::make_unexpected(std::move(ec));
+  return make_unexpected(std::move(ec));
 }
 
 unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   DCHECK_GT(buf_len, 0u);
 
   int fd = native_handle();
-  read_context_ = detail::FiberActive();
-  absl::Cleanup clean = [this]() { read_context_ = nullptr; };
-
-  ssize_t res;
   error_code ec;
-  while (true) {
+  do {
     if (fd_ & IS_SHUTDOWN) {
-      res = EPIPE;
+      ec = make_error_code(errc::broken_pipe);
       break;
     }
 
     io::MutableBytes buf = proactor()->AllocateBuffer(bufreq_sz_);
-    res = recv(fd, buf.data(), buf.size(), 0);
+    ssize_t res = recv(fd, buf.data(), buf.size(), 0);
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
       size_t ures = res;
       dest[0].cookie = 1;
@@ -439,26 +503,22 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
     proactor()->DeallocateBuffer(buf);
 
-    if (res == 0 || errno != EAGAIN) {
+    if (res == 0) {
+      ec = make_error_code(errc::connection_aborted);
       break;
     }
 
-    if (SuspendMyself(read_context_, &ec) && ec) {
-      res = ec.value();
+    if (errno != EAGAIN) {
+      ec = from_errno();
       break;
     }
-  }
 
-  // Error handling - finale part.
-  if (res == -1) {
-    res = errno;
-  } else if (res == 0) {
-    res = ECONNABORTED;
-  }
+    PendingReq req(&read_req_);
+    ec = req.Suspend(timeout());
+  } while (!ec);
 
-  DVSOCK(1) << "Got " << res;
-
-  dest[0].SetError(res);
+  DVSOCK(1) << "Got " << ec.message();
+  dest[0].SetError(ec.value());
 
   return 1;
 }
@@ -489,7 +549,7 @@ auto EpollSocket::Shutdown(int how) -> error_code {
 #ifdef __APPLE__
   // Since kqueue won't notify listen sockets when shutdown, explicitly wake
   // up any read contexts. Note this will do nothing if there is no
-  // read_context_ so its safe to call multiple times.
+  // read_req_ so its safe to call multiple times.
   Wakey(EpollProactor::EPOLL_IN, 0, nullptr);
 #endif
 
@@ -505,31 +565,6 @@ void EpollSocket::CancelOnErrorCb() {
   error_cb_ = {};
 }
 
-bool EpollSocket::SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec) {
-  epoll_mask_ = 0;
-  kev_error_ = 0;
-
-  DVSOCK(2) << "Suspending " << cntx->name();
-  if (timeout() == UINT32_MAX) {
-    cntx->Suspend();
-  } else {
-    cntx->WaitUntil(chrono::steady_clock::now() + chrono::milliseconds(timeout()));
-  }
-
-  DVSOCK(2) << "Resuming " << cntx->name() << " em: " << epoll_mask_ << ", errno: " << kev_error_;
-
-  if (epoll_mask_ & POLLERR) {
-    *ec = error_code(kev_error_, system_category());
-    return false;
-  }
-  if (epoll_mask_ & POLLHUP) {
-    *ec = make_error_code(errc::connection_aborted);
-  } else if (epoll_mask_ == 0) {  // timeout
-    *ec = make_error_code(errc::operation_canceled);
-  }
-  return true;
-}
-
 void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask;
 #ifdef __linux__
@@ -538,28 +573,61 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   constexpr uint32_t kErrMask = POLLERR | POLLHUP;
 #endif
 
-  if (error)
-    kev_error_ = error;
+  error_code ec;
+  if ((ev_mask & POLLERR) && error)
+    ec = error_code{error, system_category()};
+  else if (ev_mask & POLLHUP) {
+    ec = make_error_code(errc::connection_aborted);
+  }
 
   if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
-    epoll_mask_ |= ev_mask;
+    if (async_read_pending_) {
+      DCHECK(async_read_req_);
 
-    // It could be that we scheduled current_context_ already, but has not switched to it yet.
-    // Meanwhile a new event has arrived that triggered this callback again.
-    if (read_context_ && !read_context_->list_hook.is_linked()) {
-      DVSOCK(2) << "Wakey: Schedule read in " << read_context_->name();
-      ActivateSameThread(detail::FiberActive(), read_context_);
+      auto finalize = [this] {
+        delete async_read_req_;
+        async_read_req_ = nullptr;
+        async_read_pending_ = 0;
+      };
+      if (ec) {
+        async_read_req_->cb(make_unexpected(ec));
+        finalize();
+      } else if (async_read_req_->Run(native_handle(), false)) {
+        finalize();
+      }
+    } else {
+      // It could be that we activated context already, but has not switched to it yet.
+      // Meanwhile a new event has arrived that triggered this callback again.
+      if (read_req_ && read_req_->IsSuspended()) {
+        DVSOCK(2) << "Wakey: Schedule read in " << read_req_->name();
+        read_req_->Activate(ec);
+      }
     }
   }
 
   if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
-    epoll_mask_ |= ev_mask;
+    if (async_write_pending_) {
+      DCHECK(async_write_req_);
 
-    // It could be that we scheduled current_context_ already but has not switched to it yet.
-    // Meanwhile a new event has arrived that triggered this callback again.
-    if (write_context_ && !write_context_->list_hook.is_linked()) {
-      DVSOCK(2) << "Wakey: Schedule write in " << write_context_->name();
-      ActivateSameThread(detail::FiberActive(), write_context_);
+      auto finalize = [this] {
+        delete async_write_req_;
+        async_write_req_ = nullptr;
+        async_write_pending_ = 0;
+      };
+
+      if (ec) {
+        async_write_req_->cb(make_unexpected(ec));
+        finalize();
+      } else if (async_write_req_->Run(native_handle(), true)) {
+        finalize();
+      }
+    } else {
+      // It could be that we activated context already but has not switched to it yet.
+      // Meanwhile a new event has arrived that triggered this callback again.
+      if (write_req_ && write_req_->IsSuspended()) {
+        DVSOCK(2) << "Wakey: Schedule write in " << write_req_->name();
+        write_req_->Activate(ec);
+      }
     }
   }
 

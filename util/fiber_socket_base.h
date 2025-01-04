@@ -35,7 +35,6 @@ class FiberSocketBase : public io::Sink,
   using endpoint_type = ::boost::asio::ip::tcp::endpoint;
   using error_code = std::error_code;
   using AcceptResult = ::io::Result<FiberSocketBase*>;
-  using io::AsyncSink::WriteProgressCb;
   using ProactorBase = fb2::ProactorBase;
 
   ABSL_MUST_USE_RESULT virtual error_code Shutdown(int how) = 0;

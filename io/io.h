@@ -158,20 +158,21 @@ class Sink {
   std::error_code Write(const iovec* vec, uint32_t len);
 };
 
+
+using AsyncProgressCb = std::function<void(Result<size_t>)>;
+using AsyncResultCb = std::function<void(std::error_code)>;
+
 class AsyncSink {
  public:
-  using WriteProgressCb = std::function<void(Result<size_t>)>;
-  using WriteCb = std::function<void(std::error_code)>;
-
   // Dispatches the write call asynchronously and immediately exits.
   // The caller must make sure that (v, len) are valid until cb is called.
-  virtual void AsyncWriteSome(const iovec* v, uint32_t len, WriteProgressCb cb) = 0;
+  virtual void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) = 0;
 
   // Wrapper around AsyncWriteSome that makes sure that the passed vectir is written to
   // completion. Copies (v, len) internally so it can be discarded after the call.
-  void AsyncWrite(const iovec* v, uint32_t len, WriteCb cb);
+  void AsyncWrite(const iovec* v, uint32_t len, AsyncResultCb cb);
 
-  void AsyncWrite(Bytes buf, WriteCb cb) {
+  void AsyncWrite(Bytes buf, AsyncResultCb cb) {
     iovec v{const_cast<uint8_t*>(buf.data()), buf.size()};
     AsyncWrite(&v, 1, std::move(cb));
   }
@@ -179,18 +180,15 @@ class AsyncSink {
 
 class AsyncSource {
  public:
-  using ReadProgressCb = std::function<void(Result<size_t>)>;
-  using ReadCb = std::function<void(std::error_code)>;
-
   // Dispatches the read call asynchronously and immediately exits.
   // The caller must make sure that (v, len) are valid until cb is called.
-  virtual void AsyncReadSome(const iovec* v, uint32_t len, ReadProgressCb cb) = 0;
+  virtual void AsyncReadSome(const iovec* v, uint32_t len, AsyncProgressCb cb) = 0;
 
   // Wrapper around AsyncReadSome that makes sure that the passed vectir is read to
   // completion. Copies (v, len) internally so it can be discarded after the call.
-  void AsyncRead(const iovec* v, uint32_t len, ReadCb cb);
+  void AsyncRead(const iovec* v, uint32_t len, AsyncResultCb cb);
 
-  void AsyncRead(MutableBytes buf, ReadCb cb) {
+  void AsyncRead(MutableBytes buf, AsyncResultCb cb) {
     iovec v{buf.data(), buf.size()};
     AsyncRead(&v, 1, std::move(cb));
   }

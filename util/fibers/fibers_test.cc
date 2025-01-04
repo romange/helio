@@ -856,7 +856,7 @@ TEST_P(ProactorTest, DragonflyBug1591) {
     start_step(3);
     ASSERT_FALSE(ec) << ec.message();
     uint8_t buf[128];
-    // This triggers the dangling read_context_ bug on timeout.
+    // This triggers the dangling read_req_ bug on timeout.
     sock2->set_timeout(1);
     auto res = sock2->Recv(buf);
     ASSERT_FALSE(res.has_value()) << "Receive should fail on timeout";

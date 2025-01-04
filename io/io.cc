@@ -30,7 +30,7 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
 
 struct AsyncWriteState {
   absl::FixedArray<iovec, 4> arr;
-  AsyncSink::WriteCb cb;
+  AsyncResultCb cb;
   iovec* cur;
   AsyncSink* owner;
 
@@ -44,7 +44,7 @@ struct AsyncWriteState {
 
 struct AsyncReadState {
   absl::FixedArray<iovec, 4> arr;
-  AsyncSource::ReadCb cb;
+  AsyncResultCb cb;
   iovec* cur;
   AsyncSource* owner;
 
@@ -209,13 +209,13 @@ Result<size_t> StringSink::WriteSome(const iovec* ptr, uint32_t len) {
   return res;
 }
 
-void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, WriteCb cb) {
+void AsyncSink::AsyncWrite(const iovec* v, uint32_t len, AsyncResultCb cb) {
   AsyncWriteState* state = new AsyncWriteState(this, v, len);
   state->cb = std::move(cb);
   AsyncWriteSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });
 }
 
-void AsyncSource::AsyncRead(const iovec* v, uint32_t len, ReadCb cb) {
+void AsyncSource::AsyncRead(const iovec* v, uint32_t len, AsyncResultCb cb) {
   AsyncReadState* state = new AsyncReadState(this, v, len);
   state->cb = std::move(cb);
   AsyncReadSome(state->arr.data(), len, [state](Result<size_t> res) { state->OnCb(res); });

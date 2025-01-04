@@ -14,6 +14,10 @@
 #include <sys/timerfd.h>
 #endif
 
+#if defined(__FreeBSD__)
+#include <pthread_np.h>
+#endif
+
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/fibers/epoll_socket.h"

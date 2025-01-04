@@ -27,9 +27,8 @@ class EpollSocket : public LinuxSocketBase {
   // Really need here expected.
   Result<size_t> WriteSome(const iovec* ptr, uint32_t len) override;
 
-  // TODO: to implement async functionality.
-  void AsyncWriteSome(const iovec* v, uint32_t len, WriteProgressCb cb) override;
-  void AsyncReadSome(const iovec* v, uint32_t len, ReadProgressCb cb) override;
+  void AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) override;
+  void AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) override;
 
   Result<size_t> RecvMsg(const msghdr& msg, int flags) override;
   Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
@@ -45,28 +44,46 @@ class EpollSocket : public LinuxSocketBase {
   using FiberSocketBase::IsConnClosed;
 
  private:
+  class PendingReq;
+
+  struct AsyncReq {
+    uint32_t len;
+    iovec* vec;
+    io::AsyncProgressCb cb;
+
+    AsyncReq(iovec* v, uint32_t l, io::AsyncProgressCb _cb) : len(l), vec(v), cb(std::move(_cb)) {
+    }
+
+    // Returns true if it has been fullfilled.
+    bool Run(int fd, bool is_send);
+  };
+
   EpollProactor* GetProactor() {
     return static_cast<EpollProactor*>(proactor());
   }
   void OnSetProactor() final;
   void OnResetProactor() final;
 
-  // returns true if the operation has completed.
-  bool SuspendMyself(detail::FiberInterface* cntx, std::error_code* ec);
-
   // kevent pass error code together with completion event.
   void Wakey(uint32_t event_flags, int error, EpollProactor* cntr);
 
-  detail::FiberInterface* write_context_ = nullptr;
-  detail::FiberInterface* read_context_ = nullptr;
+  union {
+    PendingReq* write_req_;
+    AsyncReq* async_write_req_;
+  };
+
+  union {
+    PendingReq* read_req_;
+    AsyncReq* async_read_req_;
+  };
+
   int32_t arm_index_ = -1;
-  uint16_t epoll_mask_ = 0;
-  uint16_t kev_error_ = 0;
 
   static constexpr uint32_t kMaxBufSize = 1 << 16;
   static constexpr uint32_t kMinBufSize = 1 << 4;
   uint32_t bufreq_sz_ = kMinBufSize;
-
+  uint8_t async_write_pending_ : 1;
+  uint8_t async_read_pending_ : 1;
   std::function<void(uint32_t)> error_cb_;
 };
 
