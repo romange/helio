@@ -298,16 +298,18 @@ fb2::ProactorBase* ListenerInterface::PickConnectionProactor(FiberSocketBase* so
 }
 
 void ListenerInterface::TraverseConnections(TraverseCB cb) {
-  pool_->AwaitFiberOnAll([&](unsigned index, auto* pb) { TraverseConnectionsOnThread(cb); });
+  pool_->AwaitFiberOnAll(
+      [&](unsigned index, auto* pb) { TraverseConnectionsOnThread(cb, UINT32_MAX, nullptr); });
 }
 
-void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
+Connection* ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb, uint32_t limit,
+                                                           Connection* from) {
   DCHECK(ProactorBase::IsProactorThread());
   unsigned index = ProactorBase::me()->GetPoolIndex();
 
   auto it = listener_map.find(this);
   if (it == listener_map.end()) {
-    return;
+    return nullptr;
   }
 
   // Unlike with migrations we do not rollback this counter in case of contention.
@@ -318,13 +320,20 @@ void ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb) {
     gate = migrate_traversal_state_.load(memory_order_acquire);
   }
 
+  auto& conn_list = it->second->list;
+
   // From this moment only traversal routines hold the lock.
-  // We demand that
+  // We demand that cb does not preempt.
+  auto item = from ? ListType::s_iterator_to(*from) : conn_list.begin();
+
   FiberAtomicGuard fg;
-  for (auto& conn : it->second->list) {
-    cb(index, &conn);
+  uint32 cnt = 0;
+  for (; item != conn_list.end() && cnt++ < limit; ++item) {
+    cb(index, &(*item));
   }
   migrate_traversal_state_.fetch_sub(1, memory_order_release);  // release the lock.
+
+  return item == conn_list.end() ? nullptr : &(*item);
 }
 
 void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
