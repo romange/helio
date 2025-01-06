@@ -62,6 +62,9 @@ class UringSocket : public LinuxSocketBase {
   unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
   void ReturnProvided(const ProvidedBuffer& pbuf) final;
 
+  // Sends provided buffers from the group. Not sure yet how to use this API.
+  void SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb);
+
   void EnableRecvMultishot();
   void set_bufring_id(uint16_t id) {
     bufring_id_ = id;

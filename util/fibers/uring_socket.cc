@@ -208,8 +208,8 @@ auto UringSocket::Accept() -> AcceptResult {
   return fs;
 }
 
-auto UringSocket::Connect(const endpoint_type& ep,
-                          std::function<void(int)> on_pre_connect) -> error_code {
+auto UringSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect)
+    -> error_code {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -597,6 +597,25 @@ void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
     DCHECK_EQ(pbuf.cookie, kHeapType);
     p->DeallocateBuffer({const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
   }
+}
+
+void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
+  Proactor* p = GetProactor();
+  auto io_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
+                                    uint32_t flags, uint32_t ) {
+    DVLOG(2) << "SendProvided completion " << res << " flags: " << flags;
+    if (res >= 0) {
+      cb(res);
+    } else {
+      cb(make_unexpected(error_code{-res, generic_category()}));
+    }
+  };
+
+  int fd = ShiftedFd();
+  SubmitEntry se = p->GetSubmitEntry(io_cb);
+  se.PrepSend(fd, nullptr, 0, MSG_NOSIGNAL);
+  se.sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+  se.sqe()->buf_group = buf_gid;
 }
 
 void UringSocket::EnableRecvMultishot() {

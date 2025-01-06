@@ -560,6 +560,39 @@ TEST_P(FiberSocketTest, OpenMany) {
   });
 }
 
+TEST_P(FiberSocketTest, SendProvided) {
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "OpenMany requires iouring";
+    return;
+  }
+
+  constexpr unsigned kBufGid = 3;
+  UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+  up->Await([up] { up->RegisterBufferRing(kBufGid, 4 /*nentries*/, 7 /*esize*/);  });
+
+  unique_ptr<FiberSocketBase> sock;
+  error_code ec;
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    ec = sock->Connect(listen_ep_);
+  });
+  ASSERT_FALSE(ec);
+
+  UringSocket* us = static_cast<UringSocket*>(sock.get());
+  // With kernel 6.8 it produces error EOPNOTSUPP on the following call.
+  proactor_->Await([&] {
+    us->SendProvided(kBufGid, [](io::Result<size_t> res) {
+      if (res) {
+        LOG(INFO) << "SendProvided res: " << *res;
+      } else {
+        LOG(ERROR) << "SendProvided error: " << res.error();
+      }
+    });
+  });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
 #endif
 
 }  // namespace fb2
