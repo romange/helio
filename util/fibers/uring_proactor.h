@@ -44,8 +44,6 @@ class UringProactor : public ProactorBase {
   // IoResult is the I/O result of the completion event.
   // uint32_t - epoll flags.
   // uint32_t - the user tag supplied during event submission. See GetSubmitEntry below.
-  // int64_t is the payload supplied during event submission. See GetSubmitEntry below.
-  // using CbType = std::function<void(IoResult, uint32_t)>;
   using CbType =
       fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
                          false /* non-throwing*/, false /* strong exceptions guarantees*/,
