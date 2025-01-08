@@ -17,7 +17,12 @@ namespace base {
 
 using std::string;
 
+#ifdef __FreeBSD__
+static constexpr char kProcSelf[] = "/proc/curproc/file";
+#else
 static constexpr char kProcSelf[] = "/proc/self/exe";
+#endif
+
 static constexpr char kDeletedSuffix[] = " (deleted)";
 
 constexpr ssize_t kDeletedSuffixLen = sizeof(kDeletedSuffix) - 1;
