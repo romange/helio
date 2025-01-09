@@ -24,7 +24,7 @@ option (LEGACY_GLOG "whether to use legacy glog library" ON)
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 
-set(THIRD_PARTY_CXX_FLAGS "-std=c++14 -O3 -DNDEBUG -fPIC -fno-stack-protector \
+set(THIRD_PARTY_CXX_FLAGS "-std=c++17 -O3 -DNDEBUG -fPIC -fno-stack-protector \
     -fno-stack-clash-protection")
 
 if (APPLE) 
@@ -176,7 +176,7 @@ endif ()
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/archive/20240116.2.tar.gz
+  URL https://github.com/abseil/abseil-cpp/releases/download/20240722.0/abseil-cpp-20240722.0.tar.gz
   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20240116.2.patch"
 )
 
@@ -257,7 +257,7 @@ endif()
 
 add_third_party(
   gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.15.tar.gz
+  URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
 
   # GIT_SHALLOW TRUE
   # Remove building the unneeded programs (they fail on macos)

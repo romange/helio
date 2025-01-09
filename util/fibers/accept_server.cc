@@ -93,7 +93,7 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   CHECK(listener && !listener->socket());
   CHECK(!was_run_);
 
-  char str_port[16];
+  char str_port[absl::numbers_internal::kFastToBufferSize];
   struct addrinfo hints, *servinfo;
 
   memset(&hints, 0, sizeof(hints));
