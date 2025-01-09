@@ -4,6 +4,7 @@
 
 #include "util/fibers/epoll_socket.h"
 
+#include <errno.h>
 #include <netinet/in.h>
 
 #include "absl/cleanup/cleanup.h"
@@ -134,7 +135,6 @@ class EpollSocket::PendingReq {
 
   void Activate(error_code ec);
 };
-
 
 error_code EpollSocket::PendingReq::Suspend(uint32_t timeout) {
   bool timed_out = false;
@@ -352,7 +352,7 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
     DCHECK_EQ(res, -1);
 
-    if (res != EAGAIN) {
+    if (errno != EAGAIN) {
       ec = from_errno();
       break;
     }
