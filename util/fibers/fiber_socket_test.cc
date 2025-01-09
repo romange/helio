@@ -160,7 +160,37 @@ TEST_P(FiberSocketTest, Basic) {
     VLOG(1) << "Before writesome";
     auto res = sock->WriteSome(io::Bytes(buf));
     EXPECT_EQ(16, res.value_or(0));
+
     VLOG(1) << "closing client sock " << sock->native_handle();
+    std::ignore = sock->Close();
+  });
+}
+
+TEST_P(FiberSocketTest, Bug363) {
+  const bool use_epoll = GetParam() == "epoll";
+  // We test only epoll proactor
+  if (!use_epoll) {
+    return;
+  }
+
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+  sock->set_timeout(3);
+
+  proactor_->Await([&] {
+    ThisFiber::SetName("ConnectFb");
+    std::ignore = sock->Connect(listen_ep_);
+    accept_fb_.Join();
+
+    // Explode the socket with Writes until it blocks. At this point the socket
+    // should timeout;
+    for (int i = 0; i < 50; ++i) {
+      uint8_t buf[1024 * 100] = {0};
+      auto res = sock->WriteSome(io::Bytes(buf));
+      if (!res) {
+        ASSERT_TRUE(res.error().value() != EAGAIN);
+      }
+    }
+
     std::ignore = sock->Close();
   });
 }
@@ -437,9 +467,7 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
   });
 
   FiberSocketBase::ProvidedBuffer pbuf[8];
-  unsigned res = proactor_->Await([&] {
-     return conn_socket_->RecvProvided(8, pbuf);
-  });
+  unsigned res = proactor_->Await([&] { return conn_socket_->RecvProvided(8, pbuf); });
 
   ASSERT_TRUE(res > 0 && res < 8);
   size_t total_size = 0;
@@ -473,7 +501,7 @@ TEST_P(FiberSocketTest, MultiShotNobuf) {
   }
 
   UringProactor* up = static_cast<UringProactor*>(proactor_.get());
-  up->Await([up] { up->RegisterBufferRing(2, 4, 4);  });
+  up->Await([up] { up->RegisterBufferRing(2, 4, 4); });
 
   unique_ptr<FiberSocketBase> sock;
   error_code ec;
@@ -492,7 +520,6 @@ TEST_P(FiberSocketTest, MultiShotNobuf) {
     static_cast<UringSocket*>(conn_socket_.get())->set_bufring_id(0);  // invalid bufring.
     static_cast<UringSocket*>(conn_socket_.get())->EnableRecvMultishot();
   });
-
 
   unsigned res;
   FiberSocketBase::ProvidedBuffer pbuf[8];
@@ -569,7 +596,7 @@ TEST_P(FiberSocketTest, SendProvided) {
 
   constexpr unsigned kBufGid = 3;
   UringProactor* up = static_cast<UringProactor*>(proactor_.get());
-  up->Await([up] { up->RegisterBufferRing(kBufGid, 4 /*nentries*/, 7 /*esize*/);  });
+  up->Await([up] { up->RegisterBufferRing(kBufGid, 4 /*nentries*/, 7 /*esize*/); });
 
   unique_ptr<FiberSocketBase> sock;
   error_code ec;
