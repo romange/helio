@@ -167,12 +167,6 @@ TEST_P(FiberSocketTest, Basic) {
 }
 
 TEST_P(FiberSocketTest, Bug363) {
-  const bool use_epoll = GetParam() == "epoll";
-  // We test only epoll proactor
-  if (!use_epoll) {
-    return;
-  }
-
   unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
   sock->set_timeout(3);
 
@@ -187,7 +181,7 @@ TEST_P(FiberSocketTest, Bug363) {
       uint8_t buf[1024 * 100] = {0};
       auto res = sock->WriteSome(io::Bytes(buf));
       if (!res) {
-        ASSERT_TRUE(res.error().value() != EAGAIN);
+        EXPECT_EQ(res.error().value(), ECANCELED);
       }
     }
 
