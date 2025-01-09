@@ -35,6 +35,11 @@ auto Unexpected(std::errc code) {
 
 const char kInstanceTokenUrl[] = "/computeMetadata/v1/instance/service-accounts/default/token";
 
+const char kGcloudDir[] = "~/.config/gcloud/";
+const char kGcloudDefaultConfigPath[] = "configurations/config_default";
+const char kGcloudCredentialsFolder[] = "legacy_credentials/";
+const char kAdcEnv[] = "GOOGLE_APPLICATION_CREDENTIALS";
+
 io::Result<string> ExpandFilePath(string_view path) {
   io::Result<io::StatShortVec> res = io::StatFiles(path);
 
@@ -49,13 +54,9 @@ io::Result<string> ExpandFilePath(string_view path) {
   return res->front().name;
 }
 
-std::error_code LoadGCPConfig(string* account_id, string* project_id) {
-  io::Result<string> path = ExpandFilePath("~/.config/gcloud/configurations/config_default");
-  if (!path) {
-    return path.error();
-  }
-
-  io::Result<string> config = io::ReadFileToString(*path);
+std::error_code LoadGCPConfig(string gcloudRootDir, string* account_id, string* project_id) {
+  io::Result<string> config =
+      io::ReadFileToString(absl::StrCat(gcloudRootDir, kGcloudDefaultConfigPath));
   if (!config) {
     return config.error();
   }
@@ -202,28 +203,34 @@ error_code ReadGCPConfigFromMetadata(fb2::ProactorBase* pb, string* account_id, 
 
 error_code GCPCredsProvider::Init(unsigned connect_ms) {
   CHECK_GT(connect_ms, 0u);
-
-  io::Result<string> root_path = ExpandFilePath("~/.config/gcloud");
-  if (!root_path) {
-    return root_path.error();
-  }
-
-  bool is_cloud_env = false;
-  string gce_file = absl::StrCat(*root_path, "/gce");
-
-  VLOG(1) << "Reading from " << gce_file;
-
-  io::Result<string> gce_file_str = io::ReadFileToString(gce_file);
-
-  if (gce_file_str && *gce_file_str == "True") {
-    is_cloud_env = true;
-  }
-
   connect_ms_ = connect_ms;
 
-  if (is_cloud_env) {
+  string adc_file;
+
+  char* kAdcEnvVal = std::getenv(kAdcEnv);
+  if (kAdcEnvVal != nullptr) {
+    adc_file = kAdcEnvVal;
+    VLOG(1) << "Using ADC file provided via environment variable: " << adc_file;
+  } else {
+    auto gcloudRoot = ExpandFilePath(kGcloudDir);
+    if (gcloudRoot) {
+      VLOG(1) << "Using ADC provided via gcloud CLI";
+      RETURN_ERROR(LoadGCPConfig(gcloudRoot.value(), &account_id_, &project_id_));
+      if (account_id_.empty() || project_id_.empty()) {
+        LOG(WARNING) << "gcloud config file is not valid";
+        return make_error_code(errc::not_supported);
+      }
+      adc_file =
+          absl::StrCat(gcloudRoot.value(), kGcloudCredentialsFolder, account_id_, "/adc.json");
+    } else if (gcloudRoot.error() != errc::no_such_file_or_directory) {
+      LOG(WARNING) << "error retrieving " << kGcloudDir;
+      return gcloudRoot.error();
+    }
+  }
+
+  if (adc_file.empty()) {
     use_instance_metadata_ = true;
-    VLOG(1) << "Reading from instance metadata";
+    VLOG(1) << "Retrieving ADC via metadata server";
     TokenTtl token_ttl;
     fb2::ProactorBase* pb = fb2::ProactorBase::me();
     RETURN_ERROR(ReadGCPConfigFromMetadata(pb, &account_id_, &project_id_, &token_ttl));
@@ -236,13 +243,6 @@ error_code GCPCredsProvider::Init(unsigned connect_ms) {
     access_token_ = token_ttl.first;
     expire_time_.store(time(nullptr) + token_ttl.second, std::memory_order_release);
   } else {
-    RETURN_ERROR(LoadGCPConfig(&account_id_, &project_id_));
-
-    if (account_id_.empty() || project_id_.empty()) {
-      LOG(WARNING) << "gcloud config file is not valid";
-      return make_error_code(errc::not_supported);
-    }
-    string adc_file = absl::StrCat(*root_path, "/legacy_credentials/", account_id_, "/adc.json");
     VLOG(1) << "ADC file: " << adc_file;
     RETURN_ERROR(ParseADC(adc_file, &client_id_, &client_secret_, &refresh_token_));
 
@@ -427,25 +427,26 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
       for (size_t i = 0; i < array.Size(); ++i) {
         const rapidjson::Value& item = array[i];
 
-/*
-   "kind": "storage#object",
-      "id": "mybucket/mypath/1730099621171118",
-      "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/mypath",
-      "mediaLink": "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/mypath?generation=1730099621171118&alt=media",
-      "name": "mypath",
-      "bucket": "mybucket",
-      "generation": "1730099621171118",
-      "metageneration": "1",
-      "storageClass": "STANDARD",
-      "size": "28466176",
-      "md5Hash": "...",
-      "crc32c": "...",
-      "etag": "....",
-      "timeCreated": "2024-10-28T07:13:41.174Z",
-      "updated": "2024-10-28T07:13:41.174Z",
-      "timeStorageClassUpdated": "2024-10-28T07:13:41.174Z"
+        /*
+           "kind": "storage#object",
+              "id": "mybucket/mypath/1730099621171118",
+              "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/mypath",
+              "mediaLink":
+           "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/mypath?generation=1730099621171118&alt=media",
+              "name": "mypath",
+              "bucket": "mybucket",
+              "generation": "1730099621171118",
+              "metageneration": "1",
+              "storageClass": "STANDARD",
+              "size": "28466176",
+              "md5Hash": "...",
+              "crc32c": "...",
+              "etag": "....",
+              "timeCreated": "2024-10-28T07:13:41.174Z",
+              "updated": "2024-10-28T07:13:41.174Z",
+              "timeStorageClassUpdated": "2024-10-28T07:13:41.174Z"
 
-*/
+        */
 
         auto it = item.FindMember("name");
         CHECK(it != item.MemberEnd());
