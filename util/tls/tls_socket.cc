@@ -24,48 +24,6 @@ namespace tls {
 using namespace std;
 using nonstd::make_unexpected;
 
-namespace {
-
-class error_category : public std::error_category {
- public:
-  const char* name() const noexcept final {
-    return "async.tls";
-  }
-
-  string message(int ev) const final;
-
-  error_condition default_error_condition(int ev) const noexcept final;
-
-  bool equivalent(int ev, const error_condition& condition) const noexcept final {
-    return condition.value() == ev && &condition.category() == this;
-  }
-
-  bool equivalent(const error_code& error, int ev) const noexcept final {
-    return error.value() == ev && &error.category() == this;
-  }
-};
-
-string error_category::message(int ev) const {
-  char buf[256];
-  ERR_error_string_n(ev, buf, sizeof(buf));
-  return buf;
-}
-
-error_condition error_category::default_error_condition(int ev) const noexcept {
-  return error_condition{ev, *this};
-}
-
-error_category tls_category;
-
-inline error_code SSL2Error(unsigned lineno, unsigned long err) {
-  CHECK_LT(err, unsigned(INT_MAX));
-  VLOG(1) << "SSL2Error at line " << lineno << ": " << error_category{}.message(int(err));
-
-  return error_code{int(err), tls_category};
-}
-
-}  // namespace
-
 #define RETURN_ON_ERROR(x) \
   do {                     \
     auto ec = (x);         \
