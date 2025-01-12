@@ -51,6 +51,10 @@ bool UringSocket::MultiShot::DecRef() {
   return true;
 }
 
+UringSocket::MultiShot::~MultiShot() {
+  CHECK(!HasBuffers());
+}
+
 void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags,
                                       UringProactor* proactor) {
   if (refcnt > 1)
@@ -74,7 +78,10 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
       CHECK(flags & IORING_CQE_F_BUFFER);
       CHECK_GT(res, 0);
 
-      proactor->EnqueueMultishotCompletion(bufring_id, res, flags, &tail);
+      this->tail = proactor->EnqueueMultishotCompletion(bufring_id, res, flags, this->tail);
+      if (this->head == UringProactor::kMultiShotUndef)
+        this->head = this->tail;
+
       DVLOG(1) << "Multishot tail " << tail << " " << flags;
 
       DCHECK_NE(tail, UringProactor::kMultiShotUndef);
@@ -92,7 +99,11 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
 
   sqe.flags |= (flags | IOSQE_BUFFER_SELECT);
   sqe.buf_group = bufring_id;
-  sqe.ioprio |= (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
+  uint16_t prio_flags = (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
+  if (proactor->HasBundleSupport()) {
+    prio_flags |= IORING_RECVSEND_BUNDLE;
+  }
+  sqe.ioprio |= prio_flags;
 
   ++refcnt;
 }
@@ -526,17 +537,25 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
     }
 
     while (multishot_->HasBuffers()) {
-      UringProactor::MultiShotResult result =
-          GetProactor()->PullMultiShotCompletion(bufring_id_, &multishot_->tail);
+      UringProactor* up = GetProactor();
+      // result may corresponds to several ring buffers in case the bundle option is active.
+      UringProactor::CompletionResult result =
+          up->PullMultiShotCompletion(bufring_id_, &multishot_->head);
+
+      if (multishot_->head == UringProactor::kMultiShotUndef) {
+        multishot_->tail = UringProactor::kMultiShotUndef;
+      }
+
       auto& pbuf = dest[res++];
-      pbuf.buffer = result;
+      pbuf.bid = result.bid;
       pbuf.allocated = 0;
-      pbuf.err_no = 0;
+      pbuf.res_len = result.res;
       pbuf.cookie = kBufRingType;
       if (res == buf_len) {
         return res;
       }
     };
+
     if (res > 0)
       return res;
 
@@ -568,9 +587,8 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
     has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
     DVSOCK(2) << "Received " << res << " bytes";
-    uint8_t* start = p->GetBufRingPtr(bufring_id_, flags >> IORING_CQE_BUFFER_SHIFT);
-    dest[0].buffer = io::MutableBytes{start, static_cast<size_t>(res)};
-    dest[0].err_no = 0;
+    dest[0].bid = flags >> IORING_CQE_BUFFER_SHIFT;
+    dest[0].res_len = res;
 
     if (multishot_) {
       multishot_->Activate(fd, bufring_id_, register_flag(), p);
@@ -589,14 +607,12 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 }
 
 void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  DCHECK(!pbuf.buffer.empty());
+  CHECK_GT(pbuf.res_len, 0);
+  CHECK_EQ(pbuf.cookie, kBufRingType);  // kHeapType is not supported yet.
+
   Proactor* p = GetProactor();
-  if (pbuf.cookie == kBufRingType) {
-    p->ReplenishBuffers(bufring_id_, pbuf.buffer);
-  } else {
-    DCHECK_EQ(pbuf.cookie, kHeapType);
-    p->DeallocateBuffer({const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
-  }
+
+  p->ReplenishBuffers(bufring_id_, pbuf.bid, pbuf.res_len);
 }
 
 void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
@@ -633,7 +649,9 @@ void UringSocket::CancelMultiShot() {
 
   if (!multishot_->DecRef()) {  // Still has references because of the armed callback.
     int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
-    GetProactor()->CancelRequests(ShiftedFd(), flags);
+
+    int res = GetProactor()->CancelRequests(ShiftedFd(), flags);
+    LOG_IF(WARNING, res < 0) << "Error canceling multishot " << -res;
   }
   multishot_ = nullptr;
 }

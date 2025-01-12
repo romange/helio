@@ -61,15 +61,19 @@ class FiberSocketBase : public io::Sink,
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
   struct ProvidedBuffer {
-    io::Bytes buffer;
+    union {
+      uint8_t* start;
+      uint16_t bid;
+    };
+
+    int res_len;   // positive len, negative errno.
     uint32_t allocated;
-    uint16_t err_no;  // Relevant only if buffer is empty.
     uint8_t cookie;   // Used by the socket to identify the buffer source.
 
     void SetError(uint16_t err) {
-      err_no = err;
+      res_len = -int(err);
       allocated = 0;
-      buffer = {};
+      start = nullptr;
     }
   };
 

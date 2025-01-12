@@ -363,7 +363,8 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET})) {
+  // ECANCELED if the operation was cancelled due to timeout, see PendingReq::Suspend().
+  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET, ECANCELED})) {
     LOG(ERROR) << "sock[" << fd << "] Unexpected error " << ec.message() << " " << RemoteEndpoint();
   }
 
@@ -455,7 +456,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
       size_t ures = res;
       dest[0].cookie = 1;
-      dest[0].err_no = 0;
+      dest[0].start = nullptr;
 
       // Handle buffer shrinkage.
       if (bufreq_sz_ > kMinBufSize && ures < bufreq_sz_ / 2) {
@@ -465,13 +466,15 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
         memcpy(buf2.data(), buf.data(), ures);
         proactor()->DeallocateBuffer(buf);
-        dest[0].buffer = {buf2.data(), ures};
+        dest[0].start = buf2.data();
+        dest[0].res_len = ures;
         dest[0].allocated = buf2.size();
 
         return 1;
       }
 
-      dest[0].buffer = {buf.data(), ures};
+      dest[0].start = buf.data();
+      dest[0].res_len = ures;
       dest[0].allocated = buf.size();
 
       // Handle buffer expansion.
@@ -491,10 +494,10 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
           break;
         }
         ures = res;
-        dest[num_bufs].buffer = {buf.data(), ures};
+        dest[num_bufs].start = buf.data();
+        dest[num_bufs].res_len = ures;
         dest[num_bufs].allocated = buf.size();
         dest[num_bufs].cookie = 1;
-        dest[num_bufs].err_no = 0;
         ++num_bufs;
       }
 
@@ -525,10 +528,10 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
 void EpollSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   DCHECK_EQ(pbuf.cookie, 1);
-  DCHECK(!pbuf.buffer.empty());
+  DCHECK_GT(pbuf.res_len, 0);
 
   proactor()->DeallocateBuffer(
-      io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
+      io::MutableBytes{const_cast<uint8_t*>(pbuf.start), size_t(pbuf.res_len)});
 }
 
 io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {

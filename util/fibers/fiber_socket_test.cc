@@ -4,6 +4,7 @@
 
 #include <thread>
 
+#include <gmock/gmock.h>
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
@@ -20,6 +21,7 @@ namespace util {
 namespace fb2 {
 
 constexpr uint32_t kRingDepth = 8;
+using namespace testing;
 
 #ifdef __linux__
 void InitProactor(ProactorBase* p) {
@@ -371,8 +373,12 @@ TEST_P(FiberSocketTest, UDS) {
 }
 
 TEST_P(FiberSocketTest, RecvProvided) {
-#ifdef __linux__
   bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "RecvProvided is supported only on uring";
+    return;
+  }
+#ifdef __linux__
   constexpr unsigned kBufLen = 40;
   if (use_uring) {
     UringProactor* up = static_cast<UringProactor*>(proactor_.get());
@@ -417,8 +423,8 @@ TEST_P(FiberSocketTest, RecvProvided) {
 
   size_t total_size = 0;
   for (unsigned i = 0; i < res; ++i) {
-    ASSERT_FALSE(pbuf[i].buffer.empty());
-    total_size += pbuf[i].buffer.size();
+    ASSERT_GT(pbuf[i].res_len, 0);
+    total_size += pbuf[i].res_len;
   }
 
   ASSERT_LE(total_size, sizeof(buf));
@@ -432,20 +438,21 @@ TEST_P(FiberSocketTest, RecvProvided) {
 
 #ifdef __linux__
 TEST_P(FiberSocketTest, RecvMultiShot) {
-  constexpr unsigned kBufLen = 40;
   bool use_uring = GetParam() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "RecvMultiShot is supported only on uring";
     return;
   }
 
+  constexpr unsigned kBufLen = 40;
+  constexpr unsigned kGid = 1;
   UringProactor* up = static_cast<UringProactor*>(proactor_.get());
-  up->Await([up] { up->RegisterBufferRing(1, 4, kBufLen); });
+  up->Await([up] { up->RegisterBufferRing(kGid, 4, kBufLen); });
 
   unique_ptr<FiberSocketBase> sock;
   error_code ec;
-  uint8_t buf[120];
-  memset(buf, 'x', sizeof(buf));
+  array<uint8_t, 120> buf;
+  buf.fill('x');
 
   proactor_->Await([&] {
     sock.reset(proactor_->CreateSocket());
@@ -460,31 +467,44 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
     static_cast<UringSocket*>(conn_socket_.get())->EnableRecvMultishot();
   });
 
+  size_t total_size = 0;
   FiberSocketBase::ProvidedBuffer pbuf[8];
   unsigned res = proactor_->Await([&] { return conn_socket_->RecvProvided(8, pbuf); });
-
   ASSERT_TRUE(res > 0 && res < 8);
-  size_t total_size = 0;
   for (unsigned i = 0; i < res; ++i) {
-    ASSERT_FALSE(pbuf[i].buffer.empty());
-    total_size += pbuf[i].buffer.size();
-    for (uint8_t b : pbuf[i].buffer) {
-      ASSERT_EQ('x', b);
+    ASSERT_GT(pbuf[i].res_len, 0);
+    total_size += pbuf[i].res_len;
+    uint16_t bid = pbuf[i].bid;
+    auto compare = [](const uint8_t* b, unsigned len) {
+      for (unsigned i = 0; i < len; ++i) {
+        ASSERT_EQ('x', b[i]);
+      }
+    };
+
+    while (unsigned(pbuf[i].res_len) > kBufLen) {
+      uint8_t* b = up->GetBufRingPtr(kGid, bid);
+      compare(b, kBufLen);
+      pbuf[i].res_len -= kBufLen;
+      bid = up->GetNextBufRingBid(kGid, bid);
     }
+    compare(up->GetBufRingPtr(kGid, bid), pbuf[i].res_len);
   }
 
-  ASSERT_EQ(total_size, sizeof(buf));
-
-  proactor_->Await([&] { std::ignore = sock->Close(); });
   proactor_->Await([&] {
     for (unsigned i = 0; i < res; ++i) {
       conn_socket_->ReturnProvided(pbuf[i]);
     }
-    res = conn_socket_->RecvProvided(8, pbuf);
   });
+
+  EXPECT_EQ(total_size, buf.size());
+
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+  res = proactor_->Await([&] {
+    return conn_socket_->RecvProvided(8, pbuf);
+  });
+
   ASSERT_EQ(res, 1);
-  ASSERT_TRUE(pbuf[0].buffer.empty());
-  ASSERT_EQ(pbuf[0].err_no, ECONNABORTED);
+  ASSERT_EQ(pbuf[0].res_len, -ECONNABORTED);
 }
 
 TEST_P(FiberSocketTest, MultiShotNobuf) {
@@ -519,8 +539,9 @@ TEST_P(FiberSocketTest, MultiShotNobuf) {
   FiberSocketBase::ProvidedBuffer pbuf[8];
   proactor_->Await([&] { res = conn_socket_->RecvProvided(8, pbuf); });
   ASSERT_EQ(res, 1);
-  ASSERT_TRUE(pbuf[0].buffer.empty());
-  ASSERT_EQ(pbuf[0].err_no, ENOBUFS);
+
+  // with 6.8 kernel we get ENOBUFS, with newer kernels we get ENOENT.
+  ASSERT_THAT(pbuf[0].res_len, AnyOf(-ENOBUFS, -ENOENT));
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 
@@ -584,7 +605,7 @@ TEST_P(FiberSocketTest, OpenMany) {
 TEST_P(FiberSocketTest, SendProvided) {
   bool use_uring = GetParam() == "uring";
   if (!use_uring) {
-    GTEST_SKIP() << "OpenMany requires iouring";
+    GTEST_SKIP() << "SendProvided requires iouring";
     return;
   }
 

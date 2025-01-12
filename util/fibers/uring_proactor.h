@@ -117,10 +117,14 @@ class UringProactor : public ProactorBase {
   // Returns 0 on success, errno on failure.
   int RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize);
   uint8_t* GetBufRingPtr(uint16_t group_id, uint16_t bufid);
+  uint16_t GetNextBufRingBid(uint16_t group_id, uint16_t bufid) const;
 
-  // Return 1 or more buffers to the bufring. slice.data() should point to a buffer returned by
-  // GetBufRingPtr and its length should be within the range of the buffers handled by group_id.
-  void ReplenishBuffers(uint16_t group_id, io::Bytes slice);
+  // Replenish a single buffer. Does not advance the ring tail.
+  void ReplenishBuffers(uint16_t group_id, uint16_t bid, size_t bytes);
+
+  void CommitRingBuffers(uint16_t group_id, uint16_t count) {
+    io_uring_buf_ring_advance(bufring_groups_[group_id].ring, count);
+  }
 
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
@@ -138,7 +142,7 @@ class UringProactor : public ProactorBase {
   // Available since kernel 6.8.
   int BufRingAvailable(unsigned group_id) const;
 
-  // Returns 0 on success, errno on failure.
+  // Returns 0 on success, or -errno on failure.
   // See io_uring_prep_cancel(3) for flags.
   int CancelRequests(int fd, unsigned flags);
 
@@ -149,16 +153,24 @@ class UringProactor : public ProactorBase {
 
   static constexpr uint16_t kMultiShotUndef = 0xFFFF;
 
-  void EnableMultiShot(uint16_t group_id);
+  // Enqueues a completion from recv multishot. Can be later fetched by RecvProvided() via
+  // PullMultiShotCompletion call. The list of completions is managed internally by the proactor
+  // but the caller socket keeps the head/tail of his completion queue.
+  // This allows us to maintain multiple completion lists in the same bufring.
+  // tail: is the input/output argument that is updated by EnqueueMultishotCompletion.
+  uint16_t EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t cqe_flags,
+                                      uint16_t tail_id);
 
-  // Returns a new head.
-  void EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t flags, uint16_t* tail);
+  struct CompletionResult {
+    uint16_t bid;
+    IoResult res;
+  };
 
-  using MultiShotResult = io::Bytes;
+  // Pulls a single completion request from the completion queue maintained by the proactor.
+  // tail must point to a valid id (i,.e. not kMultiShotUndef).
+  // Once the completion queue is exhausted, tail is updated to kMultiShotUndef.
 
-  // Pulls a single range of a multishot completion. head must point to a valid id.
-  // Once the queue of completions is exhausted, head is set to kMultiShotUndef.
-  MultiShotResult PullMultiShotCompletion(uint16_t group_id, uint16_t* tail);
+  CompletionResult PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id);
 
  private:
   void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
@@ -204,24 +216,40 @@ class UringProactor : public ProactorBase {
   // TODO: start using IORING_TIMEOUT_MULTISHOT (see io_uring_prep_timeout(3)).
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
-  struct MultiShot {
-    uint16_t next, prev;  // Composes a ring buffer.
-    uint16_t bid;         // buffer id.
-    uint16_t reserved;
+  struct MultiShotCompletion {
+    uint16_t next;  // Composes a ring buffer.
+    uint16_t bid;   // buffer id.
+
     IoResult res;
   };
-  static_assert(sizeof(MultiShot) == 12);
+  static_assert(sizeof(MultiShotCompletion) == 8);
 
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;
-    uint8_t* buf = nullptr;
-    MultiShot* multishot_arr = nullptr;  // Array of a cardinality of nentries.
-    uint8_t nentries_exp = 0;            // 2^nentries_exp is the number of entries.
-    uint8_t multishot_exp = 0;           // 2^multishot_exp is the number of multishot entries.
-    uint16_t free_multi_shot_id = 0;
+    uint8_t* storage = nullptr;
+    MultiShotCompletion* multishot_arr = nullptr;  // Array of a cardinality of nentries.
+
+    // Insertion order map of a cardinality of nentries. bufring_next[x] points to the next
+    // bid element after x.
+    uint16_t* bufring_next = nullptr;
     uint32_t entry_size = 0;
+    uint16_t free_multi_shot_id = 0;  // head of the free list in multishot_arr.
+    uint16_t last_inserted_id = 0;  // last bid that was inserted. Used together with bufring_order.
+    uint16_t reserved1 = 0;         // reserved for future use.
+    uint8_t nentries_exp = 0;       // 2^nentries_exp is the number of entries.
+    uint8_t multishot_exp = 0;      // 2^multishot_exp is the number of multishot entries.
+    uint32_t reserved2 = 0;         // reserved for future use.
+
+    // Returns the new tail.
+    uint16_t HandleCompletion(uint16_t bid, uint16_t multishot_tail_id, IoResult res);
+
+    // Manages multishot completions.
+    CompletionResult PullCHead(uint16_t* head);
+    uint16_t PushCTail(uint16_t tail, uint16_t bid, IoResult res);
+    void AddToRing(uint16_t bid, uint16_t mask, uint16_t offset);
   };
-  static_assert(sizeof(BufRingGroup) == 32);
+
+  static_assert(sizeof(BufRingGroup) == 48);
   std::vector<BufRingGroup> bufring_groups_;
 
   // Keeps track of requested buffers
