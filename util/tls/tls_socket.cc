@@ -482,7 +482,7 @@ unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
 void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   proactor()->DeallocateBuffer(
-      io::MutableBytes{const_cast<uint8_t*>(pbuf.buffer.data()), pbuf.allocated});
+      io::MutableBytes{const_cast<uint8_t*>(pbuf.start), pbuf.allocated});
 }
 
 bool TlsSocket::IsUDS() const {

@@ -114,10 +114,14 @@ class UringSocket : public LinuxSocketBase {
 
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
 
+  // A multishot state object. Manages the multishot completions in the shared completion array
+  // of proactor. The socket must drain all its completions before it can be destroyed.
   struct MultiShot {
     detail::FiberInterface* poll_pending = nullptr;
 
+    uint16_t head = UringProactor::kMultiShotUndef;
     uint16_t tail = UringProactor::kMultiShotUndef;
+
     uint16_t err_no = 0;
 
     union {
@@ -134,6 +138,7 @@ class UringSocket : public LinuxSocketBase {
     void Activate(int fd, uint16_t bufring_id, uint8_t flags, UringProactor* proactor);
 
     MultiShot() : flags_(0) { refcnt = 1; }
+    ~MultiShot();
 
     bool HasBuffers() const {
       return tail != UringProactor::kMultiShotUndef;

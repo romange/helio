@@ -89,13 +89,12 @@ std::error_code EchoConnection::ReadMsg() {
     unsigned num_bufs = socket_->RecvProvided(8, pb);
 
     for (unsigned i = 0; i < num_bufs; ++i) {
-      if (!pb[i].buffer.empty()) {
+      if (pb[i].res_len > 0) {
         prov_buffers_.push(pb[i]);
-        pending_read_bytes_ += pb[i].buffer.size();
+        pending_read_bytes_ += pb[i].res_len;
       } else {
         DCHECK_EQ(i, 0u);
-        CHECK_GT(pb[i].err_no, 0u);
-        return error_code(pb[i].err_no, system_category());
+        return error_code(-pb[i].res_len, system_category());
       }
     }
     if (pending_read_bytes_ > req_len_) {
@@ -185,11 +184,11 @@ void EchoConnection::HandleRequests() {
       DCHECK(!prov_buffers_.empty());
       size_t needed = req_len_ - prepare_len;
       const auto& pbuf = prov_buffers_.front();
-      size_t bytes_count = pbuf.buffer.size() - first_buf_offset_;
-      DCHECK(!pbuf.buffer.empty());
+      size_t bytes_count = pbuf.res_len - first_buf_offset_;
+      DCHECK_GT(!pbuf.res_len, 0);
 
       if (bytes_count <= needed) {
-        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, bytes_count});
+        vec.push_back({const_cast<uint8_t*>(pbuf.start) + first_buf_offset_, bytes_count});
         prepare_len += bytes_count;
         DCHECK_GE(pending_read_bytes_, bytes_count);
         pending_read_bytes_ -= bytes_count;
@@ -197,7 +196,7 @@ void EchoConnection::HandleRequests() {
         prov_buffers_.pop();
         first_buf_offset_ = 0;
       } else {
-        vec.push_back({const_cast<uint8_t*>(pbuf.buffer.data()) + first_buf_offset_, needed});
+        vec.push_back({const_cast<uint8_t*>(pbuf.start) + first_buf_offset_, needed});
         first_buf_offset_ += needed;
         prepare_len += needed;
         DCHECK_GE(pending_read_bytes_, needed);
