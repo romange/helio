@@ -38,9 +38,6 @@ auto Unexpected(std::errc e) {
   return make_unexpected(make_error_code(e));
 }
 
-constexpr uint8_t kHeapType = 1;
-constexpr uint8_t kBufRingType = 2;
-
 }  // namespace
 
 bool UringSocket::MultiShot::DecRef() {
@@ -65,26 +62,23 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
     DVLOG(2) << "Multishot completion " << res << " flags: " << flags;
     UringProactor* proactor = static_cast<UringProactor*>(ProactorBase::me());
 
-    if ((flags & IORING_CQE_F_MORE) == 0) {
-      if (DecRef())  // Last reference.
-        return;
-
-      // Assumption.
-      CHECK_EQ(flags & IORING_CQE_F_BUFFER, 0u);
-      CHECK_LE(res, 0);
-      err_no = -res;
-      error_raised = 1;
-    } else {
-      CHECK(flags & IORING_CQE_F_BUFFER);
+    if (flags & IORING_CQE_F_BUFFER) {
       CHECK_GT(res, 0);
 
       this->tail = proactor->EnqueueMultishotCompletion(bufring_id, res, flags, this->tail);
       if (this->head == UringProactor::kMultiShotUndef)
         this->head = this->tail;
-
-      DVLOG(1) << "Multishot tail " << tail << " " << flags;
-
       DCHECK_NE(tail, UringProactor::kMultiShotUndef);
+    } else {
+      CHECK_LE(res, 0);
+      DCHECK_EQ(0u, flags & IORING_CQE_F_MORE);
+      err_no = -res;
+      error_raised = 1;
+    }
+
+    if ((flags & IORING_CQE_F_MORE) == 0) {
+      if (DecRef())  // Last reference.
+        return;
     }
 
     if (poll_pending) {
@@ -550,7 +544,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
       pbuf.bid = result.bid;
       pbuf.allocated = 0;
       pbuf.res_len = result.res;
-      pbuf.cookie = kBufRingType;
+      pbuf.type = kBufRingType;
       if (res == buf_len) {
         return res;
       }
@@ -578,7 +572,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   }
   ssize_t res = fc.Get();
 
-  dest[0].cookie = kBufRingType;
+  dest[0].type = kBufRingType;
   dest[0].allocated = 0;
 
   if (res > 0) {
@@ -608,7 +602,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
 void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
   CHECK_GT(pbuf.res_len, 0);
-  CHECK_EQ(pbuf.cookie, kBufRingType);  // kHeapType is not supported yet.
+  CHECK_EQ(pbuf.type, kBufRingType);  // kHeapType is not supported yet.
 
   Proactor* p = GetProactor();
 

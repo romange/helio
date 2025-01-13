@@ -455,7 +455,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
     ssize_t res = recv(fd, buf.data(), buf.size(), 0);
     if (res > 0) {  // if res is 0, that means a peer closed the socket.
       size_t ures = res;
-      dest[0].cookie = 1;
+      dest[0].type = kHeapType;
       dest[0].start = nullptr;
 
       // Handle buffer shrinkage.
@@ -497,7 +497,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
         dest[num_bufs].start = buf.data();
         dest[num_bufs].res_len = ures;
         dest[num_bufs].allocated = buf.size();
-        dest[num_bufs].cookie = 1;
+        dest[num_bufs].type = kHeapType;
         ++num_bufs;
       }
 
@@ -527,7 +527,7 @@ unsigned EpollSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 }
 
 void EpollSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  DCHECK_EQ(pbuf.cookie, 1);
+  DCHECK_EQ(pbuf.type, kHeapType);
   DCHECK_GT(pbuf.res_len, 0);
 
   proactor()->DeallocateBuffer(

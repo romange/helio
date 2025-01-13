@@ -60,6 +60,8 @@ class FiberSocketBase : public io::Sink,
 
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
+  enum ProvidedType : uint8_t { kHeapType = 1, kBufRingType = 2};
+
   struct ProvidedBuffer {
     union {
       uint8_t* start;
@@ -68,7 +70,7 @@ class FiberSocketBase : public io::Sink,
 
     int res_len;   // positive len, negative errno.
     uint32_t allocated;
-    uint8_t cookie;   // Used by the socket to identify the buffer source.
+    ProvidedType type;   // Buffer type.
 
     void SetError(uint16_t err) {
       res_len = -int(err);
