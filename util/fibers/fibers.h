@@ -119,6 +119,10 @@ uint64_t FiberLongRunSumUsec() noexcept;
 // It is advised to call this function when a program starts.
 void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size = 64 * 1024);
 
+// Sets the default stack size for fibers.
+// Expected that memory resource is already set.
+void SetDefaultStackSize(size_t default_size);
+
 // Returns the total stack size (virtual memory) for worker fibers for the current thread.
 // Please note that RSS memory usage is usually smaller, depending on the actuall stack usage
 // of the fibers.
@@ -180,9 +184,8 @@ inline void CheckSafetyMargin() {
 }
 
 class PrintLocalsCallback {
-public:
-  template<typename Fn>
-  PrintLocalsCallback(Fn&& fn) {
+ public:
+  template <typename Fn> PrintLocalsCallback(Fn&& fn) {
     fb2::detail::FiberActive()->SetPrintStacktraceCb(std::forward<Fn>(fn));
   }
 

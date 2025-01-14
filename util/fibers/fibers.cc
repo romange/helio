@@ -49,6 +49,11 @@ void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size) {
   std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
+void SetDefaultStackSize(size_t default_size) {
+  detail::default_stack_size = default_size;
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
 void* StdMallocResource::do_allocate(size_t size, size_t align) {
   void* res = malloc(size);
   if (res == nullptr) {
