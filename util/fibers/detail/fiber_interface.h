@@ -59,7 +59,6 @@ using FI_SleepHook =
 
 class Scheduler;
 
-
 class FiberInterface {
   friend class Scheduler;
 
@@ -222,6 +221,8 @@ class FiberInterface {
 
   void CheckStackMargin();
 
+  size_t GetStackMargin(const void* stack_address) const;
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -260,6 +261,7 @@ class FiberInterface {
   char name_[24];
   uint32_t stack_size_ = 0;
   uint8_t* stack_bottom_ = nullptr;
+
  private:
 #ifndef NDEBUG
   std::function<std::string()> stacktrace_print_cb_;

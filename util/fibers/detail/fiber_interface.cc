@@ -185,6 +185,10 @@ ctx::fiber_context FiberInterface::Terminate() {
   return scheduler_->Preempt();
 }
 
+size_t FiberInterface::GetStackMargin(const void* stack_address) const {
+  return static_cast<const uint8_t*>(stack_address) - stack_bottom_;
+}
+
 void FiberInterface::CheckStackMargin() {
   uint32_t check_margin = absl::GetFlag(FLAGS_fiber_safety_margin);
   if (check_margin == 0)
