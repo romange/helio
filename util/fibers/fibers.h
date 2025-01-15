@@ -175,14 +175,19 @@ inline std::string_view GetName() {
   return fb2::detail::FiberActive()->name();
 }
 
+/* Returns the margin between the provided stack address
+   and the bottom of the fiber's stack. */
+inline uint32_t GetStackMargin(const void* stack_address) {
+  return fb2::detail::FiberActive()->GetStackMargin(stack_address);
+}
+
 inline void CheckSafetyMargin() {
   fb2::detail::FiberActive()->CheckStackMargin();
 }
 
 class PrintLocalsCallback {
-public:
-  template<typename Fn>
-  PrintLocalsCallback(Fn&& fn) {
+ public:
+  template <typename Fn> PrintLocalsCallback(Fn&& fn) {
     fb2::detail::FiberActive()->SetPrintStacktraceCb(std::forward<Fn>(fn));
   }
 
