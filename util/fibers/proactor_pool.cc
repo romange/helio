@@ -4,6 +4,8 @@
 
 #include "util/proactor_pool.h"
 
+#include <vector>
+
 #include "base/flags.h"
 #include "base/logging.h"
 #include "base/pthread_utils.h"
@@ -229,7 +231,7 @@ void ProactorPool::SetupProactors() {
 
   cpu_set_t online_cpus = OnlineCpus();
   unsigned num_online_cpus = CPU_COUNT(&online_cpus);
-  unsigned rel_to_abs_cpu[num_online_cpus];
+  std::vector<unsigned> rel_to_abs_cpu(num_online_cpus, 0);
   unsigned rel_cpu_index = 0, abs_cpu_index = 0;
 
   for (; abs_cpu_index < kTotalCpus; abs_cpu_index++) {
