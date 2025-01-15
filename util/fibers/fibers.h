@@ -105,7 +105,7 @@ class Fiber {
 // Returns the context switch epoch number for this thread.
 uint64_t FiberSwitchEpoch() noexcept;
 
-// Returns the aggregated delay between activation of fibers and
+// Returns the aggregated delay between activatiI think we can remove this since it is not more needed to fix the sanitizerson of fibers and
 // the time they were switched to in microseconds.
 uint64_t FiberSwitchDelayUsec() noexcept;
 
@@ -120,7 +120,7 @@ uint64_t FiberLongRunSumUsec() noexcept;
 void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size = 64 * 1024);
 
 // Sets the default stack size for fibers.
-// Expected that memory resource is already set.
+// Expects that memory resource is already set.
 void SetDefaultStackSize(size_t default_size);
 
 // Returns the total stack size (virtual memory) for worker fibers for the current thread.
