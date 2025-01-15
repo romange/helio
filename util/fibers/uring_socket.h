@@ -141,7 +141,7 @@ class UringSocket : public LinuxSocketBase {
     ~MultiShot();
 
     bool HasBuffers() const {
-      return tail != UringProactor::kMultiShotUndef;
+      return head != UringProactor::kMultiShotUndef;
     }
   };
 

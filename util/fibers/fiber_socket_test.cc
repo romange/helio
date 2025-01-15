@@ -474,7 +474,7 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
   for (unsigned i = 0; i < res; ++i) {
     ASSERT_GT(pbuf[i].res_len, 0);
     total_size += pbuf[i].res_len;
-    uint16_t bid = pbuf[i].bid;
+    uint16_t bid = pbuf[i].buf_id;
     auto compare = [](const uint8_t* b, unsigned len) {
       for (unsigned i = 0; i < len; ++i) {
         ASSERT_EQ('x', b[i]);
@@ -485,7 +485,8 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
       uint8_t* b = up->GetBufRingPtr(kGid, bid);
       compare(b, kBufLen);
       pbuf[i].res_len -= kBufLen;
-      bid = up->GetNextBufRingBid(kGid, bid);
+      ++pbuf[i].buf_pos;
+      bid = up->GetBufIdByPos(kGid, pbuf[i].buf_pos);
     }
     compare(up->GetBufRingPtr(kGid, bid), pbuf[i].res_len);
   }

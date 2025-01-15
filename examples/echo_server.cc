@@ -205,7 +205,7 @@ bool EchoConnection::ProcessSingleBuffer(SendMsgState* state) {
     if (pb.type == FiberSocketBase::kHeapType)
       return pb.start;
 #ifdef __linux__
-    return static_cast<fb2::UringProactor*>(ProactorBase::me())->GetBufRingPtr(0, pb.bid);
+    return static_cast<fb2::UringProactor*>(ProactorBase::me())->GetBufRingPtr(0, pb.buf_id);
 #endif
     return nullptr;
   };
@@ -219,7 +219,7 @@ bool EchoConnection::ProcessSingleBuffer(SendMsgState* state) {
     state->ec = Send(state->is_raw, state->vec);
     state->vec.resize(1);
     for (auto& pb : state->kept_buffers) {
-      VLOG(2) << "Return buffer id " << pb.bid << " " << pb.res_len;
+      VLOG(2) << "Return buffer id " << pb.buf_id << " " << pb.res_len;
       socket_->ReturnProvided(pb);
     }
     state->kept_buffers.clear();
@@ -244,7 +244,8 @@ void EchoConnection::ProcessFully(SendMsgState* state) {
   while (state->buf_len > kBufLen) {  // process bundle
     ProcessSingleBuffer(state);
     state->buf_len -= kBufLen;
-    state->pbuf.bid = up->GetNextBufRingBid(0, state->pbuf.bid);
+    ++state->pbuf.buf_pos;
+    state->pbuf.buf_id = up->GetBufIdByPos(0, state->pbuf.buf_pos);
     if (state->ec)
       return;
   }
@@ -252,7 +253,7 @@ void EchoConnection::ProcessFully(SendMsgState* state) {
   if (ProcessSingleBuffer(state)) {
     state->kept_buffers.push_back(state->pbuf);
   } else {
-    VLOG(1) << "Return buffer id " << state->pbuf.bid << " " << state->pbuf.res_len;
+    VLOG(1) << "Return buffer id " << state->pbuf.buf_id << " " << state->pbuf.res_len;
     socket_->ReturnProvided(state->pbuf);
   }
 }
