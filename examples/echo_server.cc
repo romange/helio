@@ -244,7 +244,8 @@ void EchoConnection::ProcessFully(SendMsgState* state) {
   while (state->buf_len > kBufLen) {  // process bundle
     ProcessSingleBuffer(state);
     state->buf_len -= kBufLen;
-    state->pbuf.bid = up->GetNextBufRingBid(0, state->pbuf.bid);
+    ++state->pbuf.buf_pos;
+    state->pbuf.bid = up->GetBufIdByPos(0, state->pbuf.buf_pos);
     if (state->ec)
       return;
   }

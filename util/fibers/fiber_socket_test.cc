@@ -485,7 +485,8 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
       uint8_t* b = up->GetBufRingPtr(kGid, bid);
       compare(b, kBufLen);
       pbuf[i].res_len -= kBufLen;
-      bid = up->GetNextBufRingBid(kGid, bid);
+      ++pbuf[i].buf_pos;
+      bid = up->GetBufIdByPos(kGid, pbuf[i].buf_pos);
     }
     compare(up->GetBufRingPtr(kGid, bid), pbuf[i].res_len);
   }

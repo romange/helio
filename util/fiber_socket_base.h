@@ -65,7 +65,10 @@ class FiberSocketBase : public io::Sink,
   struct ProvidedBuffer {
     union {
       uint8_t* start;
-      uint16_t bid;
+      struct {
+        uint16_t bid;
+        uint16_t buf_pos;
+      };
     };
 
     int res_len;   // positive len, negative errno.

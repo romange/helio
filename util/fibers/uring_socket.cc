@@ -59,11 +59,13 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
 
   auto cb = [this](detail::FiberInterface* current, IoResult res, uint32_t flags,
                    uint32_t bufring_id) {
-    DVLOG(2) << "Multishot completion " << res << " flags: " << flags;
     UringProactor* proactor = static_cast<UringProactor*>(ProactorBase::me());
 
     if (flags & IORING_CQE_F_BUFFER) {
       CHECK_GT(res, 0);
+
+      DVLOG(2) << "Multishot completion " << res << " bid: " << (flags >> IORING_CQE_BUFFER_SHIFT)
+        << " has_more: " << ((flags & IORING_CQE_F_MORE) ? 1 : 0) << " len:" << res;
 
       this->tail = proactor->EnqueueMultishotCompletion(bufring_id, res, flags, this->tail);
       if (this->head == UringProactor::kMultiShotUndef)
@@ -72,8 +74,10 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
     } else {
       CHECK_LE(res, 0);
       DCHECK_EQ(0u, flags & IORING_CQE_F_MORE);
+
       err_no = -res;
       error_raised = 1;
+      DVLOG(2) << "Multishot error " << err_no;
     }
 
     if ((flags & IORING_CQE_F_MORE) == 0) {
@@ -213,8 +217,8 @@ auto UringSocket::Accept() -> AcceptResult {
   return fs;
 }
 
-auto UringSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect)
-    -> error_code {
+auto UringSocket::Connect(const endpoint_type& ep,
+                          std::function<void(int)> on_pre_connect) -> error_code {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -436,7 +440,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
 
     if (res > 0) {
       has_recv_data_ = (fc.flags() & IORING_CQE_F_SOCK_NONEMPTY) ? 1 : 0;
-      DVSOCK(2) << "Received " << res << " bytes";
+      DVSOCK(2) << "Received " << res << " bytes " << ", has_more " << has_recv_data_;
       return res;
     }
     DVSOCK(2) << "Got " << res;
@@ -542,6 +546,7 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 
       auto& pbuf = dest[res++];
       pbuf.bid = result.bid;
+      pbuf.buf_pos = result.bufring_pos;
       pbuf.allocated = 0;
       pbuf.res_len = result.res;
       pbuf.type = kBufRingType;
@@ -567,6 +572,8 @@ unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   fc->PrepRecv(fd, nullptr, 0, 0);
   fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
   fc->sqe()->buf_group = bufring_id_;
+
+  // Note, we do not support bundles for non-multishot mode.
   if (has_pollfirst_ && !has_recv_data_) {
     fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
   }
@@ -606,13 +613,13 @@ void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
 
   Proactor* p = GetProactor();
 
-  p->ReplenishBuffers(bufring_id_, pbuf.bid, pbuf.res_len);
+  p->ReplenishBuffers(bufring_id_, pbuf.bid, pbuf.buf_pos, pbuf.res_len);
 }
 
 void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
   Proactor* p = GetProactor();
   auto io_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                    uint32_t flags, uint32_t ) {
+                                    uint32_t flags, uint32_t) {
     DVLOG(2) << "SendProvided completion " << res << " flags: " << flags;
     if (res >= 0) {
       cb(res);
@@ -640,6 +647,13 @@ void UringSocket::EnableRecvMultishot() {
 void UringSocket::CancelMultiShot() {
   if (!multishot_)
     return;
+
+  while (multishot_->HasBuffers()) {
+    UringProactor::CompletionResult result =
+        GetProactor()->PullMultiShotCompletion(bufring_id_, &multishot_->head);
+    DCHECK_GT(result.res, 0);
+    GetProactor()->ReplenishBuffers(bufring_id_, result.bid, result.bufring_pos, result.res);
+  }
 
   if (!multishot_->DecRef()) {  // Still has references because of the armed callback.
     int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;

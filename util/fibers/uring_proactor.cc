@@ -64,6 +64,10 @@ constexpr uint16_t kCqeBatchLen = 128;
 uint16_t UringProactor::BufRingGroup::HandleCompletion(uint16_t bid, uint16_t multishot_tail_id,
                                                        IoResult res) {
   DCHECK_GT(res, 0);
+  DCHECK_EQ(ring->bufs[cached_head & (size() - 1)].bid, bid);
+  uint16_t bufring_pos = cached_head;
+
+  cached_head += (1 + (res - 1) / entry_size);
 
   if (!multishot_arr) {
     multishot_exp = nentries_exp;
@@ -78,7 +82,7 @@ uint16_t UringProactor::BufRingGroup::HandleCompletion(uint16_t bid, uint16_t mu
     multishot_arr[arr_len - 1].next = kMultiShotUndef;
   }
 
-  return PushCTail(multishot_tail_id, bid, res);
+  return PushCTail(multishot_tail_id, bid, bufring_pos, res);
 }
 
 auto UringProactor::BufRingGroup::PullCHead(uint16_t* head_id) -> CompletionResult {
@@ -93,17 +97,19 @@ auto UringProactor::BufRingGroup::PullCHead(uint16_t* head_id) -> CompletionResu
   // push head to the free list.
   head_entry.next = free_multi_shot_id;
   free_multi_shot_id = src_id;
-  return {.bid = head_entry.bid, .res = head_entry.res};
+  return {.bid = head_entry.bid, .bufring_pos = head_entry.bufring_pos, .res = head_entry.res};
 }
 
-uint16_t UringProactor::BufRingGroup::PushCTail(uint16_t tail_id, uint16_t bid, IoResult res) {
+uint16_t UringProactor::BufRingGroup::PushCTail(uint16_t tail_id, uint16_t bid,
+                                                uint16_t bufring_pos, IoResult res) {
   uint16_t next_id = free_multi_shot_id;
-  DCHECK_LT(next_id, 1 << nentries_exp);
+  DCHECK_LT(next_id, size());
 
   auto& entry = multishot_arr[next_id];
   free_multi_shot_id = entry.next;
 
   entry.bid = bid;
+  entry.bufring_pos = bufring_pos;
   entry.res = res;
   entry.next = kMultiShotUndef;
   if (tail_id != kMultiShotUndef) {
@@ -116,13 +122,6 @@ uint16_t UringProactor::BufRingGroup::PushCTail(uint16_t tail_id, uint16_t bid, 
 void UringProactor::BufRingGroup::AddToRing(uint16_t bid, uint16_t mask, uint16_t offset) {
   uint8_t* cur_buf = storage + bid * entry_size;
   io_uring_buf_ring_add(ring, cur_buf, entry_size, bid, mask, offset);
-
-  // For cases when the ring is fully depleted, last_inserted_id is undefined. However,
-  // we should never read bufring_next[last_inserted_id] by definition of
-  // last_inserted_id, its 'next' is always undefined and can only be a suffix in a chain.
-  // Therefore, we can safely override bufring_next[last_inserted_id] in such case.
-  bufring_next[last_inserted_id] = bid;
-  last_inserted_id = bid;
 }
 
 UringProactor::UringProactor() : ProactorBase() {
@@ -139,7 +138,7 @@ UringProactor::~UringProactor() {
     for (size_t i = 0; i < bufring_groups_.size(); ++i) {
       const auto& group = bufring_groups_[i];
       if (group.ring != nullptr) {
-        io_uring_free_buf_ring(&ring_, group.ring, 1U << group.nentries_exp, i);
+        io_uring_free_buf_ring(&ring_, group.ring, group.size(), i);
         delete[] group.storage;
         delete[] group.multishot_arr;
       }
@@ -447,7 +446,6 @@ int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsi
 
   unsigned mask = io_uring_buf_ring_mask(nentries);
   buf_group.storage = new uint8_t[size_t(nentries) * esize];
-  buf_group.bufring_next = new uint16_t[nentries];
   buf_group.nentries_exp = absl::bit_width(nentries) - 1;
   buf_group.entry_size = esize;
 
@@ -470,31 +468,31 @@ uint8_t* UringProactor::GetBufRingPtr(uint16_t group_id, uint16_t bufid) {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  DCHECK_LT(bufid, 1 << buf_group.nentries_exp);
+  DCHECK_LT(bufid, buf_group.size());
   DCHECK(bufring_groups_[group_id].storage);
   io_uring_buf* bufs = bufring_groups_[group_id].ring->bufs;
   return reinterpret_cast<uint8_t*>(bufs[bufid].addr);
 }
 
-uint16_t UringProactor::GetNextBufRingBid(uint16_t group_id, uint16_t bufid) const {
+uint16_t UringProactor::GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const {
   auto& buf_group = bufring_groups_[group_id];
-  DCHECK_LT(bufid, 1 << buf_group.nentries_exp);
-  return buf_group.bufring_next[bufid];
+  return buf_group.ring->bufs[buf_pos & io_uring_buf_ring_mask(buf_group.size())].bid;
 }
 
-void UringProactor::ReplenishBuffers(uint16_t group_id, uint16_t bid, size_t bytes) {
+void UringProactor::ReplenishBuffers(uint16_t group_id, uint16_t bid, uint16_t ring_pos,
+                                     size_t bytes) {
   auto& buf_group = bufring_groups_[group_id];
-  unsigned nentries = 1U << buf_group.nentries_exp;
-  unsigned mask = io_uring_buf_ring_mask(nentries);
+  unsigned mask = io_uring_buf_ring_mask(buf_group.size());
 
   uint16_t offset = 0;
   while (true) {
-    DCHECK_LT(bid, nentries);
+    DCHECK_LT(bid, buf_group.size());
     buf_group.AddToRing(bid, mask, offset++);
     if (bytes <= buf_group.entry_size)
       break;
     bytes -= buf_group.entry_size;
-    bid = buf_group.bufring_next[bid];
+    ++ring_pos;
+    bid = buf_group.ring->bufs[ring_pos & mask].bid;
   }
 
   io_uring_buf_ring_advance(buf_group.ring, offset);
@@ -571,8 +569,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
-    -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
+                                            uint16_t* head_id) -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 

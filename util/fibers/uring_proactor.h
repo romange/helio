@@ -117,10 +117,10 @@ class UringProactor : public ProactorBase {
   // Returns 0 on success, errno on failure.
   int RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize);
   uint8_t* GetBufRingPtr(uint16_t group_id, uint16_t bufid);
-  uint16_t GetNextBufRingBid(uint16_t group_id, uint16_t bufid) const;
+  uint16_t GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const;
 
-  // Replenish a single buffer. Does not advance the ring tail.
-  void ReplenishBuffers(uint16_t group_id, uint16_t bid, size_t bytes);
+  // Replenishes one or more buffers
+  void ReplenishBuffers(uint16_t group_id, uint16_t bid, uint16_t ring_pos, size_t bytes);
 
   void CommitRingBuffers(uint16_t group_id, uint16_t count) {
     io_uring_buf_ring_advance(bufring_groups_[group_id].ring, count);
@@ -163,6 +163,7 @@ class UringProactor : public ProactorBase {
 
   struct CompletionResult {
     uint16_t bid;
+    uint16_t bufring_pos;
     IoResult res;
   };
 
@@ -217,12 +218,13 @@ class UringProactor : public ProactorBase {
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
   struct MultiShotCompletion {
-    uint16_t next;  // Composes a ring buffer.
-    uint16_t bid;   // buffer id.
-
     IoResult res;
-  };
-  static_assert(sizeof(MultiShotCompletion) == 8);
+
+    uint16_t next;         // Composes a ring buffer.
+    uint16_t bid;          // buffer id.
+    uint16_t bufring_pos;  // position in the buffer ring.
+  } __attribute__((packed));
+  static_assert(sizeof(MultiShotCompletion) == 10);
 
   struct BufRingGroup {
     io_uring_buf_ring* ring = nullptr;
@@ -231,25 +233,33 @@ class UringProactor : public ProactorBase {
 
     // Insertion order map of a cardinality of nentries. bufring_next[x] points to the next
     // bid element after x.
-    uint16_t* bufring_next = nullptr;
     uint32_t entry_size = 0;
     uint16_t free_multi_shot_id = 0;  // head of the free list in multishot_arr.
-    uint16_t last_inserted_id = 0;  // last bid that was inserted. Used together with bufring_order.
-    uint16_t reserved1 = 0;         // reserved for future use.
-    uint8_t nentries_exp = 0;       // 2^nentries_exp is the number of entries.
-    uint8_t multishot_exp = 0;      // 2^multishot_exp is the number of multishot entries.
-    uint32_t reserved2 = 0;         // reserved for future use.
+
+    // Tracks the head of the ring. Updated upon each multishot completion. Relevant only
+    // for bundles. In case we decide to enable bundled for non-multishot configurations
+    // we must change the proactor code to support cached_head in this case.
+    uint16_t cached_head = 0;
+
+    uint8_t nentries_exp = 0;   // 2^nentries_exp is the number of entries.
+    uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
+    uint16_t reserved1 = 0;
+    uint32_t reserved2 = 0;
 
     // Returns the new tail.
     uint16_t HandleCompletion(uint16_t bid, uint16_t multishot_tail_id, IoResult res);
 
     // Manages multishot completions.
     CompletionResult PullCHead(uint16_t* head);
-    uint16_t PushCTail(uint16_t tail, uint16_t bid, IoResult res);
+    uint16_t PushCTail(uint16_t tail, uint16_t bid, uint16_t bufring_pos, IoResult res);
     void AddToRing(uint16_t bid, uint16_t mask, uint16_t offset);
+
+    uint16_t size() const {
+      return 1U << nentries_exp;
+    }
   };
 
-  static_assert(sizeof(BufRingGroup) == 48);
+  static_assert(sizeof(BufRingGroup) == 40);
   std::vector<BufRingGroup> bufring_groups_;
 
   // Keeps track of requested buffers
