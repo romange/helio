@@ -213,7 +213,7 @@ class WriteFile : public detail::AbstractStorageFile {
   error_code Close() override;
 
  private:
-  error_code Upload();
+  error_code Upload() override;
 
   using UploadRequest = detail::DynamicBodyRequestImpl;
   using UploadBlockListRequest = detail::DynamicBodyRequestImpl;
