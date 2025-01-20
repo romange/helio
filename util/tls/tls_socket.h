@@ -7,6 +7,7 @@
 #include <openssl/ssl.h>
 
 #include <memory>
+#include <optional>
 
 #include "util/fiber_socket_base.h"
 #include "util/tls/tls_engine.h"
@@ -90,7 +91,6 @@ class TlsSocket final : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
-
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
@@ -113,6 +113,65 @@ class TlsSocket final : public FiberSocketBase {
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
+
+  struct AsyncReqBase {
+    AsyncReqBase(TlsSocket* owner, io::AsyncProgressCb caller_cb, const iovec* vec, uint32_t len)
+        : owner(owner), caller_completion_cb(std::move(caller_cb)), vec(vec), len(len) {
+    }
+
+    TlsSocket* owner;
+    // Callback passed from the user.
+    io::AsyncProgressCb caller_completion_cb;
+
+    const iovec* vec;
+    uint32_t len;
+
+    std::function<void()> continuation;
+  };
+
+  struct AsyncWriteReq : AsyncReqBase {
+    using AsyncReqBase::AsyncReqBase;
+
+    iovec scratch_iovec;
+    // TODO simplify state transitions
+    // TODO handle async yields to avoid deadlocks (see HandleOp)
+    enum State { PushToEngine, HandleOpAsync, MaybeSendOutputAsync, Done };
+    State state = PushToEngine;
+    PushResult last_push;
+
+    // Main loop
+    void Run();
+  };
+
+  friend AsyncWriteReq;
+
+  struct AsyncReadReq : AsyncReqBase {
+    using AsyncReqBase::AsyncReqBase;
+
+    Engine::MutableBuffer dest;
+    size_t read_total = 0;
+
+    // Main loop
+    void Run();
+  };
+
+  friend AsyncReadReq;
+
+  // Asynchronous helpers
+  void MaybeSendOutputAsync();
+
+  void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
+  void HandleUpstreamAsyncRead();
+
+  void HandleOpAsync(int op_val);
+
+  void StartUpstreamWrite();
+  void StartUpstreamRead();
+
+  // TODO clean up the optional before we yield such that progress callback can dispatch another
+  // async operation
+  std::optional<AsyncWriteReq> async_write_req_;
+  std::optional<AsyncReadReq> async_read_req_;
 
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
