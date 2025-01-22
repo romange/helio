@@ -6,6 +6,7 @@
 
 #include <absl/strings/str_cat.h>
 
+#include <boost/intrusive/slist.hpp>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -158,15 +159,16 @@ INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
                                          ));
 
 struct SlistMember {
-  detail::FI_ListHook hook;
+  boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>
+      hook;
 };
 
 using TestSlist = boost::intrusive::slist<
     SlistMember,
-    boost::intrusive::member_hook<SlistMember, detail::FI_ListHook, &SlistMember::hook>,
+    boost::intrusive::member_hook<SlistMember, decltype(SlistMember::hook), &SlistMember::hook>,
     boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
 
-TEST_F(FiberTest, SList) {
+TEST_F(FiberTest, SListSafe) {
   TestSlist queue;
   SlistMember m1;
   TestSlist::iterator it = TestSlist::s_iterator_to(m1);
@@ -175,6 +177,10 @@ TEST_F(FiberTest, SList) {
   queue.push_front(m1);
   ASSERT_TRUE(m1.hook.is_linked());
   queue.erase(it);
+  ASSERT_TRUE(queue.empty());
+  queue.push_front(m1);
+  ASSERT_FALSE(queue.empty());
+  queue.pop_front();
 }
 
 TEST_F(FiberTest, Basic) {
@@ -196,8 +202,7 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3(
-      "test3", [](int i) {}, 1);
+  Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
 }
 
@@ -228,9 +233,7 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber(
-      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
-      .Detach();
+  Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -480,6 +483,14 @@ TEST_F(FiberTest, SwitchAndExecute) {
   fb2.Join();
 }
 
+TEST_F(FiberTest, WaitFor) {
+  CondVarAny cnd;
+  NoOpLock lk;
+  for (unsigned i = 0; i < 3; ++i) {
+    cnd.wait_for(lk, 10ms);
+  }
+}
+
 TEST_F(FiberTest, StackSize) {
   Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{6144}, "fb1", [] {
     LOG(INFO) << "fb1 started";
@@ -584,9 +595,8 @@ TEST_P(ProactorTest, LocalCond) {
   CondVarAny cond;
   NoOpLock lock;
   unsigned latch = 0;
-  auto fb = proactor()->LaunchFiber(Launch::dispatch, [&] {
-    cond.wait(lock, [&] { return latch == 1; });
-  });
+  auto fb = proactor()->LaunchFiber(Launch::dispatch,
+                                    [&] { cond.wait(lock, [&] { return latch == 1; }); });
   latch = 1;
   cond.notify_one();
   fb.Join();
@@ -879,9 +889,7 @@ TEST_P(ProactorTest, DumpFiberStacks) {
   Fiber fb = proactor()->LaunchFiber([&] {
     ThisFiber::SetName("migrated");
     int i = 42;
-    ThisFiber::PrintLocalsCallback locals([&] {
-      return absl::StrCat("i=", i, "\n");
-    });
+    ThisFiber::PrintLocalsCallback locals([&] { return absl::StrCat("i=", i, "\n"); });
 
     proactor()->Migrate(pth.get());
     ThisFiber::SleepFor(30ms);

@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <boost/intrusive/slist.hpp>
+#include <boost/intrusive/list.hpp>
 
 namespace util {
 namespace fb2 {
@@ -22,12 +22,15 @@ class Waiter {
   // For some boost versions/distributions, the default move c'tor does not work well,
   // so we implement it explicitly.
   Waiter(Waiter&& o) : cntx_(o.cntx_) {
+    // it does not work well for slist because its reference is used by slist members
+    // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
     o.cntx_ = nullptr;
   }
 
-  using ListHookType =
-      boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
+  // safe_link is used in assertions via IsLinked() method.
+  using ListHookType = boost::intrusive::list_member_hook<
+      boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
   FiberInterface* cntx() const {
     return cntx_;
@@ -62,9 +65,9 @@ class WaitQueue {
   void NotifyAll(FiberInterface* active);
 
  private:
-  using WaitList = boost::intrusive::slist<
+  using WaitList = boost::intrusive::list<
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,
-      boost::intrusive::constant_time_size<false>, boost::intrusive::cache_last<true>>;
+      boost::intrusive::constant_time_size<false>>;
 
   void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
 

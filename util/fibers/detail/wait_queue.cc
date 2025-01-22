@@ -16,6 +16,7 @@ namespace detail {
 void WaitQueue::Link(Waiter* waiter) {
   DCHECK(waiter);
   wait_list_.push_back(*waiter);
+  DCHECK(!wait_list_.empty());
 }
 
 bool WaitQueue::NotifyOne(FiberInterface* active) {

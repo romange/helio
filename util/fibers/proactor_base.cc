@@ -157,17 +157,20 @@ bool ProactorBase::RunOnIdleTasks() {
           do {
             on_idle_arr_.pop_back();
           } while (!on_idle_arr_.empty() && !on_idle_arr_.back().task);
-          break;
+          on_idle_next_ = 0;
+          break;  // do/while loop
         }
-      }
-      curr_ts = GetClockNanos();
+      } else {   // level >= 0
+        curr_ts = GetClockNanos();
 
-      if (unsigned(level) >= kOnIdleMaxLevel) {
-        level = kOnIdleMaxLevel;
-        should_spin = true;
-      } else if (on_idle_next_ < on_idle_arr_.size()) {  // check if the array has not been shrunk.
-        uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
-        on_idle.next_ts = curr_ts + delta_ns;
+        if (unsigned(level) >= kOnIdleMaxLevel) {
+          level = kOnIdleMaxLevel;
+          should_spin = true;
+        } else if (on_idle_next_ <
+                   on_idle_arr_.size()) {  // check if the array has not been shrunk.
+          uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
+          on_idle.next_ts = curr_ts + delta_ns;
+        }
       }
     }
 
