@@ -268,8 +268,13 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   }
 #endif
 
-  int res = io_uring_register_ring_fd(&ring_);
-  VLOG_IF(1, res < 0) << "io_uring_register_ring_fd failed: " << -res;
+  // io_uring_register_ring_fd "succeeds" on oracle linux 5.15 even though it should not
+  // as this feature is available only from 5.18. The problem is that later during shutdown
+  // io_uring_unregister_ring_fd deadlocks upon exit.
+  if (kver.kernel >= 6) {
+    int res = io_uring_register_ring_fd(&ring_);
+    LOG_IF(WARNING, res < 0) << "io_uring_register_ring_fd failed: " << -res;
+  }
 
   if (!register_fds_.empty()) {
     int res = io_uring_register_files(&ring_, register_fds_.data(), register_fds_.size());
