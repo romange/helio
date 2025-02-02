@@ -38,6 +38,8 @@ jobs:
       - name: Build & Test
         run: |
           cd ${{github.workspace}}/build
+          cat CMakeCache.txt
+          
           ninja gperf_project || cat third_party/src/gperf_project-stamp/gperf_project-install-*.log
           ninja cares_project || cat third_party/src/cares_project-stamp/cares_project-build-*.log
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \

@@ -4,6 +4,8 @@
 
 #include "io/file.h"
 
+#include <absl/strings/match.h>
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -12,6 +14,7 @@
 #include <memory>
 
 #include "base/logging.h"
+#include "io/zstd_sinksource.h"
 
 using namespace std;
 namespace io {
@@ -177,7 +180,7 @@ Result<size_t> LocalWriteFile::WriteSome(const iovec* v, uint32_t len) {
     return written;
   }
 
-  return nonstd::make_unexpected(StatusFileError());
+  return make_unexpected(StatusFileError());
 }
 
 }  // namespace
@@ -334,6 +337,20 @@ ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len) {
   } while (len > 0);
 
   return read_total;
+}
+
+
+Result<Source*> OpenUncompressed(std::string_view name) {
+  auto fl_res = OpenRead(name, ReadonlyFile::Options{});
+  if (!fl_res)
+    return make_unexpected(fl_res.error());
+
+  Source* source = new FileSource(*fl_res);  // TAKE_OWNERSHIP
+  if (absl::EndsWith(name, ".zst")) {
+    return new ZStdSource(source);
+  }
+
+  return source;
 }
 
 }  // namespace io

@@ -167,4 +167,6 @@ ABSL_MUST_USE_RESULT Result<WriteFile*> OpenWrite(std::string_view path,
 // EOF reached. Otherwise will make sure to fully fill v.
 ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len);
 
+Result<Source*> OpenUncompressed(std::string_view name);
+
 }  // namespace io

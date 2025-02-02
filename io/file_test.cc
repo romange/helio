@@ -39,11 +39,11 @@ TEST_F(FileTest, Util) {
 }
 
 TEST_F(FileTest, LineReader) {
-  string path = base::ProgramRunfile("testdata/ids.txt");
-  ReadonlyFileOrError fl_err = OpenRead(path, ReadonlyFile::Options{});
-  ASSERT_TRUE(fl_err);
-  FileSource fs(std::move(*fl_err));
-  LineReader lr(&fs, DO_NOT_TAKE_OWNERSHIP);
+  string path = base::ProgramRunfile("testdata/ids.txt.zst");
+  Result<Source*> src = OpenUncompressed(path);
+  ASSERT_TRUE(src);
+
+  LineReader lr(*src, DO_NOT_TAKE_OWNERSHIP);
   string_view line;
   uint64_t val;
   while (lr.Next(&line)) {
