@@ -8,6 +8,7 @@
 #include <absl/strings/numbers.h>
 
 #include "base/gtest.h"
+#include "base/logging.h"
 #include "io/file_util.h"
 #include "io/line_reader.h"
 
@@ -59,8 +60,12 @@ TEST_F(FileTest, Direct) {
   auto res = OpenWrite(path, opts);
   ASSERT_TRUE(res);
   WriteFile* file =  *res;
-
-  auto ec = file->Write(string(4096, 'a'));
+  char* src = nullptr;
+  constexpr unsigned kLen = 4096;
+  CHECK_EQ(0, posix_memalign((void**)&src, 4096, kLen));
+  memset(src, 'a', 4096);
+  auto ec = file->Write(string_view(src, kLen));
+  free(src);
   ASSERT_FALSE(ec) << ec;
 
   ec = file->Close();

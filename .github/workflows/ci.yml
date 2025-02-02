@@ -18,15 +18,16 @@ env:
   BUILD_TYPE: Debug
 jobs:
   build:
-    # The CMake configure and build commands are platform agnostic and should work equally
-    # well on Windows or Mac.  You can convert this to a matrix build if you need
-    # cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os:
+          - image: ubuntu-24.04
+            arch: amd64
+          - image: ubuntu-24.04-arm
+            arch: arm64
+
         # Test of these containers
-        include:
+        config:
           - container: alpine-dev:latest
             compiler: {cxx: clang++, c: clang}
           - container: ubuntu-dev:20
@@ -36,10 +37,15 @@ jobs:
             compiler: {cxx: g++, c: gcc}
           - container: ubuntu-dev:24
             compiler: {cxx: g++, c: gcc}
-
+        
+        exclude:
+          - os: { arch: arm64 }
+            config: { container: "alpine-dev:latest" }
+          
     timeout-minutes: 50
+    runs-on: ${{matrix.os.image}}
     container:
-      image: ghcr.io/romange/${{ matrix.container }}
+      image: ghcr.io/romange/${{ matrix.config.container }}
       
       # Seems that docker by default prohibits running iouring syscalls
       options: --security-opt seccomp=unconfined  
@@ -57,9 +63,9 @@ jobs:
           cmake -B ${{github.workspace}}/build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
-            -DCMAKE_C_COMPILER="${{matrix.compiler.c}}" \
-            -DCMAKE_CXX_COMPILER="${{matrix.compiler.cxx}}" \
-            -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.cxx_flags}}" \
+            -DCMAKE_C_COMPILER="${{matrix.config.compiler.c}}" \
+            -DCMAKE_CXX_COMPILER="${{matrix.config.compiler.cxx}}" \
+            -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.config.cxx_flags}}" \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
 
     - name: Build
@@ -94,13 +100,13 @@ jobs:
           ${{github.workspace}}/build/accept_server_test
 
     - name: Coverage
-      if: matrix.container == 'ubuntu-dev:20'
+      if: matrix.config.container == 'ubuntu-dev:20'
       run: |
           lcov -c -d ${{github.workspace}}/build -o coverage.info
           lcov --remove coverage.info -o coverage.info '/usr/*' '*/_deps/*' '*/third_party/*'
 
     - name: Upload coverage to Codecov
-      if: matrix.container == 'ubuntu-dev:20'
+      if: matrix.config.container == 'ubuntu-dev:20'
       uses: codecov/codecov-action@v4
       with:
          files: ./coverage.info
