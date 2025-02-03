@@ -567,6 +567,41 @@ void EpollSocket::CancelOnErrorCb() {
   error_cb_ = {};
 }
 
+void EpollSocket::HandleAsyncRequest(error_code ec, bool is_send) {
+  auto async_pending = is_send ? async_write_pending_ : async_read_pending_;
+  if (async_pending) {
+    auto& async_request = is_send ? async_write_req_ : async_read_req_;
+    DCHECK(async_request);
+
+    auto finalize_and_fetch_cb = [this, &async_request, is_send]() {
+      auto cb = std::move(async_request->cb);
+      delete async_request;
+      async_request = nullptr;
+      if (is_send)
+        async_write_pending_ = 0;
+      else
+        async_read_pending_ = 0;
+      return cb;
+    };
+
+    if (ec) {
+      auto cb = finalize_and_fetch_cb();
+      cb(make_unexpected(ec));
+    } else if (auto res = async_request->Run(native_handle(), is_send); res.first) {
+      auto cb = finalize_and_fetch_cb();
+      cb(res.second);
+    }
+  } else {
+    auto& sync_request = is_send ? write_req_ : read_req_;
+    // It could be that we activated context already, but has not switched to it yet.
+    // Meanwhile a new event has arrived that triggered this callback again.
+    if (sync_request && sync_request->IsSuspended()) {
+      DVSOCK(2) << "Wakey: Schedule read in " << sync_request->name();
+      sync_request->Activate(ec);
+    }
+  }
+}
+
 void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask;
 #ifdef __linux__
@@ -582,49 +617,14 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
     ec = make_error_code(errc::connection_aborted);
   }
 
-  auto body = [&ec, this](bool is_send) {
-    auto async_pending = is_send ? async_write_pending_ : async_read_pending_;
-    if (async_pending) {
-      auto& async_request = is_send ? async_write_req_ : async_read_req_;
-      DCHECK(async_request);
-
-      auto finalize_and_fetch_cb = [this, &async_request, is_send]() {
-        auto cb = std::move(async_request->cb);
-        delete async_request;
-        async_request = nullptr;
-        if (is_send)
-          async_write_pending_ = 0;
-        else
-          async_read_pending_ = 0;
-        return cb;
-      };
-
-      if (ec) {
-        auto cb = finalize_and_fetch_cb();
-        cb(make_unexpected(ec));
-      } else if (auto res = async_request->Run(native_handle(), is_send); res.first) {
-        auto cb = finalize_and_fetch_cb();
-        cb(res.second);
-      }
-    } else {
-      auto& sync_request = is_send ? write_req_ : read_req_;
-      // It could be that we activated context already, but has not switched to it yet.
-      // Meanwhile a new event has arrived that triggered this callback again.
-      if (sync_request && sync_request->IsSuspended()) {
-        DVSOCK(2) << "Wakey: Schedule read in " << sync_request->name();
-        sync_request->Activate(ec);
-      }
-    }
-  };
-
   if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
     bool is_send = false;
-    body(is_send);
+    HandleAsyncRequest(ec, is_send);
   }
 
   if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
     bool is_send = true;
-    body(is_send);
+    HandleAsyncRequest(ec, is_send);
   }
 
   if (error_cb_ && (ev_mask & kErrMask)) {
