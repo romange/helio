@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <utility>
+
 #include "util/fiber_socket_base.h"
 #include "util/fibers/epoll_proactor.h"
 
@@ -54,8 +56,8 @@ class EpollSocket : public LinuxSocketBase {
     AsyncReq(iovec* v, uint32_t l, io::AsyncProgressCb _cb) : len(l), vec(v), cb(std::move(_cb)) {
     }
 
-    // Returns true if it has been fullfilled.
-    bool Run(int fd, bool is_send);
+    // Caller is responsible for *calling* cb.
+    std::pair<bool, Result<size_t>> Run(int fd, bool is_send);
   };
 
   EpollProactor* GetProactor() {
@@ -66,6 +68,8 @@ class EpollSocket : public LinuxSocketBase {
 
   // kevent pass error code together with completion event.
   void Wakey(uint32_t event_flags, int error, EpollProactor* cntr);
+
+  void HandleAsyncRequest(error_code ec, bool is_send);
 
   union {
     PendingReq* write_req_;
