@@ -127,20 +127,33 @@ class TlsSocket final : public FiberSocketBase {
     uint32_t len;
 
     std::function<void()> continuation;
+    iovec scratch_iovec;
+
+    // Asynchronous helpers
+    void MaybeSendOutputAsync();
+
+    void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
+    void HandleUpstreamAsyncRead();
+
+    void HandleOpAsync(int op_val);
+
+    void StartUpstreamWrite();
+    void StartUpstreamRead();
+
+    virtual void Run() = 0;
   };
 
   struct AsyncWriteReq : AsyncReqBase {
     using AsyncReqBase::AsyncReqBase;
 
-    iovec scratch_iovec;
     // TODO simplify state transitions
     // TODO handle async yields to avoid deadlocks (see HandleOp)
-    enum State { PushToEngine, HandleOpAsync, MaybeSendOutputAsync, Done };
+    enum State { PushToEngine, HandleOpAsyncTag, MaybeSendOutputAsyncTag, Done };
     State state = PushToEngine;
     PushResult last_push;
 
     // Main loop
-    void Run();
+    void Run() override;
   };
 
   friend AsyncWriteReq;
@@ -152,21 +165,10 @@ class TlsSocket final : public FiberSocketBase {
     size_t read_total = 0;
 
     // Main loop
-    void Run();
+    void Run() override;
   };
 
   friend AsyncReadReq;
-
-  // Asynchronous helpers
-  void MaybeSendOutputAsync();
-
-  void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
-  void HandleUpstreamAsyncRead();
-
-  void HandleOpAsync(int op_val);
-
-  void StartUpstreamWrite();
-  void StartUpstreamRead();
 
   // TODO clean up the optional before we yield such that progress callback can dispatch another
   // async operation

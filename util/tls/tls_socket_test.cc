@@ -6,8 +6,10 @@
 
 #include <gmock/gmock.h>
 
+#include <algorithm>
 #include <thread>
 
+#include "absl/strings/str_cat.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
@@ -45,9 +47,11 @@ using namespace std;
 enum TlsContextRole { SERVER, CLIENT };
 
 SSL_CTX* CreateSslCntx(TlsContextRole role) {
-  std::string tls_key_file;
-  std::string tls_key_cert;
-  std::string tls_ca_cert_file;
+  std::string base_path = TEST_CERT_PATH;
+  std::string tls_key_file = absl::StrCat(base_path, "/server-key.pem");
+  std::string tls_key_cert = absl::StrCat(base_path, "/server-cert.pem");
+  std::string tls_ca_cert_file = absl::StrCat(base_path, "/ca-cert.pem");
+
   SSL_CTX* ctx;
 
   if (role == TlsContextRole::SERVER) {
@@ -87,7 +91,8 @@ class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
   // TODO clean up
   virtual void HandleRequest() {
     tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    tls_socket_->InitSSL(CreateSslCntx(SERVER));
+    ssl_ctx_ = CreateSslCntx(SERVER);
+    tls_socket_->InitSSL(ssl_ctx_);
     tls_socket_->Accept();
 
     uint8_t buf[16];
@@ -104,6 +109,7 @@ class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
   unique_ptr<FiberSocketBase> listen_socket_;
   unique_ptr<FiberSocketBase> conn_socket_;
   unique_ptr<tls::TlsSocket> tls_socket_;
+  SSL_CTX* ssl_ctx_;
 
   uint16_t listen_port_ = 0;
   Fiber accept_fb_;
@@ -197,11 +203,14 @@ void TlsFiberSocketTest::TearDown() {
   proactor_->Stop();
   proactor_thread_.join();
   proactor_.reset();
+
+  SSL_CTX_free(ssl_ctx_);
 }
 
 TEST_P(TlsFiberSocketTest, Basic) {
   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  tls_sock->InitSSL(CreateSslCntx(CLIENT));
+  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  tls_sock->InitSSL(ssl_ctx);
 
   LOG(INFO) << "before wait ";
   proactor_->Await([&] {
@@ -209,29 +218,39 @@ TEST_P(TlsFiberSocketTest, Basic) {
 
     LOG(INFO) << "Connecting to " << listen_ep_;
     error_code ec = tls_sock->Connect(listen_ep_);
-    uint8_t buf[16] = {120};
-    VLOG(1) << "Before writesome";
+    EXPECT_FALSE(ec);
+    {
+      uint8_t buf[16];
+      std::fill(std::begin(buf), std::end(buf), uint8_t(120));
+      VLOG(1) << "Before writesome";
 
-    Done done;
-    iovec v{.iov_base = &buf, .iov_len = 16};
+      Done done;
+      iovec v{.iov_base = &buf, .iov_len = 16};
 
-    tls_sock->AsyncWriteSome(&v, 1, [done](auto result) mutable {
-      EXPECT_TRUE(result.has_value());
-      EXPECT_EQ(*result, 16);
-      done.Notify();
-    });
+      tls_sock->AsyncWriteSome(&v, 1, [done](auto result) mutable {
+        EXPECT_TRUE(result.has_value());
+        EXPECT_EQ(*result, 16);
+        done.Notify();
+      });
 
-    done.Wait();
+      done.Wait();
+    }
+    {
+      uint8_t buf[16];
+      Done done;
+      iovec v{.iov_base = &buf, .iov_len = 16};
+      tls_sock->AsyncReadSome(&v, 1, [done](auto result) mutable {
+        EXPECT_TRUE(result.has_value());
+        EXPECT_EQ(*result, 16);
+        done.Notify();
+      });
 
-    // TODO with iouring this max outs the memory and crashes
-    // TODO investigate why
-    tls_sock->AsyncReadSome(&v, 1, [done](auto result) mutable {
-      EXPECT_TRUE(result.has_value());
-      EXPECT_EQ(*result, 16);
-      done.Notify();
-    });
+      done.Wait();
 
-    done.Wait();
+      for (uint8_t c : buf) {
+        EXPECT_EQ(c, 120);
+      }
+    }
 
     VLOG(1) << "closing client sock " << tls_sock->native_handle();
     std::ignore = tls_sock->Close();
@@ -240,6 +259,7 @@ TEST_P(TlsFiberSocketTest, Basic) {
     ASSERT_FALSE(ec) << ec.message();
     ASSERT_FALSE(accept_ec_);
   });
+  SSL_CTX_free(ssl_ctx);
 }
 
 }  // namespace fb2

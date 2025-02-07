@@ -329,12 +329,11 @@ io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint
   return res;
 }
 
-void TlsSocket::HandleOpAsync(int op_val) {
+void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
-      VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
-      async_write_req_->caller_completion_cb(
-          make_unexpected(make_error_code(errc::connection_aborted)));
+      VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
+      caller_completion_cb(make_unexpected(make_error_code(errc::connection_aborted)));
       break;
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       HandleUpstreamAsyncRead();
@@ -355,17 +354,17 @@ void TlsSocket::AsyncWriteReq::Run() {
       return;
     }
     last_push = *push_res;
-    state = AsyncWriteReq::HandleOpAsync;
+    state = AsyncWriteReq::HandleOpAsyncTag;
   }
 
-  if (state == AsyncWriteReq::HandleOpAsync) {
-    state = AsyncWriteReq::MaybeSendOutputAsync;
+  if (state == AsyncWriteReq::HandleOpAsyncTag) {
+    state = AsyncWriteReq::MaybeSendOutputAsyncTag;
     if (last_push.engine_opcode < 0) {
-      owner->HandleOpAsync(last_push.engine_opcode);
+      HandleOpAsync(last_push.engine_opcode);
     }
   }
 
-  if (state == AsyncWriteReq::MaybeSendOutputAsync) {
+  if (state == AsyncWriteReq::MaybeSendOutputAsyncTag) {
     state = AsyncWriteReq::PushToEngine;
     if (last_push.written > 0) {
       DCHECK(!continuation);
@@ -373,7 +372,7 @@ void TlsSocket::AsyncWriteReq::Run() {
         state = AsyncWriteReq::Done;
         caller_completion_cb(last_push.written);
       };
-      owner->MaybeSendOutputAsync();
+      MaybeSendOutputAsync();
     }
   }
 }
@@ -423,7 +422,7 @@ void TlsSocket::AsyncReadReq::Run() {
     }
 
     // Will automatically call Run()
-    owner->HandleOpAsync(op_val);
+    return HandleOpAsync(op_val);
   }
 
   // We are done. Call completion callback.
@@ -444,57 +443,58 @@ SSL* TlsSocket::ssl_handle() {
   return engine_ ? engine_->native_handle() : nullptr;
 }
 
-void TlsSocket::HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer) {
+void TlsSocket::AsyncReqBase::HandleUpstreamAsyncWrite(io::Result<size_t> write_result,
+                                                       Engine::Buffer buffer) {
   if (!write_result) {
-    state_ &= ~WRITE_IN_PROGRESS;
+    owner->state_ &= ~WRITE_IN_PROGRESS;
 
     // broken_pipe - happens when the other side closes the connection. do not log this.
     if (write_result.error() != errc::broken_pipe) {
-      VSOCK(1) << "HandleUpstreamWrite failed " << write_result.error();
+      // VSOCK(1) << "HandleUpstreamWrite failed " << write_result.error();
     }
 
     // We are done. Errornous exit.
-    async_write_req_->caller_completion_cb(write_result);
+    caller_completion_cb(write_result);
     return;
   }
 
   CHECK_GT(*write_result, 0u);
-  upstream_write_ += *write_result;
-  engine_->ConsumeOutputBuf(*write_result);
+  owner->upstream_write_ += *write_result;
+  owner->engine_->ConsumeOutputBuf(*write_result);
   buffer.remove_prefix(*write_result);
 
   // We are not done. Re-arm the async write until we drive it to completion or error.
   if (!buffer.empty()) {
-    auto& scratch = async_write_req_->scratch_iovec;
+    auto& scratch = scratch_iovec;
     scratch.iov_base = const_cast<uint8_t*>(buffer.data());
     scratch.iov_len = buffer.size();
-    next_sock_->AsyncWriteSome(&scratch, 1, [this, buffer](auto write_result) {
+    owner->next_sock_->AsyncWriteSome(&scratch, 1, [this, buffer](auto write_result) {
       HandleUpstreamAsyncWrite(write_result, buffer);
     });
   }
 
-  if (engine_->OutputPending() > 0) {
-    LOG(INFO) << "ssl buffer is not empty with " << engine_->OutputPending()
+  if (owner->engine_->OutputPending() > 0) {
+    LOG(INFO) << "ssl buffer is not empty with " << owner->engine_->OutputPending()
               << " bytes. short write detected";
   }
 
-  state_ &= ~WRITE_IN_PROGRESS;
+  owner->state_ &= ~WRITE_IN_PROGRESS;
 
   // If there is a continuation run it and let it yield back to the main loop
-  if (async_write_req_->continuation) {
-    auto cont = std::exchange(async_write_req_->continuation, std::function<void()>{});
+  if (continuation) {
+    auto cont = std::exchange(continuation, std::function<void()>{});
     cont();
     return;
   }
 
   // Yield back to main loop
-  return async_write_req_->Run();
+  return Run();
 }
 
-void TlsSocket::StartUpstreamWrite() {
-  Engine::Buffer buffer = engine_->PeekOutputBuf();
+void TlsSocket::AsyncReqBase::StartUpstreamWrite() {
+  Engine::Buffer buffer = owner->engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
-  DCHECK((state_ & WRITE_IN_PROGRESS) == 0);
+  DCHECK((owner->state_ & WRITE_IN_PROGRESS) == 0);
 
   if (buffer.empty()) {
     // We are done
@@ -503,35 +503,35 @@ void TlsSocket::StartUpstreamWrite() {
 
   DVLOG(2) << "HandleUpstreamWrite " << buffer.size();
   // we do not allow concurrent writes from multiple fibers.
-  state_ |= WRITE_IN_PROGRESS;
+  owner->state_ |= WRITE_IN_PROGRESS;
 
-  auto& scratch = async_write_req_->scratch_iovec;
+  auto& scratch = scratch_iovec;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  next_sock_->AsyncWriteSome(&scratch, 1, [this, buffer](auto write_result) {
+  owner->next_sock_->AsyncWriteSome(&scratch, 1, [this, buffer](auto write_result) {
     HandleUpstreamAsyncWrite(write_result, buffer);
   });
 }
 
-void TlsSocket::MaybeSendOutputAsync() {
-  if (engine_->OutputPending() == 0) {
-    if (async_write_req_->continuation) {
-      auto cont = std::exchange(async_write_req_->continuation, std::function<void()>{});
+void TlsSocket::AsyncReqBase::MaybeSendOutputAsync() {
+  if (owner->engine_->OutputPending() == 0) {
+    if (continuation) {
+      auto cont = std::exchange(continuation, std::function<void()>{});
       cont();
       return;
     }
-    async_write_req_->Run();
+    Run();
   }
 
   // This function is present in both read and write paths.
   // meaning that both of them can be called concurrently from differrent fibers and then
   // race over flushing the output buffer. We use state_ to prevent that.
-  if (state_ & WRITE_IN_PROGRESS) {
-    if (async_write_req_->continuation) {
+  if (owner->state_ & WRITE_IN_PROGRESS) {
+    if (continuation) {
       // TODO we must "yield" -> subscribe as a continuation to the write request cause otherwise
       // we might deadlock. See the sync version of HandleOp for more info
-      auto cont = std::exchange(async_write_req_->continuation, std::function<void()>{});
+      auto cont = std::exchange(continuation, std::function<void()>{});
       cont();
       return;
     }
@@ -567,43 +567,43 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   return HandleUpstreamWrite();
 }
 
-void TlsSocket::StartUpstreamRead() {
-  auto buffer = engine_->PeekInputBuf();
-  state_ |= READ_IN_PROGRESS;
+void TlsSocket::AsyncReqBase::StartUpstreamRead() {
+  auto buffer = owner->engine_->PeekInputBuf();
+  owner->state_ |= READ_IN_PROGRESS;
 
-  auto& scratch = async_write_req_->scratch_iovec;
+  auto& scratch = scratch_iovec;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  next_sock_->AsyncReadSome(&scratch, 1, [this](auto read_result) {
-    state_ &= ~READ_IN_PROGRESS;
+  owner->next_sock_->AsyncReadSome(&scratch, 1, [this](auto read_result) {
+    owner->state_ &= ~READ_IN_PROGRESS;
     if (!read_result) {
       // log any errors as well as situations where we have unflushed output.
-      if (read_result.error() != errc::connection_aborted || engine_->OutputPending() > 0) {
-        VSOCK(1) << "HandleUpstreamRead failed " << read_result.error();
+      if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
+        /// VSOCK(1) << "HandleUpstreamRead failed " << read_result.error();
       }
       // Erronous path. Apply the completion callback and exit.
-      async_write_req_->caller_completion_cb(read_result);
+      caller_completion_cb(read_result);
       return;
     }
 
     DVLOG(1) << "HandleUpstreamRead " << *read_result << " bytes";
-    engine_->CommitInput(*read_result);
+    owner->engine_->CommitInput(*read_result);
     // We are not done. Give back control to the main loop.
-    async_write_req_->Run();
+    Run();
   });
 }
 
-void TlsSocket::HandleUpstreamAsyncRead() {
+void TlsSocket::AsyncReqBase::HandleUpstreamAsyncRead() {
   auto on_success = [this]() {
-    if (state_ & READ_IN_PROGRESS) {
-      async_write_req_->Run();
+    if (owner->state_ & READ_IN_PROGRESS) {
+      Run();
     }
 
     StartUpstreamRead();
   };
 
-  async_write_req_->continuation = on_success;
+  continuation = on_success;
   MaybeSendOutputAsync();
 }
 
