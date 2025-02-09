@@ -199,7 +199,7 @@ Scheduler::~Scheduler() {
 
 ctx::fiber_context Scheduler::Preempt() {
   if (FiberActive() == dispatch_cntx_.get()) {
-    LOG(DFATAL) << "Should not preempt dispatcher";
+    LOG(DFATAL) << "Should not preempt dispatcher: " << GetStacktrace();
   }
   if (IsFiberAtomicSection())
     LOG(DFATAL) << "Preempting inside of atomic section";
