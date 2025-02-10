@@ -130,10 +130,9 @@ class TlsSocket final : public FiberSocketBase {
     iovec scratch_iovec;
 
     // Asynchronous helpers
-    void MaybeSendOutputAsync();
+    void MaybeSendOutputAsync(bool should_read = false);
 
     void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
-    void HandleUpstreamAsyncRead();
 
     void HandleOpAsync(int op_val);
 
@@ -141,12 +140,18 @@ class TlsSocket final : public FiberSocketBase {
     void StartUpstreamRead();
 
     virtual void Run() = 0;
+    virtual void CompleteAsyncReq(io::Result<size_t> result) = 0;
   };
+
+  // Helper function that resets the internal async request, applies the
+  // user AsyncProgressCb and returns. We need this, because progress callbacks
+  // can start another async request and for that to work, we need to clean up
+  // the one we are running on.
+  void CompleteAsyncRequest(io::Result<size_t> result);
 
   struct AsyncWriteReq : AsyncReqBase {
     using AsyncReqBase::AsyncReqBase;
 
-    // TODO simplify state transitions
     // TODO handle async yields to avoid deadlocks (see HandleOp)
     enum State { PushToEngine, HandleOpAsyncTag, MaybeSendOutputAsyncTag, Done };
     State state = PushToEngine;
@@ -154,6 +159,7 @@ class TlsSocket final : public FiberSocketBase {
 
     // Main loop
     void Run() override;
+    virtual void CompleteAsyncReq(io::Result<size_t> result) override;
   };
 
   friend AsyncWriteReq;
@@ -166,6 +172,7 @@ class TlsSocket final : public FiberSocketBase {
 
     // Main loop
     void Run() override;
+    virtual void CompleteAsyncReq(io::Result<size_t> result) override;
   };
 
   friend AsyncReadReq;
