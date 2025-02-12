@@ -77,6 +77,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
     it->second.removed = true;
   } else {
     auto [it, inserted] = state->sockets_state.try_emplace(socket_fd);
+
     if (inserted || it->second.removed) {
       AresSocketState& socket_state = it->second;
       socket_state.mask = mask;
@@ -101,9 +102,12 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
             ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
           }
         };
+        VLOG(1) << "EpollAdd " << socket_fd << ", mask: " << mask;
         socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
 #endif
       }
+    } else {
+      VLOG(1) << "Skipped updating the state for " << socket_fd;
     }
   }
 }
