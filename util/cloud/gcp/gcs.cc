@@ -214,14 +214,16 @@ error_code GCPCredsProvider::Init(unsigned connect_ms) {
   } else {
     auto gcloudRoot = ExpandFilePath(kGcloudDir);
     if (gcloudRoot) {
-      VLOG(1) << "Using ADC provided via gcloud CLI";
-      RETURN_ERROR(LoadGCPConfig(gcloudRoot.value(), &account_id_, &project_id_));
+      VLOG(1) << "Using ADC provided via gcloud CLI " << *gcloudRoot;
+
+      RETURN_ERROR(LoadGCPConfig(*gcloudRoot, &account_id_, &project_id_));
       if (account_id_.empty() || project_id_.empty()) {
-        LOG(WARNING) << "gcloud config file is not valid";
-        return make_error_code(errc::not_supported);
+        LOG(WARNING) << "gcloud config file " << *gcloudRoot
+                     << " is not valid, either project_id or account_id is empty";
+      } else {
+        adc_file =
+            absl::StrCat(gcloudRoot.value(), kGcloudCredentialsFolder, account_id_, "/adc.json");
       }
-      adc_file =
-          absl::StrCat(gcloudRoot.value(), kGcloudCredentialsFolder, account_id_, "/adc.json");
     } else if (gcloudRoot.error() != errc::no_such_file_or_directory) {
       LOG(WARNING) << "error retrieving " << kGcloudDir;
       return gcloudRoot.error();
