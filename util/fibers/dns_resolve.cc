@@ -36,7 +36,7 @@ struct AresSocketState {
 
 struct AresChannelState {
   ProactorBase* proactor;
-  detail::FiberInterface* fiber_ctx = nullptr;
+  fb2::CondVarAny cond;
 
   absl::flat_hash_map<ares_socket_t, AresSocketState> sockets_state;
 };
@@ -86,9 +86,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
       if (state->proactor->GetKind() == ProactorBase::EPOLL) {
         EpollProactor* epoll = (EpollProactor*)state->proactor;
         auto cb = [state](uint32_t event_mask, int err, EpollProactor* me) {
-          if (state->fiber_ctx) {
-            ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
-          }
+          state->cond.notify_one();
         };
         socket_state.arm_index = epoll->Arm(socket_fd, std::move(cb), mask);
       } else {
@@ -96,14 +94,12 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 #ifdef __linux__
         UringProactor* uring = (UringProactor*)state->proactor;
         auto cb = [state](uint32_t event_mask) {
-          VLOG(2) << "ArmCb: " << event_mask << " " << state->fiber_ctx << " "
-                  << state->sockets_state.size();
-          if (state->fiber_ctx) {
-            ActivateSameThread(detail::FiberActive(), state->fiber_ctx);
-          }
+          VLOG(2) << "ArmCb: " << event_mask << " " << state->sockets_state.size();
+          state->cond.notify_one();
         };
-        VLOG(1) << "EpollAdd " << socket_fd << ", mask: " << mask;
         socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
+        DVLOG(1) << "EpollAdd " << socket_fd << ", mask: " << mask
+                << " index: " << socket_state.arm_index;
 #endif
       }
     } else {
@@ -115,7 +111,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 void DnsResolveCallback(void* ares_arg, int status, int timeouts, struct ares_addrinfo* res) {
   auto* cb_args = static_cast<DnsResolveCallbackArgs*>(ares_arg);
   cb_args->done = true;
-  VLOG(1) << "DnsResolveCallback: " << status << " " << timeouts << " " << res->nodes;
+  VLOG(1) << "DnsResolveCallback: " << status << " " << timeouts << " " << (res ? res->name : "");
 
   if (status != ARES_SUCCESS || res->nodes == nullptr) {
     cb_args->ec = make_error_code(errc::address_not_available);
@@ -145,16 +141,39 @@ void DnsResolveCallback(void* ares_arg, int status, int timeouts, struct ares_ad
   }
 }
 
+// TODO: to redesign the whole logic to make it a process-wide singleton.
+// ProcessChannel should become a handler running by the proactor.
+// Instead of blocking on cv, we can use proactor to set up a timer.
+// ProcessChannel should not be call specific, and should serve multiple calls and should run
+// indefinitely together with the proactor.
+// The way I imagine it should work, ProactorBase should enable DNS functionality.
+// ProactorPool enables DNS functionality by choosing a single proactor from the pool.
+// DnsResolve knows which proactor handles dns requests and makes hops to pass Dns requests
+// to the proactor.
 void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCallbackArgs* args) {
-  auto* myself = detail::FiberActive();
-
   while (!args->done) {
     // It's important to set and reset fiber_ctx close to Suspend, to avoid the case
     // where EPOLL callbacks wake up the fiber in the wrong place.
     // ares_process_fd calls helio code that in turn can suspend a fiber as well.
-    state->fiber_ctx = myself;
-    myself->Suspend();
-    state->fiber_ctx = nullptr;
+    timeval timeout;
+    timeval* timeout_result = ares_timeout(channel, nullptr, &timeout);
+
+    fb2::NoOpLock lk;
+    if (timeout_result) {
+      uint64_t ms = timeout_result->tv_sec * 1000 + timeout_result->tv_usec / 1000;
+      VLOG(2) << "blocking on timeout " << ms << "ms";
+      cv_status st = state->cond.wait_for(lk, chrono::milliseconds(ms));
+      if (st == cv_status::timeout) {
+        VLOG_IF(1, !state->sockets_state.empty())
+            << "Timed out on waiting for fd: " << state->sockets_state.begin()->first;
+        // according to https://c-ares.org/docs/ares_process_fd.html
+        // in case of timeouts we pass ARES_SOCKET_BAD to ares_process_fd.
+        ares_process_fd(channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+        continue;
+      }
+    } else {
+      state->cond.wait(lk);
+    }
 
     for (const auto& [socket_fd, socket_state] : state->sockets_state) {
       int read_fd = HasReads(socket_state.mask) ? socket_fd : ARES_SOCKET_BAD;
@@ -170,7 +189,7 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
 error_code DnsResolve(const string& host, uint32_t wait_ms, char dest_ip[],
                       ProactorBase* proactor) {
   DCHECK(ProactorBase::me() == proactor) << "must call from the proactor thread";
-  VLOG(1) << "DnsResolveStart";
+  VLOG(1) << "DnsResolveStart " << host;
 
   AresChannelState state;
   state.proactor = proactor;
@@ -178,9 +197,16 @@ error_code DnsResolve(const string& host, uint32_t wait_ms, char dest_ip[],
   ares_options options = {};
   options.sock_state_cb = &UpdateSocketsCallback;
   options.sock_state_cb_data = &state;
+  char lookups[] = "fb";
+  options.lookups = lookups;  // hosts file first, then DNS
+
+  // set timeout
+  options.timeout = wait_ms;
+  // TODO: use options.qcache_max_ttl once we be able to reuse cares channel.
 
   ares_channel channel;
-  CHECK_EQ(ares_init_options(&channel, &options, ARES_OPT_SOCK_STATE_CB), ARES_SUCCESS);
+  constexpr int kOptions = ARES_OPT_SOCK_STATE_CB | ARES_OPT_LOOKUPS | ARES_OPT_TIMEOUTMS;
+  CHECK_EQ(ares_init_options(&channel, &options, kOptions), ARES_SUCCESS);
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
