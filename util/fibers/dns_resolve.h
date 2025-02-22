@@ -16,5 +16,8 @@ class ProactorBase;
 std::error_code DnsResolve(const std::string& host, uint32_t wait_ms, char dest_ip[],
                            ProactorBase* proactor);
 
+void InitDnsResolver(uint32_t timeout_ms);
+std::error_code DnsResolve(const std::string& host, char dest_ip[]);
+
 }  // namespace fb2
 }  // namespace util
