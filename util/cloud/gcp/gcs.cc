@@ -144,9 +144,11 @@ io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
   return result;
 }
 
+static constexpr string_view kMetaDataHost = "metadata.google.internal"sv;
+
 error_code ConfigureMetadataClient(fb2::ProactorBase* pb, http::Client* client) {
   client->set_connect_timeout_ms(1000);
-  static const char kMetaDataHost[] = "metadata.google.internal";
+
   return client->Connect(kMetaDataHost, "80");
 }
 
@@ -158,6 +160,7 @@ error_code ReadGCPConfigFromMetadata(fb2::ProactorBase* pb, string* account_id, 
   const char kEmailUrl[] = "/computeMetadata/v1/instance/service-accounts/default/email";
   h2::request<h2::empty_body> req{h2::verb::get, kEmailUrl, 11};
   req.set("Metadata-Flavor", "Google");
+  req.set(h2::field::host, kMetaDataHost.data());
 
   h2::response<h2::string_body> resp;
   RETURN_ERROR(client.Send(req, &resp));
@@ -270,6 +273,8 @@ error_code GCPCredsProvider::RefreshToken() {
 
     h2::request<h2::empty_body> req{h2::verb::get, kInstanceTokenUrl, 11};
     req.set("Metadata-Flavor", "Google");
+    req.set(h2::field::host, kMetaDataHost.data());
+
     RETURN_ERROR(client.Send(req, &resp));
   } else {
     constexpr char kDomain[] = "oauth2.googleapis.com";
