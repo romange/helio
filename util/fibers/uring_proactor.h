@@ -1,4 +1,4 @@
-// Copyright 2022, Roman Gershman.  All rights reserved.
+// Copyright 2025, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 //
 
@@ -10,6 +10,7 @@
 #include "base/segment_pool.h"
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/submit_entry.h"
+#include "util/fibers/uring_types.h"
 
 namespace util {
 namespace fb2 {
@@ -19,12 +20,13 @@ class Scheduler;
 }
 
 // Aligned buffer that is optionally part of registered buffer (io_uring_register_buffers)
-struct UringBuf {
-  static constexpr size_t kAlign = 4096;
-
+// Deprecated in favor of RegisteredSlice;
+struct UringBufDeprecated {
   io::MutableBytes bytes;           // buf, nbytes
   std::optional<unsigned> buf_idx;  // buf_idx
 };
+
+using UringBuf = UringBufDeprecated;
 
 class UringProactor : public ProactorBase {
   UringProactor(const UringProactor&) = delete;
@@ -108,8 +110,12 @@ class UringProactor : public ProactorBase {
   // Request buffer of given size from the buffer pool registered with RegisterBuffers.
   // Returns none if there's no space left in the pool.
   // Must be returned with ReturnBuffer.
-  std::optional<UringBuf> RequestBuffer(size_t size);
-  void ReturnBuffer(UringBuf buf);
+  std::optional<UringBufDeprecated> RequestBuffer(size_t size);
+  void ReturnBuffer(UringBufDeprecated buf);
+
+  std::optional<RegisteredSlice> RequestRegisteredSlice(size_t size);
+  void ReturnRegisteredSlice(RegisteredSlice buf);
+
 
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
   // Available from kernel 5.19. nentries must be less than 2^15 and should be power of 2.
@@ -226,8 +232,8 @@ class UringProactor : public ProactorBase {
   // Keeps track of requested buffers
   struct {
     uint8_t* backing = nullptr;
-    base::SegmentPool segments{};
-  } buf_pool_{};
+    base::SegmentPool segments;
+  } buf_pool_;
 
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;

@@ -69,6 +69,9 @@ class LinuxFile {
   // Async versions of Read
   void ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index, AsyncCb cb);
   void ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb);
+
+  // io_uring fixed version - src must point within the region, contained by the fixed buffer that
+  // is specified by buf_index. See io_uring_prep_write_fixed(3) for more details.
   void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
   void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
 
