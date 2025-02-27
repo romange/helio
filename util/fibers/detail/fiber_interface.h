@@ -256,7 +256,7 @@ class FiberInterface {
   // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;
 
-  // A tsc of when this fiber becames ready or becomes active (in cycles).
+  // A timestamp counter when this fiber became ready,active or got suspended (in cycles).
   uint64_t cpu_tsc_ = 0;
   char name_[24];
   uint32_t stack_size_ = 0;
