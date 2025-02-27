@@ -154,6 +154,8 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
 
 }  // namespace
 
+extern uint64_t g_tsc_cycles_per_ms;
+
 Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   DCHECK(!main_cntx->scheduler_);
   main_cntx->scheduler_ = this;
@@ -444,6 +446,7 @@ void Scheduler::PrintAllFiberStackTraces() {
   }
   auto print_fn = [active](FiberInterface* fb) {
     string state = "suspended";
+    bool add_time = true;
     if (fb->list_hook.is_linked()) {
       state = "ready";
     } else if (active == fb) {
@@ -451,12 +454,21 @@ void Scheduler::PrintAllFiberStackTraces() {
     } else if (fb->sleep_hook.is_linked()) {
       state = absl::StrCat("sleeping until ", fb->tp_.time_since_epoch().count(), " now is ",
                            chrono::steady_clock::now().time_since_epoch().count());
+      add_time = false;
     }
+
 
     string print_cb_str;
 #ifndef NDEBUG
     print_cb_str = fb->stacktrace_print_cb_ ? fb->stacktrace_print_cb_() : string{};
 #endif
+
+    if (add_time) {
+      uint64_t tsc = CycleClock::Now();
+      uint64_t delta = tsc - fb->cpu_tsc_;
+      absl::StrAppend(&state, ":", delta / g_tsc_cycles_per_ms, "ms");
+    }
+
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
               << print_cb_str << GetStacktrace();
   };
