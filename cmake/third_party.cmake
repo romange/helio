@@ -365,6 +365,15 @@ add_third_party(
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
 
+add_third_party(
+  zstd
+  URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.zst
+  SOURCE_SUBDIR "build/cmake"
+  
+  # for debug pass : "CFLAGS=-fPIC -O0 -ggdb"
+  CMAKE_PASS_FLAGS "-DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF"
+)
+
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES
