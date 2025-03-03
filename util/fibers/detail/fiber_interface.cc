@@ -53,6 +53,8 @@ PMR_NS::memory_resource* default_stack_resource = nullptr;
 size_t default_stack_size = 64 * 1024;
 uint64_t g_tsc_cycles_per_ms = 0;
 
+__thread FiberInterface::TL FiberInterface::tl;
+
 // Per thread initialization structure.
 struct TL_FiberInitializer {
   TL_FiberInitializer* next = nullptr;
@@ -63,7 +65,6 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
-  uint64_t epoch = 0;
   uint64_t switch_delay_cycles = 0;  // switch delay in cycles.
 
   // Tracks fiber runtimes that took longer than 1ms.
@@ -379,7 +380,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
   // When a kernel suspends we may get a negative delta because TSC is reset.
   // We ignore such cases (and they are very rare).
   if (tsc > cpu_tsc_) {
-    ++fb_initializer.epoch;
+    ++tl.epoch;
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
     fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
 
@@ -435,10 +436,6 @@ void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
 void SetCustomDispatcher(DispatchPolicy* policy) {
   detail::TL_FiberInitializer& fb_init = detail::FbInitializer();
   fb_init.sched->AttachCustomPolicy(policy);
-}
-
-uint64_t FiberSwitchEpoch() noexcept {
-  return detail::FbInitializer().epoch;
 }
 
 uint64_t FiberSwitchDelayUsec() noexcept {
