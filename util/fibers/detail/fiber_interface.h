@@ -223,6 +223,9 @@ class FiberInterface {
 
   size_t GetStackMargin(const void* stack_address) const;
 
+  static uint64_t TL_Epoch() {
+    return tl.epoch;
+  }
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -261,6 +264,10 @@ class FiberInterface {
   char name_[24];
   uint32_t stack_size_ = 0;
   uint8_t* stack_bottom_ = nullptr;
+
+  static __thread struct TL {
+    uint64_t epoch = 0;
+  } tl;
 
  private:
 #ifndef NDEBUG

@@ -103,7 +103,9 @@ class Fiber {
 };
 
 // Returns the context switch epoch number for this thread.
-uint64_t FiberSwitchEpoch() noexcept;
+inline uint64_t FiberSwitchEpoch() noexcept {
+  return detail::FiberInterface::TL_Epoch();
+}
 
 // Returns the aggregated delay between activation of fibers and
 // the time they were switched to in microseconds.
