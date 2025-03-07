@@ -11,6 +11,7 @@
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/utils.h"
+#include "util/fibers/stacktrace.h"
 
 ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
           "If > 0, ensures the stack each fiber has at least this margin. "
@@ -201,11 +202,12 @@ void FiberInterface::CheckStackMargin() {
   }
   uint32_t margin = ptr - stack_bottom_;
 
-  CHECK_GE(margin, check_margin) << "Low stack margin for " << name_;
+  CHECK_GE(margin, check_margin) << "Low stack margin for " << name_ << "\n" << GetStacktrace();
 
   // Log if margins are within the the orange zone.
   LOG_IF(INFO, margin < check_margin * 1.5)
-      << "Stack margin for " << name_ << ": " << margin << " bytes";
+      << "Stack margin for " << name_ << ": " << margin << " bytes\n"
+      << GetStacktrace();
 }
 
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
