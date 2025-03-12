@@ -49,15 +49,20 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
 #ifdef __linux__
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 
-int AcceptSock(int fd) {
-  sockaddr_in client_addr;
-  socklen_t addr_len = sizeof(client_addr);
-  int res = accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
-  return res;
+int AcceptSock(int fd, bool is_v4) {
+  if (is_v4) {
+    sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  } else {
+    sockaddr_in6 client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
+  }
 }
 
-int CreateSockFd() {
-  return socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+int CreateSockFd(int family) {
+  return socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 }
 
 /*void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
@@ -84,8 +89,8 @@ int AcceptSock(int fd) {
   return res;
 }
 
-int CreateSockFd() {
-  int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+int CreateSockFd(int family) {
+  int fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
   if (fd >= 0) {
     SetNonBlocking(fd);
     SetCloexec(fd);
@@ -241,7 +246,7 @@ auto EpollSocket::Accept() -> AcceptResult {
       return MakeUnexpected(errc::connection_aborted);
     }
 
-    int res = AcceptSock(real_fd);
+    int res = AcceptSock(real_fd, LocalEndpoint().address().is_v4());
     if (res >= 0) {
       EpollSocket* fs = new EpollSocket;
       fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
@@ -268,7 +273,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
 
   error_code ec;
 
-  int fd = CreateSockFd();
+  int fd = ep.address().is_v4() ? CreateSockFd(AF_INET) : CreateSockFd(AF_INET6);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
