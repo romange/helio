@@ -49,16 +49,10 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
 #ifdef __linux__
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 
-int AcceptSock(int fd, bool is_v4) {
-  if (is_v4) {
-    sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
-  } else {
-    sockaddr_in6 client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
-  }
+int AcceptSock(int fd) {
+  sockaddr_storage client_addr;
+  socklen_t addr_len = sizeof(client_addr);
+  return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
 }
 
 int CreateSockFd(int family) {
@@ -78,7 +72,7 @@ int CreateSockFd(int family) {
 constexpr int kEventMask = POLLIN | POLLOUT;
 
 int AcceptSock(int fd) {
-  sockaddr_in client_addr;
+  sockaddr_storage client_addr;
   socklen_t addr_len = sizeof(client_addr);
   int res = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
   if (res >= 0) {
@@ -246,7 +240,7 @@ auto EpollSocket::Accept() -> AcceptResult {
       return MakeUnexpected(errc::connection_aborted);
     }
 
-    int res = AcceptSock(real_fd, LocalEndpoint().address().is_v4());
+    int res = AcceptSock(real_fd);
     if (res >= 0) {
       EpollSocket* fs = new EpollSocket;
       fs->fd_ = (res << kFdShift) | (fd_ & kInheritedFlags);
