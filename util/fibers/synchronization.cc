@@ -5,6 +5,7 @@
 #include "util/fibers/synchronization.h"
 
 #include "base/logging.h"
+#include "util/fibers/stacktrace.h"
 
 namespace util {
 namespace fb2 {
@@ -118,6 +119,10 @@ std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out
     CHECK(!active->IsScheduledRemotely());
   }
   return status;
+}
+
+void CondVarAny::PrintFailState() {
+  LOG(DFATAL) << "Failed to unlink waiter from the queue. This is a bug:\n" << GetStacktrace();
 }
 
 bool EmbeddedBlockingCounter::WaitUntil(const std::chrono::steady_clock::time_point tp) {
