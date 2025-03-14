@@ -111,20 +111,9 @@ error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
     server_addr.sin6_addr = in6addr_any;
     ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
   }
-    if (ec)
-      return ec;
-    return Listen(backlog);
-  } else {
-    sockaddr_in6 server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin6_family = AF_INET6;
-    server_addr.sin6_port = htons(port);
-    server_addr.sin6_addr = in6addr_any;
-    error_code ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (ec)
-      return ec;
-    return Listen(backlog); 
-  }
+  if (ec)
+    return ec;
+  return Listen(backlog);
 }
 
 error_code LinuxSocketBase::ListenUDS(const char* path, mode_t permissions, unsigned backlog) {
