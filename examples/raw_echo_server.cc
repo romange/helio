@@ -26,6 +26,7 @@ ABSL_FLAG(uint16_t, threads, 0,
           "Number of connection threads. 0 to run as single threaded. "
           "Otherwise, the main thread accepts connections and worker threads are handling TCP "
           "connections");
+ABSL_FLAG(bool, ipv6, false, "Use IPv6");
 
 namespace ctx = boost::context;
 using namespace std;
@@ -377,20 +378,30 @@ void SetupIORing(io_uring* ring) {
   next_rp_id = 0;
 }
 
-int SetupListener(uint16_t port) {
-  int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+int SetupListener(uint16_t port, bool ipv6) {
+  int listen_fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   CHECK_GE(listen_fd, 0);
 
   const int val = 1;
   CHECK_EQ(0, setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)));
 
-  sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(port);
-  server_addr.sin_addr.s_addr = INADDR_ANY;
+  int res = 0;
+  if (ipv6) {
+    sockaddr_in6 server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin6_family = AF_INET6;
+    server_addr.sin6_port = htons(port);
+    server_addr.sin6_addr = in6addr_any;
+    res = bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+  } else {
+    sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    res = bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
+  }
 
-  int res = bind(listen_fd, (struct sockaddr*)&server_addr, sizeof(server_addr));
   CHECK_EQ(0, res);
   res = listen(listen_fd, 32);
   CHECK_EQ(0, res);
@@ -431,7 +442,8 @@ void WorkerThread(unsigned index) {
   fb2::SetCustomDispatcher(policy);
   if (index == 0) {
     uint16_t port = absl::GetFlag(FLAGS_port);
-    listen_fd = SetupListener(port);
+    bool ipv6 = absl::GetFlag(FLAGS_ipv6);
+    listen_fd = SetupListener(port, ipv6);
     Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
     accept_fb.Join();
   } else {
@@ -484,7 +496,8 @@ int main(int argc, char* argv[]) {
 
   if (num_workers == 0) {
     uint16_t port = absl::GetFlag(FLAGS_port);
-    listen_fd = SetupListener(port);
+    bool ipv6 = absl::GetFlag(FLAGS_ipv6);
+    listen_fd = SetupListener(port, ipv6);
     Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
     accept_fb.Join();
   }

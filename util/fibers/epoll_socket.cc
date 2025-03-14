@@ -267,7 +267,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
 
   error_code ec;
 
-  int fd = ep.address().is_v4() ? CreateSockFd(AF_INET) : CreateSockFd(AF_INET6);
+  int fd = CreateSockFd(ep.address().is_v4() ? AF_INET : AF_INET6);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 

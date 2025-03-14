@@ -603,6 +603,26 @@ TEST_P(FiberSocketTest, OpenMany) {
   });
 }
 
+TEST_P(FiberSocketTest, OpenManyIPv6) {
+  bool use_uring = GetParam() == "uring";
+  if (!use_uring) {
+    GTEST_SKIP() << "OpenManyUDS requires iouring";
+    return;
+  }
+
+  proactor_->Await([&] {
+    for (unsigned i = 0; i < 10000; ++i) {
+      UringProactor* up = static_cast<UringProactor*>(proactor_.get());
+      UringSocket sock(up);
+      auto ec = sock.Create(AF_INET6);
+      ASSERT_FALSE(ec);
+      ec = sock.Close();
+      ASSERT_FALSE(ec);
+      usleep(100);
+    }
+  });
+}
+
 TEST_P(FiberSocketTest, SendProvided) {
   bool use_uring = GetParam() == "uring";
   if (!use_uring) {
