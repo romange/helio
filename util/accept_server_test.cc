@@ -86,7 +86,7 @@ class TestListener : public ListenerInterface {
   }
 };
 
-class AcceptServerTest : public testing::Test {
+class AcceptServerTest : public testing::TestWithParam<bool> {
  protected:
   void SetUp() override;
 
@@ -101,6 +101,8 @@ class AcceptServerTest : public testing::Test {
   static void SetUpTestCase() {
   }
 
+  bool UseIPv6() const { return GetParam(); }
+
   FiberSocketBase::endpoint_type ep_;
 
   std::unique_ptr<ProactorPool> pp_;
@@ -110,6 +112,10 @@ class AcceptServerTest : public testing::Test {
   fb2::Fiber watchdog_fiber_;
   fb2::Done watchdog_done_;
 };
+
+// Add parameterization to run tests with both IPv4 and IPv6
+INSTANTIATE_TEST_SUITE_P(IPVersions, AcceptServerTest, testing::Values(false, true),
+    [](const auto& info) { return info.param ? "IPv6" : "IPv4"; });
 
 void AcceptServerTest::SetUp() {
   const uint16_t kPort = 1234;
@@ -123,13 +129,24 @@ void AcceptServerTest::SetUp() {
 
   as_.reset(new AcceptServer{up});
   listener_ = new TestListener();
-  auto ec = as_->AddListener("localhost", kPort, listener_);
+  
+  // Add appropriate listener based on the parameter
+  auto ec = UseIPv6() 
+      ? as_->AddListener("::1", kPort, listener_)  // IPv6
+      : as_->AddListener("localhost", kPort, listener_);  // IPv4
   CHECK(!ec) << ec;
   as_->Run();
 
   ProactorBase* pb = pp_->GetNextProactor();
   client_sock_.reset(pb->CreateSocket());
-  auto address = boost::asio::ip::make_address("127.0.0.1");
+  
+  // Use IPv4 or IPv6 address based on the parameter
+  boost::asio::ip::address address;
+  if (UseIPv6()) {
+    address = boost::asio::ip::make_address("::1");  // IPv6 loopback
+  } else {
+    address = boost::asio::ip::make_address("127.0.0.1");  // IPv4 loopback
+  }
   ep_ = FiberSocketBase::endpoint_type{address, kPort};
 
   pb->Await([&] {
@@ -171,15 +188,16 @@ void RunClient(FiberSocketBase* fs) {
   LOG(INFO) << ": echo-client stopped";
 }
 
-TEST_F(AcceptServerTest, Basic) {
+TEST_P(AcceptServerTest, Basic) {
+  LOG(INFO) << "Running Basic test for " << (UseIPv6() ? "IPv6" : "IPv4");
   client_sock_->proactor()->Await([&] { RunClient(client_sock_.get()); });
 }
 
-TEST_F(AcceptServerTest, Break) {
+TEST_P(AcceptServerTest, Break) {
   usleep(1000);
 }
 
-TEST_F(AcceptServerTest, ConnectionsLimit) {
+TEST_P(AcceptServerTest, ConnectionsLimit) {
   listener_->SetMaxClients((1 << 16) - 1);
   ASSERT_EQ(listener_->GetMaxClients(), (1 << 16) - 1);
   listener_->SetMaxClients(1);
@@ -221,7 +239,7 @@ TEST_F(AcceptServerTest, ConnectionsLimit) {
   ASSERT_EQ(listener_->GetMaxClients(), (1 << 16) - 1);
 }
 
-TEST_F(AcceptServerTest, UDS) {
+TEST_P(AcceptServerTest, UDS) {
 #ifdef __APPLE__
   GTEST_SKIP() << "Skipped AcceptServerTest.UDS test on MacOS";
   return;
@@ -235,7 +253,7 @@ TEST_F(AcceptServerTest, UDS) {
   as.Stop(true);
 }
 
-TEST_F(AcceptServerTest, Migrate) {
+TEST_P(AcceptServerTest, Migrate) {
   // Make sure the connection is active.
   client_sock_->proactor()->Await([&] { RunClient(client_sock_.get()); });
 
@@ -264,7 +282,7 @@ TEST_F(AcceptServerTest, Migrate) {
   ASSERT_EQ(200, conn->migrations);
 }
 
-TEST_F(AcceptServerTest, Shutdown) {
+TEST_P(AcceptServerTest, Shutdown) {
   listener_->SetMaxClients(1 << 16);
   auto* proactor = client_sock_->proactor();
 

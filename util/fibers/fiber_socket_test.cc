@@ -39,7 +39,20 @@ void InitProactor(ProactorBase* p) {
 
 using namespace std;
 
-class FiberSocketTest : public testing::TestWithParam<string_view> {
+// Struct to combine proactor type and IP version parameters
+struct TestParams {
+  string_view proactor_type;
+  bool use_ipv6;
+  
+  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
+  
+  string ToString() const {
+    string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
+    return string(proactor_type) + "_" + ip_ver;
+  }
+};
+
+class FiberSocketTest : public testing::TestWithParam<TestParams> {
  protected:
   void SetUp() final;
 
@@ -48,6 +61,12 @@ class FiberSocketTest : public testing::TestWithParam<string_view> {
   static void SetUpTestCase() {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
   }
+
+  // Return the proactor type parameter
+  string_view GetProactorType() const { return GetParam().proactor_type; }
+  
+  // Return whether to use IPv6
+  bool UseIPv6() const { return GetParam().use_ipv6; }
 
   using IoResult = int;
 
@@ -63,18 +82,22 @@ class FiberSocketTest : public testing::TestWithParam<string_view> {
   uint32_t conn_sock_err_mask_ = 0;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
-                         testing::Values("epoll"
+INSTANTIATE_TEST_SUITE_P(
+    Engines, 
+    FiberSocketTest,
+    testing::Values(
+        TestParams("epoll", false),  // epoll with IPv4
+        TestParams("epoll", true),   // epoll with IPv6
 #ifdef __linux__
-                                         ,
-                                         "uring"
+        TestParams("uring", false),  // uring with IPv4
+        TestParams("uring", true)    // uring with IPv6
 #endif
-                                         ),
-                         [](const auto& info) { return string(info.param); });
+    ),
+    [](const auto& info) { return info.param.ToString(); });
 
 void FiberSocketTest::SetUp() {
 #if __linux__
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   ProactorBase* proactor = nullptr;
   if (use_uring)
     proactor = new UringProactor;
@@ -103,7 +126,13 @@ void FiberSocketTest::SetUp() {
   listen_port_ = listen_socket_->LocalEndpoint().port();
   DCHECK_GT(listen_port_, 0);
 
-  auto address = boost::asio::ip::make_address("127.0.0.1");
+  // Use IPv4 or IPv6 address based on the parameter
+  boost::asio::ip::address address;
+  if (UseIPv6()) {
+    address = boost::asio::ip::make_address("::1");  // IPv6 loopback
+  } else {
+    address = boost::asio::ip::make_address("127.0.0.1");  // IPv4 loopback
+  }
   listen_ep_ = FiberSocketBase::endpoint_type{address, listen_port_};
 
   accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
@@ -148,7 +177,8 @@ void FiberSocketTest::TearDown() {
 TEST_P(FiberSocketTest, Basic) {
   unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
 
-  LOG(INFO) << "before wait ";
+  LOG(INFO) << "Running Basic test for " << (UseIPv6() ? "IPv6" : "IPv4") << " with " 
+            << GetProactorType() << " proactor";
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
 
@@ -373,7 +403,7 @@ TEST_P(FiberSocketTest, UDS) {
 }
 
 TEST_P(FiberSocketTest, RecvProvided) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "RecvProvided is supported only on uring";
     return;
@@ -438,7 +468,7 @@ TEST_P(FiberSocketTest, RecvProvided) {
 
 #ifdef __linux__
 TEST_P(FiberSocketTest, RecvMultiShot) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "RecvMultiShot is supported only on uring";
     return;
@@ -509,7 +539,7 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
 }
 
 TEST_P(FiberSocketTest, MultiShotNobuf) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "RecvMultiShot is supported only on uring";
     return;
@@ -547,7 +577,7 @@ TEST_P(FiberSocketTest, MultiShotNobuf) {
 }
 
 TEST_P(FiberSocketTest, NotEmpty) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   bool has_poll_first = false;
 
   if (use_uring) {
@@ -584,7 +614,7 @@ TEST_P(FiberSocketTest, NotEmpty) {
 }
 
 TEST_P(FiberSocketTest, OpenMany) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "OpenMany requires iouring";
     return;
@@ -604,7 +634,7 @@ TEST_P(FiberSocketTest, OpenMany) {
 }
 
 TEST_P(FiberSocketTest, OpenManyIPv6) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "OpenManyUDS requires iouring";
     return;
@@ -624,7 +654,7 @@ TEST_P(FiberSocketTest, OpenManyIPv6) {
 }
 
 TEST_P(FiberSocketTest, SendProvided) {
-  bool use_uring = GetParam() == "uring";
+  bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
     GTEST_SKIP() << "SendProvided requires iouring";
     return;
