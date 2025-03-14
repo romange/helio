@@ -35,6 +35,7 @@ ABSL_FLAG(bool, use_incoming_cpu, false,
 ABSL_FLAG(string, tls_cert, "", "");
 ABSL_FLAG(string, tls_key, "", "");
 ABSL_FLAG(string, unixsocket, "", "");
+ABSL_FLAG(bool, ipv6, false, "If true, use ipv6 for server");
 
 VarzQps ping_qps("ping-qps");
 
@@ -246,18 +247,27 @@ int main(int argc, char* argv[]) {
   AcceptServer acceptor(pp.get());
   PingListener* listener = new PingListener(ctx);
 
+  char bind_addr[INET6_ADDRSTRLEN];
+  if (GetFlag(FLAGS_ipv6)) {
+    strcpy(bind_addr, "::");
+  } else {
+    strcpy(bind_addr, "0.0.0.0");
+  }
+
   if (uds.empty()) {
-    acceptor.AddListener(port, listener);
+    acceptor.AddListener(bind_addr, port, listener);
   } else {
     unlink(uds.c_str());
     error_code ec = acceptor.AddUDSListener(uds.c_str(), 0700, listener);
     CHECK(!ec) << ec;
   }
 
+
   int http_port = GetFlag(FLAGS_http_port);
   if (http_port >= 0) {
-    uint16_t port = acceptor.AddListener(http_port, new HttpListener<>);
-    LOG(INFO) << "Started http server on port " << port;
+    error_code ec = acceptor.AddListener(bind_addr, http_port, new HttpListener<>);
+    CHECK(!ec) << "Could not open port " << http_port << " " << ec;
+    LOG(INFO) << "Started http server on port " << http_port;
   }
 
   acceptor.Run();

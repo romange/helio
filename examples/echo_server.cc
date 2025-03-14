@@ -61,6 +61,7 @@ ABSL_FLAG(bool, multishot, false, "If true, iouring sockets use multishot receiv
 ABSL_FLAG(uint16_t, bufring_size, 256, "Size of the buffer ring for iouring sockets");
 ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses SO_INCOMING_CPU in order to distribute incoming connections");
+ABSL_FLAG(bool, ipv6, false, "If true, use ipv6 for server");
 
 VarzQps ping_qps("ping-qps");
 VarzCount connections("connections");
@@ -322,10 +323,17 @@ void RunServer(ProactorPool* pp) {
   AcceptServer acceptor(pp);
   acceptor.set_back_log(GetFlag(FLAGS_backlog));
 
-  acceptor.AddListener(GetFlag(FLAGS_port), new EchoListener);
+  char bind_addr[INET6_ADDRSTRLEN];
+  if (GetFlag(FLAGS_ipv6)) {
+    strcpy(bind_addr, "::");
+  } else {
+    strcpy(bind_addr, "0.0.0.0");
+  }
+  acceptor.AddListener(bind_addr, GetFlag(FLAGS_port), new EchoListener);
   if (GetFlag(FLAGS_http_port) >= 0) {
-    uint16_t port = acceptor.AddListener(GetFlag(FLAGS_http_port), new HttpListener<>);
-    LOG(INFO) << "Started http server on port " << port;
+    error_code ec = acceptor.AddListener(bind_addr, GetFlag(FLAGS_http_port), new HttpListener<>);
+    CHECK(!ec) << "Could not open port " << GetFlag(FLAGS_http_port) << " " << ec;
+    LOG(INFO) << "Started http server on port " << GetFlag(FLAGS_http_port);
   }
 
   acceptor.Run();

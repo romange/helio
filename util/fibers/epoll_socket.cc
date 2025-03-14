@@ -50,14 +50,13 @@ nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 
 int AcceptSock(int fd) {
-  sockaddr_in client_addr;
+  sockaddr_storage client_addr;
   socklen_t addr_len = sizeof(client_addr);
-  int res = accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
-  return res;
+  return accept4(fd, (struct sockaddr*)&client_addr, &addr_len, SOCK_NONBLOCK | SOCK_CLOEXEC);
 }
 
-int CreateSockFd() {
-  return socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
+int CreateSockFd(int family) {
+  return socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 }
 
 /*void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
@@ -73,7 +72,7 @@ int CreateSockFd() {
 constexpr int kEventMask = POLLIN | POLLOUT;
 
 int AcceptSock(int fd) {
-  sockaddr_in client_addr;
+  sockaddr_storage client_addr;
   socklen_t addr_len = sizeof(client_addr);
   int res = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
   if (res >= 0) {
@@ -84,8 +83,8 @@ int AcceptSock(int fd) {
   return res;
 }
 
-int CreateSockFd() {
-  int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+int CreateSockFd(int family) {
+  int fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
   if (fd >= 0) {
     SetNonBlocking(fd);
     SetCloexec(fd);
@@ -268,7 +267,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
 
   error_code ec;
 
-  int fd = CreateSockFd();
+  int fd = CreateSockFd(ep.address().is_v4() ? AF_INET : AF_INET6);
   if (posix_err_wrap(fd, &ec) < 0)
     return ec;
 
