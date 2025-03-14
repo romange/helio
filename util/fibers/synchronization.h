@@ -144,7 +144,7 @@ class CondVarAny {
 
   std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
                                  detail::FiberInterface* active);
-
+  void PrintFailState();
  public:
   CondVarAny() = default;
 
@@ -585,6 +585,11 @@ template <typename LockType> void CondVarAny::wait(LockType& lt) {
   // relock external again before returning
   try {
     lt.lock();
+    if (waiter.IsLinked()) {
+      wait_queue_.Unlink(&waiter);
+      PrintFailState();
+    }
+
   } catch (...) {
     std::terminate();
   }
