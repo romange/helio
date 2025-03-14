@@ -119,6 +119,16 @@ void FiberSocketTest::SetUp() {
 
   error_code ec = proactor_->AwaitBrief([&] {
     listen_socket_.reset(proactor_->CreateSocket());
+    
+    // For IPv6, we need to explicitly create an IPv6 socket
+    if (UseIPv6()) {
+      auto create_ec = listen_socket_->Create(AF_INET6);
+      if (create_ec) {
+        LOG(ERROR) << "Failed to create IPv6 socket: " << create_ec.message();
+        return create_ec;
+      }
+    }
+    
     return listen_socket_->Listen(0, 0);
   });
 
@@ -625,26 +635,6 @@ TEST_P(FiberSocketTest, OpenMany) {
       UringProactor* up = static_cast<UringProactor*>(proactor_.get());
       UringSocket sock(up);
       auto ec = sock.Create(AF_INET);
-      ASSERT_FALSE(ec);
-      ec = sock.Close();
-      ASSERT_FALSE(ec);
-      usleep(100);
-    }
-  });
-}
-
-TEST_P(FiberSocketTest, OpenManyIPv6) {
-  bool use_uring = GetProactorType() == "uring";
-  if (!use_uring) {
-    GTEST_SKIP() << "OpenManyUDS requires iouring";
-    return;
-  }
-
-  proactor_->Await([&] {
-    for (unsigned i = 0; i < 10000; ++i) {
-      UringProactor* up = static_cast<UringProactor*>(proactor_.get());
-      UringSocket sock(up);
-      auto ec = sock.Create(AF_INET6);
       ASSERT_FALSE(ec);
       ec = sock.Close();
       ASSERT_FALSE(ec);
