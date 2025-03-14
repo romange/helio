@@ -855,6 +855,13 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   Mutex m1, m2;
   auto fb_server = proactor()->LaunchFiber("server", [&] {
     start_step(0);
+    
+    // Create the correct socket type based on IP version
+    if (UseIPv6()) {
+      auto create_ec = sock->Create(AF_INET6);
+      ASSERT_FALSE(create_ec) << create_ec.message();
+    }
+    
     auto ec = sock->Listen(0, /*backlog=*/10);
     ASSERT_FALSE(ec) << ec.message();
     end_step();
