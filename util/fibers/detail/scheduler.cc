@@ -225,6 +225,7 @@ ctx::fiber_context Scheduler::Preempt() {
 void Scheduler::AddReady(FiberInterface* fibi) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
+  LOG_IF(INFO, log_switch) << "Adding " << fibi->name() << " to ready_queue";
 
   fibi->cpu_tsc_ = CycleClock::Now();
   ready_queue_.push_back(*fibi);

@@ -374,7 +374,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
   fb_initializer.active = this;
-
+  LOG_IF(INFO, scheduler_->log_switch) << "Switching to " << name_;
   uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.

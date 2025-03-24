@@ -26,6 +26,8 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
+  bool log_switch = false;
+
   void AddReady(FiberInterface* fibi);
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
