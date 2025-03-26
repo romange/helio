@@ -335,7 +335,6 @@ void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   cb(res);
 }
 
-
 // TODO: to implement async functionality.
 void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   io::Result<size_t> res = ReadSome(v, len);
@@ -432,7 +431,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
     engine_->ConsumeOutputBuf(*write_result);
     buffer.remove_prefix(*write_result);
   }
-
+  CHECK_EQ(engine_->OutputPending(), 0);
   if (engine_->OutputPending() > 0) {
     LOG(INFO) << "ssl buffer is not empty with " << engine_->OutputPending()
               << " bytes. short write detected";
@@ -481,8 +480,7 @@ unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 }
 
 void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  proactor()->DeallocateBuffer(
-      io::MutableBytes{const_cast<uint8_t*>(pbuf.start), pbuf.allocated});
+  proactor()->DeallocateBuffer(io::MutableBytes{const_cast<uint8_t*>(pbuf.start), pbuf.allocated});
 }
 
 bool TlsSocket::IsUDS() const {
