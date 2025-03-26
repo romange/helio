@@ -63,13 +63,13 @@ SSL_CTX* CreateSslCntx(TlsContextRole role) {
   unsigned mask = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
 
   bool res = SSL_CTX_use_PrivateKey_file(ctx, tls_key_file.c_str(), SSL_FILETYPE_PEM) != 1;
-  CHECK(res);
+  CHECK_EQ(res, false);
   res = SSL_CTX_use_certificate_chain_file(ctx, tls_key_cert.c_str()) != 1;
-  CHECK(res);
+  CHECK_EQ(res, false);
   res = SSL_CTX_load_verify_locations(ctx, tls_ca_cert_file.data(), nullptr) != 1;
-  CHECK(res);
+  CHECK_EQ(res, false);
   res = 1 == SSL_CTX_set_cipher_list(ctx, "DEFAULT");
-  CHECK(res);
+  CHECK_EQ(res, true);
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
   SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
   SSL_CTX_set_verify(ctx, mask, NULL);
