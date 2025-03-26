@@ -120,8 +120,9 @@ class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
 };
 
 INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTest,
-                         testing::Values("epoll",
+                         testing::Values("epoll"
 #ifdef __linux__
+                                         ,
                                          "uring"
 #endif
                                          ),
