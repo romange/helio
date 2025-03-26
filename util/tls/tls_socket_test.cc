@@ -1,5 +1,5 @@
-// Copyright 2021, Beeri 15.  All rights reserved.
-// Author: Roman Gershman (romange@gmail.com)
+// Copyright 2025, Roman Gershman.  All rights reserved.
+// See LICENSE for licensing terms.
 //
 
 #include "util/tls/tls_socket.h"
@@ -63,13 +63,13 @@ SSL_CTX* CreateSslCntx(TlsContextRole role) {
   unsigned mask = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
 
   bool res = SSL_CTX_use_PrivateKey_file(ctx, tls_key_file.c_str(), SSL_FILETYPE_PEM) != 1;
-  EXPECT_FALSE(res);
+  CHECK(res);
   res = SSL_CTX_use_certificate_chain_file(ctx, tls_key_cert.c_str()) != 1;
-  EXPECT_FALSE(res);
+  CHECK(res);
   res = SSL_CTX_load_verify_locations(ctx, tls_ca_cert_file.data(), nullptr) != 1;
-  EXPECT_FALSE(res);
+  CHECK(res);
   res = 1 == SSL_CTX_set_cipher_list(ctx, "DEFAULT");
-  EXPECT_TRUE(res);
+  CHECK(res);
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
   SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
   SSL_CTX_set_verify(ctx, mask, NULL);
@@ -139,11 +139,8 @@ void TlsFiberSocketTest::SetUp() {
   ProactorBase* proactor = new EpollProactor;
 #endif
 
-  atomic_bool init_done{false};
-
-  proactor_thread_ = thread{[proactor, &init_done] {
+  proactor_thread_ = thread{[proactor] {
     InitProactor(proactor);
-    init_done.store(true, memory_order_release);
     proactor->Run();
   }};
 
@@ -222,14 +219,12 @@ TEST_P(TlsFiberSocketTest, TlsRW) {
     {
       VLOG(1) << "Before writesome";
 
-      Done done;
       iovec v{.iov_base = &res, .iov_len = 16};
 
       tls_sock->WriteSome(&v, 1);
     }
     {
       uint8_t buf[16];
-      Done done;
       iovec v{.iov_base = &buf, .iov_len = 16};
       tls_sock->ReadSome(&v, 1);
 
