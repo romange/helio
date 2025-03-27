@@ -62,14 +62,11 @@ SSL_CTX* CreateSslCntx(TlsContextRole role) {
   }
   unsigned mask = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
 
-  bool res = SSL_CTX_use_PrivateKey_file(ctx, tls_key_file.c_str(), SSL_FILETYPE_PEM) != 1;
-  CHECK_EQ(res, false);
-  res = SSL_CTX_use_certificate_chain_file(ctx, tls_key_cert.c_str()) != 1;
-  CHECK_EQ(res, false);
-  res = SSL_CTX_load_verify_locations(ctx, tls_ca_cert_file.data(), nullptr) != 1;
-  CHECK_EQ(res, false);
-  res = 1 == SSL_CTX_set_cipher_list(ctx, "DEFAULT");
-  CHECK_EQ(res, true);
+  CHECK_EQ(1, SSL_CTX_use_PrivateKey_file(ctx, tls_key_file.c_str(), SSL_FILETYPE_PEM));
+  CHECK_EQ(1, SSL_CTX_use_certificate_chain_file(ctx, tls_key_cert.c_str()));
+  CHECK_EQ(1, SSL_CTX_load_verify_locations(ctx, tls_ca_cert_file.data(), nullptr));
+  CHECK_EQ(1, SSL_CTX_set_cipher_list(ctx, "DEFAULT"));
+
   SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
   SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
   SSL_CTX_set_verify(ctx, mask, NULL);
@@ -77,49 +74,25 @@ SSL_CTX* CreateSslCntx(TlsContextRole role) {
   return ctx;
 }
 
-class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
+class TlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
   void SetUp() final;
   void TearDown() final;
 
-  static void SetUpTestCase() {
-    testing::FLAGS_gtest_death_test_style = "threadsafe";
-  }
-
   using IoResult = int;
-
-  // TODO clean up
-  virtual void HandleRequest() {
-    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    ssl_ctx_ = CreateSslCntx(SERVER);
-    tls_socket_->InitSSL(ssl_ctx_);
-    tls_socket_->Accept();
-
-    uint8_t buf[16];
-    auto res = tls_socket_->Recv(buf);
-    EXPECT_TRUE(res.has_value());
-    EXPECT_TRUE(res.value() == 16);
-
-    auto write_res = tls_socket_->Write(buf);
-    EXPECT_FALSE(write_res);
-  }
 
   unique_ptr<ProactorBase> proactor_;
   thread proactor_thread_;
   unique_ptr<FiberSocketBase> listen_socket_;
-  unique_ptr<FiberSocketBase> conn_socket_;
-  unique_ptr<tls::TlsSocket> tls_socket_;
+  unique_ptr<tls::TlsSocket> server_socket_;
   SSL_CTX* ssl_ctx_;
 
-  uint16_t listen_port_ = 0;
   Fiber accept_fb_;
-  Fiber conn_fb_;
   std::error_code accept_ec_;
   FiberSocketBase::endpoint_type listen_ep_;
-  uint32_t conn_sock_err_mask_ = 0;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTest,
+INSTANTIATE_TEST_SUITE_P(Engines, TlsSocketTest,
                          testing::Values("epoll"
 #ifdef __linux__
                                          ,
@@ -128,7 +101,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTest,
                                          ),
                          [](const auto& info) { return string(info.param); });
 
-void TlsFiberSocketTest::SetUp() {
+void TlsSocketTest::SetUp() {
 #if __linux__
   bool use_uring = GetParam() == "uring";
   ProactorBase* proactor = nullptr;
@@ -153,48 +126,39 @@ void TlsFiberSocketTest::SetUp() {
   });
 
   CHECK(!ec);
-  listen_port_ = listen_socket_->LocalEndpoint().port();
-  DCHECK_GT(listen_port_, 0);
-
-  auto address = boost::asio::ip::make_address("127.0.0.1");
-  listen_ep_ = FiberSocketBase::endpoint_type{address, listen_port_};
+  listen_ep_ = listen_socket_->LocalEndpoint();
 
   accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
     auto accept_res = listen_socket_->Accept();
-    VLOG_IF(1, !accept_res) << "Accept res: " << accept_res.error();
+    CHECK(accept_res) << "Accept error: " << accept_res.error();
 
-    if (accept_res) {
-      VLOG(1) << "Accepted connection " << *accept_res;
-      FiberSocketBase* sock = *accept_res;
-      conn_socket_.reset(sock);
-      conn_socket_->SetProactor(proactor_.get());
-      conn_socket_->RegisterOnErrorCb([this](uint32_t mask) {
-        LOG(INFO) << "Error mask: " << mask;
-        conn_sock_err_mask_ = mask;
-      });
-      conn_fb_ = proactor_->LaunchFiber([this]() { HandleRequest(); });
-    } else {
-      accept_ec_ = accept_res.error();
-    }
+    FiberSocketBase* sock = *accept_res;
+    VLOG(1) << "Accepted connection " << sock->native_handle();
+
+    sock->SetProactor(proactor_.get());
+    sock->RegisterOnErrorCb([this](uint32_t mask) {
+      LOG(ERROR) << "Error mask: " << mask;
+    });
+    server_socket_ = std::make_unique<tls::TlsSocket>(sock);
+    ssl_ctx_ = CreateSslCntx(SERVER);
+    server_socket_->InitSSL(ssl_ctx_);
+    auto tls_accept = server_socket_->Accept();
+    CHECK(accept_res) << "Tls Accept error: " << accept_res.error();
   });
 }
 
-void TlsFiberSocketTest::TearDown() {
+void TlsSocketTest::TearDown() {
   VLOG(1) << "TearDown";
 
   proactor_->Await([&] {
     std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
-    if (conn_socket_) {
-      std::ignore = conn_socket_->Close();
-    } else {
-      std::ignore = tls_socket_->Close();
+    if (server_socket_) {
+      std::ignore = server_socket_->Close();
     }
   });
 
-  conn_fb_.JoinIfNeeded();
   accept_fb_.JoinIfNeeded();
 
-  // We close here because we need to wake up listening socket.
   proactor_->Await([&] { std::ignore = listen_socket_->Close(); });
 
   proactor_->Stop();
@@ -204,42 +168,54 @@ void TlsFiberSocketTest::TearDown() {
   SSL_CTX_free(ssl_ctx_);
 }
 
-TEST_P(TlsFiberSocketTest, TlsRW) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
+TEST_P(TlsSocketTest, ShortWrite) {
+  unique_ptr<tls::TlsSocket> client_sock;
+  {
+    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
 
-  proactor_->Await([&] {
-    ThisFiber::SetName("ConnectFb");
+    proactor_->Await([&] {
+      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+      client_sock->InitSSL(ssl_ctx);
+    });
+    SSL_CTX_free(ssl_ctx);
+  }
 
+  error_code ec = proactor_->Await([&] {
     LOG(INFO) << "Connecting to " << listen_ep_;
-    error_code ec = tls_sock->Connect(listen_ep_);
-    EXPECT_FALSE(ec);
-    uint8_t res[16];
-    std::fill(std::begin(res), std::end(res), uint8_t(120));
-    {
-      VLOG(1) << "Before writesome";
-
-      iovec v{.iov_base = &res, .iov_len = 16};
-
-      tls_sock->WriteSome(&v, 1);
-    }
-    {
-      uint8_t buf[16];
-      iovec v{.iov_base = &buf, .iov_len = 16};
-      tls_sock->ReadSome(&v, 1);
-
-      EXPECT_EQ(memcmp(begin(res), begin(buf), 16), 0);
-    }
-
-    VLOG(1) << "closing client sock " << tls_sock->native_handle();
-    std::ignore = tls_sock->Close();
-    accept_fb_.Join();
-    VLOG(1) << "After join";
-    ASSERT_FALSE(ec) << ec.message();
-    ASSERT_FALSE(accept_ec_);
+    return client_sock->Connect(listen_ep_);
   });
-  SSL_CTX_free(ssl_ctx);
+  ASSERT_FALSE(ec) << ec.message();
+
+  auto client_fb = proactor_->LaunchFiber([&] {
+    uint8_t buf[256];
+    iovec iov{buf, sizeof(buf)};
+
+    client_sock->ReadSome(&iov, 1);
+  });
+
+  // Server side.
+  auto server_read_fb = proactor_->LaunchFiber([&] {
+    // This read actually causes the fiber to flush pending writes and preempt on iouring.
+    uint8_t buf[256];
+    iovec iov;
+    iov.iov_base = buf;
+    iov.iov_len = sizeof(buf);
+    server_socket_->ReadSome(&iov, 1);
+  });
+
+  auto write_res = proactor_->Await([&] {
+    ThisFiber::Yield();
+    uint8_t buf[16] = {0};
+
+    VLOG(1) << "Writing to client";
+    return server_socket_->Write(buf);
+  });
+
+  ASSERT_FALSE(write_res) << write_res;
+  LOG(INFO) << "Finished";
+  client_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+  server_read_fb.Join();
 }
 
 }  // namespace fb2
