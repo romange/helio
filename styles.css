@@ -1,0 +1,72 @@
+/* Core styling */
+.reveal h1 {
+    color: #58b2dc;
+    text-shadow: 1px 1px 3px rgba(0,0,0,0.5);
+    font-weight: 600;
+}
+
+.reveal h2 {
+    color: #f19483;
+    margin-bottom: 30px;
+}
+
+.reveal h3 {
+    color: #9ed2bf;
+}
+
+/* List styling */
+.reveal li {
+    margin: 12px 0;
+    font-size: 0.9em;
+}
+
+.reveal li li {
+    font-size: 0.95em;
+}
+
+/* Code styling */
+.reveal code:not(.hljs) {
+    background-color: rgba(40, 40, 40, 0.7);
+    color: #17b221;
+    padding: 0.1em 0.3em;
+    border-radius: 0.3em;
+    font-family: monospace;
+    font-size: 0.95em;
+    white-space: nowrap;
+}
+
+.reveal pre {
+    box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+    border-radius: 4px;
+}
+
+.reveal pre code {
+    max-height: 500px;
+}
+
+/* Link styling */
+.reveal a {
+    color: #66ccff;
+    transition: color 0.3s ease;
+}
+
+.reveal a:hover {
+    color: #99ddff;
+    text-decoration: underline;
+}
+
+/* Background and progress */
+.reveal .slide-background {
+    background: radial-gradient(circle, #1a1a1a 0%, #0a0a0a 100%);
+}
+
+.reveal .progress {
+    height: 6px;
+    color: #58b2dc;
+}
+
+/* Utility classes */
+.highlight {
+    color: #f19483;
+    font-weight: bold;
+}

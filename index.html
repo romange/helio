@@ -3,43 +3,50 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>Your Presentation Title</title>
+    <title>Helio: High-Performance I/O and Concurrency</title>
     <!-- Reveal.js CSS from CDN -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/theme/black.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/theme/black.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/highlight/monokai.min.css">
     
-    <!-- Theme used for syntax highlighted code -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/plugin/highlight/monokai.min.css">
-    <!-- Custom CSS (optional) -->
-    <style>
-        .reveal pre code {
-            max-height: 500px;
-        }
-    </style>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
     <div class="reveal">
         <div class="slides">
-            <section data-markdown="slides.md" data-separator="^\n---\n$" data-separator-vertical="^\n--\n$"></section>
+            <section data-markdown="slides.md" 
+                     data-separator="^\n---\n$" 
+                     data-separator-vertical="^\n--\n$">
+            </section>
         </div>
     </div>
+    
     <!-- Reveal.js Scripts -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/reveal.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/plugin/markdown/markdown.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.3.1/plugin/highlight/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/dist/reveal.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/markdown/markdown.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/highlight/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.5.0/plugin/notes/notes.min.js"></script>    
 
     <script>
         Reveal.initialize({
             hash: true,
-
-            // Learn about plugins: https://revealjs.com/plugins/
-            plugins: [RevealMarkdown, RevealHighlight],
-                
+            plugins: [RevealMarkdown, RevealHighlight, RevealNotes],
             transition: 'slide',
             controls: true,
             progress: true,
             center: true,
+            slideNumber: true,
+            viewDistance: 3,
+            margin: 0.1,
+            autoAnimateEasing: 'ease-out',
+            autoAnimateDuration: 0.8,
+            autoAnimateUnmatched: false,
+            markdown: {
+                gfm: true,
+                smartypants: true
+            },
         });
     </script>
 </body>

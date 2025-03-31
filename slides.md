@@ -9,30 +9,40 @@ An opinionated library for backend development
 ## Repository Overview
 
 **Purpose**:
-- Efficient I/O and concurrency using modern C++
+- Efficient backend development using modern C++
+- Lightweight fibers for task scheduling
+- Supports Linux(epoll/io_uring)/FreeBSD/MacOS
 - Key components:
-  - Proactor classes
-  - Fiber-based coroutines
-  - Non-blocking file operations
+  - Integrated logging: `VLOG/DVLOG` and invariant checks: `(D)CHECK_EQ`
+  - Unit testing
+  - Non-blocking file operations (even for non-io_uring)
 
-**Features**:
+Note: Helio is designed to work across multiple UNIX-like operating systems including Linux, FreeBSD, and MacOS.
+On Linux, it leverages epoll and io_uring for efficient I/O operations.
 
-✔️ Lightweight fibers for task scheduling </br>
-✔️ Proactor architecture for scalable I/O </br>
-✔️ Mostly posix-based abstractions </br>
+---
+
+## Repository Structure
+
+<div style="text-align: center;">
+  <img src="assets/folders.svg" alt="Repository Structure" style="width: 20%; height: auto;">
+</div>
+
+ - `base/` - data structures, memory management, absl and posix wrappers
+ - `io/` - sinks, sources, files and fs utilities.
+ - `strings/` - string related utilities that are not present in `absl/strings`.
+ - `util` - advanced abstractions: fibers, proactors, html, http etc.
 
 ---
 
 ## Proactor
 
-- Fibers scheduling fibers
-- I/O handling
-- Run-time checks (FiberAtomicGuard)
+- Fibers scheduling & I/O handling
+- Run-time checks (aka FiberAtomicGuard)
 - Message passing
 
 ```cpp
-
-
+// Example of cross-thread fiber execution
 thread_local int j = 10;
 j = 15;
 
