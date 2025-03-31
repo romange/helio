@@ -45,6 +45,8 @@ class MallocTest : public testing::Test {
   static void SetUpTestCase() {
     mi_process_init();
     mi_option_set(mi_option_arena_reserve, 0);
+    mi_option_set(mi_option_purge_delay, 0);  // purge free pages immediately.
+    mi_option_set(mi_option_purge_extend_delay, 0);
   }
 };
 
@@ -85,6 +87,7 @@ TEST_F(MallocTest, Oom) {
   ASSERT_TRUE(ptr2 != NULL);
   mi_free(ptr);
   mi_free(ptr2);
+  mi_collect(true);
 }
 
 inline size_t VmmRss() {
@@ -167,7 +170,9 @@ bool heap_visit_cb(const mi_heap_t* heap, const mi_heap_area_t* area, void* bloc
 
 TEST_F(MallocTest, MimallocUsed) {
   mi_collect(true);
-  EXPECT_EQ(0, _mi_stats_main.committed.current);
+
+  // mimalloc does not release memory back to the OS entirely.
+  EXPECT_LT(_mi_stats_main.committed.current, 1u << 18);  // after 2.1.6
   mi_heap_t* myheap = mi_heap_new();
   Sum sum;
   mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
@@ -183,7 +188,7 @@ TEST_F(MallocTest, MimallocUsed) {
   mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
   EXPECT_EQ(sum.used, kElems * 160);  // See https://github.com/microsoft/mimalloc/issues/889
   mi_heap_destroy(myheap);
-  mi_collect(true);
+
   EXPECT_LT(_mi_stats_main.committed.current, 10000);
 }
 
@@ -193,7 +198,7 @@ TEST_F(MallocTest, MimallocVisit) {
   std::ignore = mi_heap_malloc(myheap, 64);
 
   for (size_t i = 0; i < 50; ++i)
-  std::ignore = mi_heap_malloc(myheap, 128);
+    std::ignore = mi_heap_malloc(myheap, 128);
   void* ptr[50];
 
   // allocate 50
@@ -217,9 +222,8 @@ TEST_F(MallocTest, MimallocVisit) {
             << sum.used;
 
   LOG_STATS(committed);
-  LOG_STATS(malloc);
+  LOG_STATS(malloc_normal);
   LOG_STATS(reserved);
-  LOG_STATS(normal);
   mi_heap_destroy(myheap);
 }
 
