@@ -144,9 +144,11 @@ io::Result<TokenTtl> ParseTokenResponse(std::string&& response) {
   return result;
 }
 
+static constexpr string_view kMetaDataHost = "metadata.google.internal"sv;
+
 error_code ConfigureMetadataClient(fb2::ProactorBase* pb, http::Client* client) {
   client->set_connect_timeout_ms(1000);
-  static const char kMetaDataHost[] = "metadata.google.internal";
+
   return client->Connect(kMetaDataHost, "80");
 }
 
@@ -158,6 +160,7 @@ error_code ReadGCPConfigFromMetadata(fb2::ProactorBase* pb, string* account_id, 
   const char kEmailUrl[] = "/computeMetadata/v1/instance/service-accounts/default/email";
   h2::request<h2::empty_body> req{h2::verb::get, kEmailUrl, 11};
   req.set("Metadata-Flavor", "Google");
+  req.set(h2::field::host, kMetaDataHost.data());
 
   h2::response<h2::string_body> resp;
   RETURN_ERROR(client.Send(req, &resp));
@@ -214,14 +217,16 @@ error_code GCPCredsProvider::Init(unsigned connect_ms) {
   } else {
     auto gcloudRoot = ExpandFilePath(kGcloudDir);
     if (gcloudRoot) {
-      VLOG(1) << "Using ADC provided via gcloud CLI";
-      RETURN_ERROR(LoadGCPConfig(gcloudRoot.value(), &account_id_, &project_id_));
+      VLOG(1) << "Using ADC provided via gcloud CLI " << *gcloudRoot;
+
+      RETURN_ERROR(LoadGCPConfig(*gcloudRoot, &account_id_, &project_id_));
       if (account_id_.empty() || project_id_.empty()) {
-        LOG(WARNING) << "gcloud config file is not valid";
-        return make_error_code(errc::not_supported);
+        LOG(WARNING) << "gcloud config file " << *gcloudRoot
+                     << " is not valid, either project_id or account_id is empty";
+      } else {
+        adc_file =
+            absl::StrCat(gcloudRoot.value(), kGcloudCredentialsFolder, account_id_, "/adc.json");
       }
-      adc_file =
-          absl::StrCat(gcloudRoot.value(), kGcloudCredentialsFolder, account_id_, "/adc.json");
     } else if (gcloudRoot.error() != errc::no_such_file_or_directory) {
       LOG(WARNING) << "error retrieving " << kGcloudDir;
       return gcloudRoot.error();
@@ -268,6 +273,8 @@ error_code GCPCredsProvider::RefreshToken() {
 
     h2::request<h2::empty_body> req{h2::verb::get, kInstanceTokenUrl, 11};
     req.set("Metadata-Flavor", "Google");
+    req.set(h2::field::host, kMetaDataHost.data());
+
     RETURN_ERROR(client.Send(req, &resp));
   } else {
     constexpr char kDomain[] = "oauth2.googleapis.com";

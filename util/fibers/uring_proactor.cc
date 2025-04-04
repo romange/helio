@@ -58,7 +58,7 @@ constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr uint16_t kMsgRingSubmitTag = 1;
 constexpr uint16_t kTimeoutSubmitTag = 2;
 constexpr uint16_t kCqeBatchLen = 128;
-
+constexpr size_t kAlign = 4096;
 }  // namespace
 
 struct UringProactor::BufRingGroup {
@@ -170,7 +170,7 @@ UringProactor::~UringProactor() {
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
     if (buf_pool_.backing) {
-      munmap(buf_pool_.backing, buf_pool_.segments.Size() * UringBuf::kAlign);
+      munmap(buf_pool_.backing, buf_pool_.segments.Size() * kAlign);
       io_uring_unregister_buffers(&ring_);
     }
 
@@ -423,7 +423,7 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
 }
 
 unsigned UringProactor::RegisterBuffers(size_t size) {
-  size = (size + UringBuf::kAlign - 1) / UringBuf::kAlign * UringBuf::kAlign;
+  size = (size + kAlign - 1) / kAlign * kAlign;
 
   // Use mmap to create the backing
   void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -441,7 +441,7 @@ unsigned UringProactor::RegisterBuffers(size_t size) {
   }
 
   buf_pool_.backing = reinterpret_cast<uint8_t*>(ptr);
-  buf_pool_.segments.Grow(size / UringBuf::kAlign);
+  buf_pool_.segments.Grow(size / kAlign);
 
   return 0;
 }
@@ -449,10 +449,10 @@ unsigned UringProactor::RegisterBuffers(size_t size) {
 std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
   if (buf_pool_.backing) {
     // We keep track not of bytes, but 4kb segments and round up
-    size_t segment_cnt = (size + UringBuf::kAlign - 1) / UringBuf::kAlign;
+    size_t segment_cnt = (size + kAlign - 1) / kAlign;
     if (auto offset = buf_pool_.segments.Request(segment_cnt)) {
-      uint8_t* ptr = buf_pool_.backing + *offset * UringBuf::kAlign;
-      return UringBuf{{ptr, segment_cnt * UringBuf::kAlign}, 0};
+      uint8_t* ptr = buf_pool_.backing + *offset * kAlign;
+      return UringBuf{{ptr, segment_cnt * kAlign}, 0};
     }
   }
   return std::nullopt;
@@ -461,7 +461,24 @@ std::optional<UringBuf> UringProactor::RequestBuffer(size_t size) {
 void UringProactor::ReturnBuffer(UringBuf buf) {
   DCHECK(buf.buf_idx);
 
-  size_t segments = (buf.bytes.data() - buf_pool_.backing) / UringBuf::kAlign;
+  size_t segments = (buf.bytes.data() - buf_pool_.backing) / kAlign;
+  buf_pool_.segments.Return(segments);
+}
+
+optional<RegisteredSlice> UringProactor::RequestRegisteredSlice(size_t size) {
+  if (buf_pool_.backing) {
+    // We keep track not of bytes, but 4kb segments and round up
+    size_t segment_cnt = (size + kAlign - 1) / kAlign;
+    if (auto offset = buf_pool_.segments.Request(segment_cnt)) {
+      uint8_t* ptr = buf_pool_.backing + *offset * kAlign;
+      return RegisteredSlice{{ptr, segment_cnt * kAlign}, 0};
+    }
+  }
+  return std::nullopt;
+}
+
+void UringProactor::ReturnRegisteredSlice(RegisteredSlice buf) {
+  size_t segments = (buf.bytes.data() - buf_pool_.backing) / kAlign;
   buf_pool_.segments.Return(segments);
 }
 
@@ -616,8 +633,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
-                                            uint16_t* head_id) -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
+    -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 

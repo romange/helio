@@ -95,12 +95,22 @@ error_code LinuxSocketBase::Create(unsigned short pfamily) {
 }
 
 error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
-  sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(port);
-  server_addr.sin_addr.s_addr = INADDR_ANY;
-  error_code ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
+  error_code ec;
+  if (LocalEndpoint().address().is_v4()) {
+    sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(port);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
+ } else {
+    sockaddr_in6 server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin6_family = AF_INET6;
+    server_addr.sin6_port = htons(port);
+    server_addr.sin6_addr = in6addr_any;
+    ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
+  }
   if (ec)
     return ec;
   return Listen(backlog);

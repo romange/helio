@@ -18,6 +18,8 @@
                   << ", write_total:" << upstream_write_ << " "               \
                   << " pending output: " << engine_->OutputPending() << " "
 
+#define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
+
 namespace util {
 namespace tls {
 
@@ -100,8 +102,8 @@ auto TlsSocket::Accept() -> AcceptResult {
         // IANA mapping https://testssl.sh/openssl-iana.mapping.html
         uint16_t protocol_id = SSL_CIPHER_get_protocol_id(cipher);
 
-        LOG(INFO) << "SSL accept success, chosen " << SSL_CIPHER_get_name(cipher) << "/"
-                  << proto_version << " " << protocol_id;
+        LOG(INFO) << "sock[" << native_handle() << "] SSL success, chosen "
+                  << SSL_CIPHER_get_name(cipher) << "/" << proto_version << " " << protocol_id;
       }
       break;
     }
@@ -151,8 +153,8 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
   // IANA mapping https://testssl.sh/openssl-iana.mapping.html
   uint16_t protocol_id = SSL_CIPHER_get_protocol_id(cipher);
 
-  VLOG(1) << "SSL handshake success, chosen " << SSL_CIPHER_get_name(cipher) << "/" << proto_version
-          << " " << protocol_id;
+  VSOCK(1) << "SSL handshake success, chosen " << SSL_CIPHER_get_name(cipher) << "/"
+           << proto_version << " " << protocol_id;
 
   return {};
 }
@@ -197,7 +199,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   auto* io = msg.msg_iov;
   size_t io_len = msg.msg_iovlen;
 
-  DVLOG(1) << "TlsSocket::RecvMsg " << io_len << " records";
+  DVSOCK(1) << "RecvMsg " << io_len << " records";
 
   Engine::MutableBuffer dest{reinterpret_cast<uint8_t*>(io->iov_base), io->iov_len};
   size_t read_total = 0;
@@ -211,7 +213,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 
     int op_val = op_result;
 
-    DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
+    DVSOCK(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
 
     if (op_val > 0) {
       read_total += op_val;
@@ -654,7 +656,7 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
     return esz.error();
   }
 
-  DVLOG(1) << "HandleUpstreamRead " << *esz << " bytes";
+  DVSOCK(1) << "HandleUpstreamRead " << *esz << " bytes";
 
   engine_->CommitInput(*esz);
 
@@ -668,10 +670,11 @@ error_code TlsSocket::HandleUpstreamWrite() {
   if (buffer.empty())
     return {};
 
-  DVLOG(2) << "HandleUpstreamWrite " << buffer.size();
+  DVSOCK(2) << "HandleUpstreamWrite " << buffer.size();
+
   // we do not allow concurrent writes from multiple fibers.
   state_ |= WRITE_IN_PROGRESS;
-  while (!buffer.empty()) {
+  do {
     io::Result<size_t> write_result = next_sock_->WriteSome(buffer);
 
     DCHECK(engine_);
@@ -686,15 +689,16 @@ error_code TlsSocket::HandleUpstreamWrite() {
       return write_result.error();
     }
     CHECK_GT(*write_result, 0u);
+
     upstream_write_ += *write_result;
     engine_->ConsumeOutputBuf(*write_result);
-    buffer.remove_prefix(*write_result);
-  }
 
-  if (engine_->OutputPending() > 0) {
-    LOG(INFO) << "ssl buffer is not empty with " << engine_->OutputPending()
-              << " bytes. short write detected";
-  }
+    // We could preempt while calling WriteSome, and the engine could get more data to write.
+    // Therefore we sync the buffer.
+    buffer = engine_->PeekOutputBuf();
+  } while (!buffer.empty());
+
+  DCHECK_EQ(engine_->OutputPending(), 0u);
 
   state_ &= ~WRITE_IN_PROGRESS;
 

@@ -112,10 +112,23 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
   }};
 }
 
-class ProactorTest : public testing::TestWithParam<string_view> {
+// Struct to combine proactor type and IP version parameters
+struct TestParams {
+  string_view proactor_type;
+  bool use_ipv6;
+  
+  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
+  
+  string ToString() const {
+    string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
+    return string(proactor_type) + "_" + ip_ver;
+  }
+};
+
+class ProactorTest : public testing::TestWithParam<TestParams> {
  protected:
   static unique_ptr<ProactorThread> CreateProactorThread() {
-    string_view param = GetParam();
+    string_view param = GetParam().proactor_type;
     if (param == "epoll") {
       return make_unique<ProactorThread>(0, ProactorBase::EPOLL);
     }
@@ -130,7 +143,8 @@ class ProactorTest : public testing::TestWithParam<string_view> {
   void SetUp() final {
     proactor_th_ = CreateProactorThread();
     const TestInfo* const test_info = UnitTest::GetInstance()->current_test_info();
-    LOG(INFO) << "Starting " << test_info->name();
+    LOG(INFO) << "Starting " << test_info->name() << " with " 
+              << (UseIPv6() ? "IPv6" : "IPv4");
   }
 
   void TearDown() final {
@@ -144,19 +158,30 @@ class ProactorTest : public testing::TestWithParam<string_view> {
   ProactorBase* proactor() {
     return proactor_th_->get();
   }
+  
+  // Return the proactor type parameter
+  string_view GetProactorType() const { return GetParam().proactor_type; }
+  
+  // Return whether to use IPv6
+  bool UseIPv6() const { return GetParam().use_ipv6; }
 
   using IoResult = int;
 
   std::unique_ptr<ProactorThread> proactor_th_;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
-                         testing::Values("epoll"
+INSTANTIATE_TEST_SUITE_P(
+    Engines, 
+    ProactorTest,
+    testing::Values(
+          TestParams("epoll", false)  // epoll with IPv4
+        , TestParams("epoll", true)   // epoll with IPv6
 #ifdef __linux__
-                                         ,
-                                         "uring"
+        , TestParams("uring", false)  // uring with IPv4
+        , TestParams("uring", true)    // uring with IPv6
 #endif
-                                         ));
+    ),
+    [](const auto& info) { return info.param.ToString(); });
 
 struct SlistMember {
   boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>
@@ -830,6 +855,13 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   Mutex m1, m2;
   auto fb_server = proactor()->LaunchFiber("server", [&] {
     start_step(0);
+    
+    // Create the correct socket type based on IP version
+    if (UseIPv6()) {
+      auto create_ec = sock->Create(AF_INET6);
+      ASSERT_FALSE(create_ec) << create_ec.message();
+    }
+    
     auto ec = sock->Listen(0, /*backlog=*/10);
     ASSERT_FALSE(ec) << ec.message();
     end_step();
@@ -858,7 +890,14 @@ TEST_P(ProactorTest, DragonflyBug1591) {
 
   auto fb_client = proactor()->LaunchFiber("client", [&] {
     start_step(1);
-    auto localhost = boost::asio::ip::make_address("127.0.0.1");
+
+    // Use IPv4 or IPv6 address based on the parameter
+    boost::asio::ip::address localhost;
+    if (UseIPv6()) {
+      localhost = boost::asio::ip::make_address("::1");  // IPv6 loopback
+    } else {
+      localhost = boost::asio::ip::make_address("127.0.0.1");  // IPv4 loopback
+    }
     auto ep = FiberSocketBase::endpoint_type{localhost, sock->LocalEndpoint().port()};
     auto ec = sock2->Connect(ep);
     end_step();

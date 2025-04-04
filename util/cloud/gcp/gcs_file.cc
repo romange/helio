@@ -3,6 +3,7 @@
 
 #include "util/cloud/gcp/gcs_file.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 
@@ -93,7 +94,7 @@ class GcsWriteFile : public detail::AbstractStorageFile {
   GcsWriteFileOptions opts_;
 };
 
-class GcsReadFile final : public io::ReadonlyFile  {
+class GcsReadFile final : public io::ReadonlyFile {
  public:
   // does not own gcs object, only wraps it with ReadonlyFile interface.
   GcsReadFile(string read_obj_url, const GcsReadFileOptions& opts)
@@ -192,7 +193,6 @@ error_code GcsWriteFile::Close() {
 
   return {};
 }
-
 
 error_code GcsWriteFile::Upload() {
   size_t body_size = body_mb_.size();
@@ -317,11 +317,17 @@ io::Result<io::WriteFile*> OpenWriteGcsFile(const string& bucket, const string& 
 
   RobustSender sender(opts.pool, opts.creds_provider);
   RobustSender::SenderResult send_res;
-  error_code ec = sender.Send(3, &empty_req, &send_res);
-  if (ec) {
+  absl::Cleanup cleanup([&] {
     if (opts.pool_owned) {
+      // We must reset the client handle before deleting the pool that owns it.
+      send_res.client_handle.reset();
       delete opts.pool;
     }
+  });
+
+  error_code ec = sender.Send(3, &empty_req, &send_res);
+
+  if (ec) {
     return nonstd::make_unexpected(ec);
   }
 
@@ -330,11 +336,9 @@ io::Result<io::WriteFile*> OpenWriteGcsFile(const string& bucket, const string& 
   auto it = headers.find(h2::field::location);
   if (it == headers.end()) {
     LOG(ERROR) << "Could not find location in " << headers;
-    if (opts.pool_owned) {
-      delete opts.pool;
-    }
     return nonstd::make_unexpected(make_error_code(errc::connection_refused));
   }
+  std::move(cleanup).Cancel();
 
   return new GcsWriteFile(key, detail::FromBoostSV(it->value()), opts);
 }

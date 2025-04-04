@@ -115,7 +115,7 @@ void ListenerInterface::RunAcceptLoop() {
     if (!res.has_value()) {
       FiberSocketBase::error_code ec = res.error();
       if (ec != errc::connection_aborted) {
-        LOG(ERROR) << "Error calling accept " << ec << "/" << ec.message();
+        LOG(WARNING) << "Error calling accept " << ec << "/" << ec.message();
       }
       VLOG(1) << "Breaking RunAcceptLoop()";
       break;

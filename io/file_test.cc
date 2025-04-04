@@ -8,6 +8,7 @@
 #include <absl/strings/numbers.h>
 
 #include "base/gtest.h"
+#include "base/logging.h"
 #include "io/file_util.h"
 #include "io/line_reader.h"
 
@@ -39,11 +40,11 @@ TEST_F(FileTest, Util) {
 }
 
 TEST_F(FileTest, LineReader) {
-  string path = base::ProgramRunfile("testdata/ids.txt");
-  ReadonlyFileOrError fl_err = OpenRead(path, ReadonlyFile::Options{});
-  ASSERT_TRUE(fl_err);
-  FileSource fs(std::move(*fl_err));
-  LineReader lr(&fs, DO_NOT_TAKE_OWNERSHIP);
+  string path = base::ProgramRunfile("testdata/ids.txt.zst");
+  Result<Source*> src = OpenUncompressed(path);
+  ASSERT_TRUE(src);
+
+  LineReader lr(*src, DO_NOT_TAKE_OWNERSHIP);
   string_view line;
   uint64_t val;
   while (lr.Next(&line)) {
@@ -59,8 +60,12 @@ TEST_F(FileTest, Direct) {
   auto res = OpenWrite(path, opts);
   ASSERT_TRUE(res);
   WriteFile* file =  *res;
-
-  auto ec = file->Write(string(4096, 'a'));
+  char* src = nullptr;
+  constexpr unsigned kLen = 4096;
+  CHECK_EQ(0, posix_memalign((void**)&src, 4096, kLen));
+  memset(src, 'a', 4096);
+  auto ec = file->Write(string_view(src, kLen));
+  free(src);
   ASSERT_FALSE(ec) << ec;
 
   ec = file->Close();

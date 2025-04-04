@@ -250,9 +250,8 @@ auto UringSocket::Connect(const endpoint_type& ep,
 }
 
 auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
-  CHECK(proactor());
-  CHECK_GT(len, 0U);
-  CHECK_GE(fd_, 0);
+  DCHECK_GT(len, 0U);
+  DCHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
     return Unexpected(errc::connection_aborted);
@@ -260,6 +259,8 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
+  DCHECK(ProactorBase::me() == p);
+
   ssize_t res = 0;
   VSOCK(2) << "WriteSome [" << fd << "] " << len;
 
@@ -327,6 +328,8 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
 
   int fd = native_handle();
   Proactor* proactor = GetProactor();
+  DCHECK(ProactorBase::me() == proactor);
+
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
                                         uint32_t flags, uint32_t) {
     delete msg;
@@ -357,6 +360,8 @@ void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressC
 
   int fd = ShiftedFd();
   Proactor* proactor = GetProactor();
+  DCHECK(ProactorBase::me() == proactor);
+
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
                                         uint32_t flags, uint32_t) {
     delete msg;
@@ -375,8 +380,7 @@ void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressC
 }
 
 auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
-  CHECK(proactor());
-  CHECK_GE(fd_, 0);
+  DCHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
     return Unexpected(errc::connection_aborted);

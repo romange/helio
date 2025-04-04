@@ -46,12 +46,14 @@ class MainFiberImpl final : public FiberInterface {
 mutex g_scheduler_lock;
 
 TL_FiberInitializer* g_fiber_thread_list = nullptr;
-uint64_t g_tsc_cycles_per_ms = 0;
 
 }  // namespace
 
 PMR_NS::memory_resource* default_stack_resource = nullptr;
 size_t default_stack_size = 64 * 1024;
+uint64_t g_tsc_cycles_per_ms = 0;
+
+__thread FiberInterface::TL FiberInterface::tl;
 
 // Per thread initialization structure.
 struct TL_FiberInitializer {
@@ -63,7 +65,6 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
-  uint64_t epoch = 0;
   uint64_t switch_delay_cycles = 0;  // switch delay in cycles.
 
   // Tracks fiber runtimes that took longer than 1ms.
@@ -368,32 +369,35 @@ void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
 }
 
 FiberInterface* FiberInterface::SwitchSetup() {
-  FiberInterface* prev = this;
-
   auto& fb_initializer = FbInitializer();
-  std::swap(fb_initializer.active, prev);
+
+  // switch the active fiber and set to_suspend to the previously active fiber.
+  FiberInterface* to_suspend = fb_initializer.active;
+  fb_initializer.active = this;
 
   uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
   // We ignore such cases (and they are very rare).
   if (tsc > cpu_tsc_) {
-    ++fb_initializer.epoch;
-    DCHECK_GE(tsc, prev->cpu_tsc_);
+    ++tl.epoch;
+    DCHECK_GE(tsc, to_suspend->cpu_tsc_);
     fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
 
-    // prev tsc points to the fiber that was active before this call.
-    uint64_t delta_cycles = tsc - prev->cpu_tsc_;
+    // to_suspend points to the fiber that is active and is going to be to_suspend.
+    uint64_t delta_cycles = tsc - to_suspend->cpu_tsc_;
     if (delta_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
 
       // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
       fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
     }
+
+    to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
   }
 
   cpu_tsc_ = tsc;
-  return prev;
+  return to_suspend;
 }
 
 void FiberInterface::PrintAllFiberStackTraces() {
@@ -432,10 +436,6 @@ void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
 void SetCustomDispatcher(DispatchPolicy* policy) {
   detail::TL_FiberInitializer& fb_init = detail::FbInitializer();
   fb_init.sched->AttachCustomPolicy(policy);
-}
-
-uint64_t FiberSwitchEpoch() noexcept {
-  return detail::FbInitializer().epoch;
 }
 
 uint64_t FiberSwitchDelayUsec() noexcept {
