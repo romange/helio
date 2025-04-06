@@ -571,7 +571,7 @@ TEST_P(ProactorTest, AsyncCall) {
   EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
 }
 
-TEST_P(ProactorTest, Await) {
+TEST_P(ProactorTest, AwaitBrief) {
   thread_local int val = 5;
 
   proactor()->AwaitBrief([] { val = 15; });
@@ -613,7 +613,7 @@ TEST_P(ProactorTest, Sleep) {
     LOG(INFO) << "Before Sleep";
     ThisFiber::SleepFor(20ms);
     LOG(INFO) << "After Sleep";
-  });
+  }, Fiber::Opts{.name = "test_sleep"});
 }
 
 TEST_P(ProactorTest, LocalCond) {

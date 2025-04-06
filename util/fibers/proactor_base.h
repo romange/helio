@@ -104,6 +104,11 @@ class ProactorBase {
     return tl_info_.monotonic_time;
   }
 
+  // Used by Scheduler to update the monotonic time.
+  static void UpdateMonotonicTime() {
+    tl_info_.monotonic_time = GetClockNanos();
+  }
+
   // Returns an 0 <= index < N, where N is the number of proactor threads in the pool of called
   // from Proactor thread. Returns -1 if Proactor is not part of the pool.
   // Can be accessed from any thread.
@@ -139,7 +144,7 @@ class ProactorBase {
   // runs it wrapped in a fiber. Should be used instead of 'AwaitBrief' when 'f' itself
   // awaits on something.
   // To summarize: 'f' may not block its thread, but allowed to block its fiber.
-  template <typename Func> auto Await(Func&& f) -> decltype(f());
+  template <typename Func> auto Await(Func&& f, const Fiber::Opts& = {}) -> decltype(f());
 
   // Please note that this function uses Await, therefore can not be used inside
   // Proactor main fiber (i.e. Async callbacks).
@@ -430,14 +435,15 @@ template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()
 // runs it wrapped in a fiber. Should be used instead of 'Await' when 'f' itself
 // awaits on something.
 // To summarize: 'f' should not block its thread, but allowed to block its fiber.
-template <typename Func> auto ProactorBase::Await(Func&& f) -> decltype(f()) {
+template <typename Func>
+auto ProactorBase::Await(Func&& f, const Fiber::Opts& opts) -> decltype(f()) {
   if (InMyThread()) {
     return f();
   }
 
   using ResultType = decltype(f());
   util::detail::ResultMover<ResultType> mover;
-  auto fb = LaunchFiber([&] { mover.Apply(std::forward<Func>(f)); });
+  auto fb = LaunchFiber(opts, [&] { mover.Apply(std::forward<Func>(f)); });
   fb.Join();
 
   return std::move(mover).get();
