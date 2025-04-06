@@ -45,21 +45,31 @@ Result<vector<StatShort>> StatFiles(std::string_view path) {
     }
   }
 
+#ifdef _MAC_OS_
   struct stat sbuf;
+#define FSTAT(path) fstatat(AT_FDCWD, (path), &sbuf, 0)
+#else
+  struct statx sbufx;
+  constexpr unsigned kMask = STATX_MTIME | STATX_SIZE | STATX_TYPE | STATX_MODE;
+#define FSTAT(path) statx(AT_FDCWD, (path), 0, kMask, &sbufx)
+#endif
 
-  // statx is not implemented in musl-dev
   for (size_t i = 0; i < glob_result.gl_pathc; i++) {
     char* path = glob_result.gl_pathv[i];
-    if (fstatat(AT_FDCWD, path, &sbuf, 0) == 0) {
+    if (FSTAT(path) == 0) {
 #ifdef _MAC_OS_
       const auto& st_mt = sbuf.st_mtimespec;
+      size_t size = sbuf.st_size;
+      mode_t mode = sbuf.st_mode;
 #else
-      const auto& st_mt = sbuf.st_mtim;
+      const auto& st_mt = sbufx.stx_mtime;
+      size_t size = sbufx.stx_size;
+      uint16_t mode = sbufx.stx_mode;
 #endif
 
       time_t ns = st_mt.tv_sec * 1000000000ULL + st_mt.tv_nsec;
 
-      StatShort sshort{path, ns, uint64_t(sbuf.st_size), sbuf.st_mode};
+      StatShort sshort{path, ns, size, mode};
       res.emplace_back(std::move(sshort));
     } else {
       LOG(WARNING) << "Bad stat for " << glob_result.gl_pathv[i] << " " << strerror(errno);
