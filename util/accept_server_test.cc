@@ -129,9 +129,9 @@ void AcceptServerTest::SetUp() {
 
   as_.reset(new AcceptServer{up});
   listener_ = new TestListener();
-  
+
   // Add appropriate listener based on the parameter
-  auto ec = UseIPv6() 
+  auto ec = UseIPv6()
       ? as_->AddListener("::1", kPort, listener_)  // IPv6
       : as_->AddListener("localhost", kPort, listener_);  // IPv4
   CHECK(!ec) << ec;
@@ -139,7 +139,7 @@ void AcceptServerTest::SetUp() {
 
   ProactorBase* pb = pp_->GetNextProactor();
   client_sock_.reset(pb->CreateSocket());
-  
+
   // Use IPv4 or IPv6 address based on the parameter
   boost::asio::ip::address address;
   if (UseIPv6()) {
@@ -165,7 +165,7 @@ void AcceptServerTest::SetUp() {
       pp_->AwaitFiberOnAll([&m](unsigned index, ProactorBase* base) {
         std::unique_lock lk(m);
         LOG(ERROR) << "Proactor ------------------------" << index << " ---------------:\n";
-        fb2::detail::FiberInterface::PrintAllFiberStackTraces();
+        fb2::PrintFiberStackTracesInThread();
         LOG(ERROR) << "Proactor ------------------------" << index << " end---------------\n";
       });
       LOG(FATAL) << "Deadlock detected!!!!";

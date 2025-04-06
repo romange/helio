@@ -136,7 +136,7 @@ void TlsSocketTest::SetUp() {
     VLOG(1) << "Accepted connection " << sock->native_handle();
 
     sock->SetProactor(proactor_.get());
-    sock->RegisterOnErrorCb([this](uint32_t mask) {
+    sock->RegisterOnErrorCb([](uint32_t mask) {
       LOG(ERROR) << "Error mask: " << mask;
     });
     server_socket_ = std::make_unique<tls::TlsSocket>(sock);

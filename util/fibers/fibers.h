@@ -16,6 +16,13 @@ class Fiber {
  public:
   using ID = uint64_t;
 
+  struct Opts {
+    Launch launch = Launch::post;
+    FiberPriority priority = FiberPriority::NORMAL;
+    std::string_view name;
+    uint32_t stack_size = 64 * 1024;
+  };
+
   Fiber() = default;
 
   template <typename Fn> Fiber(Fn&& fn) : Fiber(std::string_view{}, std::forward<Fn>(fn)) {
@@ -36,22 +43,29 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : impl_{detail::default_stack_resource
-                  ? detail::MakeWorkerFiberImpl(name,
-                                                FixedStackAllocator(detail::default_stack_resource,
-                                                                    detail::default_stack_size),
-                                                std::forward<Fn>(fn), std::forward<Arg>(arg)...)
-                  : detail::MakeWorkerFiberImpl(name, boost::context::fixedsize_stack(),
-                                                std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
-    Start(policy);
+      : Fiber(Opts{.launch = policy, .name = name}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
   Fiber(Launch policy, StackAlloc&& stack_alloc, std::string_view name, Fn&& fn, Arg&&... arg)
-      : impl_{util::fb2::detail::MakeWorkerFiberImpl(name, std::forward<StackAlloc>(stack_alloc),
-                                                     std::forward<Fn>(fn),
-                                                     std::forward<Arg>(arg)...)} {
+      : impl_{util::fb2::detail::MakeWorkerFiberImpl(
+            name, FiberPriority::NORMAL, std::forward<StackAlloc>(stack_alloc),
+            std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
     Start(policy);
+  }
+
+  template <typename Fn, typename... Arg>
+  Fiber(const Opts& opts, Fn&& fn, Arg&&... arg)
+      : impl_{detail::default_stack_resource
+                  ? detail::MakeWorkerFiberImpl(
+                        opts.name, opts.priority,
+                        FixedStackAllocator(detail::default_stack_resource, opts.stack_size),
+                        std::forward<Fn>(fn), std::forward<Arg>(arg)...)
+                  : detail::MakeWorkerFiberImpl(opts.name, opts.priority,
+                                                // explicitly pass the stack size.
+                                                boost::context::fixedsize_stack(opts.stack_size),
+                                                std::forward<Fn>(fn), std::forward<Arg>(arg)...)} {
+    Start(opts.launch);
   }
 
   ~Fiber();
@@ -128,6 +142,7 @@ size_t WorkerFibersStackSize();
 
 // Returns number of worker fibers for the current thread.
 size_t WorkerFibersCount();
+void PrintFiberStackTracesInThread();
 
 class StdMallocResource : public PMR_NS::memory_resource {
  private:

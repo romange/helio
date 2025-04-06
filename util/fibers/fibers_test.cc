@@ -116,9 +116,9 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
 struct TestParams {
   string_view proactor_type;
   bool use_ipv6;
-  
+
   TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
-  
+
   string ToString() const {
     string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
     return string(proactor_type) + "_" + ip_ver;
@@ -143,7 +143,7 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
   void SetUp() final {
     proactor_th_ = CreateProactorThread();
     const TestInfo* const test_info = UnitTest::GetInstance()->current_test_info();
-    LOG(INFO) << "Starting " << test_info->name() << " with " 
+    LOG(INFO) << "Starting " << test_info->name() << " with "
               << (UseIPv6() ? "IPv6" : "IPv4");
   }
 
@@ -158,10 +158,10 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
   ProactorBase* proactor() {
     return proactor_th_->get();
   }
-  
+
   // Return the proactor type parameter
   string_view GetProactorType() const { return GetParam().proactor_type; }
-  
+
   // Return whether to use IPv6
   bool UseIPv6() const { return GetParam().use_ipv6; }
 
@@ -171,7 +171,7 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    Engines, 
+    Engines,
     ProactorTest,
     testing::Values(
           TestParams("epoll", false)  // epoll with IPv4
@@ -215,7 +215,7 @@ TEST_F(FiberTest, Basic) {
   Fiber fb1("test1", [&] { ++run; });
   Fiber fb2("test2", [&] { ++run; });
   EXPECT_EQ(epoch, FiberSwitchEpoch());
-  EXPECT_EQ(128 * 1024 * 2, WorkerFibersStackSize());
+  EXPECT_EQ(64 * 1024 * 2, WorkerFibersStackSize());  // 2 fibers, 64k each
   EXPECT_EQ(2, WorkerFibersCount());
 
   fb1.Join();
@@ -855,13 +855,13 @@ TEST_P(ProactorTest, DragonflyBug1591) {
   Mutex m1, m2;
   auto fb_server = proactor()->LaunchFiber("server", [&] {
     start_step(0);
-    
+
     // Create the correct socket type based on IP version
     if (UseIPv6()) {
       auto create_ec = sock->Create(AF_INET6);
       ASSERT_FALSE(create_ec) << create_ec.message();
     }
-    
+
     auto ec = sock->Listen(0, /*backlog=*/10);
     ASSERT_FALSE(ec) << ec.message();
     end_step();
@@ -934,8 +934,8 @@ TEST_P(ProactorTest, DumpFiberStacks) {
     ThisFiber::SleepFor(30ms);
   });
 
-  fb2::detail::PrintAllFiberStackTraces();
-  pth.get()->Await([]() { fb2::detail::PrintAllFiberStackTraces(); });
+  fb2::PrintFiberStackTracesInThread();
+  pth.get()->Await([]() { fb2::PrintFiberStackTracesInThread(); });
 
   fb.Join();
 }
