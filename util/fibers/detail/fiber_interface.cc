@@ -27,11 +27,13 @@ struct TL_FiberInitializer;
 
 namespace {
 
+[[maybe_unused]] size_t kSzFiberInterface = sizeof(FiberInterface);
+
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
 class MainFiberImpl final : public FiberInterface {
  public:
-  MainFiberImpl() noexcept : FiberInterface{MAIN, 1, "main"} {
+  MainFiberImpl() noexcept : FiberInterface{MAIN, FiberPriority::NORMAL, 1, "main"} {
   }
 
   ~MainFiberImpl() {
@@ -128,8 +130,8 @@ FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
 }
 
-FiberInterface::FiberInterface(Type type, uint32_t cnt, string_view nm)
-    : use_count_(cnt), type_(type) {
+FiberInterface::FiberInterface(Type type, FiberPriority prio, uint32_t cnt, string_view nm)
+    : use_count_(cnt), type_(type), prio_(prio) {
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
   size_t len = std::min(nm.size(), sizeof(name_) - 1);
   name_[len] = 0;
@@ -457,6 +459,10 @@ size_t WorkerFibersStackSize() {
 
 size_t WorkerFibersCount() {
   return detail::FbInitializer().sched->num_worker_fibers();
+}
+
+void PrintFiberStackTracesInThread() {
+  detail::PrintAllFiberStackTraces();
 }
 
 }  // namespace fb2
