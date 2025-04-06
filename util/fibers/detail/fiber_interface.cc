@@ -268,11 +268,6 @@ void FiberInterface::Join() {
   DCHECK(!waiter.IsLinked());
 }
 
-void FiberInterface::Yield() {
-  scheduler_->AddReady(this);
-  scheduler_->Preempt();
-}
-
 void FiberInterface::ActivateOther(FiberInterface* other) {
   DCHECK(other->scheduler_);
 

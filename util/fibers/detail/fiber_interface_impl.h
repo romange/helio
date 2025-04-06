@@ -19,6 +19,10 @@ inline void FiberInterface::Suspend() {
   assert(!IsScheduledRemotely());
 }
 
+inline void FiberInterface::Yield() {
+  scheduler_->Yield(this);
+}
+
 }  // namespace detail
 }  // namespace fb2
 }  // namespace util
