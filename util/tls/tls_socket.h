@@ -142,6 +142,8 @@ class TlsSocket final : public FiberSocketBase {
     void StartUpstreamWrite();
     void StartUpstreamRead();
 
+    void RunPending();
+
     virtual void Run() = 0;
     virtual void CompleteAsyncReq(io::Result<size_t> result) = 0;
   };

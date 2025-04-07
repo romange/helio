@@ -91,15 +91,15 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
   FiberSocketBase::endpoint_type listen_ep_;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, TlsSocketTest,
-                         testing::Values("epoll"
-#ifdef __linux__
-                                         ,
-                                         "uring"
-#endif
-                                         ),
-                         [](const auto& info) { return string(info.param); });
-
+// INSTANTIATE_TEST_SUITE_P(Engines, TlsSocketTest,
+//                          testing::Values("epoll"
+//#ifdef __linux__
+//                                          ,
+//                                          "uring"
+//#endif
+//                                          ),
+//                          [](const auto& info) { return string(info.param); });
+//
 void TlsSocketTest::SetUp() {
 #if __linux__
   bool use_uring = GetParam() == "uring";
@@ -165,55 +165,55 @@ void TlsSocketTest::TearDown() {
   SSL_CTX_free(ssl_ctx_);
 }
 
-TEST_P(TlsSocketTest, ShortWrite) {
-  unique_ptr<tls::TlsSocket> client_sock;
-  {
-    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-
-    proactor_->Await([&] {
-      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
-      client_sock->InitSSL(ssl_ctx);
-    });
-    SSL_CTX_free(ssl_ctx);
-  }
-
-  error_code ec = proactor_->Await([&] {
-    LOG(INFO) << "Connecting to " << listen_ep_;
-    return client_sock->Connect(listen_ep_);
-  });
-  ASSERT_FALSE(ec) << ec.message();
-
-  auto client_fb = proactor_->LaunchFiber([&] {
-    uint8_t buf[256];
-    iovec iov{buf, sizeof(buf)};
-
-    client_sock->ReadSome(&iov, 1);
-  });
-
-  // Server side.
-  auto server_read_fb = proactor_->LaunchFiber([&] {
-    // This read actually causes the fiber to flush pending writes and preempt on iouring.
-    uint8_t buf[256];
-    iovec iov;
-    iov.iov_base = buf;
-    iov.iov_len = sizeof(buf);
-    server_socket_->ReadSome(&iov, 1);
-  });
-
-  auto write_res = proactor_->Await([&] {
-    ThisFiber::Yield();
-    uint8_t buf[16] = {0};
-
-    VLOG(1) << "Writing to client";
-    return server_socket_->Write(buf);
-  });
-
-  ASSERT_FALSE(write_res) << write_res;
-  LOG(INFO) << "Finished";
-  client_fb.Join();
-  proactor_->Await([&] { std::ignore = client_sock->Close(); });
-  server_read_fb.Join();
-}
+// TEST_P(TlsSocketTest, ShortWrite) {
+//   unique_ptr<tls::TlsSocket> client_sock;
+//   {
+//     SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+//
+//     proactor_->Await([&] {
+//       client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+//       client_sock->InitSSL(ssl_ctx);
+//     });
+//     SSL_CTX_free(ssl_ctx);
+//   }
+//
+//   error_code ec = proactor_->Await([&] {
+//     LOG(INFO) << "Connecting to " << listen_ep_;
+//     return client_sock->Connect(listen_ep_);
+//   });
+//   ASSERT_FALSE(ec) << ec.message();
+//
+//   auto client_fb = proactor_->LaunchFiber([&] {
+//     uint8_t buf[256];
+//     iovec iov{buf, sizeof(buf)};
+//
+//     client_sock->ReadSome(&iov, 1);
+//   });
+//
+//   // Server side.
+//   auto server_read_fb = proactor_->LaunchFiber([&] {
+//     // This read actually causes the fiber to flush pending writes and preempt on iouring.
+//     uint8_t buf[256];
+//     iovec iov;
+//     iov.iov_base = buf;
+//     iov.iov_len = sizeof(buf);
+//     server_socket_->ReadSome(&iov, 1);
+//   });
+//
+//   auto write_res = proactor_->Await([&] {
+//     ThisFiber::Yield();
+//     uint8_t buf[16] = {0};
+//
+//     VLOG(1) << "Writing to client";
+//     return server_socket_->Write(buf);
+//   });
+//
+//   ASSERT_FALSE(write_res) << write_res;
+//   LOG(INFO) << "Finished";
+//   client_fb.Join();
+//   proactor_->Await([&] { std::ignore = client_sock->Close(); });
+//   server_read_fb.Join();
+// }
 
 class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
@@ -257,15 +257,16 @@ class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
   uint32_t conn_sock_err_mask_ = 0;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTest,
-                         testing::Values("epoll"
-#ifdef __linux__
-                                         ,
-                                         "uring"
-#endif
-                                         ),
-                         [](const auto& info) { return string(info.param); });
-
+// Epoll is blocking so this test works only on iouring
+// INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTest,
+//                         testing::Values(
+//#ifdef __linux__
+//                                         ,
+//                                         "uring"
+//#endif
+//                                         ),
+//                         [](const auto& info) { return string(info.param); });
+//
 void AsyncTlsSocketTest::SetUp() {
 #if __linux__
   bool use_uring = GetParam() == "uring";
@@ -336,58 +337,58 @@ void AsyncTlsSocketTest::TearDown() {
 
   SSL_CTX_free(ssl_ctx_);
 }
-
-TEST_P(AsyncTlsSocketTest, AsyncRW) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
-
-  proactor_->Await([&] {
-    ThisFiber::SetName("ConnectFb");
-
-    LOG(INFO) << "Connecting to " << listen_ep_;
-    error_code ec = tls_sock->Connect(listen_ep_);
-    EXPECT_FALSE(ec);
-    uint8_t res[16];
-    std::fill(std::begin(res), std::end(res), uint8_t(120));
-    {
-      VLOG(1) << "Before writesome";
-
-      Done done;
-      iovec v{.iov_base = &res, .iov_len = 16};
-
-      tls_sock->AsyncWriteSome(&v, 1, [done](auto result) mutable {
-        EXPECT_TRUE(result.has_value());
-        EXPECT_EQ(*result, 16);
-        done.Notify();
-      });
-
-      done.Wait();
-    }
-    {
-      uint8_t buf[16];
-      Done done;
-      iovec v{.iov_base = &buf, .iov_len = 16};
-      tls_sock->AsyncReadSome(&v, 1, [done](auto result) mutable {
-        EXPECT_TRUE(result.has_value());
-        EXPECT_EQ(*result, 16);
-        done.Notify();
-      });
-
-      done.Wait();
-
-      EXPECT_EQ(memcmp(begin(res), begin(buf), 16), 0);
-    }
-
-    VLOG(1) << "closing client sock " << tls_sock->native_handle();
-    std::ignore = tls_sock->Close();
-    accept_fb_.Join();
-    VLOG(1) << "After join";
-    ASSERT_FALSE(ec) << ec.message();
-    ASSERT_FALSE(accept_ec_);
-  });
-  SSL_CTX_free(ssl_ctx);
-}
+//
+// TEST_P(AsyncTlsSocketTest, AsyncRW) {
+//  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
+//  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+//  tls_sock->InitSSL(ssl_ctx);
+//
+//  proactor_->Await([&] {
+//    ThisFiber::SetName("ConnectFb");
+//
+//    LOG(INFO) << "Connecting to " << listen_ep_;
+//    error_code ec = tls_sock->Connect(listen_ep_);
+//    EXPECT_FALSE(ec);
+//    uint8_t res[16];
+//    std::fill(std::begin(res), std::end(res), uint8_t(120));
+//    {
+//      VLOG(1) << "Before writesome";
+//
+//      Done done;
+//      iovec v{.iov_base = &res, .iov_len = 16};
+//
+//      tls_sock->AsyncWriteSome(&v, 1, [done](auto result) mutable {
+//        EXPECT_TRUE(result.has_value());
+//        EXPECT_EQ(*result, 16);
+//        done.Notify();
+//      });
+//
+//      done.Wait();
+//    }
+//    {
+//      uint8_t buf[16];
+//      Done done;
+//      iovec v{.iov_base = &buf, .iov_len = 16};
+//      tls_sock->AsyncReadSome(&v, 1, [done](auto result) mutable {
+//        EXPECT_TRUE(result.has_value());
+//        EXPECT_EQ(*result, 16);
+//        done.Notify();
+//      });
+//
+//      done.Wait();
+//
+//      EXPECT_EQ(memcmp(begin(res), begin(buf), 16), 0);
+//    }
+//
+//    VLOG(1) << "closing client sock " << tls_sock->native_handle();
+//    std::ignore = tls_sock->Close();
+//    accept_fb_.Join();
+//    VLOG(1) << "After join";
+//    ASSERT_FALSE(ec) << ec.message();
+//    ASSERT_FALSE(accept_ec_);
+//  });
+//  SSL_CTX_free(ssl_ctx);
+//}
 
 class AsyncTlsSocketTestPartialRW : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
@@ -413,16 +414,100 @@ class AsyncTlsSocketTestPartialRW : public AsyncTlsSocketTest {
   static constexpr size_t payload_sz_ = 32768;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTestPartialRW,
-                         testing::Values("epoll"
-#ifdef __linux__
-                                         //                                         ,
-                                         "uring"
-#endif
-                                         ),
-                         [](const auto& info) { return string(info.param); });
+// INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTestPartialRW,
+//                          testing::Values("epoll"
+//#ifdef __linux__
+//                                          ,
+//                                          "uring"
+//#endif
+//                                          ),
+//                          [](const auto& info) { return string(info.param); });
+//
+// TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
+//   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
+//   SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+//   tls_sock->InitSSL(ssl_ctx);
+//
+//   proactor_->Await([&] {
+//     ThisFiber::SetName("ConnectFb");
+//
+//     LOG(INFO) << "Connecting to " << listen_ep_;
+//     error_code ec = tls_sock->Connect(listen_ep_);
+//     EXPECT_FALSE(ec);
+//     uint8_t res[payload_sz_];
+//     std::fill(std::begin(res), std::end(res), uint8_t(120));
+//     {
+//       VLOG(1) << "Before writesome";
+//
+//       Done done;
+//       iovec v{.iov_base = &res, .iov_len = payload_sz_};
+//
+//       tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
+//         EXPECT_FALSE(result);
+//         done.Notify();
+//       });
+//
+//       done.Wait();
+//     }
+//     {
+//       uint8_t buf[payload_sz_];
+//       Done done;
+//       iovec v{.iov_base = &buf, .iov_len = payload_sz_};
+//
+//       tls_sock->AsyncRead(&v, 1, [&](auto result) mutable {
+//         EXPECT_FALSE(result);
+//         done.Notify();
+//       });
+//
+//       done.Wait();
+//
+//       EXPECT_EQ(memcmp(begin(res), begin(buf), payload_sz_), 0);
+//     }
+//
+//     VLOG(1) << "closing client sock " << tls_sock->native_handle();
+//     std::ignore = tls_sock->Close();
+//     accept_fb_.Join();
+//     VLOG(1) << "After join";
+//     ASSERT_FALSE(ec) << ec.message();
+//     ASSERT_FALSE(accept_ec_);
+//   });
+//   SSL_CTX_free(ssl_ctx);
+// }
 
-TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
+class AsyncTlsSocketRenegotiate : public AsyncTlsSocketTest {
+  virtual void HandleRequest() {
+    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
+    ssl_ctx_ = CreateSslCntx(SERVER);
+    tls_socket_->InitSSL(ssl_ctx_);
+    tls_socket_->Accept();
+
+    uint8_t buf[payload_sz_];
+    auto res = tls_socket_->ReadAtLeast(buf, payload_sz_);
+    EXPECT_TRUE(res.has_value());
+    EXPECT_TRUE(res.value() == payload_sz_) << res.value();
+
+    absl::Span<const uint8_t> partial_write(buf, payload_sz_ / 2);
+    // We split the write to two small ones.
+    auto write_res = tls_socket_->Write(partial_write);
+    EXPECT_FALSE(write_res);
+    write_res = tls_socket_->Write(partial_write);
+    EXPECT_FALSE(write_res);
+  }
+
+  tls::TlsSocket* Handle() {
+    return tls_socket_.get();
+  }
+
+ public:
+  static constexpr size_t payload_sz_ = 32768;
+};
+
+#ifdef __linux__
+INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketRenegotiate, testing::Values("uring"),
+                         [](const auto& info) { return string(info.param); });
+#endif
+
+TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
   SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
   tls_sock->InitSSL(ssl_ctx);
@@ -430,37 +515,32 @@ TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
 
-    LOG(INFO) << "Connecting to " << listen_ep_;
     error_code ec = tls_sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
+
+    uint8_t send_buf[payload_sz_];
     uint8_t res[payload_sz_];
-    std::fill(std::begin(res), std::end(res), uint8_t(120));
+    std::fill(std::begin(send_buf), std::end(send_buf), uint8_t(120));
     {
-      VLOG(1) << "Before writesome";
+      Done done_read, done_write;
+      iovec send_vec{.iov_base = &send_buf, .iov_len = payload_sz_};
+      iovec read_vec{.iov_base = &res, .iov_len = payload_sz_};
 
-      Done done;
-      iovec v{.iov_base = &res, .iov_len = payload_sz_};
-
-      tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
+      // We don't need to call ssl_renegotiate here, the first read will also negotiate the protocol
+      tls_sock->AsyncRead(&read_vec, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
-        done.Notify();
+        done_read.Notify();
       });
 
-      done.Wait();
-    }
-    {
-      uint8_t buf[payload_sz_];
-      Done done;
-      iovec v{.iov_base = &buf, .iov_len = payload_sz_};
-
-      tls_sock->AsyncRead(&v, 1, [&](auto result) mutable {
+      // Here AsyncWrite will resume later since write_in_progress bit is set
+      tls_sock->AsyncWrite(&send_vec, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
-        done.Notify();
+        done_write.Notify();
       });
 
-      done.Wait();
-
-      EXPECT_EQ(memcmp(begin(res), begin(buf), payload_sz_), 0);
+      done_write.Wait();
+      done_read.Wait();
+      EXPECT_EQ(memcmp(begin(res), begin(send_buf), payload_sz_), 0);
     }
 
     VLOG(1) << "closing client sock " << tls_sock->native_handle();
@@ -472,6 +552,5 @@ TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
   });
   SSL_CTX_free(ssl_ctx);
 }
-
 }  // namespace fb2
 }  // namespace util

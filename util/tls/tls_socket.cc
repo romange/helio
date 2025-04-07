@@ -334,20 +334,11 @@ io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint
 void TlsSocket::AsyncWriteReq::CompleteAsyncReq(io::Result<size_t> result) {
   auto current = std::exchange(owner->async_write_req_, std::nullopt);
   current->caller_completion_cb(result);
-  if (owner->pending_blocked_) {
-    auto* blocked = std::exchange(owner->pending_blocked_, nullptr);
-    blocked->Run();
-  }
 }
 
 void TlsSocket::AsyncReadReq::CompleteAsyncReq(io::Result<size_t> result) {
   auto current = std::exchange(owner->async_read_req_, std::nullopt);
   current->caller_completion_cb(result);
-  // Run pending if blocked
-  if (owner->pending_blocked_) {
-    auto* blocked = std::exchange(owner->pending_blocked_, nullptr);
-    blocked->Run();
-  }
 }
 
 void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
@@ -482,6 +473,8 @@ void TlsSocket::AsyncReqBase::HandleUpstreamAsyncWrite(io::Result<size_t> write_
               << " pending output: " << owner->engine_->OutputPending()
               << " HandleUpstreamAsyncWrite failed " << write_result.error();
     }
+    // Run pending if blocked
+    RunPending();
 
     // We are done. Errornous exit.
     CompleteAsyncReq(write_result);
@@ -491,7 +484,9 @@ void TlsSocket::AsyncReqBase::HandleUpstreamAsyncWrite(io::Result<size_t> write_
   CHECK_GT(*write_result, 0u);
   owner->upstream_write_ += *write_result;
   owner->engine_->ConsumeOutputBuf(*write_result);
-  buffer.remove_prefix(*write_result);
+  // We could preempt while calling WriteSome, and the engine could get more data to write.
+  // Therefore we sync the buffer.
+  buffer = owner->engine_->PeekOutputBuf();
 
   // We are not done. Re-arm the async write until we drive it to completion or error.
   if (!buffer.empty()) {
@@ -509,6 +504,9 @@ void TlsSocket::AsyncReqBase::HandleUpstreamAsyncWrite(io::Result<size_t> write_
   }
 
   owner->state_ &= ~WRITE_IN_PROGRESS;
+
+  // Run pending if blocked
+  RunPending();
 
   // If there is a continuation run it and let it yield back to the main loop.
   // Continuation is responsible for calling AsyncRequest::Run again.
@@ -622,6 +620,7 @@ void TlsSocket::AsyncReqBase::StartUpstreamRead() {
 
   owner->next_sock_->AsyncReadSome(&scratch, 1, [this](auto read_result) {
     owner->state_ &= ~READ_IN_PROGRESS;
+    RunPending();
     if (!read_result) {
       // log any errors as well as situations where we have unflushed output.
       if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
@@ -640,6 +639,13 @@ void TlsSocket::AsyncReqBase::StartUpstreamRead() {
     // We are not done. Give back control to the main loop.
     Run();
   });
+}
+
+void TlsSocket::AsyncReqBase::RunPending() {
+  if (owner->pending_blocked_) {
+    auto* blocked = std::exchange(owner->pending_blocked_, nullptr);
+    blocked->Run();
+  }
 }
 
 auto TlsSocket::HandleUpstreamRead() -> error_code {
