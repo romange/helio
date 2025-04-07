@@ -182,8 +182,6 @@ void EpollProactor::Init(unsigned pool_index) {
 void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
   VLOG(1) << "EpollProactor::MainLoop";
 
-  detail::FiberInterface* dispatcher = detail::FiberActive();
-
   EventsBatch ev_batch;
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0;
@@ -304,16 +302,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     RunL2Tasks(scheduler);
 
     // must be if and not while - see uring_proactor.cc for more details.
-    if (scheduler->HasReady()) {
-      FiberInterface* fi = scheduler->PopReady();
-      DCHECK(!fi->list_hook.is_linked());
-      DCHECK(!fi->sleep_hook.is_linked());
-
-      scheduler->AddReady(dispatcher);
-
-      DVLOG(2) << "Switching to " << fi->name();
-      tl_info_.monotonic_time = GetClockNanos();
-      fi->SwitchTo();
+    if (!scheduler->RunWorkerFibersStep()) {
       cqe_count = 1;
     }
 

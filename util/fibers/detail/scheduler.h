@@ -41,6 +41,9 @@ class Scheduler {
     return !ready_queue_.empty();
   }
 
+  // Yields the calling fiber.
+  void Yield(FiberInterface* me);
+
   ::boost::context::fiber_context Preempt();
 
   // Returns true if the fiber timed out by reaching tp.
@@ -88,6 +91,16 @@ class Scheduler {
     return custom_policy_;
   }
 
+  // Returns true if all the ready fibers are suspended, false if there are still some ready fibers.
+  // (The latter case happens when one of the fibers yields).
+  bool RunWorkerFibersStep() {
+    if (ready_queue_.empty()) {
+      return true;
+    }
+
+    return RunWorkerFibersStepImpl();
+  }
+
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
   void SuspendAndExecuteOnDispatcher(std::function<void()> fn);
@@ -100,6 +113,9 @@ class Scheduler {
     return worker_stack_size_;
   }
  private:
+
+  bool RunWorkerFibersStepImpl();
+
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
   using FI_Queue = boost::intrusive::list<
@@ -132,12 +148,13 @@ class Scheduler {
   FI_Queue ready_queue_, terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
-  std::atomic_uint64_t remote_epoch_{0};
 
   // A list of all fibers in the thread.
   FI_List fibers_;
 
   bool shutdown_ = false;
+  bool was_yield_ = false;
+
   uint32_t num_worker_fibers_ = 0;
   size_t worker_stack_size_ = 0;
 };

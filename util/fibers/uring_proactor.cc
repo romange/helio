@@ -880,23 +880,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // straight back to the dispatcher. Instead it chooses the next ready worker fiber
     // from the ready queue.
     //
-    // We can not iterate in while loop here because fibers that yield will make the loop
-    // never ending.
-    if (scheduler->HasReady()) {
-      FiberInterface* fi = scheduler->PopReady();
-      DCHECK(!fi->list_hook.is_linked());
-      DCHECK(!fi->sleep_hook.is_linked());
-      scheduler->AddReady(dispatcher);
-
-      DVLOG(2) << "Switching to " << fi->name();
-      tl_info_.monotonic_time = GetClockNanos();
-      fi->SwitchTo();
-
-      if (scheduler->HasReady()) {
-        // all our ready fibers have been processed. Lets try to submit more sqes.
-        jump_from = JUMP_FROM_READY;
-        continue;
-      }
+    if (!scheduler->RunWorkerFibersStep()) {
+      // all our ready fibers have been processed. Lets try to submit more sqes.
+      jump_from = JUMP_FROM_READY;
+      continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {

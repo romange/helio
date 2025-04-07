@@ -8,7 +8,10 @@ if(POLICY CMP0144)
 endif()
 
 cmake_policy (SET CMP0079 NEW)
-
+if (POLICY CMP0169)
+  cmake_policy (SET CMP0169 OLD) # silence deprecation warning about FetchContent_Populate
+endif()
+  
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party")
 
 SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})
@@ -233,8 +236,7 @@ if (LEGACY_GLOG)
   target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 endif()
 
-# 1.71 comes with ubuntu 20.04 so that's what we require.
-find_package(Boost 1.71.0 REQUIRED COMPONENTS context system)
+find_package(Boost CONFIG REQUIRED COMPONENTS context system)
 Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_VERSION}")
 
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)

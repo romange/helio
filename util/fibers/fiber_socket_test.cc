@@ -43,9 +43,9 @@ using namespace std;
 struct TestParams {
   string_view proactor_type;
   bool use_ipv6;
-  
+
   TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
-  
+
   string ToString() const {
     string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
     return string(proactor_type) + "_" + ip_ver;
@@ -64,7 +64,7 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
 
   // Return the proactor type parameter
   string_view GetProactorType() const { return GetParam().proactor_type; }
-  
+
   // Return whether to use IPv6
   bool UseIPv6() const { return GetParam().use_ipv6; }
 
@@ -83,7 +83,7 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    Engines, 
+    Engines,
     FiberSocketTest,
     testing::Values(
           TestParams("epoll", false)  // epoll with IPv4
@@ -119,7 +119,7 @@ void FiberSocketTest::SetUp() {
 
   error_code ec = proactor_->AwaitBrief([&] {
     listen_socket_.reset(proactor_->CreateSocket());
-    
+
     // For IPv6, we need to explicitly create an IPv6 socket
     if (UseIPv6()) {
       auto create_ec = listen_socket_->Create(AF_INET6);
@@ -128,7 +128,7 @@ void FiberSocketTest::SetUp() {
         return create_ec;
       }
     }
-    
+
     return listen_socket_->Listen(0, 0);
   });
 
@@ -187,7 +187,7 @@ void FiberSocketTest::TearDown() {
 TEST_P(FiberSocketTest, Basic) {
   unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
 
-  LOG(INFO) << "Running Basic test for " << (UseIPv6() ? "IPv6" : "IPv4") << " with " 
+  LOG(INFO) << "Running Basic test for " << (UseIPv6() ? "IPv6" : "IPv4") << " with "
             << GetProactorType() << " proactor";
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
@@ -209,19 +209,21 @@ TEST_P(FiberSocketTest, Basic) {
 }
 
 TEST_P(FiberSocketTest, Bug363) {
-  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
-  sock->set_timeout(3);
-
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
+    unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+    sock->set_timeout(3);
+
     std::ignore = sock->Connect(listen_ep_);
     accept_fb_.Join();
 
     // Explode the socket with Writes until it blocks. At this point the socket
     // should timeout;
+    constexpr size_t kBufSize = 1024 * 100;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
+    memset(buf.get(), 0, kBufSize);
     for (int i = 0; i < 50; ++i) {
-      uint8_t buf[1024 * 100] = {0};
-      auto res = sock->WriteSome(io::Bytes(buf));
+      auto res = sock->WriteSome(io::Bytes(buf.get(), kBufSize));
       if (!res) {
         EXPECT_EQ(res.error().value(), ECANCELED);
       }

@@ -22,6 +22,11 @@ enum class Launch {
   post       // enqueue the fiber for activation but continue with the current fiber.
 };
 
+enum class FiberPriority : uint8_t {
+  NORMAL,      // default priority
+  BACKGROUND,  // background priority, runs when no NORMAL fibers are ready.
+};
+
 // based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
 class FixedStackAllocator {
  public:
@@ -87,8 +92,9 @@ class FiberInterface {
   FI_SleepHook sleep_hook;
   FI_ListHook fibers_hook;  // For a list of all fibers in the thread
 
-  // init_count is the initial use_count of the fiber.
-  FiberInterface(Type type, uint32_t init_count, std::string_view nm = std::string_view{});
+  // init_count is the initial use_count of the fiber, dispatch fiber has count 0.
+  FiberInterface(Type type, FiberPriority prio, uint32_t init_count,
+                 std::string_view nm = std::string_view{});
 
   virtual ~FiberInterface();
 
@@ -226,6 +232,7 @@ class FiberInterface {
   static uint64_t TL_Epoch() {
     return tl.epoch;
   }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -262,6 +269,7 @@ class FiberInterface {
   // A timestamp counter when this fiber became ready,active or got suspended (in cycles).
   uint64_t cpu_tsc_ = 0;
   char name_[24];
+  FiberPriority prio_;
   uint32_t stack_size_ = 0;
   uint8_t* stack_bottom_ = nullptr;
 
@@ -284,9 +292,10 @@ template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInte
 
  public:
   template <typename StackAlloc>
-  WorkerFiberImpl(std::string_view name, const boost::context::preallocated& palloc,
-                  StackAlloc&& salloc, Fn&& fn, Arg&&... arg)
-      : FiberInterface(WORKER, 1, name), fn_(std::forward<Fn>(fn)),
+  WorkerFiberImpl(std::string_view name, FiberPriority prio,
+                  const boost::context::preallocated& palloc, StackAlloc&& salloc, Fn&& fn,
+                  Arg&&... arg)
+      : FiberInterface(WORKER, prio, 1, name), fn_(std::forward<Fn>(fn)),
         arg_(std::forward<Arg>(arg)...) {
     stack_size_ = palloc.sctx.size;  // The whole stack size that was allocated for this fiber.
     InitStackBottom(reinterpret_cast<uint8_t*>(palloc.sp) - palloc.size, palloc.size);
@@ -341,8 +350,9 @@ boost::context::preallocated MakePreallocated(const boost::context::stack_contex
 }
 
 template <typename StackAlloc, typename Fn, typename... Arg>
-static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, StackAlloc&& salloc,
-                                                        Fn&& fn, Arg&&... arg) {
+static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, FiberPriority prio,
+                                                        StackAlloc&& salloc, Fn&& fn,
+                                                        Arg&&... arg) {
   boost::context::stack_context sctx = salloc.allocate();
   using WorkerImpl = WorkerFiberImpl<Fn, Arg...>;
   boost::context::preallocated palloc = MakePreallocated<WorkerImpl>(sctx);
@@ -352,7 +362,7 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, S
   // placement new of context on top of fiber's stack.
   // note, that obj_ptr is not real top of the stack, because boost places more records below it.
   WorkerImpl* fctx =
-      new (obj_ptr) WorkerImpl{name, std::move(palloc), std::forward<StackAlloc>(salloc),
+      new (obj_ptr) WorkerImpl{name, prio, std::move(palloc), std::forward<StackAlloc>(salloc),
                                std::forward<Fn>(fn), std::forward<Arg>(arg)...};
   return fctx;
 }

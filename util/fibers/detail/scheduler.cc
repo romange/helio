@@ -11,6 +11,7 @@
 
 #include "base/logging.h"
 #include "util/fibers/detail/utils.h"
+#include "util/fibers/proactor_base.h"
 #include "util/fibers/stacktrace.h"
 
 namespace util {
@@ -65,11 +66,11 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
 }
 
 // DispatcherImpl implementation.
-DispatcherImpl::DispatcherImpl(ctx::preallocated const& palloc, ctx::fixedsize_stack&& salloc,
+DispatcherImpl::DispatcherImpl(const ctx::preallocated& palloc, ctx::fixedsize_stack&& salloc,
                                detail::Scheduler* sched) noexcept
-    : FiberInterface{DISPATCH, 0, "_dispatch"} {
+    : FiberInterface{DISPATCH, FiberPriority::NORMAL, 0, "_dispatch"} {
   stack_size_ = palloc.sctx.size;
-  entry_ = ctx::fiber(std::allocator_arg, palloc, salloc,
+  entry_ = ctx::fiber(std::allocator_arg, palloc, std::move(salloc),
                       [this](ctx::fiber&& caller) { return Run(std::move(caller)); });
   scheduler_ = sched;
 #if defined(BOOST_USE_UCONTEXT)
@@ -199,6 +200,12 @@ Scheduler::~Scheduler() {
   DestroyTerminated();
 }
 
+void Scheduler::Yield(FiberInterface* me) {
+  AddReady(me);
+  was_yield_ = true;
+  Preempt();
+}
+
 ctx::fiber_context Scheduler::Preempt() {
   if (FiberActive() == dispatch_cntx_.get()) {
     LOG(DFATAL) << "Should not preempt dispatcher: " << GetStacktrace();
@@ -210,7 +217,8 @@ ctx::fiber_context Scheduler::Preempt() {
     if (now != last_ts) {  //   once a second at most.
       last_ts = now;
       LOG(DFATAL) << "Preempting inside of atomic section, fiber: " << FiberActive()->name()
-                << ", stacktrace:\n" << GetStacktrace();
+                  << ", stacktrace:\n"
+                  << GetStacktrace();
     }
   }
 
@@ -482,6 +490,24 @@ void Scheduler::PrintAllFiberStackTraces() {
   };
 
   ExecuteOnAllFiberStacks(print_fn);
+}
+
+bool Scheduler::RunWorkerFibersStepImpl() {
+  DCHECK(!ready_queue_.empty());
+
+  FiberInterface* fi = PopReady();
+  DCHECK(!fi->list_hook.is_linked());
+  DCHECK(!fi->sleep_hook.is_linked());
+  AddReady(dispatch_cntx_.get());
+
+  DVLOG(2) << "Switching to " << fi->name();
+  ProactorBase::UpdateMonotonicTime();
+  fi->SwitchTo();
+
+  was_yield_ = false;
+
+  // We are back to the dispatcher, return true if there are no ready fibers.
+  return !HasReady();
 }
 
 }  // namespace detail
