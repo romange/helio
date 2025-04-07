@@ -130,7 +130,10 @@ class TlsSocket final : public FiberSocketBase {
     iovec scratch_iovec;
 
     // Asynchronous helpers
-    void MaybeSendOutputAsync(bool should_read = false);
+    void MaybeSendOutputAsyncWithRead();
+
+    // Returns true if we did not start an upstream write
+    void MaybeSendOutputAsync();
 
     void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
 
@@ -159,7 +162,7 @@ class TlsSocket final : public FiberSocketBase {
 
     // Main loop
     void Run() override;
-    virtual void CompleteAsyncReq(io::Result<size_t> result) override;
+    void CompleteAsyncReq(io::Result<size_t> result) override;
   };
 
   friend AsyncWriteReq;
@@ -172,7 +175,7 @@ class TlsSocket final : public FiberSocketBase {
 
     // Main loop
     void Run() override;
-    virtual void CompleteAsyncReq(io::Result<size_t> result) override;
+    void CompleteAsyncReq(io::Result<size_t> result) override;
   };
 
   friend AsyncReadReq;
@@ -181,6 +184,7 @@ class TlsSocket final : public FiberSocketBase {
   // async operation
   std::optional<AsyncWriteReq> async_write_req_;
   std::optional<AsyncReadReq> async_read_req_;
+  AsyncReqBase* pending_blocked_ = nullptr;
 
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};

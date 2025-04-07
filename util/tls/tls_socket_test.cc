@@ -56,7 +56,6 @@ SSL_CTX* CreateSslCntx(TlsContextRole role) {
 
   if (role == TlsContextRole::SERVER) {
     ctx = SSL_CTX_new(TLS_server_method());
-    // TODO init those to build on ci
   } else {
     ctx = SSL_CTX_new(TLS_client_method());
   }
@@ -216,7 +215,7 @@ TEST_P(TlsSocketTest, ShortWrite) {
   server_read_fb.Join();
 }
 
-class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
+class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
   void SetUp() final;
   void TearDown() final;
@@ -258,7 +257,7 @@ class TlsFiberSocketTest : public testing::TestWithParam<string_view> {
   uint32_t conn_sock_err_mask_ = 0;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTest,
+INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTest,
                          testing::Values("epoll"
 #ifdef __linux__
                                          ,
@@ -267,7 +266,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTest,
                                          ),
                          [](const auto& info) { return string(info.param); });
 
-void TlsFiberSocketTest::SetUp() {
+void AsyncTlsSocketTest::SetUp() {
 #if __linux__
   bool use_uring = GetParam() == "uring";
   ProactorBase* proactor = nullptr;
@@ -314,7 +313,7 @@ void TlsFiberSocketTest::SetUp() {
   });
 }
 
-void TlsFiberSocketTest::TearDown() {
+void AsyncTlsSocketTest::TearDown() {
   VLOG(1) << "TearDown";
 
   proactor_->Await([&] {
@@ -338,7 +337,7 @@ void TlsFiberSocketTest::TearDown() {
   SSL_CTX_free(ssl_ctx_);
 }
 
-TEST_P(TlsFiberSocketTest, AsyncRW) {
+TEST_P(AsyncTlsSocketTest, AsyncRW) {
   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
   SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
   tls_sock->InitSSL(ssl_ctx);
@@ -390,7 +389,7 @@ TEST_P(TlsFiberSocketTest, AsyncRW) {
   SSL_CTX_free(ssl_ctx);
 }
 
-class TlsFiberSocketTestPartialRW : public TlsFiberSocketTest {
+class AsyncTlsSocketTestPartialRW : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
     tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
     ssl_ctx_ = CreateSslCntx(SERVER);
@@ -414,7 +413,7 @@ class TlsFiberSocketTestPartialRW : public TlsFiberSocketTest {
   static constexpr size_t payload_sz_ = 32768;
 };
 
-INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTestPartialRW,
+INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTestPartialRW,
                          testing::Values("epoll"
 #ifdef __linux__
                                          //                                         ,
@@ -423,7 +422,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, TlsFiberSocketTestPartialRW,
                                          ),
                          [](const auto& info) { return string(info.param); });
 
-TEST_P(TlsFiberSocketTestPartialRW, PartialAsyncReadWrite) {
+TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
   SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
   tls_sock->InitSSL(ssl_ctx);
@@ -442,8 +441,7 @@ TEST_P(TlsFiberSocketTestPartialRW, PartialAsyncReadWrite) {
       Done done;
       iovec v{.iov_base = &res, .iov_len = payload_sz_};
 
-      // TODO replace this to show that here are partial reads/writes
-      tls_sock->AsyncWrite(&v, 1, [done](auto result) mutable {
+      tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
         done.Notify();
       });
@@ -455,7 +453,6 @@ TEST_P(TlsFiberSocketTestPartialRW, PartialAsyncReadWrite) {
       Done done;
       iovec v{.iov_base = &buf, .iov_len = payload_sz_};
 
-      // TODO replace this to show that here are partial reads/writes
       tls_sock->AsyncRead(&v, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
         done.Notify();

@@ -334,19 +334,30 @@ io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint
 void TlsSocket::AsyncWriteReq::CompleteAsyncReq(io::Result<size_t> result) {
   auto current = std::exchange(owner->async_write_req_, std::nullopt);
   current->caller_completion_cb(result);
+  if (owner->pending_blocked_) {
+    auto* blocked = std::exchange(owner->pending_blocked_, nullptr);
+    blocked->Run();
+  }
 }
 
 void TlsSocket::AsyncReadReq::CompleteAsyncReq(io::Result<size_t> result) {
   auto current = std::exchange(owner->async_read_req_, std::nullopt);
   current->caller_completion_cb(result);
+  // Run pending if blocked
+  if (owner->pending_blocked_) {
+    auto* blocked = std::exchange(owner->pending_blocked_, nullptr);
+    blocked->Run();
+  }
 }
 
 void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
+      VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
+      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
       break;
     case Engine::NEED_READ_AND_MAYBE_WRITE:
-      MaybeSendOutputAsync(true);
+      MaybeSendOutputAsyncWithRead();
       break;
     case Engine::NEED_WRITE:
       MaybeSendOutputAsync();
@@ -357,41 +368,40 @@ void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
 }
 
 void TlsSocket::AsyncWriteReq::Run() {
-  if (state == AsyncWriteReq::PushToEngine) {
-    // We never preempt here
-    io::Result<PushResult> push_res = owner->PushToEngine(vec, len);
-    if (!push_res) {
-      CompleteAsyncReq(make_unexpected(push_res.error()));
-      // We are done with this AsyncWriteReq. Caller might started
-      // a new one.
-      return;
-    }
-    last_push = *push_res;
-    state = AsyncWriteReq::HandleOpAsyncTag;
-  }
-
-  if (state == AsyncWriteReq::HandleOpAsyncTag) {
-    state = AsyncWriteReq::MaybeSendOutputAsyncTag;
-    if (last_push.engine_opcode < 0) {
-      if (last_push.engine_opcode == Engine::EOF_STREAM) {
-        VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
-        CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
+  while (true) {
+    if (state == AsyncWriteReq::PushToEngine) {
+      // We never preempt here
+      io::Result<PushResult> push_res = owner->PushToEngine(vec, len);
+      if (!push_res) {
+        CompleteAsyncReq(make_unexpected(push_res.error()));
+        // We are done with this AsyncWriteReq. Caller might started
+        // a new one.
         return;
       }
-      HandleOpAsync(last_push.engine_opcode);
-      return;
+      last_push = *push_res;
+      state = AsyncWriteReq::HandleOpAsyncTag;
     }
-  }
 
-  if (state == AsyncWriteReq::MaybeSendOutputAsyncTag) {
-    state = AsyncWriteReq::PushToEngine;
-    if (last_push.written > 0) {
-      continuation = [this]() { CompleteAsyncReq(last_push.written); };
-      MaybeSendOutputAsync();
-      return;
+    if (state == AsyncWriteReq::HandleOpAsyncTag) {
+      state = AsyncWriteReq::MaybeSendOutputAsyncTag;
+      if (last_push.engine_opcode < 0) {
+        HandleOpAsync(last_push.engine_opcode);
+        return;
+      }
     }
-    // Run again we are not done.
-    Run();
+
+    if (state == AsyncWriteReq::MaybeSendOutputAsyncTag) {
+      state = AsyncWriteReq::PushToEngine;
+      if (last_push.written > 0) {
+        state = AsyncWriteReq::Done;
+        MaybeSendOutputAsync();
+        return;
+      }
+    }
+
+    if (state == AsyncWriteReq::Done) {
+      return CompleteAsyncReq(last_push.written);
+    }
   }
 }
 
@@ -440,10 +450,6 @@ void TlsSocket::AsyncReadReq::Run() {
     }
 
     DCHECK(!continuation);
-    if (op_val == Engine::EOF_STREAM) {
-      VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
-      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
-    }
     HandleOpAsync(op_val);
     return;
   }
@@ -535,38 +541,43 @@ void TlsSocket::AsyncReqBase::StartUpstreamWrite() {
   });
 }
 
-void TlsSocket::AsyncReqBase::MaybeSendOutputAsync(bool should_read) {
-  auto body = [should_read, this]() {
-    if (should_read) {
-      return StartUpstreamRead();
-    }
-    if (continuation) {
-      auto cont = std::exchange(continuation, std::function<void()>{});
-      return cont();
-    }
-    return Run();
-  };
-
+void TlsSocket::AsyncReqBase::MaybeSendOutputAsync() {
   if (owner->engine_->OutputPending() == 0) {
-    return body();
+    return;
   }
 
   // This function is present in both read and write paths.
   // meaning that both of them can be called concurrently from differrent fibers and then
   // race over flushing the output buffer. We use state_ to prevent that.
   if (owner->state_ & WRITE_IN_PROGRESS) {
-    // TODO we must "yield" -> subscribe as a continuation to the write request cause otherwise
-    // we might deadlock. See the sync version of HandleOp for more info
-    return body();
+    DCHECK(owner->pending_blocked_ == nullptr);
+    owner->pending_blocked_ = this;
+    return;
   }
 
-  if (should_read) {
-    DCHECK(!continuation);
-    continuation = [this]() {
-      // Yields to Run internally()
-      StartUpstreamRead();
-    };
+  StartUpstreamWrite();
+}
+
+void TlsSocket::AsyncReqBase::MaybeSendOutputAsyncWithRead() {
+  if (owner->engine_->OutputPending() == 0) {
+    return StartUpstreamRead();
   }
+
+  // This function is present in both read and write paths.
+  // meaning that both of them can be called concurrently from differrent fibers and then
+  // race over flushing the output buffer. We use state_ to prevent that.
+  if (owner->state_ & WRITE_IN_PROGRESS) {
+    DCHECK(owner->pending_blocked_ == nullptr);
+    owner->pending_blocked_ = this;
+    return;
+  }
+
+  DCHECK(!continuation);
+  continuation = [this]() {
+    // Yields to Run internally()
+    StartUpstreamRead();
+  };
+
   StartUpstreamWrite();
 }
 
@@ -599,8 +610,6 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 void TlsSocket::AsyncReqBase::StartUpstreamRead() {
   if (owner->state_ & READ_IN_PROGRESS) {
-    // TODO we should yield instead
-    Run();
     return;
   }
 
