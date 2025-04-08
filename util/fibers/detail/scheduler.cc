@@ -123,6 +123,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
+    // TODO: missing support for background fibers.
     if (sched->HasReady()) {
       FiberInterface* fi = sched->PopReady();
       DCHECK(!fi->list_hook.is_linked());
@@ -171,8 +172,14 @@ Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
 
-  while (HasReady()) {
-    FiberInterface* fi = PopReady();
+  while (HasReady(0)) {
+    FiberInterface* fi = PopReady(0);
+    DCHECK(!fi->sleep_hook.is_linked());
+    fi->SwitchTo();
+  }
+
+  while (HasReady(1)) {
+    FiberInterface* fi = PopReady(1);
     DCHECK(!fi->sleep_hook.is_linked());
     fi->SwitchTo();
   }
@@ -202,7 +209,7 @@ Scheduler::~Scheduler() {
 
 void Scheduler::Yield(FiberInterface* me) {
   AddReady(me);
-  was_yield_ = true;
+  yield_ocurred_ = true;
   Preempt();
 }
 
@@ -222,10 +229,10 @@ ctx::fiber_context Scheduler::Preempt() {
     }
   }
 
-  DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
+  DCHECK(!ready_queue_[0].empty());  // dispatcher fiber is always in the ready queue.
 
-  FiberInterface* fi = &ready_queue_.front();
-  ready_queue_.pop_front();
+  FiberInterface* fi = &ready_queue_[0].front();
+  ready_queue_[0].pop_front();
 
   return fi->SwitchTo();
 }
@@ -235,7 +242,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_.push_back(*fibi);
+  ready_queue_[unsigned(fibi->prio_)].push_back(*fibi);
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -423,7 +430,7 @@ unsigned Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
-    ready_queue_.push_back(fi);
+    ready_queue_[unsigned(fi.prio_)].push_back(fi);
     fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
     ++result;
   } while (!sleep_queue_.empty());
@@ -451,7 +458,7 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
 
   // We must erase it from the ready queue because we switch to dispatcher "abnormally",
   // not through Preempt().
-  ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
+  ready_queue_[0].erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
 
   dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
 }
@@ -493,21 +500,49 @@ void Scheduler::PrintAllFiberStackTraces() {
 }
 
 bool Scheduler::RunWorkerFibersStepImpl() {
-  DCHECK(!ready_queue_.empty());
+  constexpr unsigned q_indx = unsigned(FiberPriority::NORMAL);
+  DCHECK(HasReady(q_indx));
 
-  FiberInterface* fi = PopReady();
+  do {
+    FiberInterface* fi = PopReady(q_indx);
+    DCHECK(!fi->list_hook.is_linked());
+    DCHECK(!fi->sleep_hook.is_linked());
+    AddReady(dispatch_cntx_.get());
+
+    DVLOG(2) << "Switching to " << fi->name();
+    ProactorBase::UpdateMonotonicTime();
+
+    // Traverses one or more fibers because a worker fiber does not necessarily returns
+    // straight back to the dispatcher. Instead it chooses the next ready worker fiber
+    // from the ready queue.
+    fi->SwitchTo();
+
+    // We may switch back to dispatcher fiber and still have ready_queue_ not empty if:
+    // 1. one of the fibers yielded
+    // 2. if one of the fibers notified a suspended fiber and it was added to the ready queue.
+    // In case of yield we break, because we want to maintain responsiveness, and handle
+    // other tasks first before continuing with yielded fibers.
+  } while (HasReady(q_indx) && !yield_ocurred_);
+
+  yield_ocurred_ = false;  // reset the flag.
+
+  // We are back to the dispatcher, return true if there are no ready fibers.
+  return !HasReady(q_indx);
+}
+
+void Scheduler::RunBackgroundStepImpl() {
+  constexpr unsigned q_indx = unsigned(FiberPriority::BACKGROUND);
+
+  FiberInterface* fi = PopReady(q_indx);
   DCHECK(!fi->list_hook.is_linked());
   DCHECK(!fi->sleep_hook.is_linked());
   AddReady(dispatch_cntx_.get());
 
   DVLOG(2) << "Switching to " << fi->name();
   ProactorBase::UpdateMonotonicTime();
+
+  // Currently switches exactly to one fiber because Preempt fetches only from the ready queue.
   fi->SwitchTo();
-
-  was_yield_ = false;
-
-  // We are back to the dispatcher, return true if there are no ready fibers.
-  return !HasReady();
 }
 
 }  // namespace detail

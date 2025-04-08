@@ -18,6 +18,7 @@
 #include "base/histogram.h"
 #include "base/logging.h"
 #include "base/proc_util.h"
+#include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/uring_socket.h"
 
@@ -876,13 +877,14 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    // Traverses one or more fibers because a worker fiber does not necessarily returns
-    // straight back to the dispatcher. Instead it chooses the next ready worker fiber
-    // from the ready queue.
-    //
-    if (!scheduler->RunWorkerFibersStep()) {
+    if (!scheduler->RunWorkerFibersStep() || has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (scheduler->RunBackgroundStep()) {
+      jump_from = JUMP_FROM_L2;
       continue;
     }
 
@@ -894,6 +896,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ///
     /// End of the tight loop that processes tasks, ready fibers, and submits sqes.
     ///
+
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
       jump_from = JUMP_FROM_L2;
@@ -901,6 +904,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     DCHECK(!has_cpu_work && !scheduler->HasReady());
+
+    // We put this check to follow up in case it breaks in the future.
+    // In any case we have the io_uring_sq_ready() check below to protect us
+    // in production.
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
 
     if (io_uring_sq_ready(&ring_) > 0) {
