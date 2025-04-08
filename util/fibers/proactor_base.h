@@ -21,10 +21,6 @@
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
 
-#if !defined(__x86_64__) && !defined(__aarch64__)
-#include <absl/base/internal/cycleclock.h>
-#endif
-
 namespace util {
 class LinuxSocketBase;
 
@@ -271,20 +267,6 @@ class ProactorBase {
   // they recently run.
   // Returns true if there are fibers that became ready as a result.
   bool RunL2Tasks(detail::Scheduler* scheduler);
-
-  static uint64_t GetCPUCycleCount() {
-#if defined(__x86_64__)
-    uint64_t low, high;
-  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-  return static_cast<int64_t>((high << 32) | low);
-#elif defined(__aarch64__)
-  int64_t tv;
-  asm volatile("mrs %0, cntvct_el0" : "=r"(tv));
-  return tv;
-#else
-    return absl::base_internal::CycleClock::Now();
-#endif
-  }
 
   void IdleEnd(uint64_t start);
 

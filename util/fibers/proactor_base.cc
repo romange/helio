@@ -8,6 +8,8 @@
 #include <absl/base/internal/cycleclock.h>
 #include <signal.h>
 
+#include "base/cycle_clock.h"
+
 #if __linux__
 #include <sys/eventfd.h>
 constexpr int kNumSig = _NSIG;
@@ -288,7 +290,7 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
 
 // The threshold is set to ~2.5ms.
 bool ProactorBase::ShouldPollL2Tasks() const {
-  uint64_t now = GetCPUCycleCount();
+  uint64_t now = base::CycleClock::Now();
   return now > last_level2_cycle_ + 256 * cycles_per_10us;
 }
 
@@ -296,7 +298,7 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
   // avoid calling steady_clock::now() too much.
   // Cycles count can reset, for example when CPU is suspended, therefore we also allow
   // "returning  into past". False positive is possible but it's not a big deal.
-  uint64_t now = GetCPUCycleCount();
+  uint64_t now = base::CycleClock::Now();
   if (ABSL_PREDICT_FALSE(now < last_level2_cycle_)) {
     // LOG_FIRST_N - otherwise every adjustment will trigger num-threads messages.
     LOG_FIRST_N(WARNING, 1) << "The cycle clock was adjusted backwards by "
@@ -316,7 +318,7 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
 }
 
 void ProactorBase::IdleEnd(uint64_t start) {
-  uint64_t end = GetCPUCycleCount();
+  uint64_t end = base::CycleClock::Now();
 
   // Assuming that cpu clock frequency is
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
@@ -348,7 +350,7 @@ void ProactorBase::Pause(unsigned count) {
 
 void ProactorBase::ModuleInit() {
   uint64_t delta;
-  cycles_per_10us = absl::base_internal::CycleClock::Frequency() / 100'000;
+  cycles_per_10us = base::CycleClock::Frequency() / 100'000;
 
   while (true) {
     uint64_t now = GetClockNanos();
@@ -365,7 +367,7 @@ void ProactorBase::ModuleInit() {
 }
 
 void ProactorDispatcher::Run(detail::Scheduler* sched) {
-  proactor_->cpu_measure_cycle_start_ = ProactorBase::GetCPUCycleCount();
+  proactor_->cpu_measure_cycle_start_ = base::CycleClock::Now();
   proactor_->MainLoop(sched);
 }
 

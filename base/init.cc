@@ -8,12 +8,15 @@
 #include <absl/log/initialize.h>
 #endif
 
+#include <absl/base/internal/cycleclock.h>
+#include <absl/debugging/failure_signal_handler.h>
+#include <absl/debugging/symbolize.h>
+#include <absl/flags/parse.h>
+
 #include <atomic>
 #include <exception>
 
-#include "absl/debugging/failure_signal_handler.h"
-#include "absl/debugging/symbolize.h"
-#include "absl/flags/parse.h"
+#include "base/cycle_clock.h"
 #include "base/logging.h"
 
 // This overrides glibc's default assert handler in debug builds so
@@ -22,8 +25,7 @@
 #ifdef __GLIBC__
 extern "C" void __assert_fail(const char* assertion, const char* file, unsigned int line,
                               const char* function) {
-  LOG(FATAL) << "[" << file << ":" << line << "]: "
-             << "assert(" << assertion << ") failed!";
+  LOG(FATAL) << "[" << file << ":" << line << "]: " << "assert(" << assertion << ") failed!";
 }
 #endif
 #endif
@@ -53,6 +55,16 @@ void ModuleInitializer::RunFtors(bool is_ctor) {
 
 #undef MainInitGuard
 
+namespace base {
+
+uint64_t CycleClock::frequency_ = 0;
+
+void CycleClock::InitOnce() {
+  frequency_ = absl::base_internal::CycleClock::Frequency();
+}
+
+}  // namespace base
+
 static std::atomic<int> main_init_guard_count{0};
 
 MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
@@ -73,6 +85,7 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
   absl::InstallFailureSignalHandler(options);
 
   base::kProgramName = (*argv)[0];
+  base::CycleClock::InitOnce();
 
 #if defined NDEBUG
   LOG(INFO) << (*argv)[0] << " running in opt mode.";

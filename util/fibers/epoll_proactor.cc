@@ -18,6 +18,7 @@
 #include <pthread_np.h>
 #endif
 
+#include "base/cycle_clock.h"
 #include "base/logging.h"
 #include "base/proc_util.h"
 #include "util/fibers/epoll_socket.h"
@@ -266,7 +267,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    uint64_t start_cycle = GetCPUCycleCount();
+    uint64_t start_cycle = base::CycleClock::Now();
     int epoll_res = EpollWait(epoll_fd_, &ev_batch, timeout);
     IdleEnd(start_cycle);
 
