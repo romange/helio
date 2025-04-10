@@ -7,10 +7,10 @@
 
 #include <mutex>  // for g_scheduler_lock
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
-#include "util/fibers/detail/utils.h"
 
 ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
           "If > 0, ensures the stack each fiber has at least this margin. "
@@ -19,6 +19,7 @@ ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
 namespace util {
 namespace fb2 {
 using namespace std;
+using base::CycleClock;
 
 namespace detail {
 namespace ctx = boost::context;
@@ -28,6 +29,18 @@ struct TL_FiberInitializer;
 namespace {
 
 [[maybe_unused]] size_t kSzFiberInterface = sizeof(FiberInterface);
+
+inline void CpuPause() {
+#if defined(__i386__) || defined(__amd64__)
+  __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+  /* Use an isb here as we've found it's much closer in duration to
+   * the x86 pause instruction vs. yield which is a nop and thus the
+   * loop count is lower and the interconnect gets a lot more traffic
+   * from loading the ticket above. */
+  __asm__ __volatile__("isb");
+#endif
+}
 
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
@@ -48,12 +61,13 @@ class MainFiberImpl final : public FiberInterface {
 mutex g_scheduler_lock;
 
 TL_FiberInitializer* g_fiber_thread_list = nullptr;
+uint64_t g_tsc_cycles_per_ms = 0;
 
 }  // namespace
 
 PMR_NS::memory_resource* default_stack_resource = nullptr;
 size_t default_stack_size = 64 * 1024;
-uint64_t g_tsc_cycles_per_ms = 0;
+
 
 __thread FiberInterface::TL FiberInterface::tl;
 
@@ -96,7 +110,7 @@ TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
   next = g_fiber_thread_list;
   g_fiber_thread_list = this;
   if (g_tsc_cycles_per_ms == 0) {
-    g_tsc_cycles_per_ms = CycleClock::FrequencyUsec() * 1000;
+    g_tsc_cycles_per_ms = CycleClock::Frequency() / 1000;
     VLOG(1) << "TSC Frequency : " << g_tsc_cycles_per_ms << "/ms";
   }
 }
@@ -208,6 +222,11 @@ void FiberInterface::CheckStackMargin() {
   // Log if margins are within the the orange zone.
   LOG_IF(INFO, margin < check_margin * 1.5)
       << "Stack margin for " << name_ << ": " << margin << " bytes";
+}
+
+uint64_t FiberInterface::GetRunningTimeCycles() const {
+  uint64_t now = CycleClock::Now();
+  return now > cpu_tsc_ ? now - cpu_tsc_ : 0;
 }
 
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
@@ -381,7 +400,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
     fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
 
-    // to_suspend points to the fiber that is active and is going to be to_suspend.
+    // to_suspend points to the fiber that is active and is going to be suspended.
     uint64_t delta_cycles = tsc - to_suspend->cpu_tsc_;
     if (delta_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
