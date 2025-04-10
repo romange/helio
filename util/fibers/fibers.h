@@ -179,6 +179,10 @@ inline void Yield() {
   fb2::detail::FiberActive()->Yield();
 }
 
+inline uint64_t GetRunningTimeCycles() {
+  return fb2::detail::FiberActive()->GetRunningTimeCycles();
+}
+
 template <typename Rep, typename Period>
 void SleepFor(const std::chrono::duration<Rep, Period>& timeout_duration) {
   SleepUntil(std::chrono::steady_clock::now() + timeout_duration);

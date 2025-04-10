@@ -593,7 +593,10 @@ TEST_P(ProactorTest, DispatchTest) {
     LOG(INFO) << "state 1";
 
     cnd2.notify_one();
+    EXPECT_GT(ThisFiber::GetRunningTimeCycles(), 1000);
+
     cnd1.wait(g, [&] { return state == 2; });
+
     LOG(INFO) << "End";
   });
 

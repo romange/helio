@@ -60,7 +60,14 @@ namespace base {
 uint64_t CycleClock::frequency_ = 0;
 
 void CycleClock::InitOnce() {
+#ifdef __aarch64__
+  // On aarch64, we can read the frequency from the cntfrq_el0 register.
+  uint64_t res;
+  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(res));
+  frequency_ = res;
+#else
   frequency_ = absl::base_internal::CycleClock::Frequency();
+#endif
 }
 
 }  // namespace base
