@@ -507,10 +507,12 @@ class AsyncTlsSocketRenegotiate : public AsyncTlsSocketTest {
   static constexpr size_t payload_sz_ = 32768;
 };
 
+// TODO once we fix epoll AsyncRead from blocking to nonblocking, we should add it here as well
+// For now also disable this on mac since there is no iouring on mac
 #ifdef __linux__
+
 INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketRenegotiate, testing::Values("uring"),
                          [](const auto& info) { return string(info.param); });
-#endif
 
 TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
   unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
@@ -563,5 +565,8 @@ TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
       opts);
   SSL_CTX_free(ssl_ctx);
 }
+
+#endif
+
 }  // namespace fb2
 }  // namespace util
