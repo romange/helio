@@ -211,7 +211,7 @@ TEST_F(FiberTest, SListSafe) {
 TEST_F(FiberTest, Basic) {
   int run = 0;
   uint64_t epoch = FiberSwitchEpoch();
-
+  EXPECT_EQ(0, ThisFiber::GetPreemptCount());
   Fiber fb1("test1", [&] { ++run; });
   Fiber fb2("test2", [&] { ++run; });
   EXPECT_EQ(epoch, FiberSwitchEpoch());
@@ -219,7 +219,11 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, WorkerFibersCount());
 
   fb1.Join();
+  EXPECT_EQ(1,  ThisFiber::GetPreemptCount());
   fb2.Join();
+
+  // Second join does not preempt because fb2 finished running before.
+  EXPECT_EQ(1,  ThisFiber::GetPreemptCount());
 
   EXPECT_EQ(0, WorkerFibersCount());
   EXPECT_EQ(0, WorkerFibersStackSize());
@@ -229,6 +233,7 @@ TEST_F(FiberTest, Basic) {
 
   Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
+  EXPECT_EQ(2,  ThisFiber::GetPreemptCount());
 }
 
 TEST_F(FiberTest, Stack) {

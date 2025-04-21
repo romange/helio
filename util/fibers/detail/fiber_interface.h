@@ -212,6 +212,10 @@ class FiberInterface {
     return stack_size_;
   }
 
+  uint64_t preempt_cnt() const {
+    return preempt_cnt_;
+  }
+
   // Assigns a print callback that is called by Scheduler::PrintAllFiberStackTraces.
   // Please note that there can be at most one callback at any time during the lifetime of fiber.
   void SetPrintStacktraceCb(std::function<std::string()> cb) {
@@ -264,6 +268,9 @@ class FiberInterface {
   Scheduler* scheduler_ = nullptr;
 
   std::atomic<FiberInterface*> remote_next_{nullptr};
+
+  // number of times this fiber was preempted.
+  uint64_t preempt_cnt_ = 0;
 
   // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;

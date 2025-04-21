@@ -206,6 +206,10 @@ inline void CheckSafetyMargin() {
   fb2::detail::FiberActive()->CheckStackMargin();
 }
 
+inline uint64_t GetPreemptCount() {
+  return fb2::detail::FiberActive()->preempt_cnt();
+}
+
 class PrintLocalsCallback {
  public:
   template <typename Fn> PrintLocalsCallback(Fn&& fn) {
