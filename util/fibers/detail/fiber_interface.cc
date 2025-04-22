@@ -405,12 +405,13 @@ FiberInterface* FiberInterface::SwitchSetup() {
     if (delta_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
 
-      // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
+      // improves precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
       fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
     }
-
-    to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
   }
+
+  to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
+  to_suspend->preempt_cnt_++;
 
   cpu_tsc_ = tsc;
   return to_suspend;
@@ -454,15 +455,20 @@ void SetCustomDispatcher(DispatchPolicy* policy) {
   fb_init.sched->AttachCustomPolicy(policy);
 }
 
+// Total accumulated time in microseconds for ready fibers to become active.
+// Together with FiberSwitchEpoch we can compute the average delay per fiber.
 uint64_t FiberSwitchDelayUsec() noexcept {
   // in nanoseconds, so lets convert from cycles
   return detail::FbInitializer().switch_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
 }
 
+// Total number of events of fibers running too long.
 uint64_t FiberLongRunCnt() noexcept {
   return detail::FbInitializer().long_runtime_cnt;
 }
 
+// Total accumulated time in microseconds for active fibers running too long.
+// Together with FiberLongRunCnt we can compute the average time per long running event.
 uint64_t FiberLongRunSumUsec() noexcept {
   return detail::FbInitializer().long_runtime_usec;
 }

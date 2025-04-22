@@ -212,6 +212,8 @@ TEST_F(FiberTest, Basic) {
   int run = 0;
   uint64_t epoch = FiberSwitchEpoch();
 
+  // We could preempt before in the previous tests, so it may be > 0.
+  uint64_t preempt_cnt_start = ThisFiber::GetPreemptCount();
   Fiber fb1("test1", [&] { ++run; });
   Fiber fb2("test2", [&] { ++run; });
   EXPECT_EQ(epoch, FiberSwitchEpoch());
@@ -219,7 +221,11 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, WorkerFibersCount());
 
   fb1.Join();
+  EXPECT_EQ(preempt_cnt_start + 1,  ThisFiber::GetPreemptCount());
   fb2.Join();
+
+  // Second join does not preempt because fb2 finished running before.
+  EXPECT_EQ(preempt_cnt_start+ 1,  ThisFiber::GetPreemptCount());
 
   EXPECT_EQ(0, WorkerFibersCount());
   EXPECT_EQ(0, WorkerFibersStackSize());
@@ -229,6 +235,7 @@ TEST_F(FiberTest, Basic) {
 
   Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
+  EXPECT_EQ(preempt_cnt_start + 2,  ThisFiber::GetPreemptCount());
 }
 
 TEST_F(FiberTest, Stack) {
