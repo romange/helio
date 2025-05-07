@@ -87,6 +87,164 @@ size_t find_nth(string_view str, char c, uint32_t index) {
   return string_view::npos;
 }
 
+// Convert hex string to IPv6 address bytes
+void HexToIPv6(string_view hex_str, unsigned char* out) {
+  for (size_t i = 0; i < 16 && (i * 2 + 1) < hex_str.size(); i++) {
+    string_view byte_hex = hex_str.substr(i * 2, 2);
+    unsigned int byte;
+    if (absl::SimpleHexAtoi(byte_hex, &byte)) {
+      out[i] = static_cast<unsigned char>(byte);
+    }
+  }
+}
+
+// Parse a line from /proc/net/tcp or /proc/net/tcp6 file
+bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo* info) {
+  line = absl::StripLeadingAsciiWhitespace(line);
+
+  std::vector<string_view> parts;
+  size_t pos = 0;
+
+  while (pos < line.size()) {
+    while (pos < line.size() && absl::ascii_isspace(line[pos]))
+      pos++;
+    if (pos >= line.size())
+      break;
+
+    size_t token_start = pos;
+    while (pos < line.size() && !absl::ascii_isspace(line[pos]))
+      pos++;
+
+    parts.push_back(line.substr(token_start, pos - token_start));
+  }
+
+  if (parts.size() < 10)
+    return false;
+
+  unsigned int sl;
+  string_view sl_part = parts[0];
+  if (absl::EndsWith(sl_part, ":")) {
+    sl_part.remove_suffix(1);
+  }
+  if (!absl::SimpleAtoi(sl_part, &sl))
+    return false;
+
+  string_view local_addr_port = parts[1];
+  size_t colon_pos = local_addr_port.find(':');
+  if (colon_pos == string_view::npos)
+    return false;
+
+  string_view local_addr_hex = local_addr_port.substr(0, colon_pos);
+  string_view local_port_hex = local_addr_port.substr(colon_pos + 1);
+
+  string_view remote_addr_port = parts[2];
+  colon_pos = remote_addr_port.find(':');
+  if (colon_pos == string_view::npos)
+    return false;
+
+  string_view remote_addr_hex = remote_addr_port.substr(0, colon_pos);
+  string_view remote_port_hex = remote_addr_port.substr(colon_pos + 1);
+
+  unsigned int state;
+  if (!absl::SimpleHexAtoi(parts[3], &state))
+    return false;
+
+  unsigned int inode = 0;
+  if (!absl::SimpleAtoi(parts[9], &inode))
+    return false;
+
+  if (inode != target_inode)
+    return false;
+
+  info->is_ipv6 = is_ipv6;
+  info->state = state;
+  info->inode = inode;
+
+  unsigned int port;
+  if (absl::SimpleHexAtoi(local_port_hex, &port)) {
+    info->local_port = port;
+  }
+  if (absl::SimpleHexAtoi(remote_port_hex, &port)) {
+    info->remote_port = port;
+  }
+
+  if (is_ipv6) {
+    HexToIPv6(local_addr_hex, info->local_addr6);
+    HexToIPv6(remote_addr_hex, info->remote_addr6);
+  } else {
+    unsigned int addr;
+    if (absl::SimpleHexAtoi(local_addr_hex, &addr)) {
+      info->local_addr = addr;
+    }
+    if (absl::SimpleHexAtoi(remote_addr_hex, &addr)) {
+      info->remote_addr = addr;
+    }
+  }
+
+  return true;
+}
+
+// Reads TCP info from a specified proc file
+Result<TcpInfo> ReadTcpInfoFromFile(const char* proc_path, ino_t sock_inode, bool is_ipv6) {
+  TcpInfo info;
+  int fd = open(proc_path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return make_unexpected(error_code{errno, system_category()});
+  }
+
+  base::IoBuf buf{4096};
+  bool found = false;
+  bool header_skipped = false;
+
+  while (true) {
+    auto dest = buf.AppendBuffer();
+
+    int res = read(fd, dest.data(), dest.size());
+    if (res < 0) {
+      close(fd);
+      return make_unexpected(error_code{errno, system_category()});
+    }
+
+    if (res == 0) {
+      break;
+    }
+
+    buf.CommitWrite(res);
+
+    while (true) {
+      auto input = buf.InputBuffer();
+      uint8_t* eol = reinterpret_cast<uint8_t*>(memchr(input.data(), '\n', input.size()));
+      if (!eol) {
+        if (buf.AppendLen() == 0) {
+          buf.EnsureCapacity(buf.Capacity() * 2);
+        }
+        break;
+      }
+
+      string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
+
+      if (!header_skipped) {
+        header_skipped = true;
+      } else if (ParseSocketLine(line, sock_inode, is_ipv6, &info)) {
+        found = true;
+        break;
+      }
+
+      buf.ConsumeInput(line.size() + 1);
+    }
+
+    if (found) {
+      break;
+    }
+  }
+
+  close(fd);
+  if (!found) {
+    return make_unexpected(error_code{ENOENT, system_category()});
+  }
+  return info;
+}
+
 }  // namespace
 
 Result<StatusData> ReadStatusInfo() {
@@ -220,6 +378,32 @@ Result<DistributionInfo> ReadDistributionInfo() {
   if (ec)
     return make_unexpected(ec);
   return result;
+}
+
+// Converts numeric TCP state to human-readable string
+std::string TcpStateToString(unsigned state) {
+  switch (state) {
+    case 0x01: return "ESTABLISHED";
+    case 0x02: return "SYN_SENT";
+    case 0x03: return "SYN_RECV";
+    case 0x04: return "FIN_WAIT1";
+    case 0x05: return "FIN_WAIT2";
+    case 0x06: return "TIME_WAIT";
+    case 0x07: return "CLOSE";
+    case 0x08: return "CLOSE_WAIT";
+    case 0x09: return "LAST_ACK";
+    case 0x0A: return "LISTEN";
+    case 0x0B: return "CLOSING";
+    default: return "UNKNOWN";
+  }
+}
+
+Result<TcpInfo> ReadTcpInfo(ino_t sock_inode) {
+  return ReadTcpInfoFromFile("/proc/net/tcp", sock_inode, false);
+}
+
+Result<TcpInfo> ReadTcp6Info(ino_t sock_inode) {
+  return ReadTcpInfoFromFile("/proc/net/tcp6", sock_inode, true);
 }
 
 }  // namespace io

@@ -48,4 +48,20 @@ using DistributionInfo = std::vector<std::pair<std::string, std::string>>;
 
 Result<DistributionInfo> ReadDistributionInfo();
 
+struct TcpInfo {
+  bool is_ipv6 = false;
+  unsigned state = 0;
+  unsigned local_port = 0;
+  unsigned remote_port = 0;
+  unsigned inode = 0;
+  uint32_t local_addr = 0;
+  uint32_t remote_addr = 0;
+  unsigned char local_addr6[16] = {0};
+  unsigned char remote_addr6[16] = {0};
+};
+
+std::string TcpStateToString(unsigned state);
+Result<TcpInfo> ReadTcpInfo(ino_t sock_inode);
+Result<TcpInfo> ReadTcp6Info(ino_t sock_inode);
+
 }  // namespace io
