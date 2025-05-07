@@ -51,6 +51,9 @@ Result<DistributionInfo> ReadDistributionInfo();
 
 struct TcpInfo {
   bool is_ipv6 = false;
+  // TCP state.
+  // https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Protocol_operation
+  // https://www.ibm.com/support/pages/network-connection-state-meanings-and-transitions
   unsigned state = 0;
   unsigned local_port = 0;
   unsigned remote_port = 0;
@@ -62,6 +65,8 @@ struct TcpInfo {
 };
 
 std::string TcpStateToString(unsigned state);
+
+// sock_inode can be fetched by fstat call on socket file descriptor
 Result<TcpInfo> ReadTcpInfo(ino_t sock_inode);
 Result<TcpInfo> ReadTcp6Info(ino_t sock_inode);
 
