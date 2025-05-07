@@ -22,12 +22,13 @@ namespace {
 
 // Reads proc files like /proc/self/status  or /proc/meminfo
 // passes to cb: (key, value)
-error_code ReadProcFile(const char* name, char c, function<void(string_view, string_view)> cb) {
+error_code ReadProcFile(const char* name, char c, function<void(string_view, string_view)> cb, bool skip_header = false) {
   int fd = open(name, O_RDONLY | O_CLOEXEC);
   if (fd == -1)
     return error_code{errno, system_category()};
 
   base::IoBuf buf{512};
+  bool header_skipped = !skip_header;
 
   while (true) {
     auto dest = buf.AppendBuffer();
@@ -56,6 +57,13 @@ error_code ReadProcFile(const char* name, char c, function<void(string_view, str
       }
 
       string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
+      
+      if (!header_skipped) {
+        header_skipped = true;
+        buf.ConsumeInput(line.size() + 1);
+        continue;
+      }
+      
       size_t pos = line.find(c);
       if (pos == string_view::npos)
         break;
@@ -100,8 +108,6 @@ void HexToIPv6(string_view hex_str, unsigned char* out) {
 
 // Parse a line from /proc/net/tcp or /proc/net/tcp6 file
 bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo* info) {
-  line = absl::StripLeadingAsciiWhitespace(line);
-
   std::vector<string_view> parts;
   size_t pos = 0;
 
@@ -118,18 +124,10 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
     parts.push_back(line.substr(token_start, pos - token_start));
   }
 
-  if (parts.size() < 10)
+  if (parts.size() < 9)
     return false;
 
-  unsigned int sl;
-  string_view sl_part = parts[0];
-  if (absl::EndsWith(sl_part, ":")) {
-    sl_part.remove_suffix(1);
-  }
-  if (!absl::SimpleAtoi(sl_part, &sl))
-    return false;
-
-  string_view local_addr_port = parts[1];
+  string_view local_addr_port = parts[0];
   size_t colon_pos = local_addr_port.find(':');
   if (colon_pos == string_view::npos)
     return false;
@@ -137,7 +135,7 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
   string_view local_addr_hex = local_addr_port.substr(0, colon_pos);
   string_view local_port_hex = local_addr_port.substr(colon_pos + 1);
 
-  string_view remote_addr_port = parts[2];
+  string_view remote_addr_port = parts[1];
   colon_pos = remote_addr_port.find(':');
   if (colon_pos == string_view::npos)
     return false;
@@ -146,11 +144,11 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
   string_view remote_port_hex = remote_addr_port.substr(colon_pos + 1);
 
   unsigned int state;
-  if (!absl::SimpleHexAtoi(parts[3], &state))
+  if (!absl::SimpleHexAtoi(parts[2], &state))
     return false;
 
   unsigned int inode = 0;
-  if (!absl::SimpleAtoi(parts[9], &inode))
+  if (!absl::SimpleAtoi(parts[8], &inode))
     return false;
 
   if (inode != target_inode)
@@ -189,61 +187,27 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
 // Reads TCP info from a specified proc file
 Result<TcpInfo> ReadTcpInfoFromFile(const char* proc_path, ino_t sock_inode, bool is_ipv6) {
   TcpInfo info;
-  int fd = open(proc_path, O_RDONLY | O_CLOEXEC);
-  if (fd < 0) {
-    return make_unexpected(error_code{errno, system_category()});
-  }
-
-  base::IoBuf buf{4096};
   bool found = false;
-  bool header_skipped = false;
 
-  while (true) {
-    auto dest = buf.AppendBuffer();
-
-    int res = read(fd, dest.data(), dest.size());
-    if (res < 0) {
-      close(fd);
-      return make_unexpected(error_code{errno, system_category()});
-    }
-
-    if (res == 0) {
-      break;
-    }
-
-    buf.CommitWrite(res);
-
-    while (true) {
-      auto input = buf.InputBuffer();
-      uint8_t* eol = reinterpret_cast<uint8_t*>(memchr(input.data(), '\n', input.size()));
-      if (!eol) {
-        if (buf.AppendLen() == 0) {
-          buf.EnsureCapacity(buf.Capacity() * 2);
-        }
-        break;
-      }
-
-      string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
-
-      if (!header_skipped) {
-        header_skipped = true;
-      } else if (ParseSocketLine(line, sock_inode, is_ipv6, &info)) {
-        found = true;
-        break;
-      }
-
-      buf.ConsumeInput(line.size() + 1);
-    }
-
+  auto cb = [&](string_view key, string_view value) {
     if (found) {
-      break;
+      return;
     }
+
+    if (ParseSocketLine(value, sock_inode, is_ipv6, &info)) {
+      found = true;
+    }
+  };
+
+  error_code ec = ReadProcFile(proc_path, ':', std::move(cb), true);
+  if (ec) {
+    return make_unexpected(ec);
   }
 
-  close(fd);
   if (!found) {
     return make_unexpected(error_code{ENOENT, system_category()});
   }
+
   return info;
 }
 
