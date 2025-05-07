@@ -174,10 +174,12 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
   } else {
     unsigned int addr;
     if (absl::SimpleHexAtoi(local_addr_hex, &addr)) {
-      info->local_addr = addr;
+      uint8_t* bytes = reinterpret_cast<uint8_t*>(&addr);
+      info->local_addr = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
     }
     if (absl::SimpleHexAtoi(remote_addr_hex, &addr)) {
-      info->remote_addr = addr;
+      uint8_t* bytes = reinterpret_cast<uint8_t*>(&addr);
+      info->remote_addr = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
     }
   }
 

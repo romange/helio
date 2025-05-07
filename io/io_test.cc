@@ -7,6 +7,11 @@
 #include <gmock/gmock.h>
 
 #include <deque>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <netinet/in.h>
 
 #include "base/gtest.h"
 #include "base/logging.h"
@@ -117,6 +122,69 @@ TEST_F(IoTest, ProcReader) {
   auto it =
       find_if(dinfo.begin(), dinfo.end(), [](auto val) { return val.first == "PRETTY_NAME"; });
   ASSERT_TRUE(it != dinfo.end());
+}
+
+TEST_F(IoTest, TcpInfoReader) {
+#ifdef __APPLE__
+  GTEST_SKIP() << "Skipped IoTest.TcpInfoReader test on MacOS";
+  return;
+#endif
+
+  EXPECT_EQ("ESTABLISHED", TcpStateToString(0x01));
+  EXPECT_EQ("LISTEN", TcpStateToString(0x0A));
+
+#ifdef __linux__
+  int sock_ipv4 = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(sock_ipv4, 0);
+
+  struct sockaddr_in addr4;
+  memset(&addr4, 0, sizeof(addr4));
+  addr4.sin_family = AF_INET;
+  addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr4.sin_port = htons(8000);
+  
+  ASSERT_GE(bind(sock_ipv4, (struct sockaddr*)&addr4, sizeof(addr4)), 0);
+  ASSERT_GE(listen(sock_ipv4, 5), 0);
+
+  struct stat stat_buf;
+  ASSERT_GE(fstat(sock_ipv4, &stat_buf), 0);
+  ino_t ipv4_inode = stat_buf.st_ino;
+  
+  auto tcp_info = ReadTcpInfo(ipv4_inode);
+  EXPECT_EQ(tcp_info->inode, ipv4_inode);
+  EXPECT_EQ(tcp_info->state, 0x0A);
+  EXPECT_EQ(tcp_info->local_port, 8000);
+  EXPECT_FALSE(tcp_info->is_ipv6);
+  
+  EXPECT_EQ(tcp_info->local_addr, 0x7F000001);
+  
+  close(sock_ipv4);
+  
+  int sock_ipv6 = socket(AF_INET6, SOCK_STREAM, 0);
+  struct sockaddr_in6 addr6;
+  memset(&addr6, 0, sizeof(addr6));
+  addr6.sin6_family = AF_INET6;
+  addr6.sin6_addr = in6addr_loopback;
+  addr6.sin6_port = htons(8001);
+  
+  int opt = 1;
+  setsockopt(sock_ipv6, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
+  
+  ASSERT_GE(bind(sock_ipv6, (struct sockaddr*)&addr6, sizeof(addr6)), 0);
+  ASSERT_GE(listen(sock_ipv6, 5), 0);
+  ASSERT_GE(fstat(sock_ipv6, &stat_buf), 0);
+  ino_t ipv6_inode = stat_buf.st_ino;
+    
+  auto tcp6_info = ReadTcp6Info(ipv6_inode);
+  EXPECT_EQ(tcp6_info->inode, ipv6_inode);
+  EXPECT_EQ(tcp6_info->state, 0x0A);
+  EXPECT_EQ(tcp6_info->local_port, 8001);
+  EXPECT_TRUE(tcp6_info->is_ipv6);
+
+  close(sock_ipv6);
+  
+  EXPECT_FALSE(ReadTcpInfo(-1));
+#endif
 }
 
 TEST_F(IoTest, IniReader) {
