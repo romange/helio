@@ -5,7 +5,9 @@
 #include "io/proc_reader.h"
 
 #include <absl/strings/numbers.h>
+#include <absl/strings/str_split.h>
 #include <absl/strings/strip.h>
+#include <absl/base/internal/endian.h>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -106,23 +108,11 @@ void HexToIPv6(string_view hex_str, unsigned char* out) {
   }
 }
 
-// Parse a line from /proc/net/tcp or /proc/net/tcp6 file
+// Parse a substring after sl from /proc/net/tcp or /proc/net/tcp6 file
+// sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+// https://www.kernel.org/doc/Documentation/networking/proc_net_tcp.txt
 bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo* info) {
-  std::vector<string_view> parts;
-  size_t pos = 0;
-
-  while (pos < line.size()) {
-    while (pos < line.size() && absl::ascii_isspace(line[pos]))
-      pos++;
-    if (pos >= line.size())
-      break;
-
-    size_t token_start = pos;
-    while (pos < line.size() && !absl::ascii_isspace(line[pos]))
-      pos++;
-
-    parts.push_back(line.substr(token_start, pos - token_start));
-  }
+  std::vector<string_view> parts = absl::StrSplit(line, absl::ByAnyChar(" \t"), absl::SkipEmpty());
 
   if (parts.size() < 9)
     return false;
@@ -172,12 +162,10 @@ bool ParseSocketLine(string_view line, ino_t target_inode, bool is_ipv6, TcpInfo
   } else {
     unsigned int addr;
     if (absl::SimpleHexAtoi(local_addr_hex, &addr)) {
-      uint8_t* bytes = reinterpret_cast<uint8_t*>(&addr);
-      info->local_addr = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+      info->local_addr = absl::big_endian::Load32(reinterpret_cast<const char*>(&addr));
     }
     if (absl::SimpleHexAtoi(remote_addr_hex, &addr)) {
-      uint8_t* bytes = reinterpret_cast<uint8_t*>(&addr);
-      info->remote_addr = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+      info->remote_addr = absl::big_endian::Load32(reinterpret_cast<const char*>(&addr));
     }
   }
 
@@ -189,7 +177,7 @@ Result<TcpInfo> ReadTcpInfoFromFile(const char* proc_path, ino_t sock_inode, boo
   TcpInfo info;
   bool found = false;
 
-  auto cb = [&](string_view key, string_view value) {
+  auto cb = [&](string_view key, string_view value) mutable {
     if (found) {
       return;
     }
