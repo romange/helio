@@ -337,12 +337,6 @@ void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   cb(res);
 }
 
-// TODO: to implement async functionality.
-void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  io::Result<size_t> res = ReadSome(v, len);
-  cb(res);
-}
-
 SSL* TlsSocket::ssl_handle() {
   return engine_ ? engine_->native_handle() : nullptr;
 }
@@ -518,6 +512,127 @@ error_code TlsSocket::ListenUDS(const char* path, mode_t permissions, unsigned b
 void TlsSocket::SetProactor(ProactorBase* p) {
   next_sock_->SetProactor(p);
   FiberSocketBase::SetProactor(p);
+}
+
+void TlsSocket::AsyncReqBase::MaybeSendOutputAsyncWithRead() {
+  if (owner->engine_->OutputPending() == 0) {
+    return StartUpstreamRead();
+  }
+
+  // TODO handle WRITE_IN_PROGRESS here by adding pending_blocked_
+  // if (owner->state_ & WRITE_IN_PROGRESS)
+
+  // sync interface, works because we are still executing within a fiber
+  owner->MaybeSendOutput();
+  StartUpstreamRead();
+}
+
+void TlsSocket::AsyncReqBase::StartUpstreamRead() {
+  if (owner->state_ & READ_IN_PROGRESS) {
+    return;
+  }
+
+  auto buffer = owner->engine_->PeekInputBuf();
+  owner->state_ |= READ_IN_PROGRESS;
+
+  auto& scratch = scratch_iovec;
+  scratch.iov_base = const_cast<uint8_t*>(buffer.data());
+  scratch.iov_len = buffer.size();
+
+  owner->next_sock_->AsyncReadSome(&scratch, 1, [this](auto read_result) {
+    owner->state_ &= ~READ_IN_PROGRESS;
+    if (!read_result) {
+      // log any errors as well as situations where we have unflushed output.
+      if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
+        VLOG(1) << "sock[" << owner->native_handle() << "], state " << int(owner->state_)
+                << ", write_total:" << owner->upstream_write_ << " "
+                << " pending output: " << owner->engine_->OutputPending() << " "
+                << "StartUpstreamRead failed " << read_result.error();
+      }
+      // Erronous path. Apply the completion callback and exit.
+      CompleteAsyncReq(read_result);
+      return;
+    }
+
+    DVLOG(1) << "HandleUpstreamRead " << *read_result << " bytes";
+    owner->engine_->CommitInput(*read_result);
+    // We are not done. Give back control to the main loop.
+    Run();
+  });
+}
+
+void TlsSocket::AsyncReadReq::CompleteAsyncReq(io::Result<size_t> result) {
+  auto current = std::move(owner->async_read_req_);
+  current->caller_completion_cb(result);
+}
+
+void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
+  switch (op_val) {
+    case Engine::EOF_STREAM:
+      VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
+      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
+      break;
+    case Engine::NEED_READ_AND_MAYBE_WRITE:
+      MaybeSendOutputAsyncWithRead();
+      break;
+    // TODO handle NEED_WRITE
+    default:
+      LOG(DFATAL) << "Unsupported " << op_val;
+  }
+}
+
+void TlsSocket::AsyncReadReq::Run() {
+  DCHECK_GT(len, 0u);
+
+  while (true) {
+    DCHECK(!dest.empty());
+
+    size_t read_len = std::min(dest.size(), size_t(INT_MAX));
+
+    Engine::OpResult op_result = owner->engine_->Read(dest.data(), read_len);
+
+    int op_val = op_result;
+
+    DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
+
+    if (op_val > 0) {
+      read_total += op_val;
+
+      // I do not understand this code and what the hell I meant to do here. Seems to work
+      // though.
+      if (size_t(op_val) == read_len) {
+        if (size_t(op_val) < dest.size()) {
+          dest.remove_prefix(op_val);
+        } else {
+          ++vec;
+          --len;
+          if (len == 0) {
+            // We are done. Call completion callback.
+            CompleteAsyncReq(read_total);
+            return;
+          }
+          dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(vec->iov_base), vec->iov_len};
+        }
+        // We read everything we asked for but there are still buffers left to fill.
+        continue;
+      }
+      break;
+    }
+
+    HandleOpAsync(op_val);
+    return;
+  }
+
+  // We are done. Call completion callback.
+  CompleteAsyncReq(read_total);
+}
+
+void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  CHECK(!async_read_req_);
+  auto req = AsyncReadReq(this, std::move(cb), v, len);
+  req.dest = {reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len};
+  async_read_req_ = std::make_unique<AsyncReadReq>(std::move(req));
+  async_read_req_->Run();
 }
 
 }  // namespace tls

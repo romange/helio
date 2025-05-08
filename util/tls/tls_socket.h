@@ -90,7 +90,6 @@ class TlsSocket final : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
-
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
@@ -116,6 +115,51 @@ class TlsSocket final : public FiberSocketBase {
 
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
+
+  struct AsyncReqBase {
+    AsyncReqBase(TlsSocket* owner, io::AsyncProgressCb caller_cb, const iovec* vec, uint32_t len)
+        : owner(owner), caller_completion_cb(std::move(caller_cb)), vec(vec), len(len) {
+    }
+
+    TlsSocket* owner;
+    // Callback passed from the user.
+    io::AsyncProgressCb caller_completion_cb;
+
+    const iovec* vec;
+    uint32_t len;
+
+    iovec scratch_iovec;
+
+    // Asynchronous helpers
+    void MaybeSendOutputAsyncWithRead();
+
+    void HandleOpAsync(int op_val);
+
+    void StartUpstreamRead();
+
+    virtual void Run() = 0;
+    virtual void CompleteAsyncReq(io::Result<size_t> result) = 0;
+  };
+
+  // Helper function that resets the internal async request, applies the
+  // user AsyncProgressCb and returns. We need this, because progress callbacks
+  // can start another async request and for that to work, we need to clean up
+  // the one we are running on.
+  void CompleteAsyncRequest(io::Result<size_t> result);
+
+  struct AsyncReadReq : AsyncReqBase {
+    using AsyncReqBase::AsyncReqBase;
+
+    Engine::MutableBuffer dest;
+    size_t read_total = 0;
+
+    // Main loop
+    void Run() override;
+    void CompleteAsyncReq(io::Result<size_t> result) override;
+  };
+
+  std::unique_ptr<AsyncReadReq> async_read_req_;
+  AsyncReqBase* pending_blocked_ = nullptr;
 };
 
 }  // namespace tls
