@@ -5,6 +5,7 @@
 #pragma once
 
 #include <vector>
+#include <sys/types.h>
 #include "io/io.h"
 
 namespace io {
@@ -47,5 +48,26 @@ Result<SelfStat> ReadSelfStat();
 using DistributionInfo = std::vector<std::pair<std::string, std::string>>;
 
 Result<DistributionInfo> ReadDistributionInfo();
+
+struct TcpInfo {
+  bool is_ipv6 = false;
+  // TCP state.
+  // https://en.wikipedia.org/wiki/Transmission_Control_Protocol#Protocol_operation
+  // https://www.ibm.com/support/pages/network-connection-state-meanings-and-transitions
+  unsigned state = 0;
+  unsigned local_port = 0;
+  unsigned remote_port = 0;
+  unsigned inode = 0;
+  uint32_t local_addr = 0;
+  uint32_t remote_addr = 0;
+  unsigned char local_addr6[16] = {0};
+  unsigned char remote_addr6[16] = {0};
+};
+
+std::string TcpStateToString(unsigned state);
+
+// sock_inode can be fetched by fstat call on socket file descriptor
+Result<TcpInfo> ReadTcpInfo(ino_t sock_inode);
+Result<TcpInfo> ReadTcp6Info(ino_t sock_inode);
 
 }  // namespace io
