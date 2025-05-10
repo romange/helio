@@ -81,6 +81,10 @@ template <typename T, typename Queue = folly::ProducerConsumerQueue<T>> class Si
     return q_.capacity();
   }
 
+  // Advanced control - tries to wake up the producer, blocked on a full queue.
+  void NotifyProducer() {
+    push_ec_.notify();
+  }
  private:
   Queue q_;
   unsigned throttled_pushes_ = 0;
