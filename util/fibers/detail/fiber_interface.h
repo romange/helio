@@ -23,8 +23,8 @@ enum class Launch {
 };
 
 enum class FiberPriority : uint8_t {
-  NORMAL,      // default priority
-  BACKGROUND,  // background priority, runs when no NORMAL fibers are ready.
+  NORMAL = 0,      // default priority
+  BACKGROUND = 1,  // background priority, runs when no NORMAL fibers are ready.
 };
 
 // based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
