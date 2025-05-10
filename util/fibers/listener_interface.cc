@@ -404,6 +404,16 @@ void ListenerInterface::Migrate(Connection* conn, fb2::ProactorBase* dest) {
   conn->OnPostMigrateThread();
 }
 
+void ListenerInterface::StopAccepting() {
+  ProactorBase* proactor = socket()->proactor();
+  proactor->Dispatch([sock = socket()] {
+    if (sock->IsOpen()) {
+      auto ec = sock->Shutdown(SHUT_RDWR);
+      LOG_IF(WARNING, ec) << "Error shutting down a socket " << ec.message();
+    }
+  });
+}
+
 void ListenerInterface::SetMaxClients(uint32_t max_clients) {
   max_clients_ = max_clients;
 

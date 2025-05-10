@@ -119,6 +119,9 @@ class ListenerInterface {
 
   void RunSingleConnection(Connection* conn);
 
+  // Can be called from any thread. Blocks the calling fiber.
+  void StopAccepting();
+
   static ListenerConnMap* GetSafeTlsConnMap();
 
   static thread_local ListenerConnMap listener_map;
