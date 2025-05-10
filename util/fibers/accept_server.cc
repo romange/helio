@@ -4,10 +4,14 @@
 
 #include "util/accept_server.h"
 
+#include <absl/strings/numbers.h>
+#include <netdb.h>
 #include <signal.h>
 
-#include <absl/strings/numbers.h>
+#include <system_error>
+
 #include "base/logging.h"
+#include "io/io.h"
 #include "util/fiber_socket_base.h"
 #include "util/listener_interface.h"
 #include "util/proactor_pool.h"
@@ -16,6 +20,37 @@ namespace util {
 
 using namespace boost;
 using namespace std;
+
+static io::Result<struct addrinfo*> CreateServerSocket(struct addrinfo* servinfo, uint16_t backlog,
+                                                       ListenerInterface* listener,
+                                                       FiberSocketBase* fs) {
+  int family_pref[2] = {AF_INET, AF_INET6};
+  error_code ec;
+  // Try ip4 first
+  for (unsigned j = 0; j < 2; ++j) {
+    for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
+      if (p->ai_family != family_pref[j])
+        continue;
+      auto ec = fs->Create(p->ai_family);
+      if (ec)
+        continue;
+
+      ec = listener->ConfigureServerSocket(fs->native_handle());
+      if (ec)
+        break;
+
+      ec = fs->Bind(p->ai_addr, p->ai_addrlen);
+      if (ec)
+        break;
+      ec = fs->Listen(backlog);
+      if (ec)
+        break;
+      return p;
+    }
+    (void)fs->Close();
+  };
+  return nonstd::make_unexpected(ec);
+}
 
 AcceptServer::AcceptServer(ProactorPool* pool, PMR_NS::memory_resource* mr, bool break_on_int)
     : pool_(pool), mr_(mr), ref_bc_(0), break_on_int_(break_on_int) {
@@ -115,52 +150,26 @@ error_code AcceptServer::AddListener(const char* bind_addr, uint16_t port,
   unique_ptr<FiberSocketBase> fs{next->CreateSocket()};
   DCHECK(fs);
 
-  error_code ec;
-
-  int family_pref[2] = {AF_INET, AF_INET6};
-  auto sock_create_cb = [&] {
-    // Try ip4 first
-    for (unsigned j = 0; j < 2; ++j) {
-      for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
-        if (p->ai_family != family_pref[j])
-          continue;
-        ec = fs->Create(p->ai_family);
-        if (ec)
-          continue;
-
-        ec = listener->ConfigureServerSocket(fs->native_handle());
-        if (ec)
-          break;
-
-        ec = fs->Bind(p->ai_addr, p->ai_addrlen);
-        if (ec)
-          break;
-        ec = fs->Listen(backlog_);
-        if (!ec) {
-          const char* safe_bind = bind_addr ? bind_addr : "";
-          VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << p->ai_family << " "
-                  << safe_bind << ":" << port;
-          return true;
-        }
-      }
-      (void)fs->Close();
-    }
-    return false;
-  };
-
-  bool success = next->Await(std::move(sock_create_cb));
-
+  io::Result<struct addrinfo*> listen_res =
+      next->Await([&] { return CreateServerSocket(servinfo, backlog_, listener, fs.get()); });
+  int res_family = listen_res ? (*listen_res)->ai_family : AF_UNSPEC;
   freeaddrinfo(servinfo);
 
-  if (success) {
-    DCHECK(fs->IsOpen());
-
-    listener->InitByAcceptServer(pool_, mr_);
-    listener->sock_ = std::move(fs);
-    list_interface_.emplace_back(listener);
+  if (!listen_res) {
+    return listen_res.error();
   }
 
-  return ec;
+  DCHECK(fs->IsOpen());
+
+  const char* safe_bind = bind_addr ? bind_addr : "";
+  VLOG(1) << "AddListener [" << fs->native_handle() << "] family: " << res_family << " "
+          << safe_bind << ":" << port;
+
+  listener->InitByAcceptServer(pool_, mr_);
+  listener->sock_ = std::move(fs);
+  list_interface_.emplace_back(listener);
+
+  return {};
 }
 
 error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
@@ -194,15 +203,8 @@ error_code AcceptServer::AddUDSListener(const char* path, mode_t permissions,
 
 void AcceptServer::BreakListeners() {
   for (auto& lw : list_interface_) {
-    ProactorBase* proactor = lw->socket()->proactor();
-    proactor->Dispatch([sock = lw->socket()] {
-      if (sock->IsOpen()) {
-        auto ec = sock->Shutdown(SHUT_RDWR);
-        LOG_IF(WARNING, ec) << "Error shutting down a socket " << ec.message();
-      }
-    });
+    lw->StopAccepting();
   }
   VLOG(1) << "AcceptServer::BreakListeners finished";
 }
-
 }  // namespace util
