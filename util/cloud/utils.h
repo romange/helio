@@ -158,6 +158,8 @@ class CredentialsProvider {
 
   virtual std::error_code Init(unsigned connect_ms) = 0;
 
+  virtual std::string ServiceEndpoint() const = 0;
+
   virtual void Sign(detail::HttpRequestBase* req) const = 0;
   virtual std::error_code RefreshToken() = 0;
 };
