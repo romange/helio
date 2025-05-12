@@ -19,7 +19,7 @@ class Credentials;
 
 class Storage {
  public:
-  Storage(Credentials* creds) : creds_(creds) {
+  explicit Storage(CredentialsProvider* creds) : creds_(creds) {
   }
 
   using ContainerItem = std::string_view;
@@ -30,18 +30,17 @@ class Storage {
                        unsigned max_results, std::function<void(const ListItem&)> cb);
 
  private:
-  Credentials* creds_;
+  CredentialsProvider* creds_;
 };
 
 struct ReadFileOptions {
-  Credentials* creds_provider = nullptr;
+  CredentialsProvider* creds_provider = nullptr;
   SSL_CTX* ssl_cntx;
 };
 
 using WriteFileOptions = ReadFileOptions;
 
-io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container,
-                                           const std::string& key,
+io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
                                            const ReadFileOptions& opts);
 
 io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,

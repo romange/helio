@@ -152,7 +152,8 @@ unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx,
   return pool;
 }
 
-detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url, Credentials* provider) {
+detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url,
+                                     CredentialsProvider* provider) {
   detail::EmptyRequestImpl req(h2::verb::get, url);
   req.SetHeader(h2::field::host, endpoint);
   req.SetHeader(h2::field::accept_encoding, "gzip, deflate");
@@ -231,7 +232,7 @@ ReadFile::~ReadFile() {
 }
 
 error_code ReadFile::InitRead() {
-  string endpoint = opts_.creds_provider->GetEndpoint();
+  string endpoint = opts_.creds_provider->ServiceEndpoint();
   pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
 
   detail::EmptyRequestImpl req = FillRequest(endpoint, read_obj_url_, opts_.creds_provider);
@@ -303,7 +304,7 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
 
 WriteFile::WriteFile(string_view container, string_view key, const WriteFileOptions& opts)
     : detail::AbstractStorageFile(key, 1UL << 23), opts_(opts) {
-  string endpoint = opts_.creds_provider->GetEndpoint();
+  string endpoint = opts_.creds_provider->ServiceEndpoint();
   pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
   target_ = absl::StrCat("/", container, "/", key);
 }
@@ -355,7 +356,7 @@ auto WriteFile::PrepareUploadBlockReq() -> unique_ptr<UploadRequest> {
 
   upload_req->SetBody(std::move(body_mb_));
 
-  upload_req->SetHeader(h2::field::host, opts_.creds_provider->GetEndpoint());
+  upload_req->SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
   upload_req->Finalize();
   opts_.creds_provider->Sign(upload_req.get());
 
@@ -382,7 +383,7 @@ auto WriteFile::PrepareBlockListReq() -> unique_ptr<UploadBlockListRequest> {
 
   upload_req->SetBody(std::move(mb));
 
-  upload_req->SetHeader(h2::field::host, opts_.creds_provider->GetEndpoint());
+  upload_req->SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
   upload_req->Finalize();
   opts_.creds_provider->Sign(upload_req.get());
 
@@ -395,7 +396,7 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   SSL_CTX* ctx = http::TlsClient::CreateSslContext();
   absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
 
-  string endpoint = creds_->GetEndpoint();
+  string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
   detail::EmptyRequestImpl req = FillRequest(endpoint, "/?comp=list", creds_);
@@ -424,7 +425,7 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   SSL_CTX* ctx = http::TlsClient::CreateSslContext();
   absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
 
-  string endpoint = creds_->GetEndpoint();
+  string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
   string url = absl::StrCat("/", container, "?restype=container&comp=list");
