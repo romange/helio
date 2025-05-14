@@ -12,7 +12,7 @@
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
 
-ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
+ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
           "If > 0, ensures the stack each fiber has at least this margin. "
           "The check is done at fiber destruction time.");
 
