@@ -13,9 +13,18 @@
 #if __linux__
 #include <sys/eventfd.h>
 constexpr int kNumSig = _NSIG;
+
+#if defined(__aarch64__)
+#include <sys/auxv.h>
+
+#ifndef HWCAP_SB
+#define HWCAP_SB (1 << 29)
+#endif
+#endif  // __aarch64__
+
 #else
 constexpr int kNumSig = NSIG;
-#endif
+#endif // __linux__
 
 #include <mutex>  // once_flag
 
@@ -55,6 +64,31 @@ void SigAction(int signal, siginfo_t*, void*) {
     LOG(ERROR) << "Tangling signal handler " << signal;
   }
 }
+
+#if defined(__aarch64__)
+// ARM architecture pause implementation
+static inline void arm_arch_pause(void) {
+#if defined(__linux__)
+  static int use_spin_delay_sb = -1;
+
+  if (use_spin_delay_sb == 1) {
+    asm volatile(".inst 0xd50330ff");  // SB instruction encoding
+  }
+  else if (use_spin_delay_sb == 0) {
+    asm volatile("isb");
+  }
+  else {
+    // Initialize variable and check if SB is supported
+    if (getauxval(AT_HWCAP) & HWCAP_SB)
+      use_spin_delay_sb = 1;
+    else
+      use_spin_delay_sb = 0;
+  }
+#else
+  asm volatile("isb");
+#endif // __linux__
+}
+#endif // __aarch64__
 
 unsigned pause_amplifier = 50;
 uint64_t cycles_per_10us = 1000000;  // correctly defined inside ModuleInit.
@@ -339,11 +373,7 @@ void ProactorBase::Pause(unsigned count) {
 #if defined(__i386__) || defined(__amd64__)
     __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
-    /* Use an isb here as we've found it's much closer in duration to
-     * the x86 pause instruction vs. yield which is a nop and thus the
-     * loop count is lower and the interconnect gets a lot more traffic
-     * from loading the ticket above. */
-    __asm__ __volatile__("isb");
+    arm_arch_pause();
 #endif
   }
 }
