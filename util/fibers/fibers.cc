@@ -12,7 +12,7 @@ namespace util {
 namespace fb2 {
 
 Fiber::~Fiber() {
-  CHECK(!IsJoinable());
+  CHECK(!impl_) << "Fiber destructor called on a joinable fiber " << impl_->name();
 }
 
 Fiber& Fiber::operator=(Fiber&& other) noexcept {

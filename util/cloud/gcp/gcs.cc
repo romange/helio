@@ -320,11 +320,16 @@ error_code GCPCredsProvider::RefreshToken() {
 }
 
 void GCPCredsProvider::Sign(detail::HttpRequestBase* req) const {
-  req->SetHeader(h2::field::authorization, AuthHeader(access_token()));
+  req->SetHeader(h2::field::authorization, detail::AuthHeader(access_token()));
+}
+
+string GCPCredsProvider::ServiceEndpoint() const {
+  return "storage.googleapis.com";
 }
 
 unique_ptr<http::ClientPool> GCS::CreateApiConnectionPool(SSL_CTX* ssl_ctx, fb2::ProactorBase* pb) {
-  unique_ptr<http::ClientPool> res(new http::ClientPool(GCS_API_DOMAIN, ssl_ctx, pb));
+  GCPCredsProvider provider;
+  unique_ptr<http::ClientPool> res(new http::ClientPool(provider.ServiceEndpoint(), ssl_ctx, pb));
   res->SetOnConnect([](int fd) {
     auto ec = detail::EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
@@ -346,8 +351,8 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
   string url = absl::StrCat("/storage/v1/b?project=", creds_provider_.project_id());
   absl::StrAppend(&url, "&maxResults=50&fields=items/id,nextPageToken");
 
-  detail::EmptyRequestImpl empty_req =
-      detail::CreateGCPEmptyRequest(h2::verb::get, url, creds_provider_.access_token());
+  detail::EmptyRequestImpl empty_req = detail::CreateGCPEmptyRequest(
+      h2::verb::get, creds_provider_.ServiceEndpoint(), url, creds_provider_.access_token());
 
   rj::Document doc;
 
@@ -405,8 +410,8 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
     absl::StrAppend(&url, "&delimiter=%2f");
   }
 
-  detail::EmptyRequestImpl empty_req =
-      detail::CreateGCPEmptyRequest(h2::verb::get, url, creds_provider_.access_token());
+  detail::EmptyRequestImpl empty_req = detail::CreateGCPEmptyRequest(
+      h2::verb::get, creds_provider_.ServiceEndpoint(), url, creds_provider_.access_token());
 
   rj::Document doc;
   RobustSender sender(client_pool_.get(), &creds_provider_);

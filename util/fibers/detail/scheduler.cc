@@ -9,8 +9,8 @@
 #include <condition_variable>
 #include <mutex>
 
+#include "base/cycle_clock.h"
 #include "base/logging.h"
-#include "util/fibers/detail/utils.h"
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/stacktrace.h"
 
@@ -21,7 +21,7 @@ namespace detail {
 namespace ctx = boost::context;
 
 using namespace std;
-
+using base::CycleClock;
 namespace {
 
 class DispatcherImpl final : public FiberInterface {
@@ -154,8 +154,6 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
 }
 
 }  // namespace
-
-extern uint64_t g_tsc_cycles_per_ms;
 
 Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   DCHECK(!main_cntx->scheduler_);
@@ -482,7 +480,8 @@ void Scheduler::PrintAllFiberStackTraces() {
     if (add_time) {
       uint64_t tsc = CycleClock::Now();
       uint64_t delta = tsc - fb->cpu_tsc_;
-      absl::StrAppend(&state, ":", delta / g_tsc_cycles_per_ms, "ms");
+      uint64_t freq_ms = CycleClock::Frequency() / 1000;
+      absl::StrAppend(&state, ":", delta / freq_ms , "ms");
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"

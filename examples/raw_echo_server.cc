@@ -18,7 +18,6 @@
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
 #include "util/fibers/fibers.h"
-#include "util/fibers/detail/utils.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
 ABSL_FLAG(uint32_t, size, 512, "Message size");

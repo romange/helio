@@ -14,6 +14,7 @@
 
 #include <bit>
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/histogram.h"
 #include "base/logging.h"
@@ -972,7 +973,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       DCHECK(!scheduler->HasReady());
 
       VPRO(2) << "wait_for_cqe " << stats_.loop_cnt;
-      uint64_t start_cycle = GetCPUCycleCount();
+      uint64_t start_cycle = base::CycleClock::Now();
       wait_for_cqe(&ring_, 1, ts_arg);
       IdleEnd(start_cycle);
       VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load(memory_order_relaxed)

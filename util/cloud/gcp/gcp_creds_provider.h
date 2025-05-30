@@ -30,6 +30,8 @@ class GCPCredsProvider : public CredentialsProvider {
   // TODO: to use expire_time_ to skip the refresh if expire time is far away.
   std::error_code RefreshToken();
 
+  std::string ServiceEndpoint() const final;
+
   const std::string& project_id() const {
     return project_id_;
   }

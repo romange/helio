@@ -117,7 +117,7 @@ error_code Credentials::Init(unsigned) {
   return {};
 }
 
-string Credentials::GetEndpoint() const {
+string Credentials::ServiceEndpoint() const {
   return absl::StrCat(account_name_, ".blob.core.windows.net");
 }
 

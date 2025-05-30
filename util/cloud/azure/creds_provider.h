@@ -22,7 +22,7 @@ class Credentials : public CredentialsProvider {
     return account_key_;
   }
 
-  std::string GetEndpoint() const;
+  std::string ServiceEndpoint() const;
 
   void Sign(detail::HttpRequestBase* req) const final;
   std::error_code RefreshToken() final;

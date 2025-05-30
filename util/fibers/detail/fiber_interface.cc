@@ -7,18 +7,22 @@
 
 #include <mutex>  // for g_scheduler_lock
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
-#include "util/fibers/detail/utils.h"
 
-ABSL_FLAG(uint32_t, fiber_safety_margin, 0,
+ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
           "If > 0, ensures the stack each fiber has at least this margin. "
           "The check is done at fiber destruction time.");
+
+ABSL_FLAG(uint32_t, fiber_run_warning_threshold_ms, 0,
+          "If greater than 0, will warn if a fiber runs longer than this threshold. ");
 
 namespace util {
 namespace fb2 {
 using namespace std;
+using base::CycleClock;
 
 namespace detail {
 namespace ctx = boost::context;
@@ -28,6 +32,18 @@ struct TL_FiberInitializer;
 namespace {
 
 [[maybe_unused]] size_t kSzFiberInterface = sizeof(FiberInterface);
+
+inline void CpuPause() {
+#if defined(__i386__) || defined(__amd64__)
+  __asm__ __volatile__("pause");
+#elif defined(__aarch64__)
+  /* Use an isb here as we've found it's much closer in duration to
+   * the x86 pause instruction vs. yield which is a nop and thus the
+   * loop count is lower and the interconnect gets a lot more traffic
+   * from loading the ticket above. */
+  __asm__ __volatile__("isb");
+#endif
+}
 
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
@@ -48,12 +64,12 @@ class MainFiberImpl final : public FiberInterface {
 mutex g_scheduler_lock;
 
 TL_FiberInitializer* g_fiber_thread_list = nullptr;
+uint64_t g_tsc_cycles_per_ms = 0, g_ts_cycles_warn_threshold = -1;
 
 }  // namespace
 
 PMR_NS::memory_resource* default_stack_resource = nullptr;
 size_t default_stack_size = 64 * 1024;
-uint64_t g_tsc_cycles_per_ms = 0;
 
 __thread FiberInterface::TL FiberInterface::tl;
 
@@ -96,7 +112,10 @@ TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
   next = g_fiber_thread_list;
   g_fiber_thread_list = this;
   if (g_tsc_cycles_per_ms == 0) {
-    g_tsc_cycles_per_ms = CycleClock::FrequencyUsec() * 1000;
+    g_tsc_cycles_per_ms = CycleClock::Frequency() / 1000;
+    uint32_t warn_ms = absl::GetFlag(FLAGS_fiber_run_warning_threshold_ms);
+    if (warn_ms)
+      g_ts_cycles_warn_threshold = g_tsc_cycles_per_ms * warn_ms;
     VLOG(1) << "TSC Frequency : " << g_tsc_cycles_per_ms << "/ms";
   }
 }
@@ -208,6 +227,11 @@ void FiberInterface::CheckStackMargin() {
   // Log if margins are within the the orange zone.
   LOG_IF(INFO, margin < check_margin * 1.5)
       << "Stack margin for " << name_ << ": " << margin << " bytes";
+}
+
+uint64_t FiberInterface::GetRunningTimeCycles() const {
+  uint64_t now = CycleClock::Now();
+  return now > cpu_tsc_ ? now - cpu_tsc_ : 0;
 }
 
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
@@ -381,17 +405,22 @@ FiberInterface* FiberInterface::SwitchSetup() {
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
     fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
 
-    // to_suspend points to the fiber that is active and is going to be to_suspend.
-    uint64_t delta_cycles = tsc - to_suspend->cpu_tsc_;
-    if (delta_cycles > g_tsc_cycles_per_ms) {
+    // to_suspend points to the fiber that is active and is going to be suspended.
+    uint64_t active_cycles = tsc - to_suspend->cpu_tsc_;
+    if (active_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
 
-      // improve precision, instead of "delta_cycles / (g_tsc_cycles_per_ms / 1000)"
-      fb_initializer.long_runtime_usec += (delta_cycles * 1000) / g_tsc_cycles_per_ms;
+      // improves precision, instead of "active_cycles / (g_tsc_cycles_per_ms / 1000)"
+      fb_initializer.long_runtime_usec += (active_cycles * 1000) / g_tsc_cycles_per_ms;
+      if (active_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() == WORKER) {
+        LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for "
+                     << (active_cycles / g_tsc_cycles_per_ms) << " ms";
+      }
     }
-
-    to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
   }
+
+  to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
+  to_suspend->preempt_cnt_++;
 
   cpu_tsc_ = tsc;
   return to_suspend;
@@ -435,17 +464,26 @@ void SetCustomDispatcher(DispatchPolicy* policy) {
   fb_init.sched->AttachCustomPolicy(policy);
 }
 
+// Total accumulated time in microseconds for ready fibers to become active.
+// Together with FiberSwitchEpoch we can compute the average delay per fiber.
 uint64_t FiberSwitchDelayUsec() noexcept {
   // in nanoseconds, so lets convert from cycles
   return detail::FbInitializer().switch_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
 }
 
+// Total number of events of fibers running too long.
 uint64_t FiberLongRunCnt() noexcept {
   return detail::FbInitializer().long_runtime_cnt;
 }
 
+// Total accumulated time in microseconds for active fibers running too long.
+// Together with FiberLongRunCnt we can compute the average time per long running event.
 uint64_t FiberLongRunSumUsec() noexcept {
   return detail::FbInitializer().long_runtime_usec;
+}
+
+void SetFiberLongRunWarningThreshold(uint32_t warn_ms) {
+  detail::g_ts_cycles_warn_threshold = warn_ms == 0 ? -1 : detail::g_tsc_cycles_per_ms * warn_ms;
 }
 
 size_t WorkerFibersStackSize() {

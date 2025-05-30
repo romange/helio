@@ -131,6 +131,8 @@ uint64_t FiberLongRunCnt() noexcept;
 // Exposes total duration of fibers running for a "long" time (longer than 1ms).
 uint64_t FiberLongRunSumUsec() noexcept;
 
+void SetFiberLongRunWarningThreshold(uint32_t warn_ms);
+
 // Injects a custom memory resource for stack allocation. Can be called only once.
 // It is advised to call this function when a program starts.
 void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size = 64 * 1024);
@@ -179,6 +181,10 @@ inline void Yield() {
   fb2::detail::FiberActive()->Yield();
 }
 
+inline uint64_t GetRunningTimeCycles() {
+  return fb2::detail::FiberActive()->GetRunningTimeCycles();
+}
+
 template <typename Rep, typename Period>
 void SleepFor(const std::chrono::duration<Rep, Period>& timeout_duration) {
   SleepUntil(std::chrono::steady_clock::now() + timeout_duration);
@@ -200,6 +206,10 @@ inline uint32_t GetStackMargin(const void* stack_address) {
 
 inline void CheckSafetyMargin() {
   fb2::detail::FiberActive()->CheckStackMargin();
+}
+
+inline uint64_t GetPreemptCount() {
+  return fb2::detail::FiberActive()->preempt_cnt();
 }
 
 class PrintLocalsCallback {
