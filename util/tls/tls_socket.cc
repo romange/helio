@@ -514,20 +514,20 @@ void TlsSocket::SetProactor(ProactorBase* p) {
   FiberSocketBase::SetProactor(p);
 }
 
-void TlsSocket::AsyncReqBase::MaybeSendOutputAsyncWithRead() {
-  if (owner->engine_->OutputPending() == 0) {
-    return StartUpstreamRead();
+void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
+  if (owner->engine_->OutputPending() != 0) {
+    // sync interface, works because we are still executing within a fiber
+    // used for "mocking" and shall be replaced on the next PR with actual async op
+    owner->MaybeSendOutput();
   }
 
   // TODO handle WRITE_IN_PROGRESS here by adding pending_blocked_
   // if (owner->state_ & WRITE_IN_PROGRESS)
 
-  // sync interface, works because we are still executing within a fiber
-  owner->MaybeSendOutput();
   StartUpstreamRead();
 }
 
-void TlsSocket::AsyncReqBase::StartUpstreamRead() {
+void TlsSocket::AsyncReq::StartUpstreamRead() {
   if (owner->state_ & READ_IN_PROGRESS) {
     return;
   }
@@ -556,82 +556,83 @@ void TlsSocket::AsyncReqBase::StartUpstreamRead() {
 
     DVLOG(1) << "HandleUpstreamRead " << *read_result << " bytes";
     owner->engine_->CommitInput(*read_result);
-    // We are not done. Give back control to the main loop.
+    Engine::OpResult engine_read = owner->MaybeReadFromEngine(vec, len);
+    if (engine_read > 0) {
+      CompleteAsyncReq(engine_read);
+      return;
+    }
+    // We need another Async operation
+    op_val = engine_read;
     Run();
   });
 }
 
-void TlsSocket::AsyncReadReq::CompleteAsyncReq(io::Result<size_t> result) {
+void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
   auto current = std::move(owner->async_read_req_);
   current->caller_completion_cb(result);
 }
 
-void TlsSocket::AsyncReqBase::HandleOpAsync(int op_val) {
+void TlsSocket::AsyncReq::HandleOpAsync(int op_val) {
   switch (op_val) {
-    case Engine::EOF_STREAM:
-      VLOG(1) << "EOF_STREAM received " << owner->next_sock_->native_handle();
-      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
-      break;
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       MaybeSendOutputAsyncWithRead();
       break;
     // TODO handle NEED_WRITE
     default:
+      // EOF_STREAM should be handled earlier
       LOG(DFATAL) << "Unsupported " << op_val;
   }
 }
 
-void TlsSocket::AsyncReadReq::Run() {
+void TlsSocket::AsyncReq::Run() {
   DCHECK_GT(len, 0u);
+  HandleOpAsync(op_val);
+}
 
-  while (true) {
-    DCHECK(!dest.empty());
-
-    size_t read_len = std::min(dest.size(), size_t(INT_MAX));
-
-    Engine::OpResult op_result = owner->engine_->Read(dest.data(), read_len);
-
-    int op_val = op_result;
-
-    DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
-
-    if (op_val > 0) {
-      read_total += op_val;
-
-      // I do not understand this code and what the hell I meant to do here. Seems to work
-      // though.
-      if (size_t(op_val) == read_len) {
-        if (size_t(op_val) < dest.size()) {
-          dest.remove_prefix(op_val);
-        } else {
-          ++vec;
-          --len;
-          if (len == 0) {
-            // We are done. Call completion callback.
-            CompleteAsyncReq(read_total);
-            return;
-          }
-          dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(vec->iov_base), vec->iov_len};
-        }
-        // We read everything we asked for but there are still buffers left to fill.
-        continue;
-      }
-      break;
-    }
-
-    HandleOpAsync(op_val);
-    return;
-  }
-
-  // We are done. Call completion callback.
-  CompleteAsyncReq(read_total);
+Engine::OpResult TlsSocket::MaybeReadFromEngine(const iovec* v, uint32_t len) {
+  Engine::MutableBuffer dest = {reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len};
+  size_t read_len = std::min(dest.size(), size_t(INT_MAX));
+  Engine::OpResult op_val = engine_->Read(dest.data(), read_len);
+  DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
+  // if read_len == op_val we could try to read more. However, the next read might require
+  // an async operation on the underline socket because op_val < 0.
+  // The problem here is that SSL_read from engine_->Read is *not* idempotent and we might
+  // end up in a situation where we need to do two things at the same time:
+  // 1. Call the callers completion callback which will start another async op because
+  //    we read less bytes than what was requested, i.e, read_total < sum_of_all(v->len).
+  // 2. Start another async operation to satisfy the protocol because op_val < 0 and we
+  //    called engine_->Read which is *not* idempotent.
+  // For that, it's best to let it flow naturally. If there is some data in the engine read it
+  // and call the completion callback which will in turn try to read more from the engine.
+  // It will read everything or reach to a point that an async operation needs to be dispatched.
+  // That way, we get a linear view of the operations involved with the downside of a few more
+  // function calls (since we don't try to drain the whole engine as we don't know if the next
+  // read can be satisfied or dispatch as an async operation).
+  // Last but not least, it was advised here:
+  // https://github.com/romange/helio/pull/408#discussion_r2080998216
+  // That we should remove engine reads from the AsyncRequest all together and return
+  // to the caller if there was some data read.
+  return op_val;
 }
 
 void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_read_req_);
-  auto req = AsyncReadReq(this, std::move(cb), v, len);
-  req.dest = {reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len};
-  async_read_req_ = std::make_unique<AsyncReadReq>(std::move(req));
+
+  Engine::OpResult res = MaybeReadFromEngine(v, len);
+  // We read some data from the engine. Satisfy the request and return.
+  if (res > 0) {
+    return cb(res);
+  }
+
+  if (res == Engine::EOF_STREAM) {
+    VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
+    return cb(make_unexpected(make_error_code(errc::connection_aborted)));
+  }
+
+  // We could not read from the engine. Dispatch async op.
+  auto req = AsyncReq(this, std::move(cb), v, len);
+  req.op_val = res;
+  async_read_req_ = std::make_unique<AsyncReq>(std::move(req));
   async_read_req_->Run();
 }
 
