@@ -527,6 +527,33 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
   StartUpstreamRead();
 }
 
+void TlsSocket::AsyncReq::AsyncProgressCb(io::Result<size_t> read_result) {
+  owner->state_ &= ~READ_IN_PROGRESS;
+  if (!read_result) {
+    // log any errors as well as situations where we have unflushed output.
+    if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
+      VLOG(1) << "sock[" << owner->native_handle() << "], state " << int(owner->state_)
+              << ", write_total:" << owner->upstream_write_ << " "
+              << " pending output: " << owner->engine_->OutputPending() << " "
+              << "StartUpstreamRead failed " << read_result.error();
+    }
+    // Erronous path. Apply the completion callback and exit.
+    CompleteAsyncReq(read_result);
+    return;
+  }
+
+  DVLOG(1) << "HandleUpstreamRead " << *read_result << " bytes";
+  owner->engine_->CommitInput(*read_result);
+  Engine::OpResult engine_read = owner->MaybeReadFromEngine(vec, len);
+  if (engine_read > 0) {
+    CompleteAsyncReq(engine_read);
+    return;
+  }
+  // We need another Async operation
+  op_val = engine_read;
+  HandleOpAsync();
+}
+
 void TlsSocket::AsyncReq::StartUpstreamRead() {
   if (owner->state_ & READ_IN_PROGRESS) {
     return;
@@ -539,32 +566,7 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  owner->next_sock_->AsyncReadSome(&scratch, 1, [this](auto read_result) {
-    owner->state_ &= ~READ_IN_PROGRESS;
-    if (!read_result) {
-      // log any errors as well as situations where we have unflushed output.
-      if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
-        VLOG(1) << "sock[" << owner->native_handle() << "], state " << int(owner->state_)
-                << ", write_total:" << owner->upstream_write_ << " "
-                << " pending output: " << owner->engine_->OutputPending() << " "
-                << "StartUpstreamRead failed " << read_result.error();
-      }
-      // Erronous path. Apply the completion callback and exit.
-      CompleteAsyncReq(read_result);
-      return;
-    }
-
-    DVLOG(1) << "HandleUpstreamRead " << *read_result << " bytes";
-    owner->engine_->CommitInput(*read_result);
-    Engine::OpResult engine_read = owner->MaybeReadFromEngine(vec, len);
-    if (engine_read > 0) {
-      CompleteAsyncReq(engine_read);
-      return;
-    }
-    // We need another Async operation
-    op_val = engine_read;
-    Run();
-  });
+  owner->next_sock_->AsyncReadSome(&scratch, 1, [this](auto res) { this->AsyncProgressCb(res); });
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
@@ -572,7 +574,7 @@ void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
   current->caller_completion_cb(result);
 }
 
-void TlsSocket::AsyncReq::HandleOpAsync(int op_val) {
+void TlsSocket::AsyncReq::HandleOpAsync() {
   switch (op_val) {
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       MaybeSendOutputAsyncWithRead();
@@ -584,16 +586,10 @@ void TlsSocket::AsyncReq::HandleOpAsync(int op_val) {
   }
 }
 
-void TlsSocket::AsyncReq::Run() {
-  DCHECK_GT(len, 0u);
-  HandleOpAsync(op_val);
-}
-
 Engine::OpResult TlsSocket::MaybeReadFromEngine(const iovec* v, uint32_t len) {
-  Engine::MutableBuffer dest = {reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len};
-  size_t read_len = std::min(dest.size(), size_t(INT_MAX));
-  Engine::OpResult op_val = engine_->Read(dest.data(), read_len);
-  DVLOG(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
+  size_t read_len = std::min(v->iov_len, size_t(INT_MAX));
+  Engine::OpResult op_val = engine_->Read(reinterpret_cast<uint8_t*>(v->iov_base), read_len);
+  DVLOG(2) << "Engine::Read " << read_len << " bytes, got " << op_val;
   // if read_len == op_val we could try to read more. However, the next read might require
   // an async operation on the underline socket because op_val < 0.
   // The problem here is that SSL_read from engine_->Read is *not* idempotent and we might
@@ -618,22 +614,22 @@ Engine::OpResult TlsSocket::MaybeReadFromEngine(const iovec* v, uint32_t len) {
 void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_read_req_);
 
-  Engine::OpResult res = MaybeReadFromEngine(v, len);
+  Engine::OpResult op_val = MaybeReadFromEngine(v, len);
   // We read some data from the engine. Satisfy the request and return.
-  if (res > 0) {
-    return cb(res);
+  if (op_val > 0) {
+    return cb(op_val);
   }
 
-  if (res == Engine::EOF_STREAM) {
+  if (op_val == Engine::EOF_STREAM) {
     VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
     return cb(make_unexpected(make_error_code(errc::connection_aborted)));
   }
 
   // We could not read from the engine. Dispatch async op.
-  auto req = AsyncReq(this, std::move(cb), v, len);
-  req.op_val = res;
+  DCHECK_GT(len, 0u);
+  auto req = AsyncReq{this, std::move(cb), v, len, op_val, {}};
   async_read_req_ = std::make_unique<AsyncReq>(std::move(req));
-  async_read_req_->Run();
+  async_read_req_->HandleOpAsync();
 }
 
 }  // namespace tls

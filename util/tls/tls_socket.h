@@ -117,10 +117,6 @@ class TlsSocket final : public FiberSocketBase {
   uint8_t state_{0};
 
   struct AsyncReq {
-    AsyncReq(TlsSocket* owner, io::AsyncProgressCb caller_cb, const iovec* vec, uint32_t len)
-        : owner(owner), caller_completion_cb(std::move(caller_cb)), vec(vec), len(len) {
-    }
-
     TlsSocket* owner;
     // Callback passed from the user.
     io::AsyncProgressCb caller_completion_cb;
@@ -134,12 +130,13 @@ class TlsSocket final : public FiberSocketBase {
     // Asynchronous helpers
     void MaybeSendOutputAsyncWithRead();
 
-    void HandleOpAsync(int op_val);
+    void HandleOpAsync();
 
     void StartUpstreamRead();
 
-    void Run();
     void CompleteAsyncReq(io::Result<size_t> result);
+
+    void AsyncProgressCb(io::Result<size_t> result);
   };
 
   // Helper function that resets the internal async request, applies the
