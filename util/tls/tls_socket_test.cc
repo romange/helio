@@ -227,7 +227,6 @@ class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
 
   using IoResult = int;
 
-  // TODO clean up
   virtual void HandleRequest() {
     tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
     ssl_ctx_ = CreateSslCntx(SERVER);
@@ -235,7 +234,10 @@ class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
     tls_socket_->Accept();
 
     uint8_t buf[16];
-    std::fill(std::begin(buf), std::end(buf), uint8_t(120));
+    auto res = tls_socket_->Recv(buf);
+    EXPECT_TRUE(res.has_value());
+    EXPECT_TRUE(res.value() == 16);
+
     auto write_res = tls_socket_->Write(buf);
     EXPECT_FALSE(write_res);
   }
@@ -345,11 +347,22 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
 
-    LOG(INFO) << "Connecting to " << listen_ep_;
     error_code ec = tls_sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
     uint8_t res[16];
     std::fill(std::begin(res), std::end(res), uint8_t(120));
+    {
+      Done done;
+      iovec v{.iov_base = &res, .iov_len = 16};
+
+      tls_sock->AsyncWriteSome(&v, 1, [done](auto result) mutable {
+        EXPECT_TRUE(result.has_value());
+        EXPECT_EQ(*result, 16);
+        done.Notify();
+      });
+
+      done.Wait();
+    }
     {
       uint8_t buf[16];
       Done done;

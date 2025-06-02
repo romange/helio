@@ -386,6 +386,7 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   async_write_pending_ = 1;
 }
 
+// TODO implement async functionality
 void EpollSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   auto res = ReadSome(v, len);
   cb(res);
