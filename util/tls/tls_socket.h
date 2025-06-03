@@ -135,12 +135,12 @@ class TlsSocket final : public FiberSocketBase {
     void MaybeSendOutputAsync();
 
     void HandleOpAsync();
-    void HandleUpstreamAsyncWrite(io::Result<size_t> write_result, Engine::Buffer buffer);
 
     void StartUpstreamRead();
     void StartUpstreamWrite();
 
     void CompleteAsyncReq(io::Result<size_t> result);
+    void CompleteAsyncWrite(io::Result<size_t> write_result);
 
     void AsyncProgressCb(io::Result<size_t> result);
   };
