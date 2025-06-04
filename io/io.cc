@@ -50,6 +50,7 @@ struct AsyncReadState {
 
   AsyncReadState(AsyncSource* source, const iovec* v, uint32_t length)
       : arr(length), owner(source) {
+    cur = arr.data();
     std::copy(v, v + length, arr.data());
   }
 
