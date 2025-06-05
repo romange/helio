@@ -150,6 +150,13 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     // result->eb_parser->body_limit(boost::optional<uint64_t>());
     auto header_err = client_handle->ReadHeader(result->eb_parser.get());
 
+    // Check if connection is closed after read.
+    if (!client_handle->IsConnected()) {
+      LOG(INFO) << "Connection closed. Retrying.";
+      ThisFiber::SleepFor(100ms);
+      continue;
+    }
+
     // Unfortunately earlier versions of boost (1.74-) have a bug that do not support the body_limit
     // directive above. Therefore, we fix it here.
     if (header_err == h2::error::body_limit) {
