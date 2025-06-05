@@ -126,8 +126,12 @@ class TlsSocket final : public FiberSocketBase {
     uint32_t len;
     Engine::OpResult op_val;
 
-    iovec scratch_iovec;
+    enum Role : std::uint8_t { READER, WRITER };
+    Role role;
 
+    iovec scratch_iovec = {};
+
+    size_t engine_written = 0;
     bool should_read = false;
 
     // Asynchronous helpers
@@ -146,6 +150,7 @@ class TlsSocket final : public FiberSocketBase {
   };
 
   std::unique_ptr<AsyncReq> async_read_req_;
+  std::unique_ptr<AsyncReq> async_write_req_;
 };
 
 }  // namespace tls
