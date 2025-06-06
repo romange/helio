@@ -133,6 +133,10 @@ bool Client::IsConnected() const {
   return socket_ && socket_->IsOpen();
 }
 
+bool Client::IsClosed(const std::error_code& ec) const {
+  return socket_ && socket_->IsConnClosed(ec);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 SSL_CTX* TlsClient::CreateSslContext() {

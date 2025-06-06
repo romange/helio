@@ -143,20 +143,24 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     VLOG(1) << "HttpReq " << client_handle->host() << ": " << req->GetHeaders() << ", ["
             << client_handle->native_handle() << "]";
 
-    RETURN_ERROR(req->Send(client_handle));
+    auto send_err = req->Send(client_handle);
+    // Socket that were inactive for longer time can be closed from server side.
+    // Writing can return `broken_pipe` so we need to retry.
+    if (client_handle->IsClosed(send_err)) {
+      VLOG(1) << "req->SendRetrying. Connection closed with error: " << send_err.message();
+      continue;
+    }
+    RETURN_ERROR(send_err);
     result->eb_parser.reset(new h2::response_parser<h2::empty_body>());
 
     // no limit. Prevent from this parser to throw an error due to large body.
     // result->eb_parser->body_limit(boost::optional<uint64_t>());
     auto header_err = client_handle->ReadHeader(result->eb_parser.get());
-
-    // Check if connection is closed after read.
-    if (!client_handle->IsConnected()) {
-      LOG(INFO) << "Connection closed. Retrying.";
-      ThisFiber::SleepFor(100ms);
+    // Reading from closed socket can result in `connection_aborted`.
+    if (client_handle->IsClosed(header_err)) {
+      VLOG(1) << "Retrying. Connection closed with error: " << header_err.message();
       continue;
     }
-
     // Unfortunately earlier versions of boost (1.74-) have a bug that do not support the body_limit
     // directive above. Therefore, we fix it here.
     if (header_err == h2::error::body_limit) {

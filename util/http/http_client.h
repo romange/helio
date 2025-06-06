@@ -57,6 +57,7 @@ class Client {
   void Shutdown();
 
   bool IsConnected() const;
+  bool IsClosed(const std::error_code& ec) const;
 
   void set_connect_timeout_ms(uint32_t ms) {
     connect_timeout_ms_ = ms;
