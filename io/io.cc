@@ -21,8 +21,12 @@ inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
 
   do {
     res = dest->WriteSome(v, len);
-    if (res && *res == 0)
-      return nonstd::make_unexpected(make_error_code(errc::io_error));
+    if (res && *res == 0) {
+      for (uint32_t i = 0; i < len; ++i) {
+        if (v[i].iov_len != 0) 
+          return nonstd::make_unexpected(make_error_code(errc::io_error));
+      }
+    }
   } while (!res && res.error() == errc::interrupted);
 
   return res;
