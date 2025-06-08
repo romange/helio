@@ -146,8 +146,8 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     auto send_err = req->Send(client_handle);
     // Socket that were inactive for longer time can be closed from server side.
     // Writing can return `broken_pipe` so we need to retry.
-    if (client_handle->IsClosed(send_err)) {
-      VLOG(1) << "req->SendRetrying. Connection closed with error: " << send_err.message();
+    if (FiberSocketBase::IsConnClosed(send_err)) {
+      VLOG(1) << "Retrying. Connection closed with error: " << send_err.message();
       continue;
     }
     RETURN_ERROR(send_err);
@@ -157,7 +157,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     // result->eb_parser->body_limit(boost::optional<uint64_t>());
     auto header_err = client_handle->ReadHeader(result->eb_parser.get());
     // Reading from closed socket can result in `connection_aborted`.
-    if (client_handle->IsClosed(header_err)) {
+    if (FiberSocketBase::IsConnClosed(header_err)) {
       VLOG(1) << "Retrying. Connection closed with error: " << header_err.message();
       continue;
     }
