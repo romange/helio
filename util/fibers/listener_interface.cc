@@ -225,6 +225,11 @@ void ListenerInterface::RunAcceptLoop() {
 }
 
 ListenerInterface::~ListenerInterface() {
+  if (sock_->IsOpen()) {
+    sock_->proactor()->Await([this] {
+      std::ignore = this->sock_->Close();
+    });
+  }
   VLOG(1) << "Destroying ListenerInterface " << this;
 }
 
