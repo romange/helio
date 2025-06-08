@@ -98,7 +98,7 @@ void ListenerInterface::RunAcceptLoop() {
 
   if (!sock_->IsUDS()) {
     ep = sock_->LocalEndpoint();
-    VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
+    VSOCK(0, *sock_) << "AcceptServer - listening on " << ep.address() << ":" << ep.port();
   }
 
   PreAcceptLoop(sock_->proactor());

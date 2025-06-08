@@ -116,6 +116,7 @@ class TlsSocket final : public FiberSocketBase {
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
 
+  // TODO turn this into a class with proper access specifiers
   struct AsyncReq {
     TlsSocket* owner;
     // Callback passed from the user.
@@ -127,25 +128,22 @@ class TlsSocket final : public FiberSocketBase {
 
     iovec scratch_iovec;
 
+    bool should_read = false;
+
     // Asynchronous helpers
     void MaybeSendOutputAsyncWithRead();
+    void MaybeSendOutputAsync();
 
     void HandleOpAsync();
 
     void StartUpstreamRead();
+    void StartUpstreamWrite();
 
     void CompleteAsyncReq(io::Result<size_t> result);
+    void CompleteAsyncWrite(io::Result<size_t> write_result);
 
     void AsyncProgressCb(io::Result<size_t> result);
   };
-
-  // Helper function that resets the internal async request, applies the
-  // user AsyncProgressCb and returns. We need this, because progress callbacks
-  // can start another async request and for that to work, we need to clean up
-  // the one we are running on.
-  void CompleteAsyncRequest(io::Result<size_t> result);
-
-  Engine::OpResult MaybeReadFromEngine(const iovec* v, uint32_t len);
 
   std::unique_ptr<AsyncReq> async_read_req_;
 };
