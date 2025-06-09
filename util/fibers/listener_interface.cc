@@ -225,7 +225,7 @@ void ListenerInterface::RunAcceptLoop() {
 }
 
 ListenerInterface::~ListenerInterface() {
-  if (sock_->IsOpen()) {
+  if (sock_ && sock_->IsOpen()) {
     sock_->proactor()->Await([this] {
       std::ignore = this->sock_->Close();
     });
