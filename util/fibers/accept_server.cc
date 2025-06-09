@@ -31,8 +31,8 @@ static io::Result<struct addrinfo*> CreateServerSocket(struct addrinfo* servinfo
     for (addrinfo* p = servinfo; p != NULL; p = p->ai_next) {
       if (p->ai_family != family_pref[j])
         continue;
-      auto ec = fs->Create(p->ai_family);
-      if (ec)
+      auto fam_ec = fs->Create(p->ai_family);
+      if (fam_ec)
         continue;
 
       ec = listener->ConfigureServerSocket(fs->native_handle());

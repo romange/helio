@@ -117,8 +117,9 @@ class AcceptServerTest : public testing::TestWithParam<bool> {
 INSTANTIATE_TEST_SUITE_P(IPVersions, AcceptServerTest, testing::Values(false, true),
     [](const auto& info) { return info.param ? "IPv6" : "IPv4"; });
 
+const uint16_t kPort = 1234;
+
 void AcceptServerTest::SetUp() {
-  const uint16_t kPort = 1234;
 #if USE_URING
   ProactorPool* up = Pool::IOUring(16, 2);
 #else
@@ -335,6 +336,13 @@ TEST_P(AcceptServerTest, Shutdown) {
       std::ignore = socks[i]->Close();
     }
   });
+}
+
+TEST_P(AcceptServerTest, BusyPort) {
+  AcceptServer as{pp_.get(), false};
+
+  auto ec = as.AddListener(UseIPv6() ? "::1" : "127.0.0.1", kPort, new TestListener());
+  ASSERT_TRUE(ec);
 }
 
 }  // namespace util
