@@ -16,7 +16,11 @@ namespace io {
 namespace {
 
 // Writes some bytes and handles some corner cases including retry on interrupted.
-inline Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
+Result<size_t> WriteSomeBytes(const iovec* v, uint32_t len, Sink* dest) {
+  DCHECK(len > 0 && v != nullptr);
+  for (unsigned i = 0; i < len; ++i) {
+    DCHECK_GT(v[i].iov_len, 0u);
+  }
   Result<size_t> res;
 
   do {
@@ -50,6 +54,7 @@ struct AsyncReadState {
 
   AsyncReadState(AsyncSource* source, const iovec* v, uint32_t length)
       : arr(length), owner(source) {
+    cur = arr.data();
     std::copy(v, v + length, arr.data());
   }
 

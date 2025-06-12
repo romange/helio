@@ -131,6 +131,8 @@ uint64_t FiberLongRunCnt() noexcept;
 // Exposes total duration of fibers running for a "long" time (longer than 1ms).
 uint64_t FiberLongRunSumUsec() noexcept;
 
+void SetFiberLongRunWarningThreshold(uint32_t warn_ms);
+
 // Injects a custom memory resource for stack allocation. Can be called only once.
 // It is advised to call this function when a program starts.
 void SetDefaultStackResource(PMR_NS::memory_resource* mr, size_t default_size = 64 * 1024);
