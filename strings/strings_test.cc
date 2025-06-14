@@ -3,9 +3,12 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
+#include "base/flags.h"
 #include "base/gtest.h"
 #include "base/integral_types.h"
 #include "strings/human_readable.h"
+
+ABSL_FLAG(strings::MemoryBytesFlag, test_flag, 64, "");
 
 namespace strings {
 
@@ -66,4 +69,22 @@ TEST(HumanReadableElapsedTime, Basic) {
   EXPECT_EQ(HumanReadableElapsedTime(382386614.40), "12.1 years");
   EXPECT_EQ(HumanReadableElapsedTime(DBL_MAX), "5.7e+300 years");
 }
+
+TEST(HumanReadableElapsedTime, Parse) {
+  int64_t num_bytes;
+  EXPECT_TRUE(ParseHumanReadableBytes("1K", &num_bytes));
+  EXPECT_EQ(num_bytes, 1024);
+  EXPECT_TRUE(ParseHumanReadableBytes("1k", &num_bytes));
+  EXPECT_EQ(num_bytes, 1024);
+  EXPECT_TRUE(ParseHumanReadableBytes("1M", &num_bytes));
+  EXPECT_EQ(num_bytes, 1024 * 1024);
+  EXPECT_TRUE(ParseHumanReadableBytes("1G", &num_bytes));
+  EXPECT_EQ(num_bytes, 1024 * 1024 * 1024);
+  EXPECT_TRUE(ParseHumanReadableBytes("1", &num_bytes));
+  EXPECT_EQ(num_bytes, 1);
+
+  EXPECT_FALSE(ParseHumanReadableBytes("1A", &num_bytes));
+  EXPECT_FALSE(ParseHumanReadableBytes("1KMB", &num_bytes));
+}
+
 }  // namespace strings
