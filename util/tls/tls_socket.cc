@@ -517,14 +517,12 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
     return;
   }
 
-  // TODO handle WRITE_IN_PROGRESS here by adding pending_blocked_
-  // if (owner->state_ & WRITE_IN_PROGRESS)
-
   StartUpstreamRead();
 }
 
 void TlsSocket::AsyncReq::AsyncProgressCb(io::Result<size_t> read_result) {
   owner->state_ &= ~READ_IN_PROGRESS;
+  RunBlocked();
   if (!read_result) {
     // log any errors as well as situations where we have unflushed output.
     if (read_result.error() != errc::connection_aborted || owner->engine_->OutputPending() > 0) {
@@ -553,6 +551,9 @@ void TlsSocket::AsyncReq::AsyncProgressCb(io::Result<size_t> read_result) {
 
 void TlsSocket::AsyncReq::StartUpstreamRead() {
   if (owner->state_ & READ_IN_PROGRESS) {
+    LOG(INFO) << "StartUpstreamRead read in progress";
+    CHECK(owner->blocked_async_req_ == nullptr);
+    owner->blocked_async_req_ = this;
     return;
   }
 
@@ -567,7 +568,13 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
-  auto current = std::move(owner->async_read_req_);
+  std::unique_ptr<AsyncReq> current;
+  if(role == Role::READER) {
+    current = std::move(owner->async_read_req_);
+  }
+  else {
+    current = std::move(owner->async_write_req_);
+  }
   current->caller_completion_cb(result);
 }
 
@@ -628,6 +635,7 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
     }
 
     // We are done. Errornous exit.
+    RunBlocked();
     CompleteAsyncReq(write_result);
     return;
   }
@@ -655,6 +663,7 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
   }
 
   owner->state_ &= ~WRITE_IN_PROGRESS;
+  RunBlocked();
 
   // We are done with the writes, check if we also need to read because we are
   // in NEED_READ_AND_MAYBE_WRITE state
@@ -677,13 +686,13 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
   DCHECK(role == WRITER);
   // We wrote some therefore we can complete
   if (engine_written > 0) {
-    caller_completion_cb(engine_written);
+    CompleteAsyncReq(engine_written);
     return;
   }
   // We need to call PushToTheEngine again
   io::Result<PushResult> push_res = owner->PushToEngine(vec, len);
   if (!push_res) {
-    caller_completion_cb(make_unexpected(push_res.error()));
+    CompleteAsyncReq(make_unexpected(push_res.error()));
     return;
   }
   op_val = push_res->engine_opcode;
@@ -698,6 +707,12 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
 }
 
 void TlsSocket::AsyncReq::StartUpstreamWrite() {
+  if (owner->state_ & WRITE_IN_PROGRESS) {
+    LOG(INFO) << "StartUpstreamRead read in progress";
+    CHECK(owner->blocked_async_req_ == nullptr);
+    owner->blocked_async_req_ = this;
+    return;
+  }
   Engine::Buffer buffer = owner->engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
   DCHECK((owner->state_ & WRITE_IN_PROGRESS) == 0);
@@ -719,7 +734,12 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
     return;
   }
 
-  // TODO handle WRITE_IN_PROGRESS to avoid deadlock
+  if (owner->state_ & WRITE_IN_PROGRESS) {
+    CHECK(owner->blocked_async_req_ == nullptr);
+    owner->blocked_async_req_ = this;
+    return;
+  }
+
   StartUpstreamWrite();
 }
 
@@ -750,6 +770,28 @@ void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
   async_write_req_->StartUpstreamWrite();
   return;
+}
+
+void TlsSocket::AsyncReq::RunBlocked() {
+  if (!owner->blocked_async_req_) {
+    return;    
+  }
+
+  auto *blocked = std::exchange(owner->blocked_async_req_, nullptr);
+
+  if(blocked->should_read) {
+    should_read = false;
+    blocked->StartUpstreamRead();
+    return;
+  }
+
+  if(blocked->role == Role::WRITER) {
+    auto current = std::move(owner->async_write_req_);
+    owner->AsyncWriteSome(current->vec, current->len, std::move(current->caller_completion_cb));
+    return;
+  }
+  auto current = std::move(owner->async_read_req_);
+  owner->AsyncReadSome(current->vec, current->len, std::move(current->caller_completion_cb));
 }
 
 }  // namespace tls

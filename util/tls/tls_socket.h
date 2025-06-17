@@ -147,10 +147,14 @@ class TlsSocket final : public FiberSocketBase {
     void CompleteAsyncWrite(io::Result<size_t> write_result);
 
     void AsyncProgressCb(io::Result<size_t> result);
+
+    void RunBlocked();
   };
 
   std::unique_ptr<AsyncReq> async_read_req_;
   std::unique_ptr<AsyncReq> async_write_req_;
+
+  AsyncReq *blocked_async_req_ = nullptr;
 };
 
 }  // namespace tls
