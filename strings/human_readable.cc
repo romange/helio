@@ -134,4 +134,93 @@ std::string HumanReadableElapsedTime(double seconds) {
   return human_readable;
 }
 
+bool ParseHumanReadableBytes(std::string_view str, int64_t* num_bytes) {
+  if (str.empty())
+    return false;
+
+  const char* cstr = str.data();
+  bool neg = (*cstr == '-');
+  if (neg) {
+    cstr++;
+  }
+  char* end;
+  double d = strtod(cstr, &end);
+
+  if (end == cstr)  // did not succeed to advance
+    return false;
+
+  int64_t scale = 1;
+
+  switch (*end) {
+    // Considers just the first character after the number
+    // so it matches: 1G, 1GB, 1GiB and 1Gigabytes
+    // NB: an int64 can only go up to <8 EB.
+    case 'E':
+    case 'e':
+      scale <<= 10;  // Fall through...
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'P':
+    case 'p':
+      scale <<= 10;
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'T':
+    case 't':
+      scale <<= 10;
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'G':
+    case 'g':
+      scale <<= 10;
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'M':
+    case 'm':
+      scale <<= 10;
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'K':
+    case 'k':
+      scale <<= 10;
+      ABSL_FALLTHROUGH_INTENDED;
+    case 'B':
+    case 'b':
+    case '\0':
+      break;  // To here.
+    default:
+      return false;
+  }
+
+  // Now validate that nothing remains after the unit
+  const char* suffix = end;
+  if (*suffix != '\0') {
+    ++suffix;
+    if (*suffix == 'B' || *suffix == 'b')
+      ++suffix;  // allow optional "B" or "b"
+    if (*suffix != '\0')
+      return false;
+  }
+
+  d *= scale;
+  if (int64_t(d) > INT64_MAX || d < 0)
+    return false;
+
+  *num_bytes = static_cast<int64_t>(d + 0.5);
+  if (neg) {
+    *num_bytes = -*num_bytes;
+  }
+  return true;
+}
+
+bool AbslParseFlag(std::string_view in, MemoryBytesFlag* flag, std::string* err) {
+  int64_t val;
+  if (ParseHumanReadableBytes(in, &val) && val >= 0) {
+    flag->value = val;
+    return true;
+  }
+
+  *err = "Use human-readable format, eg.: 500MB, 1G, 1TB";
+  return false;
+}
+
+std::string AbslUnparseFlag(const MemoryBytesFlag& flag) {
+  return strings::HumanReadableNumBytes(flag.value);
+}
+
 }  // namespace strings
