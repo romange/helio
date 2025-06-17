@@ -71,7 +71,7 @@ static inline void arm_arch_pause(void) {
 #if defined(__linux__)
   static int use_spin_delay_sb = -1;
 
-  if (__builtin_expect(use_spin_delay_sb == 1, 1)) {
+  if (use_spin_delay_sb == 1) {
     asm volatile(".inst 0xd50330ff");  // SB instruction encoding
   }
   else if (use_spin_delay_sb == 0) {
