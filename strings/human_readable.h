@@ -39,6 +39,25 @@ std::string HumanReadableNumBytes(int64_t num_bytes);
 //   -10         -> "-10 s"
 std::string HumanReadableElapsedTime(double seconds);
 
+// Parses a human readable string representing a number of bytes into an int64_t.
+// The string can contain a number followed by a unit suffix, such as "1K", "2M",
+// "3G", "4T", "5P", "6E", or "7B". The suffixes are case-insensitive.
+bool ParseHumanReadableBytes(std::string_view str, int64_t* num_bytes);
+
+struct MemoryBytesFlag {
+  size_t value = 0;
+
+  MemoryBytesFlag(size_t s = 0) : value(s) {  // NOLINT
+  }
+
+  operator size_t() const {  // NOLINT
+    return value;
+  }
+};
+
+bool AbslParseFlag(std::string_view in, MemoryBytesFlag* flag, std::string* err);
+std::string AbslUnparseFlag(const MemoryBytesFlag& flag);
+
 }  // namespace strings
 
 #endif  // HUMAN_READABLE_NUMBERS_H_
