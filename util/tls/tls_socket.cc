@@ -331,12 +331,6 @@ io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint
   return res;
 }
 
-// TODO: to implement async functionality.
-void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  io::Result<size_t> res = WriteSome(v, len);
-  cb(res);
-}
-
 SSL* TlsSocket::ssl_handle() {
   return engine_ ? engine_->native_handle() : nullptr;
 }
@@ -546,14 +540,7 @@ void TlsSocket::AsyncReq::AsyncProgressCb(io::Result<size_t> read_result) {
 
   DVLOG(1) << "AsyncProgressCb " << *read_result << " bytes";
   owner->engine_->CommitInput(*read_result);
-  Engine::OpResult engine_read =
-      owner->engine_->Read(reinterpret_cast<uint8_t*>(vec->iov_base), vec->iov_len);
-  if (engine_read > 0) {
-    CompleteAsyncReq(engine_read);
-    return;
-  }
-  // We need another Async operation
-  op_val = engine_read;
+  op_val = owner->engine_->Read(reinterpret_cast<uint8_t*>(vec->iov_base), vec->iov_len);
   HandleOpAsync();
 }
 
@@ -573,17 +560,29 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
-  auto current = std::move(owner->async_read_req_);
+  std::unique_ptr<AsyncReq> current;
+  if (role == Role::READER) {
+    current = std::move(owner->async_read_req_);
+  } else {
+    current = std::move(owner->async_write_req_);
+  }
   current->caller_completion_cb(result);
 }
 
 void TlsSocket::AsyncReq::HandleOpAsync() {
+  if (op_val > 0) {
+    CompleteAsyncReq(op_val);
+    return;
+  }
   switch (op_val) {
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       MaybeSendOutputAsyncWithRead();
       break;
     case Engine::NEED_WRITE:
       MaybeSendOutputAsync();
+      break;
+    case Engine::EOF_STREAM:
+      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
       break;
     default:
       // EOF_STREAM should be handled earlier
@@ -609,7 +608,7 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
 
   // We could not read from the engine. Dispatch async op.
   DCHECK_GT(len, 0u);
-  auto req = AsyncReq{this, std::move(cb), v, len, op_val, {}};
+  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::READER};
   async_read_req_ = std::make_unique<AsyncReq>(std::move(req));
   async_read_req_->HandleOpAsync();
 }
@@ -655,12 +654,44 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
 
   owner->state_ &= ~WRITE_IN_PROGRESS;
 
-  // We are done with the writes, check if we also need to read because we are
+  // We are done with the write, check if we also need to read because we are
   // in NEED_READ_AND_MAYBE_WRITE state
   if (should_read) {
     should_read = false;
     StartUpstreamRead();
+    return;
   }
+
+  // NEED_WRITE state needs to "loop". We have a different action depending on the role
+  if (role == READER) {
+    // We need to read again from the engine. This is when HandleAsync is called
+    // with NEED_WRITE.
+    op_val = owner->engine_->Read(reinterpret_cast<uint8_t*>(vec->iov_base), len);
+    DVLOG(2) << "Engine::Read tried to read " << vec->iov_len << " bytes, got " << op_val;
+    HandleOpAsync();
+    return;
+  }
+
+  DCHECK(role == WRITER);
+  // We wrote some therefore we can complete
+  if (engine_written > 0) {
+    CompleteAsyncReq(engine_written);
+    return;
+  }
+  // We need to call PushToTheEngine again
+  io::Result<PushResult> push_res = owner->PushToEngine(vec, len);
+  if (!push_res) {
+    CompleteAsyncReq(make_unexpected(push_res.error()));
+    return;
+  }
+  op_val = push_res->engine_opcode;
+  engine_written = push_res->written;
+  if (op_val < 0) {
+    HandleOpAsync();
+    return;
+  }
+
+  StartUpstreamWrite();
 }
 
 void TlsSocket::AsyncReq::StartUpstreamWrite() {
@@ -687,6 +718,31 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
 
   // TODO handle WRITE_IN_PROGRESS to avoid deadlock
   StartUpstreamWrite();
+}
+
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  CHECK(!async_write_req_);
+  // Write to the engine
+  io::Result<PushResult> push_res = PushToEngine(v, len);
+  if (!push_res) {
+    cb(make_unexpected(push_res.error()));
+    return;
+  }
+
+  const int op_val = push_res->engine_opcode;
+  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::WRITER};
+  req.engine_written = push_res->written;
+
+  async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
+  if (op_val < 0) {
+    //  0We pay for the allocation if op_val=EOF_STREAM but this is a very unlikely case
+    //  and I rather keep this function small than actually handling this case explicitly
+    //  with an if branch.
+    async_write_req_->HandleOpAsync();
+    return;
+  }
+
+  async_write_req_->StartUpstreamWrite();
 }
 
 }  // namespace tls
