@@ -24,6 +24,16 @@ template <typename T> struct Future {
     return std::move(block->value);
   }
 
+  std::optional<T> GetFor(std::chrono::steady_clock::duration dur) {
+    std::cv_status st =block->waker.await_until(
+        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); },
+        std::chrono::steady_clock::now() + dur);
+    if (st == std::cv_status::timeout) {
+      return std::nullopt;
+    }
+    return std::move(block->value);
+  }
+
   void Resolve(T result) {
     block->value = std::move(result);
     block->has_value.store(true, std::memory_order_relaxed);
@@ -34,7 +44,7 @@ template <typename T> struct Future {
   struct Block {
     T value{};  // replace with aligned_storage or optional if T is not default-constructible
     std::atomic_bool has_value = false;
-    util::fb2::EventCount waker{};
+    util::fb2::EventCount waker;
   };
   std::shared_ptr<Block> block;
 };
