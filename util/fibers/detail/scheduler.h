@@ -37,8 +37,8 @@ class Scheduler {
 
   void ScheduleTermination(FiberInterface* fibi);
 
-  bool HasReady() const {
-    return !ready_queue_.empty();
+  bool HasReady(unsigned q_indx = 0) const {
+    return !ready_queue_[q_indx].empty();
   }
 
   // Yields the calling fiber.
@@ -50,10 +50,10 @@ class Scheduler {
   bool WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
 
   // Assumes HasReady() is true.
-  FiberInterface* PopReady() {
-    assert(!ready_queue_.empty());
-    FiberInterface* res = &ready_queue_.front();
-    ready_queue_.pop_front();
+  FiberInterface* PopReady(unsigned q_indx = 0) {
+    assert(!ready_queue_[q_indx].empty());
+    FiberInterface* res = &ready_queue_[q_indx].front();
+    ready_queue_[q_indx].pop_front();
     return res;
   }
 
@@ -94,11 +94,21 @@ class Scheduler {
   // Returns true if all the ready fibers are suspended, false if there are still some ready fibers.
   // (The latter case happens when one of the fibers yields).
   bool RunWorkerFibersStep() {
-    if (ready_queue_.empty()) {
+    if (ready_queue_[unsigned(FiberPriority::NORMAL)].empty()) {
       return true;
     }
 
     return RunWorkerFibersStepImpl();
+  }
+
+  // Returns true if a background fiber was executed, false otherwise.
+  bool RunBackgroundStep() {
+    if (ready_queue_[unsigned(FiberPriority::BACKGROUND)].empty()) {
+      return false;
+    }
+
+    RunBackgroundStepImpl();
+    return true;
   }
 
   void PrintAllFiberStackTraces();
@@ -115,6 +125,7 @@ class Scheduler {
  private:
 
   bool RunWorkerFibersStepImpl();
+  void RunBackgroundStepImpl();
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -145,7 +156,9 @@ class Scheduler {
   DispatchPolicy* custom_policy_ = nullptr;
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
-  FI_Queue ready_queue_, terminate_queue_;
+
+  // ready_queue_[0] - normal, ready_queue_[1] - background.
+  FI_Queue ready_queue_[2], terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
 
@@ -153,7 +166,7 @@ class Scheduler {
   FI_List fibers_;
 
   bool shutdown_ = false;
-  bool was_yield_ = false;
+  bool yield_ocurred_ = false;
 
   uint32_t num_worker_fibers_ = 0;
   size_t worker_stack_size_ = 0;
