@@ -1,8 +1,31 @@
 diff --git a/src/alloc.c b/src/alloc.c
-index 86aaae75..876dfd38 100644
+index 86aaae75..448acd3f 100644
 --- a/src/alloc.c
 +++ b/src/alloc.c
-@@ -577,6 +577,24 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
+@@ -21,6 +21,13 @@ terms of the MIT license. A copy of the license can be found in the file
+ #include "free.c"
+ #undef MI_IN_ALLOC_C
+ 
++
++static void _mi_assert_local(const char* assertion, const char* fname, unsigned line) {
++  _mi_fprintf(NULL, NULL, "mimalloc: assertion failed: at \"%s\":%u, assertion: \"%s\"\n", fname, line, assertion);
++  abort();
++}
++#define mi_assert_local(expr)     ((expr) ? (void)0 : _mi_assert_local(#expr,__FILE__,__LINE__))
++
+ // ------------------------------------------------------
+ // Allocation
+ // ------------------------------------------------------
+@@ -39,7 +46,7 @@ extern inline void* _mi_page_malloc_zero(mi_heap_t* heap, mi_page_t* page, size_
+   // pop from the free list
+   page->free = mi_block_next(page, block);
+   page->used++;
+-  mi_assert_internal(page->free == NULL || _mi_ptr_page(page->free) == page);
++  mi_assert_local(page->free == NULL || _mi_ptr_page(page->free) == page);
+   #if MI_DEBUG>3
+   if (page->free_is_zero) {
+     mi_assert_expensive(mi_mem_is_zero(block+1,size - sizeof(*block)));
+@@ -577,6 +584,24 @@ mi_decl_nodiscard void* mi_new_reallocn(void* p, size_t newcount, size_t size) {
    }
  }
  
