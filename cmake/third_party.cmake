@@ -197,6 +197,35 @@ if(NOT abseil_cpp_POPULATED)
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
 
+# Add SimSIMD with proper static library build
+FetchContent_Declare(
+  simsimd
+  URL https://github.com/ashvardanian/SimSIMD/archive/refs/tags/v6.4.9.tar.gz
+  URL_HASH SHA256=1c2cfa9ab66de4337ea27c22068d1a8b44c0cb8df4c4b661fc273e1645a8221b
+)
+
+FetchContent_GetProperties(simsimd)
+if(NOT simsimd_POPULATED)
+  FetchContent_Populate(simsimd)
+endif()
+
+# Create properly configured static library
+add_library(simsimd_lib STATIC "${simsimd_SOURCE_DIR}/c/lib.c")
+
+# Set include directories
+target_include_directories(simsimd_lib PUBLIC "${simsimd_SOURCE_DIR}/include")
+
+# Let SimSIMD do its job - runtime dispatch by default
+target_compile_definitions(simsimd_lib PUBLIC SIMSIMD_DYNAMIC_DISPATCH=1)
+
+# Suppress unused function warnings for both GCC and Clang
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(simsimd_lib PRIVATE -Wno-unused-function -Wno-unused-variable -Wno-unknown-pragmas -Wno-unused-but-set-variable)
+endif()
+
+# Create alias for consistent naming
+add_library(TRDP::simsimd ALIAS simsimd_lib)
+
 if (LEGACY_GLOG)
   set(FETCHCONTENT_UPDATES_DISCONNECTED_GLOG ON CACHE BOOL "")
 
