@@ -376,11 +376,18 @@ add_third_party(
   CMAKE_PASS_FLAGS "-DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF"
 )
 
+add_third_party(
+  expected
+  GIT_REPOSITORY https://github.com/martinmoene/expected-lite.git
+  GIT_TAG f17940fabae07063cabb67abf2c8d164d3146044 # Important fixes for monadic functions
+  CMAKE_PASS_FLAGS "-DEXPECTED_LITE_OPT_BUILD_TESTS=0"
+  LIB "none"
+)
+
 add_library(TRDP::rapidjson INTERFACE IMPORTED)
 add_dependencies(TRDP::rapidjson rapidjson_project)
 set_target_properties(TRDP::rapidjson PROPERTIES
                       INTERFACE_INCLUDE_DIRECTORIES "${RAPIDJSON_INCLUDE_DIR}")
-
 
 if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
   set_target_properties(TRDP::gperf PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES unwind)
@@ -391,3 +398,9 @@ target_compile_definitions(TRDP::pugixml INTERFACE PUGIXML_NO_EXCEPTIONS=1 PUGIX
 if (APPLE)
   set_target_properties(TRDP::cares PROPERTIES IMPORTED_LINK_INTERFACE_LIBRARIES resolv)
 endif()
+
+add_library(TRDP::expected INTERFACE IMPORTED)
+add_dependencies(TRDP::expected expected_project)
+set_target_properties(TRDP::expected PROPERTIES
+                      INTERFACE_INCLUDE_DIRECTORIES "${EXPECTED_INCLUDE_DIR}")
+target_compile_definitions(TRDP::expected INTERFACE nsel_CONFIG_NO_NODISCARD=OFF)
