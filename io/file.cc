@@ -5,7 +5,6 @@
 #include "io/file.h"
 
 #include <absl/strings/match.h>
-
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -339,18 +338,11 @@ ssize_t ReadAllPosix(int fd, size_t offset, const iovec* v, uint32_t len) {
   return read_total;
 }
 
-
 Result<Source*> OpenUncompressed(std::string_view name) {
-  auto fl_res = OpenRead(name, ReadonlyFile::Options{});
-  if (!fl_res)
-    return make_unexpected(fl_res.error());
-
-  Source* source = new FileSource(*fl_res);  // TAKE_OWNERSHIP
-  if (absl::EndsWith(name, ".zst")) {
-    return new ZStdSource(source);
-  }
-
-  return source;
+  return OpenRead(name, ReadonlyFile::Options{}).transform([name](auto* file) -> io::Source* {
+    Source* source = new FileSource(file);  // TAKE_OWNERSHIP
+    return absl::EndsWith(name, ".zst") ? new ZStdSource(source) : source;
+  });
 }
 
 }  // namespace io

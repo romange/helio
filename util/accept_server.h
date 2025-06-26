@@ -39,15 +39,18 @@ class AcceptServer {
   void Wait();
 
   // Returns the port number to which the listener was bound.
+  // Takes ownership of the listener.
   // Check-fails in case of an error.
   uint16_t AddListener(uint16_t port, ListenerInterface* listener);
 
   // Advanced version that allows to specify bind address.
   // bind_addr can be null, in that case the behavior is to bind on all interfaces.
+  // Takes ownership of the listener.
   // Does not check-fail - it's responsibility of the caller to check the error code.
   std::error_code AddListener(const char* bind_addr, uint16_t port, ListenerInterface* listener);
 
   // Adds a listener on unix domain sockets.
+  // Takes ownership of the listener.
   std::error_code AddUDSListener(const char* path, mode_t permissions, ListenerInterface* listener);
 
   void TriggerOnBreakSignal(std::function<void()> f) {

@@ -90,7 +90,6 @@ class TlsSocket final : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
  private:
-
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
@@ -116,6 +115,37 @@ class TlsSocket final : public FiberSocketBase {
 
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
+
+  // TODO turn this into a class with proper access specifiers
+  struct AsyncReq {
+    TlsSocket* owner;
+    // Callback passed from the user.
+    io::AsyncProgressCb caller_completion_cb;
+
+    const iovec* vec;
+    uint32_t len;
+    Engine::OpResult op_val;
+
+    iovec scratch_iovec;
+
+    bool should_read = false;
+
+    // Asynchronous helpers
+    void MaybeSendOutputAsyncWithRead();
+    void MaybeSendOutputAsync();
+
+    void HandleOpAsync();
+
+    void StartUpstreamRead();
+    void StartUpstreamWrite();
+
+    void CompleteAsyncReq(io::Result<size_t> result);
+    void CompleteAsyncWrite(io::Result<size_t> write_result);
+
+    void AsyncProgressCb(io::Result<size_t> result);
+  };
+
+  std::unique_ptr<AsyncReq> async_read_req_;
 };
 
 }  // namespace tls

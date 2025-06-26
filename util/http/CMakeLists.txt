@@ -13,4 +13,4 @@ add_executable(http_main http_main.cc)
 add_library(http_client_lib http_client.cc https_client_pool.cc)
 
 cxx_link(http_client_lib fibers2 http_beast_prebuilt http_utils tls_lib)
-cxx_link(http_main fibers2 html_lib http_server_lib TRDP::mimalloc)
+cxx_link(http_main fibers2 html_lib http_server_lib)

@@ -6,7 +6,6 @@
 #include <absl/flags/usage_config.h>
 #include <absl/strings/match.h>
 #include <absl/strings/str_join.h>
-#include <mimalloc-new-delete.h>
 
 #include <boost/beast/http/span_body.hpp>
 

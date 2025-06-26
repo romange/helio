@@ -98,7 +98,7 @@ void ListenerInterface::RunAcceptLoop() {
 
   if (!sock_->IsUDS()) {
     ep = sock_->LocalEndpoint();
-    VSOCK(0, *sock_) << "AcceptServer - listening on port " << ep.port();
+    VSOCK(0, *sock_) << "AcceptServer - listening on " << ep.address() << ":" << ep.port();
   }
 
   PreAcceptLoop(sock_->proactor());
@@ -225,6 +225,11 @@ void ListenerInterface::RunAcceptLoop() {
 }
 
 ListenerInterface::~ListenerInterface() {
+  if (sock_ && sock_->IsOpen()) {
+    sock_->proactor()->Await([this] {
+      std::ignore = this->sock_->Close();
+    });
+  }
   VLOG(1) << "Destroying ListenerInterface " << this;
 }
 
