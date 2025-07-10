@@ -89,6 +89,25 @@ class TlsSocket final : public FiberSocketBase {
 
   virtual void SetProactor(ProactorBase* p) override;
 
+  // * NOT PART OF THE API -- USED FOR TESTING PURPOSES ONLY *
+  // This function is used to simulate a corner case of AsyncReadSome. In particular,
+  // when engine_->Read(...) returns NEED_WRITE. According to chatgpt and google
+  // This scenario reproduces "roughly" by:
+  // 1. client connects to server and server accepts.
+  // 2. handshake completes
+  // 4. client stops reading from the socket -> no acks are sent
+  // 5. server keeps sending data until TCP sent buffers are full (because client has not yet acked)
+  // 6. server calls sll_renegotiate followed by an ssl_handshake
+  // 7. server calls AsyncRead which calls engine->Read() which should return NEED_WRITE
+  //    because the state machine requires a protocol renegotiation and the internal buffers
+  //    are full.
+  // So the idea is that when the server reads, the internal openssl state machine needs to
+  // exchange protocol data but it can not because the TCP buffers are full and consequently
+  // the internall BIO buffers are not yet flushed so the engine->Read() will return NEED_WRITE
+  // such that the protocol renegotiation can kick in. Even though this scenario seems easy to
+  // simulate it does not reproduce NEED_WRITE and for now I use this function to simulate it.
+  void __DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+
  private:
   struct PushResult {
     size_t written = 0;
@@ -116,28 +135,43 @@ class TlsSocket final : public FiberSocketBase {
   enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
   uint8_t state_{0};
 
-  // TODO turn this into a class with proper access specifiers
-  struct AsyncReq {
-    TlsSocket* owner;
+  class AsyncReq {
+   public:
+    enum Role : std::uint8_t { READER, WRITER };
+
+    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len,
+             Engine::OpResult op_val, Role role)
+        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), op_val_(op_val),
+          role_(role) {
+    }
+
+    void HandleOpAsync();
+    void StartUpstreamWrite();
+    void SetEngineWritten(size_t written) {
+      engine_written_ = written;
+    }
+
+   private:
+    TlsSocket* owner_;
     // Callback passed from the user.
-    io::AsyncProgressCb caller_completion_cb;
+    io::AsyncProgressCb caller_completion_cb_;
 
-    const iovec* vec;
-    uint32_t len;
-    Engine::OpResult op_val;
+    const iovec* vec_;
+    uint32_t len_;
+    Engine::OpResult op_val_;
 
-    iovec scratch_iovec;
+    Role role_;
 
-    bool should_read = false;
+    iovec scratch_iovec_ = {};
+
+    size_t engine_written_ = 0;
+    bool should_read_ = false;
 
     // Asynchronous helpers
     void MaybeSendOutputAsyncWithRead();
     void MaybeSendOutputAsync();
 
-    void HandleOpAsync();
-
     void StartUpstreamRead();
-    void StartUpstreamWrite();
 
     void CompleteAsyncReq(io::Result<size_t> result);
     void CompleteAsyncWrite(io::Result<size_t> write_result);
@@ -146,6 +180,7 @@ class TlsSocket final : public FiberSocketBase {
   };
 
   std::unique_ptr<AsyncReq> async_read_req_;
+  std::unique_ptr<AsyncReq> async_write_req_;
 };
 
 }  // namespace tls
