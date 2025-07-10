@@ -388,5 +388,64 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
   SSL_CTX_free(ssl_ctx);
 }
 
+class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
+  virtual void HandleRequest() {
+    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
+    ssl_ctx_ = CreateSslCntx(SERVER);
+    tls_socket_->InitSSL(ssl_ctx_);
+    tls_socket_->Accept();
+
+    Done done;
+    // Without handling NEED_WRITE in AsyncReq::CompleteAsyncReq we would deadlock here
+    uint8_t res[1024];
+    iovec v{.iov_base = &res, .iov_len = 1024};
+    tls_socket_->__DebugForceNeedWriteOnAsyncRead(&v, 1, [&](auto res) { done.Notify(); });
+
+    done.Wait();
+  }
+};
+
+// TODO once we fix epoll AsyncRead from blocking to nonblocking investiage why it fails on mac,
+// For now also disable this on mac altogether.
+#ifdef __linux__
+
+INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketNeedWrite, testing::Values("epoll", "uring"),
+                         [](const auto& info) { return string(info.param); });
+
+TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
+  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
+  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  tls_sock->InitSSL(ssl_ctx);
+
+  proactor_->Await([&] {
+    error_code ec = tls_sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+    uint8_t res[256];
+    std::fill(std::begin(res), std::end(res), uint8_t(120));
+    {
+      VLOG(1) << "Before writesome";
+
+      Done done;
+      iovec v{.iov_base = &res, .iov_len = 256};
+
+      tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
+        EXPECT_FALSE(result);
+        done.Notify();
+      });
+
+      done.Wait();
+    }
+    VLOG(1) << "closing client sock " << tls_sock->native_handle();
+    std::ignore = tls_sock->Close();
+    accept_fb_.Join();
+    VLOG(1) << "After join";
+    ASSERT_FALSE(ec) << ec.message();
+    ASSERT_FALSE(accept_ec_);
+  });
+  SSL_CTX_free(ssl_ctx);
+}
+
+#endif
+
 }  // namespace fb2
 }  // namespace util
