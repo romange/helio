@@ -118,7 +118,6 @@ class TlsSocket final : public FiberSocketBase {
     READ_IN_PROGRESS = 2,
     SHUTDOWN_IN_PROGRESS = 4,
     SHUTDOWN_DONE = 8,
-    HANDSHAKE_COMPLETE = 16
   };
   uint8_t state_{0};
 

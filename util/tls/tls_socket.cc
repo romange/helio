@@ -62,14 +62,7 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   }
 
   state_ |= SHUTDOWN_IN_PROGRESS;
-  // We must call SSL_shutdown only the handshake is complete.
-  // if handshake is not complete we cannot send or receive the TLS close_notify alert so
-  // op result should be zero such that we don't call MaybeSendOutput() below.
-  Engine::OpResult op_result = 0;
-  if (state_ & HANDSHAKE_COMPLETE) {
-    state_ &= HANDSHAKE_COMPLETE;
-    op_result = engine_->Shutdown();
-  }
+  Engine::OpResult op_result = engine_->Shutdown();
   if (op_result) {
     // engine_ could send notification messages to the peer.
     std::ignore = MaybeSendOutput();
@@ -102,7 +95,6 @@ auto TlsSocket::Accept() -> AcceptResult {
     }
 
     if (op_result == 1) {  // Success.
-      state_ |= HANDSHAKE_COMPLETE;
       if (VLOG_IS_ON(1)) {
         const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
         string_view proto_version = SSL_get_version(engine_->native_handle());
@@ -137,7 +129,6 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
     if (op_result == 1) {
-      state_ &= HANDSHAKE_COMPLETE;
       break;
     }
 
@@ -170,7 +161,6 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
-  state_ &= HANDSHAKE_COMPLETE;
   return next_sock_->Close();
 }
 

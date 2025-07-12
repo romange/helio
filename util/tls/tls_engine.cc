@@ -140,6 +140,9 @@ auto Engine::Shutdown() -> OpResult {
   if (state_ & FATAL_ERROR)
     return 1;
 
+  if (!SSL_is_init_finished(ssl_))
+    return 0;
+
   int result = SSL_shutdown(ssl_);
   // See https://www.openssl.org/docs/man1.1.1/man3/SSL_shutdown.html
 
@@ -239,13 +242,13 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
     case SSL_ERROR_SSL: {
       state_ |= FATAL_ERROR;
       queue_error = ERR_get_error();
-      LOG_EVERY_T(WARNING, 30) << "SSL protocol error " << ERROR_DETAILS;
+      LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS;
       break;
     }
     default:
       queue_error = ERR_get_error();
       state_ |= FATAL_ERROR;
-      LOG_EVERY_T(WARNING, 30) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS;
+      LOG_EVERY_T(WARNING, 1) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS;
       break;
   }
 
