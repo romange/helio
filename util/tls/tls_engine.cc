@@ -140,10 +140,13 @@ auto Engine::Shutdown() -> OpResult {
   if (state_ & FATAL_ERROR)
     return 1;
 
+  if (!SSL_is_init_finished(ssl_))
+    return 0;
+
   int result = SSL_shutdown(ssl_);
   // See https://www.openssl.org/docs/man1.1.1/man3/SSL_shutdown.html
 
-  if (result == 0) { // First step of Shutdown (close_notify) returns 0.
+  if (result == 0) {              // First step of Shutdown (close_notify) returns 0.
     result = SSL_shutdown(ssl_);  // Initiate the second step.
   }
 
@@ -216,15 +219,14 @@ int SslProbeSetDefaultCALocation(SSL_CTX* ctx) {
   return -1;
 }
 
-
 auto Engine::ToOpResult(int result, const char* location) -> OpResult {
   DCHECK_LE(result, 0);
 
   int ssl_error = SSL_get_error(ssl_, result);
   unsigned long queue_error = 0;
 
-#define ERROR_DETAILS errno << ":" << queue_error << " "  \
-                   << ERR_reason_error_string(queue_error) << " " << location
+#define ERROR_DETAILS \
+  errno << ":" << queue_error << " " << ERR_reason_error_string(queue_error) << " " << location
 
   switch (ssl_error) {
     case SSL_ERROR_ZERO_RETURN:  // graceful shutdown of TLS connection.
@@ -237,15 +239,16 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
       queue_error = ERR_get_error();
       VLOG(1) << "SSL syscall error " << ERROR_DETAILS;
       break;
-    case SSL_ERROR_SSL:
+    case SSL_ERROR_SSL: {
       state_ |= FATAL_ERROR;
       queue_error = ERR_get_error();
-      LOG(WARNING) << "SSL protocol error " << ERROR_DETAILS;
+      LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS;
       break;
+    }
     default:
       queue_error = ERR_get_error();
       state_ |= FATAL_ERROR;
-      LOG(WARNING) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS;
+      LOG_EVERY_T(WARNING, 1) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS;
       break;
   }
 
