@@ -322,6 +322,10 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
   }
 }
 
+uint64_t ProactorBase::GetCurrentBusyCycles() const {
+  return base::CycleClock::Now() - idle_end_cycle_;
+}
+
 // The threshold is set to ~2.5ms.
 bool ProactorBase::ShouldPollL2Tasks() const {
   uint64_t now = base::CycleClock::Now();
@@ -352,17 +356,17 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
 }
 
 void ProactorBase::IdleEnd(uint64_t start) {
-  uint64_t end = base::CycleClock::Now();
+  idle_end_cycle_ = base::CycleClock::Now();
 
   // Assuming that cpu clock frequency is
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
-  cpu_idle_cycles_ += (end - start);
+  cpu_idle_cycles_ += (idle_end_cycle_ - start);
 
-  if (end > cpu_measure_cycle_start_ + kMinCyclePeriod) {
+  if (idle_end_cycle_ > cpu_measure_cycle_start_ + kMinCyclePeriod) {
     load_numerator_ = cpu_idle_cycles_;
-    load_denominator_ = end - cpu_measure_cycle_start_;
+    load_denominator_ = idle_end_cycle_ - cpu_measure_cycle_start_;
     cpu_idle_cycles_ = 0;
-    cpu_measure_cycle_start_ = end;
+    cpu_measure_cycle_start_ = idle_end_cycle_;
   }
 }
 

@@ -25,8 +25,13 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
+ABSL_FLAG(uint32_t, uring_busy_poll_usec, 0,
+          "If positive, use busy poll for this number of microseconds. "
+          "If 0, do not use busy poll at all.");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
+
+// #define CHECK_WAKE_LATENCY 1
 
 using namespace std;
 
@@ -791,6 +796,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     JUMP_FROM_TOTAL
   } jump_from = JUMP_FROM_INIT;
   unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
+  uint64_t busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
 
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
@@ -921,12 +927,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 10) {
+    bool should_poll =
+        spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
+    if (!ring_busy && should_poll) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
       jump_from = JUMP_FROM_SPIN;
+      // Refresh to allow runtime updates.
+      busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
       continue;
     }
 
@@ -962,6 +972,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      * 3. In case compare fails, we do not care about the ordering because we reset tq_seq again
      *    at the beginning of the loop.
      */
+
+#ifdef CHECK_WAKE_LATENCY
+     last_wake_ts_.store(0, std::memory_order_relaxed);
+#endif
     if (task_queue_.empty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
                                       memory_order_relaxed)) {
@@ -979,6 +993,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load(memory_order_relaxed)
               << " tasks:" << stats_.num_task_runs << " " << stats_.loop_cnt;
 
+#ifdef CHECK_WAKE_LATENCY
+      {
+        uint64_t now = absl::GetCurrentTimeNanos();
+        uint64_t last_wake_ts = last_wake_ts_.load(std::memory_order_relaxed);
+        if (last_wake_ts && now - last_wake_ts > 300'0000) {  // 300 us
+          LOG(INFO) << "WakeRing was sent " << (now - last_wake_ts) / 1000
+                    << " usec ago";
+        }
+      }
+#endif
       ++stats_.num_stalls;
       tq_seq = 0;
       tq_seq_.store(0, std::memory_order_release);
@@ -1014,9 +1038,19 @@ void UringProactor::WakeRing() {
 
   DCHECK(caller != this);
 
-  if (caller && caller->msgring_f_) {
+#ifdef CHECK_WAKE_LATENCY
+  last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
+#endif
+
+  // We disable PrepMsgRing because it seems to have higher latency than just
+  // writing to the wake_fd_. At P99 levels it can spend milliseconds until the destination
+  // proactor is woken up. Also see https://github.com/axboe/liburing/issues/1150
+  if (false && caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
+
+    // flush the se asap to wake up the destination proactor as quickly as possible.
+    // io_uring_submit(&caller->ring_);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
