@@ -1038,19 +1038,12 @@ void UringProactor::WakeRing() {
 
   DCHECK(caller != this);
 
-#ifdef CHECK_WAKE_LATENCY
-  last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
-#endif
-
-  // We disable PrepMsgRing because it seems to have higher latency than just
-  // writing to the wake_fd_. At P99 levels it can spend milliseconds until the destination
-  // proactor is woken up. Also see https://github.com/axboe/liburing/issues/1150
-  if (false && caller && caller->msgring_f_) {
+  if (caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
 
     // flush the se asap to wake up the destination proactor as quickly as possible.
-    // io_uring_submit(&caller->ring_);
+    io_uring_submit(&caller->ring_);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
