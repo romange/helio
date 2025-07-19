@@ -31,7 +31,7 @@ ABSL_FLAG(uint32_t, uring_busy_poll_usec, 0,
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
-#define CHECK_WAKE_LATENCY 1
+// #define CHECK_WAKE_LATENCY 1
 
 using namespace std;
 
