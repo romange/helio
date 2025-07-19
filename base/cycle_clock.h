@@ -40,6 +40,16 @@ class CycleClock {
     return frequency_;
   }
 
+  // Translates usec to cpu cycles.
+  static uint64_t FromUsec(uint64_t usec) {
+    return (usec * frequency_) / 1000'000ULL;
+  }
+
+  // Converts cycles to microseconds.
+  static uint64_t ToUsec(uint64_t cycles) {
+    return (cycles * 1000'000ULL) / frequency_;
+  }
+
  private:
   static uint64_t frequency_;
 };
