@@ -25,6 +25,9 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
+ABSL_FLAG(uint32_t, uring_busy_poll_usec, 0,
+          "If positive, use busy poll for this number of microseconds. "
+          "If 0, do not use busy poll at all.");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
@@ -791,6 +794,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     JUMP_FROM_TOTAL
   } jump_from = JUMP_FROM_INIT;
   unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
+  uint64_t busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
 
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
@@ -921,12 +925,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 10) {
+    bool should_poll =
+        spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
+    if (!ring_busy && should_poll) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
       jump_from = JUMP_FROM_SPIN;
+      // Refresh to allow runtime updates.
+      busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
       continue;
     }
 
@@ -1017,6 +1025,9 @@ void UringProactor::WakeRing() {
   if (caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
+
+    // flush the se asap to wake up the destination proactor as quickly as possible.
+    io_uring_submit(&caller->ring_);
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));

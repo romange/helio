@@ -217,6 +217,9 @@ class ProactorBase {
     return double(load_numerator_) / load_denominator_;
   }
 
+  // Returns current busy cycles count since the last call to epoll_wait or equivalent.
+  uint64_t GetCurrentBusyCycles() const;
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -269,6 +272,9 @@ class ProactorBase {
   bool RunL2Tasks(detail::Scheduler* scheduler);
 
   void IdleEnd(uint64_t start);
+  uint64_t idle_end_cycle() const {
+    return idle_end_cycle_;
+  }
 
   pthread_t thread_id_ = 0U;
   int sys_thread_id_ = 0;
@@ -328,7 +334,7 @@ class ProactorBase {
   }
 
   uint64_t last_level2_cycle_ = 0;
-
+  uint64_t idle_end_cycle_ = 0;
   uint64_t cpu_measure_cycle_start_ = 0, cpu_idle_cycles_ = 0;
   uint64_t load_numerator_ = 0, load_denominator_ = 1;
 };
