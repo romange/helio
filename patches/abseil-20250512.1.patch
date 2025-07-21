@@ -1,5 +1,7 @@
---- absl/debugging/internal/symbolize.h.orig	2025-07-21 11:56:15.037314899 +0300
-+++ absl/debugging/internal/symbolize.h	2025-07-21 11:56:20.937386117 +0300
+diff --git a/absl/debugging/internal/symbolize.h b/absl/debugging/internal/symbolize.h
+index 5593fde6..d3a2ba28 100644
+--- a/absl/debugging/internal/symbolize.h
++++ b/absl/debugging/internal/symbolize.h
 @@ -28,7 +28,7 @@
  
  #ifdef ABSL_INTERNAL_HAVE_ELF_SYMBOLIZE
