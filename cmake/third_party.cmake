@@ -241,47 +241,51 @@ Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_V
 
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)
 
+# Optionally include gperf
+if (WITH_GPERF)
+  # gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
+  # Until it's fixed, I use the old configure based build.
 
-# gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
-# Until it's fixed, I use the old configure based build.
+  if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
+    set(PERF_TOOLS_OPTS --enable-libunwind )
+  else()
+    set(PERF_TOOLS_OPTS --disable-libunwind)
+  endif()
 
-if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
-  set(PERF_TOOLS_OPTS --enable-libunwind )
+  if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+    set(PERF_TOOLS_MAKE "gmake")
+  else()
+    set(PERF_TOOLS_MAKE "make")
+  endif()
+
+  add_third_party(
+    gperf
+    URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
+
+    # GIT_SHALLOW TRUE
+    # Remove building the unneeded programs (they fail on macos)
+    PATCH_COMMAND echo sed -i "/^noinst_PROGRAMS +=/d;/binary_trees binary_trees_shared/d"
+                  <SOURCE_DIR>/Makefile.am
+    COMMAND autoreconf -i   # update runs every time for some reason
+    # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
+    #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
+    #                  -Dgperftools_build_benchmark=OFF"
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers
+                       "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}" CPPFLAGS=-I<SOURCE_DIR>
+                       --disable-heap-checker --disable-debugalloc --disable-heap-profiler
+                       --disable-deprecated-pprof --disable-dependency-tracking
+                       --disable-shared --enable-static
+                       --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
+                       MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
+    BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
+
+    # install-data required by fedora
+    INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
+    LIB libprofiler.a
+  )
 else()
-  set(PERF_TOOLS_OPTS --disable-libunwind)
+  add_library(TRDP::gperf INTERFACE IMPORTED)
 endif()
-
-if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
-  set(PERF_TOOLS_MAKE "gmake")
-else()
-  set(PERF_TOOLS_MAKE "make")
-endif()
-
-add_third_party(
-  gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
-
-  # GIT_SHALLOW TRUE
-  # Remove building the unneeded programs (they fail on macos)
-  PATCH_COMMAND echo sed -i "/^noinst_PROGRAMS +=/d;/binary_trees binary_trees_shared/d"
-                <SOURCE_DIR>/Makefile.am
-  COMMAND autoreconf -i   # update runs every time for some reason
-  # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
-  #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
-  #                  -Dgperftools_build_benchmark=OFF"
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers
-                     "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}" CPPFLAGS=-I<SOURCE_DIR>
-                     --disable-heap-checker --disable-debugalloc --disable-heap-profiler
-                     --disable-deprecated-pprof --disable-dependency-tracking
-                     --disable-shared --enable-static
-                     --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
-                     MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
-  BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
-
-  # install-data required by fedora
-  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
-  LIB libprofiler.a
-)
 
 set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
