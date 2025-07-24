@@ -20,7 +20,6 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
-option (WITH_AWS "Include AWS client for working with S3 files" ON)
 option (LEGACY_GLOG "whether to use legacy glog library" ON)
 
 
@@ -337,15 +336,6 @@ add_third_party(
 )
 
 add_third_party(
-  rapidjson
-  GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
-  GIT_TAG ab1842a
-  CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
-                    -DRAPIDJSON_BUILD_DOC=OFF"
-  LIB "none"
-)
-
-add_third_party(
   pugixml
   URL https://github.com/zeux/pugixml/archive/refs/tags/v1.14.tar.gz
 )
@@ -361,6 +351,17 @@ if (WITH_AWS)
     PATCH_COMMAND "${AWS_PATCH_COMMAND}"
     CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
     LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
+  )
+endif()
+
+if (WITH_GCP)
+  add_third_party(
+    rapidjson
+    GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
+    GIT_TAG ab1842a
+    CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
+                      -DRAPIDJSON_BUILD_DOC=OFF"
+    LIB "none"
   )
 endif()
 
