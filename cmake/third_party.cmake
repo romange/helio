@@ -242,6 +242,7 @@ add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILA
 
 # Optionally include gperf
 if (WITH_GPERF)
+  add_definitions(-DWITH_GPERF)
   # gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
   # Until it's fixed, I use the old configure based build.
 
