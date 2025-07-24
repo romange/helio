@@ -20,7 +20,6 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
-option (WITH_AWS "Include AWS client for working with S3 files" ON)
 option (LEGACY_GLOG "whether to use legacy glog library" ON)
 
 
@@ -241,47 +240,51 @@ Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_V
 
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)
 
+# Optionally include gperf
+if (WITH_GPERF)
+  # gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
+  # Until it's fixed, I use the old configure based build.
 
-# gperftools cmake build is broken https://github.com/gperftools/gperftools/issues/1321
-# Until it's fixed, I use the old configure based build.
+  if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
+    set(PERF_TOOLS_OPTS --enable-libunwind )
+  else()
+    set(PERF_TOOLS_OPTS --disable-libunwind)
+  endif()
 
-if (WITH_UNWIND AND (${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64"))
-  set(PERF_TOOLS_OPTS --enable-libunwind )
+  if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+    set(PERF_TOOLS_MAKE "gmake")
+  else()
+    set(PERF_TOOLS_MAKE "make")
+  endif()
+
+  add_third_party(
+    gperf
+    URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
+
+    # GIT_SHALLOW TRUE
+    # Remove building the unneeded programs (they fail on macos)
+    PATCH_COMMAND echo sed -i "/^noinst_PROGRAMS +=/d;/binary_trees binary_trees_shared/d"
+                  <SOURCE_DIR>/Makefile.am
+    COMMAND autoreconf -i   # update runs every time for some reason
+    # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
+    #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
+    #                  -Dgperftools_build_benchmark=OFF"
+    CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers
+                       "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}" CPPFLAGS=-I<SOURCE_DIR>
+                       --disable-heap-checker --disable-debugalloc --disable-heap-profiler
+                       --disable-deprecated-pprof --disable-dependency-tracking
+                       --disable-shared --enable-static
+                       --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
+                       MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
+    BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
+
+    # install-data required by fedora
+    INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
+    LIB libprofiler.a
+  )
 else()
-  set(PERF_TOOLS_OPTS --disable-libunwind)
+  add_library(TRDP::gperf INTERFACE IMPORTED)
 endif()
-
-if ("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
-  set(PERF_TOOLS_MAKE "gmake")
-else()
-  set(PERF_TOOLS_MAKE "make")
-endif()
-
-add_third_party(
-  gperf
-  URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
-
-  # GIT_SHALLOW TRUE
-  # Remove building the unneeded programs (they fail on macos)
-  PATCH_COMMAND echo sed -i "/^noinst_PROGRAMS +=/d;/binary_trees binary_trees_shared/d"
-                <SOURCE_DIR>/Makefile.am
-  COMMAND autoreconf -i   # update runs every time for some reason
-  # CMAKE_PASS_FLAGS "-DGPERFTOOLS_BUILD_HEAP_PROFILER=OFF -DGPERFTOOLS_BUILD_HEAP_CHECKER=OFF \
-  #                  -DGPERFTOOLS_BUILD_DEBUGALLOC=OFF -DBUILD_TESTING=OFF  \
-  #                  -Dgperftools_build_benchmark=OFF"
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure --enable-frame-pointers
-                     "CXXFLAGS=${THIRD_PARTY_CXX_FLAGS}" CPPFLAGS=-I<SOURCE_DIR>
-                     --disable-heap-checker --disable-debugalloc --disable-heap-profiler
-                     --disable-deprecated-pprof --disable-dependency-tracking
-                     --disable-shared --enable-static
-                     --prefix=${THIRD_PARTY_LIB_DIR}/gperf ${PERF_TOOLS_OPTS}
-                     MAKE=${PERF_TOOLS_MAKE} CXX=${CMAKE_CXX_COMPILER}
-  BUILD_COMMAND echo ${PERF_TOOLS_MAKE} -j4
-
-  # install-data required by fedora
-  INSTALL_COMMAND ${PERF_TOOLS_MAKE} install-exec install-data
-  LIB libprofiler.a
-)
 
 set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
 
@@ -333,15 +336,6 @@ add_third_party(
 )
 
 add_third_party(
-  rapidjson
-  GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
-  GIT_TAG ab1842a
-  CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
-                    -DRAPIDJSON_BUILD_DOC=OFF"
-  LIB "none"
-)
-
-add_third_party(
   pugixml
   URL https://github.com/zeux/pugixml/archive/refs/tags/v1.14.tar.gz
 )
@@ -357,6 +351,17 @@ if (WITH_AWS)
     PATCH_COMMAND "${AWS_PATCH_COMMAND}"
     CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
     LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
+  )
+endif()
+
+if (WITH_GCP)
+  add_third_party(
+    rapidjson
+    GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
+    GIT_TAG ab1842a
+    CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
+                      -DRAPIDJSON_BUILD_DOC=OFF"
+    LIB "none"
   )
 endif()
 
