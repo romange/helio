@@ -4,7 +4,10 @@
 
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
+
+#ifdef WITH_GPERF
 #include <gperftools/profiler.h>
+#endif
 
 #include <boost/beast/http/message.hpp>
 #include <filesystem>
@@ -34,6 +37,7 @@ typedef h2::response<h2::string_body> StringResponse;
 const char kProfilesFolder[] = "/tmp/profile/";
 
 static void HandleCpuProfile(bool enable, StringResponse* response) {
+#ifdef WITH_GPERF
   std::filesystem::create_directory(kProfilesFolder);
   string profile_name = kProfilesFolder + base::ProgramBaseName();
   response->set(h2::field::cache_control, "no-cache, no-store, must-revalidate");
@@ -97,6 +101,10 @@ static void HandleCpuProfile(bool enable, StringResponse* response) {
 
   response->set(h2::field::location, url);
   response->result(h2::status::moved_permanently);
+#else
+  response->body().append("GPERF disabled");
+  response->result(h2::status::internal_server_error);
+#endif
 }
 
 StringResponse ProfilezHandler(const QueryArgs& args) {
