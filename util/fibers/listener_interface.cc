@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <sys/resource.h>
 
+#include "base/cycle_clock.h"
 #include "base/logging.h"
 #include "util/accept_server.h"
 #include "util/proactor_pool.h"
@@ -111,6 +112,11 @@ void ListenerInterface::RunAcceptLoop() {
   });
 
   while (true) {
+    // For burst of accept requests we yield to allow other fibers to run.
+    if (base::CycleClock::ToUsec(ThisFiber::GetRunningTimeCycles()) > 1000) {  // 1ms
+      ThisFiber::Yield();
+    }
+
     FiberSocketBase::AcceptResult res = sock_->Accept();
     if (!res.has_value()) {
       FiberSocketBase::error_code ec = res.error();

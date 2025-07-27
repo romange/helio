@@ -112,7 +112,7 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
-  uint64_t switch_delay_cycles = 0;  // switch delay in cycles.
+  uint64_t runqueue_delay_cycles = 0;  // switch delay in cycles.
 
   // Tracks fiber runtimes that took longer than 1ms.
   uint64_t long_runtime_cnt = 0;
@@ -432,7 +432,8 @@ FiberInterface* FiberInterface::SwitchSetup() {
   if (tsc > cpu_tsc_) {
     ++tl.epoch;
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
-    fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
+    uint64_t runqueue_delay = tsc - cpu_tsc_;
+    fb_initializer.runqueue_delay_cycles += runqueue_delay;
 
     // to_suspend points to the fiber that is active and is going to be suspended.
     uint64_t active_cycles = tsc - to_suspend->cpu_tsc_;
@@ -497,7 +498,7 @@ void SetCustomDispatcher(DispatchPolicy* policy) {
 // Together with FiberSwitchEpoch we can compute the average delay per fiber.
 uint64_t FiberSwitchDelayUsec() noexcept {
   // in nanoseconds, so lets convert from cycles
-  return detail::FbInitializer().switch_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
+  return detail::FbInitializer().runqueue_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
 }
 
 // Total number of events of fibers running too long.
