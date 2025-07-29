@@ -24,9 +24,6 @@
 using util::fb2::Done;
 namespace util {
 namespace http {
-namespace {
-char last_profile_suffix[100] = {0};
-}
 
 using namespace std;
 using namespace boost;
@@ -38,6 +35,8 @@ const char kProfilesFolder[] = "/tmp/profile/";
 
 static void HandleCpuProfile(bool enable, StringResponse* response) {
 #ifdef WITH_GPERF
+  static char last_profile_suffix[100] = {0};
+
   std::filesystem::create_directory(kProfilesFolder);
   string profile_name = kProfilesFolder + base::ProgramBaseName();
   response->set(h2::field::cache_control, "no-cache, no-store, must-revalidate");
