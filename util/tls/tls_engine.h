@@ -129,6 +129,7 @@ class Engine {
   uint8_t state_ = 0;
   SSL* ssl_;
   BIO* external_bio_;
+  size_t bytes_written_ = 0, bytes_read_ = 0;  // Total bytes written to the engine.
 };
 
 /// Tries to load CA certificates from predefined (hardcoded) locations.
