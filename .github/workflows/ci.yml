@@ -89,10 +89,6 @@ jobs:
 
           gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
           GLOG_logtostderr=1 ctest -V -L CI
-    - name: Print logs on failure
-      if: failure()
-      run: |
-          cat /home/runner/work/helio/helio/build/third_party/src/aws_project-stamp/aws_project-build-*.log
     - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
