@@ -13,6 +13,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
@@ -962,6 +963,16 @@ TEST_P(ProactorTest, Periodic) {
   });
   LOG(INFO) << "Periodic finished";
   EXPECT_GT(cnt, 0u);
+}
+
+TEST_P(ProactorTest, Background) {
+  proactor()->Await([&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      ThisFiber::Yield();
+    }
+  }, Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "background"
+  });
+  LOG(INFO) << "Background finished";
 }
 
 }  // namespace fb2
