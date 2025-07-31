@@ -20,6 +20,9 @@ Include(ExternalProject)
 Include(FetchContent)
 
 option (WITH_UNWIND "Enable libunwind support" ON)
+option (WITH_GPERF "Compile with gperf" ON)
+option (WITH_AWS "Include AWS client for working with S3 files" ON)
+option (WITH_GCP "Include GCP client for working with GCP" ON)
 option (LEGACY_GLOG "whether to use legacy glog library" ON)
 
 

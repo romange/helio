@@ -24,10 +24,6 @@ option (USE_MOLD "whether to use mold linker" OFF)
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
 
-option(WITH_GPERF "Compile with gperf" ON)
-option(WITH_AWS "Include AWS client for working with S3 files" ON)
-option(WITH_GCP "Include GCP client for working with GCP" ON)
-
 include(CheckCXXCompilerFlag)
 
 # Can not use CHECK_CXX_COMPILER_FLAG due to linker problems.
