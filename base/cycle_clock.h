@@ -56,7 +56,7 @@ class CycleClock {
 
 // The following class aggregates cycle measurements over a short period of time.
 // If periods change, the timer is reset automatically otherwise it continues to accumulate cycles.
-class RealTimeAggreagator {
+class RealTimeAggregator {
  public:
   void Add(uint64_t start, uint64_t now);
 
@@ -71,6 +71,12 @@ class RealTimeAggreagator {
     return usec > 10000u ? 10000u : usec;
   }
 
+  // Returns true if any of the measurements in the current period crossed the ratio threshold.
+  bool IsOverloaded(float cpu_ratio) const {
+    // If we have more than 1000 usec in the last 1ms, we consider it overloaded.
+    return Usec1ms() >= 1000u * cpu_ratio || Usec10ms() >= 10000u * cpu_ratio;
+  }
+
  private:
   uint32_t measurement_start_1ms_ = 0;
   uint32_t measurement_start_10ms_ = 0;
@@ -80,7 +86,7 @@ class RealTimeAggreagator {
 
 class CpuTimeGuard {
  public:
-  explicit CpuTimeGuard(RealTimeAggreagator* val) : val_(val) {
+  explicit CpuTimeGuard(RealTimeAggregator* val) : val_(val) {
     start_ = CycleClock::Now();
   }
 
@@ -90,7 +96,7 @@ class CpuTimeGuard {
   }
 
  private:
-  RealTimeAggreagator* val_;
+  RealTimeAggregator* val_;
   uint64_t start_;
 };
 

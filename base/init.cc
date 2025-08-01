@@ -77,7 +77,7 @@ void CycleClock::InitOnce() {
 // kHighCycleBound which should actually be larger than 100% cpu time in 10ms.
 constexpr uint64_t kHighCycleBound = 1 << 31UL;
 
-void RealTimeAggreagator::Add(uint64_t start, uint64_t now) {
+void RealTimeAggregator::Add(uint64_t start, uint64_t now) {
   uint32_t now_ms = static_cast<uint32_t>(now / freq_ms);
 
   const uint64_t cycles = now - start;
