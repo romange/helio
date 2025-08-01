@@ -54,4 +54,44 @@ class CycleClock {
   static uint64_t frequency_;
 };
 
+// The following class aggregates cycle measurements over a short period of time.
+// If periods change, the timer is reset automatically otherwise it continues to accumulate cycles.
+class RealTimeAggreagator {
+ public:
+  void Add(uint64_t start, uint64_t now);
+
+  // Returns usec measured in the last 1ms period.
+  unsigned Usec1ms() const {
+    uint64_t usec = CycleClock::ToUsec(cycles_1ms_);
+    return usec > 1000u ? 1000u : usec;
+  }
+
+  unsigned Usec10ms() const {
+    uint64_t usec = CycleClock::ToUsec(cycles_1ms_);
+    return usec > 10000u ? 10000u : usec;
+  }
+
+ private:
+  uint32_t measurement_start_1ms_ = 0;
+  uint32_t measurement_start_10ms_ = 0;
+
+  uint32_t cycles_1ms_ = 0, cycles_10ms_ = 0;
+};
+
+class CpuTimeGuard {
+ public:
+  explicit CpuTimeGuard(RealTimeAggreagator* val) : val_(val) {
+    start_ = CycleClock::Now();
+  }
+
+  ~CpuTimeGuard() {
+    uint64_t now = CycleClock::Now();
+    val_->Add(start_, now);
+  }
+
+ private:
+  RealTimeAggreagator* val_;
+  uint64_t start_;
+};
+
 }  // namespace base

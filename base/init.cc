@@ -58,6 +58,7 @@ void ModuleInitializer::RunFtors(bool is_ctor) {
 namespace base {
 
 uint64_t CycleClock::frequency_ = 0;
+static uint64_t freq_ms = 0;
 
 void CycleClock::InitOnce() {
 #ifdef __aarch64__
@@ -68,6 +69,34 @@ void CycleClock::InitOnce() {
 #else
   frequency_ = absl::base_internal::CycleClock::Frequency();
 #endif
+  freq_ms = frequency_ / 1000;
+}
+
+// We bound our measurements since number of cycles should not overflow 1ms or 10ms.
+// But if our measurements cover larger time intervals, we just set saturated value
+// kHighCycleBound which should actually be larger than 100% cpu time in 10ms.
+constexpr uint64_t kHighCycleBound = 1 << 31UL;
+
+void RealTimeAggreagator::Add(uint64_t start, uint64_t now) {
+  uint32_t now_ms = static_cast<uint32_t>(now / freq_ms);
+
+  const uint64_t cycles = now - start;
+
+  if (measurement_start_1ms_ == now_ms) {
+    cycles_1ms_ = std::min(cycles_1ms_ + cycles, kHighCycleBound);
+    cycles_10ms_ = std::min(cycles_10ms_ + cycles, kHighCycleBound);
+  } else {
+    cycles_1ms_ = std::min(cycles, kHighCycleBound);
+    measurement_start_1ms_ = now_ms;
+
+    const uint32_t current_10ms_bucket_start = (now_ms / 10) * 10;
+    if (measurement_start_10ms_ == current_10ms_bucket_start) {
+      cycles_10ms_ = std::min(cycles_10ms_ + cycles, kHighCycleBound);
+    } else {
+      cycles_10ms_ = std::min(cycles, kHighCycleBound);
+      measurement_start_10ms_ = current_10ms_bucket_start;
+    }
+  }
 }
 
 }  // namespace base
