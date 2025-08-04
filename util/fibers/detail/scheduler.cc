@@ -498,13 +498,14 @@ void Scheduler::PrintAllFiberStackTraces() {
 }
 
 RunFiberResult Scheduler::Run(FiberPriority priority) {
+  // TODO: use c++ 20 using enum
   const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
   const float kBackgroundWarrantPct = 0.1;  // at least 10% of cpu time under any load
 
   // Reset total runtime every while to restore normal balance.
   // If background fibers took most of the time, punish them by resetting later.
   if (runtime_ns_.total() >= kBaseSlice) {
-    if (runtime_ns_[FiberPriority::NORMAL] <= runtime_ns_[FiberPriority::BACKGROUND] ||
+    if (runtime_ns_[FiberPriority::BACKGROUND] <= runtime_ns_[FiberPriority::NORMAL] ||
         runtime_ns_.total() >= 5 * kBaseSlice) {
       runtime_ns_.fill(0);
     }
@@ -518,7 +519,8 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
     if (runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
       RunReadyFibersInternal(FiberPriority::BACKGROUND);
   } else {
-    DCHECK(!HasReady(FiberPriority::NORMAL));  // Proactor should progress on highest priority instead
+    DCHECK(
+        !HasReady(FiberPriority::NORMAL));  // Proactor should progress on highest priority instead
     DCHECK(priority == FiberPriority::BACKGROUND);
   }
 
