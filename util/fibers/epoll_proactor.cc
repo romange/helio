@@ -303,10 +303,14 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     RunL2Tasks(scheduler);
 
     if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE) {
-      cqe_count = 1;
+      continue;
     }
 
     if (cqe_count) {
+      continue;
+    }
+
+    if (scheduler->RunBackgroundStep() == detail::RunFiberResult::HAS_ACTIVE) {
       continue;
     }
 

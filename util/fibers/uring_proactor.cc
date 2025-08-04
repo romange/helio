@@ -975,7 +975,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      */
 
 #ifdef CHECK_WAKE_LATENCY
-    last_wake_ts_.store(0, std::memory_order_relaxed);
+     last_wake_ts_.store(0, std::memory_order_relaxed);
 #endif
     if (task_queue_.empty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,

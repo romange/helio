@@ -123,6 +123,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
+    // TODO: missing support for background fibers.
     if (sched->HasReady()) {
       FiberInterface* fi = sched->PopReady();
       DCHECK(!fi->list_hook.is_linked());
@@ -169,11 +170,12 @@ Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
 
-  const unsigned prio = unsigned(FiberPriority::NORMAL);
-  while (HasReady(prio)) {
-    FiberInterface* fi = PopReady(prio);
-    DCHECK(!fi->sleep_hook.is_linked());
-    fi->SwitchTo();
+  for (unsigned prio = 0; prio < 2; ++prio) {
+    while (HasReady(prio)) {
+      FiberInterface* fi = PopReady(prio);
+      DCHECK(!fi->sleep_hook.is_linked());
+      fi->SwitchTo();
+    }
   }
 
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
@@ -235,7 +237,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(*fibi);
+  ready_queue_[unsigned(fibi->prio_)].push_back(*fibi);
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -423,7 +425,7 @@ unsigned Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
-    ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(fi);
+    ready_queue_[unsigned(fi.prio_)].push_back(fi);
     fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
     ++result;
   } while (!sleep_queue_.empty());
@@ -494,11 +496,12 @@ void Scheduler::PrintAllFiberStackTraces() {
   ExecuteOnAllFiberStacks(print_fn);
 }
 
-auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
-  const unsigned q_indx = unsigned(FiberPriority::NORMAL);
-  DCHECK(HasReady(q_indx));
+auto Scheduler::RunWorkerFibersStepImpl(unsigned q_index) -> RunFiberResult {
+  DCHECK(HasReady(q_index));
 
-  constexpr uint64_t kMaxTimeSpentNs = 1000'000U;  // 1 ms.
+  // We limit the time slice for BACKGROUND fibers more than NORMAL fibers.
+  const uint64_t kMaxTimeSpentNs =
+      q_index == unsigned(FiberPriority::NORMAL) ? 1000'000U : 200'000U;
   const uint64_t deadline_ns = ProactorBase::GetMonotonicTimeNs() + kMaxTimeSpentNs;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
@@ -508,7 +511,7 @@ auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
   // To mitigate this,
   // we break out of the loop if a fiber yield has occurred, even if the ready queue is not empty.
   do {
-    FiberInterface* fi = PopReady(q_indx);
+    FiberInterface* fi = PopReady(q_index);
     DCHECK(!fi->list_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
     AddReady(dispatch_cntx_.get());
@@ -533,12 +536,12 @@ auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
     // We may need to break here even if ready_queue_ is not empty if one of the fibers yielded,
     // because otherwise we may end up in a busy loop with a fiber keeps yielding and we never
     // return to the dispatcher.
-  } while (HasReady(q_indx) && !yield_occurred_);
+  } while (HasReady(q_index) && !yield_occurred_);
 
   yield_occurred_ = false;
 
   // We are back to the dispatcher, return true if there are no ready fibers.
-  return HasReady(q_indx) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+  return HasReady(q_index) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 }  // namespace detail
