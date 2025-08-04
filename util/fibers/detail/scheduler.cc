@@ -123,9 +123,9 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
-    // TODO: missing support for background fibers.
-    if (sched->HasReady()) {
-      FiberInterface* fi = sched->PopReady();
+    unsigned q_index = static_cast<unsigned>(this->prio_);
+    if (sched->HasReady(q_index)) {
+      FiberInterface* fi = sched->PopReady(q_index);
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
       sched->AddReady(this);
