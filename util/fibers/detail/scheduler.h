@@ -42,8 +42,8 @@ class Scheduler {
 
   void ScheduleTermination(FiberInterface* fibi);
 
-  bool HasReady(unsigned q_indx = 0) const {
-    return !ready_queue_[q_indx].empty();
+  bool HasReady(FiberPriority p = FiberPriority::NORMAL) const {
+    return !ready_queue_[static_cast<uint8_t>(p)].empty();
   }
 
   // Yields the calling fiber.
@@ -55,10 +55,11 @@ class Scheduler {
   bool WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
 
   // Assumes HasReady() is true.
-  FiberInterface* PopReady(unsigned q_indx = 0) {
-    assert(!ready_queue_[q_indx].empty());
-    FiberInterface* res = &ready_queue_[q_indx].front();
-    ready_queue_[q_indx].pop_front();
+  FiberInterface* PopReady(FiberPriority p = FiberPriority::NORMAL) {
+    size_t idx = static_cast<uint8_t>(p);
+    assert(!ready_queue_[idx].empty());
+    FiberInterface* res = &ready_queue_[idx].front();
+    ready_queue_[idx].pop_front();
     return res;
   }
 
@@ -113,7 +114,7 @@ class Scheduler {
 
  private:
   // Run fibers from ready queue with given priority.
-  void RunReadyFibersInternal(unsigned q_ind);
+  void RunReadyFibersInternal(FiberPriority priority);
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -133,6 +134,16 @@ class Scheduler {
     }
   };
 
+  struct RuntimeCounter : public std::array<uint64_t /* runtime ns */, 2 /* FiberPrioriry */> {
+    using std::array<uint64_t, 2>::operator[];
+    uint64_t operator[](FiberPriority p) const {
+      return std::array<uint64_t, 2>::operator[](static_cast<uint8_t>(p));
+    }
+    uint64_t total() const {
+      return operator[](FiberPriority::NORMAL) + operator[](FiberPriority::BACKGROUND);
+    }
+  };
+
   using SleepQueue = boost::intrusive::multiset<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_SleepHook, &FiberInterface::sleep_hook>,
@@ -145,7 +156,7 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
-  uint64_t runtime_ns_[2 /* FiberPrioriry */];  // total running times of fibers in ns
+  RuntimeCounter runtime_ns_;  // total running times of fibers in ns
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;

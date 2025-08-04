@@ -781,6 +781,7 @@ LinuxSocketBase* UringProactor::CreateSocket() {
 
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   struct io_uring_cqe* cqes[kCqeBatchLen];
+  using namespace detail;
 
   uint32_t tq_seq = 0;
   uint32_t spin_loops = 0;
@@ -883,7 +884,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    if (scheduler->Run(FiberPriority::NORMAL) == detail::RunFiberResult::HAS_ACTIVE ||
+    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE ||
         has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
@@ -904,7 +905,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (scheduler->Run(FiberPriority::BACKGROUND) == detail::RunFiberResult::HAS_ACTIVE) {
+    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
       jump_from = JUMP_FROM_READY;
       continue;
     }
