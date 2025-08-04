@@ -17,6 +17,12 @@ class Histogram {
   Histogram();
   ~Histogram();
 
+  Histogram(const Histogram&) = default;
+  Histogram(Histogram&&) = default;
+
+  Histogram& operator=(const Histogram&) = default;
+  Histogram& operator=(Histogram&&) = default;
+
   void Clear();
   void Add(double value) {
     Add(value, 1);
