@@ -169,8 +169,9 @@ Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
 
-  while (HasReady()) {
-    FiberInterface* fi = PopReady();
+  const unsigned prio = unsigned(FiberPriority::NORMAL);
+  while (HasReady(prio)) {
+    FiberInterface* fi = PopReady(prio);
     DCHECK(!fi->sleep_hook.is_linked());
     fi->SwitchTo();
   }
@@ -200,7 +201,7 @@ Scheduler::~Scheduler() {
 
 void Scheduler::Yield(FiberInterface* me) {
   AddReady(me);
-  was_yield_ = true;
+  yield_occurred_ = true;
   Preempt();
 }
 
@@ -220,10 +221,11 @@ ctx::fiber_context Scheduler::Preempt() {
     }
   }
 
-  DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
+  constexpr unsigned prio = unsigned(FiberPriority::NORMAL);
+  DCHECK(HasReady(prio));  // dispatcher fiber is always in the ready queue.
 
-  FiberInterface* fi = &ready_queue_.front();
-  ready_queue_.pop_front();
+  FiberInterface* fi = &ready_queue_[prio].front();
+  ready_queue_[prio].pop_front();
 
   return fi->SwitchTo();
 }
@@ -233,7 +235,7 @@ void Scheduler::AddReady(FiberInterface* fibi) {
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_.push_back(*fibi);
+  ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(*fibi);
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -421,7 +423,7 @@ unsigned Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
-    ready_queue_.push_back(fi);
+    ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(fi);
     fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
     ++result;
   } while (!sleep_queue_.empty());
@@ -447,9 +449,10 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   // All our dispatch policies add dispatcher to ready queue, hence it must be there.
   CHECK(dispatch_cntx_->list_hook.is_linked());
 
+  constexpr unsigned prio = unsigned(FiberPriority::NORMAL);
   // We must erase it from the ready queue because we switch to dispatcher "abnormally",
   // not through Preempt().
-  ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
+  ready_queue_[prio].erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
 
   dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
 }
@@ -481,7 +484,7 @@ void Scheduler::PrintAllFiberStackTraces() {
       uint64_t tsc = CycleClock::Now();
       uint64_t delta = tsc - fb->cpu_tsc_;
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
-      absl::StrAppend(&state, ":", delta / freq_ms , "ms");
+      absl::StrAppend(&state, ":", delta / freq_ms, "ms");
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
@@ -491,22 +494,51 @@ void Scheduler::PrintAllFiberStackTraces() {
   ExecuteOnAllFiberStacks(print_fn);
 }
 
-bool Scheduler::RunWorkerFibersStepImpl() {
-  DCHECK(!ready_queue_.empty());
+auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
+  const unsigned q_indx = unsigned(FiberPriority::NORMAL);
+  DCHECK(HasReady(q_indx));
 
-  FiberInterface* fi = PopReady();
-  DCHECK(!fi->list_hook.is_linked());
-  DCHECK(!fi->sleep_hook.is_linked());
-  AddReady(dispatch_cntx_.get());
+  constexpr uint64_t kMaxTimeSpentNs = 1000'000U;  // 1 ms.
+  const uint64_t deadline_ns = ProactorBase::GetMonotonicTimeNs() + kMaxTimeSpentNs;
 
-  DVLOG(2) << "Switching to " << fi->name();
-  ProactorBase::UpdateMonotonicTime();
-  fi->SwitchTo();
+  // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
+  // Instead of a single function call, we use a loop to allow the scheduler to traverse and
+  // execute multiple ready fibers in succession without returning to the dispatcher loop.
+  // However, care must be taken to avoid a busy loop if a fiber repeatedly yields.
+  // To mitigate this,
+  // we break out of the loop if a fiber yield has occurred, even if the ready queue is not empty.
+  do {
+    FiberInterface* fi = PopReady(q_indx);
+    DCHECK(!fi->list_hook.is_linked());
+    DCHECK(!fi->sleep_hook.is_linked());
+    AddReady(dispatch_cntx_.get());
 
-  was_yield_ = false;
+    DVLOG(2) << "Switching to " << fi->name();
+
+    // Traverses one or more fibers. A worker fiber does not necessarily returns straight back
+    // to the dispatcher. Instead it chooses the next ready worker fiber
+    // from the ready queue.
+    fi->SwitchTo();
+
+    ProactorBase::UpdateMonotonicTime();
+    uint64_t now_ns = ProactorBase::GetMonotonicTimeNs();
+
+    // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
+    // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
+    // to kMaxTimeSpentNs.
+    if (now_ns > deadline_ns) {
+      break;
+    }
+
+    // We may need to break here even if ready_queue_ is not empty if one of the fibers yielded,
+    // because otherwise we may end up in a busy loop with a fiber keeps yielding and we never
+    // return to the dispatcher.
+  } while (HasReady(q_indx) && !yield_occurred_);
+
+  yield_occurred_ = false;
 
   // We are back to the dispatcher, return true if there are no ready fibers.
-  return !HasReady();
+  return HasReady(q_indx) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 }  // namespace detail

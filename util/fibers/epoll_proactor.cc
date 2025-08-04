@@ -302,8 +302,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     RunL2Tasks(scheduler);
 
-    // must be if and not while - see uring_proactor.cc for more details.
-    if (!scheduler->RunWorkerFibersStep()) {
+    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE) {
       cqe_count = 1;
     }
 
@@ -311,10 +310,10 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    scheduler->DestroyTerminated();
     if (!RunOnIdleTasks()) {
-      Pause(spin_loops);
+      // Pause(spin_loops);
       ++spin_loops;
+      scheduler->DestroyTerminated();
     }
   }
 

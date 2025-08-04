@@ -883,11 +883,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    // Traverses one or more fibers because a worker fiber does not necessarily returns
-    // straight back to the dispatcher. Instead it chooses the next ready worker fiber
-    // from the ready queue.
-    //
-    if (!scheduler->RunWorkerFibersStep()) {
+    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE ||
+        has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
       continue;
@@ -908,6 +905,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     DCHECK(!has_cpu_work && !scheduler->HasReady());
+
+    // We put this check to follow up in case it breaks in the future.
+    // In any case we have the io_uring_sq_ready() check below to protect us
+    // in production.
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
 
     if (io_uring_sq_ready(&ring_) > 0) {
@@ -974,7 +975,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      */
 
 #ifdef CHECK_WAKE_LATENCY
-     last_wake_ts_.store(0, std::memory_order_relaxed);
+    last_wake_ts_.store(0, std::memory_order_relaxed);
 #endif
     if (task_queue_.empty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
@@ -998,8 +999,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         uint64_t now = absl::GetCurrentTimeNanos();
         uint64_t last_wake_ts = last_wake_ts_.load(std::memory_order_relaxed);
         if (last_wake_ts && now - last_wake_ts > 300'0000) {  // 300 us
-          LOG(INFO) << "WakeRing was sent " << (now - last_wake_ts) / 1000
-                    << " usec ago";
+          LOG(INFO) << "WakeRing was sent " << (now - last_wake_ts) / 1000 << " usec ago";
         }
       }
 #endif
