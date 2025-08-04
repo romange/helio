@@ -370,12 +370,9 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, F
 
   // placement new of context on top of fiber's stack.
   // note, that obj_ptr is not real top of the stack, because boost places more records below it.
-  WorkerImpl* fctx = new (obj_ptr) WorkerImpl{name,
-                                              prio,
-                                              std::move(palloc),
-                                              std::forward<StackAlloc>(salloc),
-                                              std::forward<Fn>(fn),
-                                              std::forward<Arg>(arg)...};
+  WorkerImpl* fctx =
+      new (obj_ptr) WorkerImpl{name, prio, std::move(palloc), std::forward<StackAlloc>(salloc),
+                               std::forward<Fn>(fn), std::forward<Arg>(arg)...};
   return fctx;
 }
 

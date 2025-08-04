@@ -123,9 +123,8 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
-    auto prio = this->prio_;
-    if (sched->HasReady(prio)) {
-      FiberInterface* fi = sched->PopReady(prio);
+    if (sched->HasReady(this->prio_)) {
+      FiberInterface* fi = sched->PopReady(this->prio_);
       DCHECK(!fi->list_hook.is_linked());
       DCHECK(!fi->sleep_hook.is_linked());
       sched->AddReady(this);
@@ -519,8 +518,7 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
     if (runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
       RunReadyFibersInternal(FiberPriority::BACKGROUND);
   } else {
-    DCHECK(
-        !HasReady(FiberPriority::NORMAL));  // Proactor should progress on highest priority instead
+    DCHECK(!HasReady(FiberPriority::NORMAL));  // Proactor should progress on higher priority first
     DCHECK(priority == FiberPriority::BACKGROUND);
   }
 
