@@ -341,6 +341,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
+// TODO: Optimize
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
   unsigned iteration = 0;
@@ -496,13 +497,46 @@ void Scheduler::PrintAllFiberStackTraces() {
   ExecuteOnAllFiberStacks(print_fn);
 }
 
-auto Scheduler::RunWorkerFibersStepImpl(unsigned q_index) -> RunFiberResult {
-  DCHECK(HasReady(q_index));
+RunFiberResult Scheduler::Run(FiberPriority prioirty) {
+  const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
+  const float kBackgroundWarrantPct = 0.1;  // at least 10% of cpu time under any load
+  unsigned q_index = static_cast<unsigned>(prioirty);
+
+  // Reset total runtime every while to restore normal balance.
+  // If background fibers took most of the time, punish them by resetting later.
+  uint64_t time_sum = runtime_ns_[0] + runtime_ns_[1];
+  if (time_sum >= kBaseSlice) {
+    if (runtime_ns_[0] <= runtime_ns_[1] || time_sum >= 5 * kBaseSlice) {
+      runtime_ns_[0] = runtime_ns_[1] = 0;
+    }
+  }
+
+  if (prioirty == FiberPriority::BACKGROUND) {
+    DCHECK(!HasReady(0));  // Proactor should progress on highest priority instead
+    RunReadyFibersInternal(q_index);
+  } else {
+    DCHECK(prioirty == FiberPriority::NORMAL);
+    RunReadyFibersInternal(q_index);
+
+    // If background fibers are below their warrant, let them run
+    time_sum = (runtime_ns_[0] + runtime_ns_[1]);
+    if (float(runtime_ns_[1]) <= float(time_sum) * kBackgroundWarrantPct) {
+      RunReadyFibersInternal(1);
+    }
+  }
+
+  return HasReady(q_index) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+}
+
+void Scheduler::RunReadyFibersInternal(unsigned q_index) {
+  if (!HasReady(q_index))
+    return;
 
   // We limit the time slice for BACKGROUND fibers more than NORMAL fibers.
-  const uint64_t kMaxTimeSpentNs =
-      q_index == unsigned(FiberPriority::NORMAL) ? 1000'000U : 200'000U;
-  const uint64_t deadline_ns = ProactorBase::GetMonotonicTimeNs() + kMaxTimeSpentNs;
+  const uint64_t kBudgets[2] = {1000'000U, 200'000};
+  const uint64_t max_budget = kBudgets[q_index];
+  const uint64_t start_ns = ProactorBase::GetMonotonicTimeNs();
+  uint64_t ran_ns = 0;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
   // Instead of a single function call, we use a loop to allow the scheduler to traverse and
@@ -524,12 +558,12 @@ auto Scheduler::RunWorkerFibersStepImpl(unsigned q_index) -> RunFiberResult {
     fi->SwitchTo();
 
     ProactorBase::UpdateMonotonicTime();
-    uint64_t now_ns = ProactorBase::GetMonotonicTimeNs();
+    ran_ns = ProactorBase::GetMonotonicTimeNs() - start_ns;
 
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
     // to kMaxTimeSpentNs.
-    if (now_ns > deadline_ns) {
+    if (ran_ns > max_budget) {
       break;
     }
 
@@ -539,9 +573,7 @@ auto Scheduler::RunWorkerFibersStepImpl(unsigned q_index) -> RunFiberResult {
   } while (HasReady(q_index) && !yield_occurred_);
 
   yield_occurred_ = false;
-
-  // We are back to the dispatcher, return true if there are no ready fibers.
-  return HasReady(q_index) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+  runtime_ns_[q_index] += ran_ns;
 }
 
 }  // namespace detail

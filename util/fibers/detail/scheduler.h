@@ -96,24 +96,8 @@ class Scheduler {
     return custom_policy_;
   }
 
-  // Returns true if all the ready fibers are suspended, false if there are still some ready fibers.
-  // (The latter case happens when one of the fibers yields).
-  RunFiberResult RunWorkerFibersStep() {
-    if (ready_queue_[unsigned(FiberPriority::NORMAL)].empty()) {
-      return RunFiberResult::EXHAUSTED;
-    }
-
-    return RunWorkerFibersStepImpl(unsigned(FiberPriority::NORMAL));
-  }
-
-  // Returns true if a background fiber was executed, false otherwise.
-  RunFiberResult RunBackgroundStep() {
-    if (ready_queue_[unsigned(FiberPriority::BACKGROUND)].empty()) {
-      return RunFiberResult::EXHAUSTED;
-    }
-
-    return RunWorkerFibersStepImpl(unsigned(FiberPriority::BACKGROUND));
-  }
+  // Run fibers from ready queue with given priority baseline
+  RunFiberResult Run(FiberPriority baseline);
 
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
@@ -128,7 +112,8 @@ class Scheduler {
   }
 
  private:
-  RunFiberResult RunWorkerFibersStepImpl(unsigned q_index);
+  // Run fibers from ready queue with given priority.
+  void RunReadyFibersInternal(unsigned q_ind);
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -160,8 +145,8 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
-  // ready_queue_[0] - normal. TODO: add background queue.
-  FI_Queue ready_queue_[2], terminate_queue_;
+  uint64_t runtime_ns_[2 /* FiberPrioriry */];  // total running times of fibers in ns
+  FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
 

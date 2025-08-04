@@ -302,7 +302,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     RunL2Tasks(scheduler);
 
-    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE) {
+    if (scheduler->Run(FiberPriority::NORMAL) == detail::RunFiberResult::HAS_ACTIVE) {
       continue;
     }
 
@@ -310,7 +310,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (scheduler->RunBackgroundStep() == detail::RunFiberResult::HAS_ACTIVE) {
+    if (scheduler->Run(FiberPriority::BACKGROUND) == detail::RunFiberResult::HAS_ACTIVE) {
       continue;
     }
 

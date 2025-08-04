@@ -639,8 +639,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
-    -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
+                                            uint16_t* head_id) -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 
@@ -883,7 +883,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE ||
+    if (scheduler->Run(FiberPriority::NORMAL) == detail::RunFiberResult::HAS_ACTIVE ||
         has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
@@ -901,6 +901,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
       jump_from = JUMP_FROM_L2;
+      continue;
+    }
+
+    if (scheduler->Run(FiberPriority::BACKGROUND) == detail::RunFiberResult::HAS_ACTIVE) {
+      jump_from = JUMP_FROM_READY;
       continue;
     }
 
@@ -975,7 +980,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      */
 
 #ifdef CHECK_WAKE_LATENCY
-     last_wake_ts_.store(0, std::memory_order_relaxed);
+    last_wake_ts_.store(0, std::memory_order_relaxed);
 #endif
     if (task_queue_.empty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
