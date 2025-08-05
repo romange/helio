@@ -433,6 +433,16 @@ void LinuxFile::WriteAsync(io::Bytes src, off_t offset, AsyncCb cb) {
     se.sqe()->flags |= IOSQE_FIXED_FILE;
 }
 
+void LinuxFile::FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
+                                       uint32_t, uint32_t) { cb(res); };
+  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+
+  se.PrepFallocate(fd_, mode, offset, len);
+  if (is_direct_)
+    se.sqe()->flags |= IOSQE_FIXED_FILE;
+}
+
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);
