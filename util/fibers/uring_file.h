@@ -63,7 +63,7 @@ class LinuxFile {
 
   std::error_code ReadFixed(io::MutableBytes dest, off_t offset, unsigned buf_index);
 
-  // int - io result.
+  // int - io result. negative value is an error code.
   using AsyncCb = std::function<void(int)>;
 
   // Async versions of Read
@@ -74,7 +74,7 @@ class LinuxFile {
   // is specified by buf_index. See io_uring_prep_write_fixed(3) for more details.
   void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
   void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
-
+  void FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb);
  protected:
   int fd_ = -1;
   union {
