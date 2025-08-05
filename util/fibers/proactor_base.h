@@ -220,6 +220,10 @@ class ProactorBase {
   // Returns current busy cycles count since the last call to epoll_wait or equivalent.
   uint64_t GetCurrentBusyCycles() const;
 
+  void SetSpinLimit(unsigned limit) {
+    spin_limit_ = limit;
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -314,7 +318,7 @@ class ProactorBase {
 
   std::vector<OnIdleWrapper> on_idle_arr_;
   uint32_t on_idle_next_ = 0;
-
+  uint32_t spin_limit_ = 10;
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
 
   struct TLInfo {

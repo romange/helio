@@ -25,9 +25,6 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
-ABSL_FLAG(uint32_t, uring_busy_poll_usec, 0,
-          "If positive, use busy poll for this number of microseconds. "
-          "If 0, do not use busy poll at all.");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
@@ -796,7 +793,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     JUMP_FROM_TOTAL
   } jump_from = JUMP_FROM_INIT;
   unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
-  uint64_t busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
 
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
@@ -883,15 +879,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE ||
-        has_cpu_work) {
+    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE || has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
+      spin_loops = 0;
       continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
+      spin_loops = 0;
       continue;
     }
 
@@ -901,6 +898,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
       jump_from = JUMP_FROM_L2;
+      spin_loops = 0;
       continue;
     }
 
@@ -928,16 +926,14 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    bool should_poll =
-        spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
+    bool should_poll = spin_loops++ < spin_limit_;
     if (!ring_busy && should_poll) {
       DVLOG(3) << "spin_loops " << spin_loops;
 
+      wait_for_cqe(&ring_, 0, nullptr);  // check completions without blocking.
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
       jump_from = JUMP_FROM_SPIN;
-      // Refresh to allow runtime updates.
-      busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
       continue;
     }
 

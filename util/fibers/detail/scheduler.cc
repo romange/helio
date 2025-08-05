@@ -499,6 +499,7 @@ auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
   DCHECK(HasReady(q_indx));
 
   constexpr uint64_t kMaxTimeSpentNs = 1000'000U;  // 1 ms.
+  ProactorBase::UpdateMonotonicTime();
   const uint64_t deadline_ns = ProactorBase::GetMonotonicTimeNs() + kMaxTimeSpentNs;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
