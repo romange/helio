@@ -222,12 +222,15 @@ ctx::fiber_context Scheduler::Preempt() {
     }
   }
 
-  DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
+  // Background fibers always return to the scheduler
+  if (FiberActive()->prio_ == FiberPriority::BACKGROUND) {
+    return dispatch_cntx_->SwitchTo();
+  }
 
+  DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
   size_t idx = static_cast<uint8_t>(FiberPriority::NORMAL);
   FiberInterface* fi = &ready_queue_[idx].front();
   ready_queue_[idx].pop_front();
-
   return fi->SwitchTo();
 }
 
@@ -545,7 +548,10 @@ void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     FiberInterface* fi = PopReady(priority);
     DCHECK(!fi->list_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
-    AddReady(dispatch_cntx_.get());
+
+    // Run round robin only with equal priority, others switch back directly after running
+    if (priority == dispatch_cntx_->prio_)
+      AddReady(dispatch_cntx_.get());
 
     DVLOG(2) << "Switching to " << fi->name();
 
