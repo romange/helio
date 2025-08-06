@@ -136,9 +136,15 @@ class Scheduler {
 
   struct RuntimeCounter : public std::array<uint64_t /* runtime ns */, 2 /* FiberPrioriry */> {
     using std::array<uint64_t, 2>::operator[];
-    uint64_t operator[](FiberPriority p) const {
-      return std::array<uint64_t, 2>::operator[](static_cast<uint8_t>(p));
+
+    uint64_t& operator[](FiberPriority p) {
+      return (*this)[static_cast<uint8_t>(p)];
     }
+
+    uint64_t operator[](FiberPriority p) const {
+      return (*this)[static_cast<uint8_t>(p)];
+    }
+
     uint64_t total() const {
       return operator[](FiberPriority::NORMAL) + operator[](FiberPriority::BACKGROUND);
     }

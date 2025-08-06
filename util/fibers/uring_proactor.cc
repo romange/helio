@@ -884,8 +884,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE ||
-        has_cpu_work) {
+    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE || has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
       continue;
@@ -905,11 +904,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
-      jump_from = JUMP_FROM_READY;
-      continue;
-    }
-
     DCHECK(!has_cpu_work && !scheduler->HasReady());
 
     // We put this check to follow up in case it breaks in the future.
@@ -918,6 +912,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
 
     if (io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
       jump_from = JUMP_FROM_READY;
       continue;
     }

@@ -533,8 +533,10 @@ void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     return;
 
   // We limit the time slice for BACKGROUND fibers more than NORMAL fibers.
-  const uint64_t kBudgets[2] = {1000'000U, 200'000};
+  const uint64_t kBudgets[2] = {1'000'000, 100'000};
   const uint64_t max_budget = kBudgets[static_cast<uint8_t>(priority)];
+
+  ProactorBase::UpdateMonotonicTime();
   const uint64_t start_ns = ProactorBase::GetMonotonicTimeNs();
   uint64_t ran_ns = 0;
 
@@ -570,10 +572,14 @@ void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
       break;
     }
 
+    // Background fibers yield as often as possible to be cooperative, so break only for normal ones
+    if (priority == FiberPriority::NORMAL && yield_occurred_)
+      break;
+
     // We may need to break here even if ready_queue_ is not empty if one of the fibers yielded,
     // because otherwise we may end up in a busy loop with a fiber keeps yielding and we never
     // return to the dispatcher.
-  } while (HasReady(priority) && !yield_occurred_);
+  } while (HasReady(priority));
 
   yield_occurred_ = false;
   runtime_ns_[static_cast<size_t>(priority)] += ran_ns;
