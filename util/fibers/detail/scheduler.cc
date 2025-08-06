@@ -513,7 +513,7 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
     }
   }
 
-  RunReadyFibersInternal(priority);
+  auto res = RunReadyFibersInternal(priority);
 
   // If background fibers are below their warrant, let them run
   if (priority == FiberPriority::NORMAL) {
@@ -525,20 +525,24 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
     DCHECK(priority == FiberPriority::BACKGROUND);
   }
 
-  return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+  return res;
 }
 
-void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
+RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   if (!HasReady(priority))
-    return;
+    return RunFiberResult::EXHAUSTED;
 
   // We limit the time slice for BACKGROUND fibers more than NORMAL fibers.
   const uint64_t kBudgets[2] = {1'000'000, 100'000};
   const uint64_t max_budget = kBudgets[static_cast<uint8_t>(priority)];
 
   ProactorBase::UpdateMonotonicTime();
-  const uint64_t start_ns = ProactorBase::GetMonotonicTimeNs();
+  uint64_t now_ns = ProactorBase::GetMonotonicTimeNs();
+  const uint64_t start_ns = now_ns;
   uint64_t ran_ns = 0;
+
+  if (now_ns < background_next_)
+    return RunFiberResult::EXHAUSTED;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
   // Instead of a single function call, we use a loop to allow the scheduler to traverse and
@@ -563,7 +567,8 @@ void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     fi->SwitchTo();
 
     ProactorBase::UpdateMonotonicTime();
-    ran_ns = ProactorBase::GetMonotonicTimeNs() - start_ns;
+    now_ns = ProactorBase::GetMonotonicTimeNs();
+    ran_ns = now_ns - start_ns;
 
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
@@ -583,6 +588,13 @@ void Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
   yield_occurred_ = false;
   runtime_ns_[static_cast<size_t>(priority)] += ran_ns;
+
+  // Punish long running time
+  if (priority == FiberPriority::BACKGROUND && ran_ns >= max_budget * 4) {
+    background_next_ = now_ns + max_budget * 10;
+  }
+
+  return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 }  // namespace detail

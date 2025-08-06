@@ -114,7 +114,7 @@ class Scheduler {
 
  private:
   // Run fibers from ready queue with given priority.
-  void RunReadyFibersInternal(FiberPriority priority);
+  RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -162,6 +162,7 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
+  uint64_t background_next_ = 0;
   RuntimeCounter runtime_ns_;  // total running times of fibers in ns
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
