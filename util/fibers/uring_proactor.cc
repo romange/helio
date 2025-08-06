@@ -25,9 +25,6 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
-ABSL_FLAG(uint32_t, uring_busy_poll_usec, 0,
-          "If positive, use busy poll for this number of microseconds. "
-          "If 0, do not use busy poll at all.");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
@@ -783,7 +780,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   struct io_uring_cqe* cqes[kCqeBatchLen];
 
   uint32_t tq_seq = 0;
-  uint32_t spin_loops = 0;
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
 
@@ -796,7 +792,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     JUMP_FROM_TOTAL
   } jump_from = JUMP_FROM_INIT;
   unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
-  uint64_t busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
 
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
@@ -860,7 +855,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         }
       } while (task_queue_.try_dequeue(task));
       stats_.num_task_runs += cnt;
-      DVLOG(2) << "Tasks runs " << stats_.num_task_runs << "/" << spin_loops;
+      DVLOG(2) << "Tasks runs " << stats_.num_task_runs;
 
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
@@ -881,17 +876,21 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       if (ShouldPollL2Tasks()) {
         RunL2Tasks(scheduler);
       }
+      ResetBusyPoll();
     }
 
     if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE ||
         has_cpu_work) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
+
       continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
       continue;
     }
 
@@ -901,6 +900,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
       jump_from = JUMP_FROM_L2;
+      ResetBusyPoll();
       continue;
     }
 
@@ -913,6 +913,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
     if (io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
       continue;
     }
 
@@ -928,20 +929,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    bool should_poll =
-        spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
+    bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
     if (!ring_busy && should_poll) {
-      DVLOG(3) << "spin_loops " << spin_loops;
+      Pause(3);
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
       jump_from = JUMP_FROM_SPIN;
-      // Refresh to allow runtime updates.
-      busy_poll_cycles = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_uring_busy_poll_usec));
       continue;
     }
-
-    spin_loops = 0;  // Reset the spinning.
 
     __kernel_timespec ts{0, 0};
     __kernel_timespec* ts_arg = nullptr;
@@ -977,7 +973,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 #ifdef CHECK_WAKE_LATENCY
     last_wake_ts_.store(0, std::memory_order_relaxed);
 #endif
-    if (task_queue_.empty() &&
+    if (task_queue_.empty() && scheduler->RemoteEmpty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
                                       memory_order_relaxed)) {
       if (is_stopped_) {
@@ -996,8 +992,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
 #ifdef CHECK_WAKE_LATENCY
       {
-        uint64_t now = absl::GetCurrentTimeNanos();
-        uint64_t last_wake_ts = last_wake_ts_.load(std::memory_order_relaxed);
+        int64_t now = absl::GetCurrentTimeNanos();
+        int64_t last_wake_ts = last_wake_ts_.load(std::memory_order_relaxed);
         if (last_wake_ts && now - last_wake_ts > 300'0000) {  // 300 us
           LOG(INFO) << "WakeRing was sent " << (now - last_wake_ts) / 1000 << " usec ago";
         }
