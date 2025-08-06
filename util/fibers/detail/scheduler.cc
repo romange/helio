@@ -498,6 +498,8 @@ auto Scheduler::RunWorkerFibersStepImpl() -> RunFiberResult {
   const unsigned q_indx = unsigned(FiberPriority::NORMAL);
   DCHECK(HasReady(q_indx));
 
+  ProactorBase::UpdateMonotonicTime();
+
   constexpr uint64_t kMaxTimeSpentNs = 1000'000U;  // 1 ms.
   const uint64_t deadline_ns = ProactorBase::GetMonotonicTimeNs() + kMaxTimeSpentNs;
 
