@@ -103,6 +103,8 @@ __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
+  SetBusyPollUsec(20);
+
 #ifdef __linux__
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
   CHECK_GE(wake_fd_, 0);
@@ -323,7 +325,11 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
 }
 
 uint64_t ProactorBase::GetCurrentBusyCycles() const {
-  return base::CycleClock::Now() - idle_end_cycle_;
+  return base::CycleClock::Now() - busy_poll_start_cycle_;
+}
+
+void ProactorBase::SetBusyPollUsec(uint32_t usec) {
+  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(usec);
 }
 
 // The threshold is set to ~2.5ms.
@@ -356,18 +362,23 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
 }
 
 void ProactorBase::IdleEnd(uint64_t start) {
-  idle_end_cycle_ = base::CycleClock::Now();
+  auto end_cycles = base::CycleClock::Now();
+  busy_poll_start_cycle_ = end_cycles;
 
   // Assuming that cpu clock frequency is
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
-  cpu_idle_cycles_ += (idle_end_cycle_ - start);
+  cpu_idle_cycles_ += (end_cycles - start);
 
-  if (idle_end_cycle_ > cpu_measure_cycle_start_ + kMinCyclePeriod) {
+  if (end_cycles > cpu_measure_cycle_start_ + kMinCyclePeriod) {
     load_numerator_ = cpu_idle_cycles_;
-    load_denominator_ = idle_end_cycle_ - cpu_measure_cycle_start_;
+    load_denominator_ = end_cycles - cpu_measure_cycle_start_;
     cpu_idle_cycles_ = 0;
-    cpu_measure_cycle_start_ = idle_end_cycle_;
+    cpu_measure_cycle_start_ = end_cycles;
   }
+}
+
+void ProactorBase::ResetBusyPoll() {
+  busy_poll_start_cycle_ = base::CycleClock::Now();
 }
 
 void ProactorBase::Pause(unsigned count) {
