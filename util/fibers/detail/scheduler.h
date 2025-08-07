@@ -164,6 +164,8 @@ class Scheduler {
 
 
   struct  {
+    uint64_t last_normal_run = 0;
+
     uint64_t start = 0;
     uint64_t last = 0;
     uint64_t took = 0;

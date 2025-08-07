@@ -230,17 +230,21 @@ ctx::fiber_context Scheduler::Preempt() {
 
   // Background fibers always return to the scheduler
   if (FiberActive()->prio_ == FiberPriority::BACKGROUND) {
-    // Punish hungry fibers
+    // Punish hungry fibers if we had normal fibers in the last 1ms
     if (yield && runqueue_.last - last > runqueue_.budget) {
-      FiberActive()->tp_ =
-          std::chrono::steady_clock::now() + std::chrono::duration<uint64_t, std::micro>(50);
-      sleep_queue_.insert(*FiberActive());
-      return dispatch_cntx_->SwitchTo();
+      if (runqueue_.last - runqueue_.last_normal_run < 1'000'000) {
+        uint64_t overflow = runqueue_.last - last - runqueue_.budget;
+        uint64_t sleep_ns = overflow * 10 + 50'000;
+        FiberActive()->tp_ =
+            std::chrono::steady_clock::now() + std::chrono::duration<uint64_t, std::nano>(sleep_ns);
+        sleep_queue_.insert(*FiberActive());
+        return dispatch_cntx_->SwitchTo();
+      }
     }
-  
+
     // Save context switch, continue immediately
     if (yield && runqueue_.took < runqueue_.budget) {
-      return {};     
+      return {};
     }
 
     if (yield)
@@ -606,6 +610,10 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
   yield_occurred_ = false;
   runtime_ns_[static_cast<size_t>(priority)] += runqueue_.took;
+
+
+  if (priority == FiberPriority::NORMAL)
+    runqueue_.last_normal_run = runqueue_.last;
 
   // if (priority == FiberPriority::BACKGROUND)
   //   LOG_IF(WARNING, ran_ns >= 400'000) << ran_ns << " ~ " << iterations;
