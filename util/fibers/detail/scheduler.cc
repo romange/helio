@@ -201,8 +201,9 @@ Scheduler::~Scheduler() {
 }
 
 void Scheduler::Yield(FiberInterface* me) {
-  AddReady(me);
+  // AddReady(me);
   yield_occurred_ = true;
+  runqueue_.last_yield = true;
   Preempt();
 }
 
@@ -222,16 +223,39 @@ ctx::fiber_context Scheduler::Preempt() {
     }
   }
 
+  ProactorBase::UpdateMonotonicTime();
+  uint64_t last = exchange(runqueue_.last, ProactorBase::GetMonotonicTimeNs());
+  bool yield = exchange(runqueue_.last_yield, false);
+  runqueue_.took = runqueue_.last - runqueue_.start;
+
   // Background fibers always return to the scheduler
   if (FiberActive()->prio_ == FiberPriority::BACKGROUND) {
-    return dispatch_cntx_->SwitchTo();
-  }
+    // Punish hungry fibers
+    if (yield && runqueue_.last - last > runqueue_.budget) {
+      FiberActive()->tp_ =
+          std::chrono::steady_clock::now() + std::chrono::duration<uint64_t, std::micro>(50);
+      sleep_queue_.insert(*FiberActive());
+      return dispatch_cntx_->SwitchTo();
+    }
+  
+    // Save context switch, continue immediately
+    if (yield && runqueue_.took < runqueue_.budget) {
+      return {};     
+    }
 
-  DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
-  size_t idx = static_cast<uint8_t>(FiberPriority::NORMAL);
-  FiberInterface* fi = &ready_queue_[idx].front();
-  ready_queue_[idx].pop_front();
-  return fi->SwitchTo();
+    if (yield)
+      AddReady(FiberActive());
+    return dispatch_cntx_->SwitchTo();
+  } else {
+    if (yield)
+      AddReady(FiberActive());
+
+    DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
+    size_t idx = static_cast<uint8_t>(FiberPriority::NORMAL);
+    FiberInterface* fi = &ready_queue_[idx].front();
+    ready_queue_[idx].pop_front();
+    return fi->SwitchTo();
+  }
 }
 
 void Scheduler::AddReady(FiberInterface* fibi) {
@@ -535,12 +559,12 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
   // We limit the time slice for BACKGROUND fibers more than NORMAL fibers.
   const uint64_t kBudgets[2] = {1'000'000, 100'000};
-  const uint64_t max_budget = kBudgets[static_cast<uint8_t>(priority)];
 
   ProactorBase::UpdateMonotonicTime();
-  uint64_t now_ns = ProactorBase::GetMonotonicTimeNs();
-  const uint64_t start_ns = now_ns;
-  uint64_t ran_ns = 0;
+  runqueue_.took = 0;
+  runqueue_.start = runqueue_.last = ProactorBase::GetMonotonicTimeNs();
+  runqueue_.budget = kBudgets[static_cast<uint8_t>(priority)];
+  runqueue_.last_yield = false;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
   // Instead of a single function call, we use a loop to allow the scheduler to traverse and
@@ -564,14 +588,10 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // from the ready queue.
     fi->SwitchTo();
 
-    ProactorBase::UpdateMonotonicTime();
-    now_ns = ProactorBase::GetMonotonicTimeNs();
-    ran_ns = now_ns - start_ns;
-
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
     // to kMaxTimeSpentNs.
-    if (ran_ns > max_budget) {
+    if (runqueue_.took > runqueue_.budget) {
       break;
     }
 
@@ -585,7 +605,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   } while (HasReady(priority));
 
   yield_occurred_ = false;
-  runtime_ns_[static_cast<size_t>(priority)] += ran_ns;
+  runtime_ns_[static_cast<size_t>(priority)] += runqueue_.took;
 
   // if (priority == FiberPriority::BACKGROUND)
   //   LOG_IF(WARNING, ran_ns >= 400'000) << ran_ns << " ~ " << iterations;

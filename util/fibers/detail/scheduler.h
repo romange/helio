@@ -162,7 +162,15 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
-  uint64_t background_next_ = 0;
+
+  struct  {
+    uint64_t start = 0;
+    uint64_t last = 0;
+    uint64_t took = 0;
+    uint64_t budget = 0;
+    bool last_yield = false;
+  } runqueue_;
+
   RuntimeCounter runtime_ns_;  // total running times of fibers in ns
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
