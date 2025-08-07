@@ -884,13 +884,23 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
     }
 
-    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE || has_cpu_work) {
+    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
       continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
+      jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
       continue;
     }
@@ -916,11 +926,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
-      jump_from = JUMP_FROM_READY;
-      continue;
-    }
-
     // DCHECK_EQ(io_uring_cq_ready(&ring_), 0u) does not hold because completions
     // can be updated asynchronously by the kernel (unless IORING_SETUP_DEFER_TASKRUN is set).
 
@@ -936,6 +941,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool should_poll =
         spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
     if (!ring_busy && should_poll) {
+      // CHECK(false);
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
@@ -962,6 +968,12 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
       ts_arg = &ts;
     }
+
+    // if (reduced_sleep) {
+    //   ts_arg = &ts;
+    //   ts.tv_sec = 0;
+    //   ts.tv_nsec = std::min(ts.tv_nsec, 20'000LL);
+    // }
 
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then

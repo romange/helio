@@ -517,9 +517,10 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
 
   // If background fibers are below their warrant, let them run
   if (priority == FiberPriority::NORMAL) {
-    uint64_t warrant = float(runtime_ns_.total()) * kBackgroundWarrantPct;
-    if (runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
-      RunReadyFibersInternal(FiberPriority::BACKGROUND);
+    // uint64_t warrant = float(runtime_ns_.total()) * kBackgroundWarrantPct;
+    // if (runtime_ns_[FiberPriority::NORMAL] > 0 && runtime_ns_[FiberPriority::BACKGROUND] <=
+    // warrant)
+    //   RunReadyFibersInternal(FiberPriority::BACKGROUND);
   } else {
     DCHECK(!HasReady(FiberPriority::NORMAL));  // Proactor should progress on higher priority first
     DCHECK(priority == FiberPriority::BACKGROUND);
@@ -540,9 +541,6 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   uint64_t now_ns = ProactorBase::GetMonotonicTimeNs();
   const uint64_t start_ns = now_ns;
   uint64_t ran_ns = 0;
-
-  if (now_ns < background_next_)
-    return RunFiberResult::EXHAUSTED;
 
   // The following do-while loop is used to process all ready fibers in the NORMAL priority queue.
   // Instead of a single function call, we use a loop to allow the scheduler to traverse and
@@ -589,11 +587,8 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   yield_occurred_ = false;
   runtime_ns_[static_cast<size_t>(priority)] += ran_ns;
 
-  // Punish long running time
-  if (priority == FiberPriority::BACKGROUND && ran_ns >= max_budget * 4) {
-    background_next_ = now_ns + max_budget * 10;
-  }
-
+  // if (priority == FiberPriority::BACKGROUND)
+  //   LOG_IF(WARNING, ran_ns >= 400'000) << ran_ns << " ~ " << iterations;
   return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
