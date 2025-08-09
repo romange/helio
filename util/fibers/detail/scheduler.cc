@@ -245,17 +245,18 @@ ctx::fiber_context Scheduler::Preempt() {
 
     // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
     // Alternatively sleep every 10th time to yield to the OS for long cpu tasks
-    if ((hungry && !likely_idle) || last % 10 == 0) {
-      uint64_t took = runqueue_.last - last;
-      uint64_t sleep_ns = std::min<uint64_t>(1'500'000, took + 10'000);
-      FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
-      sleep_queue_.insert(*FiberActive());
-      return dispatch_cntx_->SwitchTo();
+    if (yield) {
+      if ((hungry && !likely_idle) || last % 10 == 0) {
+        uint64_t took = runqueue_.last - last;
+        uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
+        FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
+        sleep_queue_.insert(*FiberActive());
+      } else {
+        AddReady(FiberActive());
+      }
     }
 
     // Background fibers always return to the dispatcher
-    if (yield)
-      AddReady(FiberActive());
     return dispatch_cntx_->SwitchTo();
   } else {
     DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
