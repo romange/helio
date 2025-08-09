@@ -171,6 +171,7 @@ class Scheduler {
     uint64_t took = 0;
     uint64_t budget = 0;
     bool last_yield = false;
+    uint64_t yields = 0;
   } runqueue_;
 
   RuntimeCounter runtime_ns_;  // total running times of fibers in ns
@@ -182,7 +183,6 @@ class Scheduler {
   FI_List fibers_;
 
   bool shutdown_ = false;
-  bool yield_occurred_ = false;
 
   uint32_t num_worker_fibers_ = 0;
   size_t worker_stack_size_ = 0;
