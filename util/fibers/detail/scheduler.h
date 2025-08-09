@@ -42,8 +42,8 @@ class Scheduler {
 
   void ScheduleTermination(FiberInterface* fibi);
 
-  bool HasReady(unsigned q_indx = 0) const {
-    return !ready_queue_[q_indx].empty();
+  bool HasReady(FiberPriority p = FiberPriority::NORMAL) const {
+    return !ready_queue_[static_cast<uint8_t>(p)].empty();
   }
 
   // Yields the calling fiber.
@@ -55,10 +55,11 @@ class Scheduler {
   bool WaitUntil(std::chrono::steady_clock::time_point tp, FiberInterface* me);
 
   // Assumes HasReady() is true.
-  FiberInterface* PopReady(unsigned q_indx = 0) {
-    assert(!ready_queue_[q_indx].empty());
-    FiberInterface* res = &ready_queue_[q_indx].front();
-    ready_queue_[q_indx].pop_front();
+  FiberInterface* PopReady(FiberPriority p = FiberPriority::NORMAL) {
+    auto idx = static_cast<unsigned>(p);
+    assert(!ready_queue_[idx].empty());
+    FiberInterface* res = &ready_queue_[idx].front();
+    ready_queue_[idx].pop_front();
     return res;
   }
 
@@ -96,15 +97,8 @@ class Scheduler {
     return custom_policy_;
   }
 
-  // Returns EXHAUSTED if all the ready fibers are suspended, HAS_ACTIVE if there are
-  // still some ready fibers. The latter case happens when RunWorkerFibersStepImpl breaks early.
-  RunFiberResult RunWorkerFibersStep() {
-    if (ready_queue_[unsigned(FiberPriority::NORMAL)].empty()) {
-      return RunFiberResult::EXHAUSTED;
-    }
-
-    return RunWorkerFibersStepImpl();
-  }
+  // Run fibers from ready queue with given priority baseline
+  RunFiberResult Run(FiberPriority baseline);
 
   void PrintAllFiberStackTraces();
   void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
@@ -119,7 +113,8 @@ class Scheduler {
   }
 
  private:
-  RunFiberResult RunWorkerFibersStepImpl();
+  // Run fibers from ready queue with given priority.
+  RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
@@ -139,6 +134,22 @@ class Scheduler {
     }
   };
 
+  struct RuntimeCounter : public std::array<uint64_t /* runtime ns */, 2 /* FiberPrioriry */> {
+    using std::array<uint64_t, 2>::operator[];
+
+    uint64_t& operator[](FiberPriority p) {
+      return (*this)[static_cast<uint8_t>(p)];
+    }
+
+    uint64_t operator[](FiberPriority p) const {
+      return (*this)[static_cast<uint8_t>(p)];
+    }
+
+    uint64_t total() const {
+      return operator[](FiberPriority::NORMAL) + operator[](FiberPriority::BACKGROUND);
+    }
+  };
+
   using SleepQueue = boost::intrusive::multiset<
       FiberInterface,
       boost::intrusive::member_hook<FiberInterface, FI_SleepHook, &FiberInterface::sleep_hook>,
@@ -151,8 +162,20 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
-  // ready_queue_[0] - normal. TODO: add background queue.
-  FI_Queue ready_queue_[1], terminate_queue_;
+  struct {
+    uint64_t last_normal_ts = 0;  // last timepoint (ns) when NORMAL priority fiber ran
+
+    uint64_t start_ts = 0;   // timestamp (ns) start of round robin run (set by scheduler)
+    uint64_t last_ts = 0;    // timestamp (ns) of last fiber yield
+    uint64_t took_ns = 0;    // ns, how much round robin took so far
+    uint64_t budget_ns = 0;  // ns, budget for running whole round robin
+
+    bool last_yield = false;  // if last fiber yielded
+    uint64_t yields = 0;      // number of yields
+  } round_robin_run_;
+
+  RuntimeCounter runtime_ns_;  // total running times of fibers in ns
+  FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
 
@@ -160,7 +183,6 @@ class Scheduler {
   FI_List fibers_;
 
   bool shutdown_ = false;
-  bool yield_occurred_ = false;
 
   uint32_t num_worker_fibers_ = 0;
   size_t worker_stack_size_ = 0;
