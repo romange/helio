@@ -56,7 +56,7 @@ class Scheduler {
 
   // Assumes HasReady() is true.
   FiberInterface* PopReady(FiberPriority p = FiberPriority::NORMAL) {
-    size_t idx = static_cast<uint8_t>(p);
+    auto idx = static_cast<unsigned>(p);
     assert(!ready_queue_[idx].empty());
     FiberInterface* res = &ready_queue_[idx].front();
     ready_queue_[idx].pop_front();
@@ -162,17 +162,17 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
+  struct {
+    uint64_t last_normal_ts = 0;  // last timepoint (ns) when NORMAL priority fiber ran
 
-  struct  {
-    uint64_t last_normal_run = 0;
+    uint64_t start_ts = 0;   // timestamp (ns) start of round robin run (set by scheduler)
+    uint64_t last_ts = 0;    // timestamp (ns) of last fiber yield
+    uint64_t took_ns = 0;    // ns, how much round robin took so far
+    uint64_t budget_ns = 0;  // ns, budget for running whole round robin
 
-    uint64_t start = 0;
-    uint64_t last = 0;
-    uint64_t took = 0;
-    uint64_t budget = 0;
-    bool last_yield = false;
-    uint64_t yields = 0;
-  } runqueue_;
+    bool last_yield = false;  // if last fiber yielded
+    uint64_t yields = 0;      // number of yields
+  } round_robin_run_;
 
   RuntimeCounter runtime_ns_;  // total running times of fibers in ns
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;

@@ -941,7 +941,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool should_poll =
         spin_loops++ < 10 || (base::CycleClock::Now() < idle_end_cycle() + busy_poll_cycles);
     if (!ring_busy && should_poll) {
-      // CHECK(false);
       DVLOG(3) << "spin_loops " << spin_loops;
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
@@ -968,12 +967,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       }
       ts_arg = &ts;
     }
-
-    // if (reduced_sleep) {
-    //   ts_arg = &ts;
-    //   ts.tv_sec = 0;
-    //   ts.tv_nsec = std::min(ts.tv_nsec, 20'000LL);
-    // }
 
     /**
      * If tq_seq_ has changed since it was cached into tq_seq, then

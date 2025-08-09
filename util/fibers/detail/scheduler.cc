@@ -205,7 +205,7 @@ Scheduler::~Scheduler() {
 }
 
 void Scheduler::Yield(FiberInterface* me) {
-  runqueue_.last_yield = true;
+  round_robin_run_.last_yield = true;
   Preempt();
 }
 
@@ -226,28 +226,27 @@ ctx::fiber_context Scheduler::Preempt() {
   }
 
   ProactorBase::UpdateMonotonicTime();
-  uint64_t last = exchange(runqueue_.last, ProactorBase::GetMonotonicTimeNs());
-  bool yield = exchange(runqueue_.last_yield, false);
-  if (yield)
-    runqueue_.yields += 1;
-  runqueue_.took = runqueue_.last - runqueue_.start;
+  uint64_t last = exchange(round_robin_run_.last_ts, ProactorBase::GetMonotonicTimeNs());
+  bool yield = exchange(round_robin_run_.last_yield, false);
+  round_robin_run_.yields += yield ? 1 : 0;
+  round_robin_run_.took_ns = round_robin_run_.last_ts - round_robin_run_.start_ts;
 
   if (FiberActive()->prio_ == FiberPriority::BACKGROUND) {
     // Fast path: return directly to the fiber to avoid costly context switch.
     // Other tasks will be run on the next iteration or when this one is done.
-    if (yield && runqueue_.took < runqueue_.budget)
+    if (yield && round_robin_run_.took_ns < round_robin_run_.budget_ns)
       return {};
 
     // Fiber ate a big chunk of cpu time
-    bool hungry = runqueue_.last - last > runqueue_.budget;
+    bool hungry = round_robin_run_.last_ts - last > round_robin_run_.budget_ns;
     // No other normal fibers were present in last 5ms, server is likely (almost) idle
-    bool likely_idle = runqueue_.last - runqueue_.last_normal_run > 5'000'000;
+    bool likely_idle = round_robin_run_.last_ts - round_robin_run_.last_normal_ts > 5'000'000;
 
     // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
     // Alternatively sleep every 10th time to yield to the OS for long cpu tasks
     if (yield) {
       if ((hungry && !likely_idle) || last % 10 == 0) {
-        uint64_t took = runqueue_.last - last;
+        uint64_t took = round_robin_run_.last_ts - last;
         uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
         FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
         sleep_queue_.insert(*FiberActive());
@@ -259,6 +258,9 @@ ctx::fiber_context Scheduler::Preempt() {
     // Background fibers always return to the dispatcher
     return dispatch_cntx_->SwitchTo();
   } else {
+    if (yield)
+      AddReady(FiberActive());
+
     DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
     size_t idx = static_cast<uint8_t>(FiberPriority::NORMAL);
     FiberInterface* fi = &ready_queue_[idx].front();
@@ -569,11 +571,11 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   const uint64_t kBudgets[2] = {1'000'000, 50'000};
 
   ProactorBase::UpdateMonotonicTime();
-  runqueue_.took = 0;
-  runqueue_.start = runqueue_.last = ProactorBase::GetMonotonicTimeNs();
-  runqueue_.budget = kBudgets[static_cast<uint8_t>(priority)];
-  runqueue_.last_yield = false;
-  runqueue_.yields = 0;
+  round_robin_run_.took_ns = 0;
+  round_robin_run_.start_ts = round_robin_run_.last_ts = ProactorBase::GetMonotonicTimeNs();
+  round_robin_run_.budget_ns = kBudgets[static_cast<uint8_t>(priority)];
+  round_robin_run_.last_yield = false;
+  round_robin_run_.yields = 0;
 
   // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
   // Yields cause it to stop running even with leftover budget to return to processing io events.
@@ -584,8 +586,9 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     DCHECK(!fi->list_hook.is_linked());
     DCHECK(!fi->sleep_hook.is_linked());
 
-    // Run round robin only with equal priority, others switch back directly after running
-    if (priority == dispatch_cntx_->prio_)
+    // Run round robin only with normal priority, returing to the dispatcher after every round.
+    // Background fibers switch back directly to dispatcher
+    if (priority == FiberPriority::NORMAL)
       AddReady(dispatch_cntx_.get());
 
     DVLOG(2) << "Switching to " << fi->name();
@@ -596,12 +599,12 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
     // to kMaxTimeSpentNs.
-    if (runqueue_.took > runqueue_.budget) {
+    if (round_robin_run_.took_ns > round_robin_run_.budget_ns) {
       break;
     }
 
     // Background fibers yield as often as possible to be cooperative, so break only for normal ones
-    if (priority == FiberPriority::NORMAL && runqueue_.yields > 0)
+    if (priority == FiberPriority::NORMAL && round_robin_run_.yields > 0)
       break;
 
     // We may need to break here even if ready_queue_ is not empty if one of the fibers yielded,
@@ -609,9 +612,9 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // return to the dispatcher.
   } while (HasReady(priority));
 
-  runtime_ns_[static_cast<size_t>(priority)] += runqueue_.took;
+  runtime_ns_[static_cast<size_t>(priority)] += round_robin_run_.took_ns;
   if (priority == FiberPriority::NORMAL)
-    runqueue_.last_normal_run = runqueue_.last;
+    round_robin_run_.last_normal_ts = round_robin_run_.last_ts;
 
   return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
