@@ -214,6 +214,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
+  submit_on_wake_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -424,6 +425,16 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
 
   return SubmitEntry{res};
 }
+
+bool UringProactor::FlushSubmitQueueIfNeeded() {
+  if (io_uring_sq_ready(&ring_) < submit_q_threshold_) {
+    return false;
+  }
+
+  io_uring_submit(&ring_);
+  return true;
+}
+
 
 unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + kAlign - 1) / kAlign * kAlign;
@@ -1038,15 +1049,14 @@ void UringProactor::WakeRing() {
   last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
 #endif
 
-  // We disable PrepMsgRing because it seems to have higher latency than just
-  // writing to the wake_fd_. At P99 levels it can spend milliseconds until the destination
-  // proactor is woken up. Also see https://github.com/axboe/liburing/issues/1150
-  if (false && caller && caller->msgring_f_) {
+  if (caller && caller->msgring_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
 
-    // flush the se asap to wake up the destination proactor as quickly as possible.
-    // io_uring_submit(&caller->ring_);
+    if (caller->submit_on_wake_) {
+      // flush the se asap to wake up the destination proactor as quickly as possible.
+      io_uring_submit(&caller->ring_);
+    }
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
