@@ -212,6 +212,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
+  submit_on_wake_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -422,6 +423,16 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
 
   return SubmitEntry{res};
 }
+
+bool UringProactor::FlushSubmitQueueIfNeeded() {
+  if (io_uring_sq_ready(&ring_) < submit_q_threshold_) {
+    return false;
+  }
+
+  io_uring_submit(&ring_);
+  return true;
+}
+
 
 unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + kAlign - 1) / kAlign * kAlign;
@@ -1022,8 +1033,10 @@ void UringProactor::WakeRing() {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
 
+    if (caller->submit_on_wake_) {
     // flush the se asap to wake up the destination proactor as quickly as possible.
-    io_uring_submit(&caller->ring_);
+      io_uring_submit(&caller->ring_);
+    }
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));

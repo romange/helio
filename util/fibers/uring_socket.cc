@@ -258,18 +258,18 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   }
 
   int fd = ShiftedFd();
-  Proactor* p = GetProactor();
-  DCHECK(ProactorBase::me() == p);
+  Proactor* proactor = GetProactor();
+  DCHECK(ProactorBase::me() == proactor);
 
   ssize_t res = 0;
   VSOCK(2) << "WriteSome [" << fd << "] " << len;
 
   if (len == 1) {
     while (true) {
-      FiberCall fc(p, timeout());
+      FiberCall fc(proactor, timeout());
       fc->PrepSend(fd, ptr->iov_base, ptr->iov_len, MSG_NOSIGNAL);
       fc->sqe()->flags |= register_flag();
-
+      proactor->FlushSubmitQueueIfNeeded();
       res = fc.Get();  // Interrupt point
       if (res >= 0) {
         return res;  // Fastpath
@@ -289,9 +289,10 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
     msg.msg_iovlen = len;
 
     while (true) {
-      FiberCall fc(p, timeout());
+      FiberCall fc(proactor, timeout());
       fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
       fc->sqe()->flags |= register_flag();
+      proactor->FlushSubmitQueueIfNeeded();
 
       res = fc.Get();  // Interrupt point
       if (res >= 0) {
@@ -621,7 +622,7 @@ void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
 }
 
 void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
-  Proactor* p = GetProactor();
+  Proactor* proactor = GetProactor();
   auto io_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
                                     uint32_t flags, uint32_t) {
     DVLOG(2) << "SendProvided completion " << res << " flags: " << flags;
@@ -633,7 +634,7 @@ void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
   };
 
   int fd = ShiftedFd();
-  SubmitEntry se = p->GetSubmitEntry(io_cb);
+  SubmitEntry se = proactor->GetSubmitEntry(io_cb);
   se.PrepSend(fd, nullptr, 0, MSG_NOSIGNAL);
   se.sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
   se.sqe()->buf_group = buf_gid;
