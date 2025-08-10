@@ -115,6 +115,10 @@ class UringProactor : public ProactorBase {
     submit_q_threshold_ = threshold;
   }
 
+  /**
+   * Flushes the submit queue if the number of pending submissions reaches the configured threshold.
+   * Returns true if the queue was flushed, false otherwise.
+   */
   bool FlushSubmitQueueIfNeeded();
 
   // Register buffer with given size and allocate backing storage, calls io_uring_register_buffers.
