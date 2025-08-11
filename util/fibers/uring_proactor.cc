@@ -647,8 +647,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
-    -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
+                                            uint16_t* head_id) -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 
@@ -789,6 +789,7 @@ LinuxSocketBase* UringProactor::CreateSocket() {
 
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   struct io_uring_cqe* cqes[kCqeBatchLen];
+  using namespace detail;
 
   uint32_t tq_seq = 0;
   uint32_t busy_sq_cnt = 0;
@@ -890,8 +891,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       ResetBusyPoll();
     }
 
-    if (scheduler->RunWorkerFibersStep() == detail::RunFiberResult::HAS_ACTIVE ||
-        has_cpu_work) {
+    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
       ResetBusyPoll();
@@ -902,6 +902,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
       ResetBusyPoll();
+      continue;
+    }
+
+    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
+      jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
       continue;
     }
 

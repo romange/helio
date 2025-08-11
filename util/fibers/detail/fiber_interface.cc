@@ -233,7 +233,7 @@ ctx::fiber_context FiberInterface::Terminate() {
 
   // usually Preempt returns empty fc but here we return the value of where
   // to switch to when this fiber completes. See intrusive_ptr_release for more info.
-  return scheduler_->Preempt();
+  return scheduler_->Preempt(false);
 }
 
 size_t FiberInterface::GetStackMargin(const void* stack_address) const {

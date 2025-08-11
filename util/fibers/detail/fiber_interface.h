@@ -137,6 +137,10 @@ class FiberInterface {
     return bool(entry_);
   }
 
+  FiberPriority Priority() const {
+    return prio_;
+  }
+
   // We need refcounting for referencing handles via .
   friend void intrusive_ptr_add_ref(FiberInterface* ctx) noexcept {
     ctx->use_count_.fetch_add(1, std::memory_order_relaxed);

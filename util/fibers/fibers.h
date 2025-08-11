@@ -181,6 +181,10 @@ inline void Yield() {
   fb2::detail::FiberActive()->Yield();
 }
 
+inline fb2::FiberPriority Priority() {
+  return fb2::detail::FiberActive()->Priority();
+}
+
 inline uint64_t GetRunningTimeCycles() {
   return fb2::detail::FiberActive()->GetRunningTimeCycles();
 }
