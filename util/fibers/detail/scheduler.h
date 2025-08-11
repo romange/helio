@@ -28,6 +28,13 @@ enum class RunFiberResult {
 // The override call is done via SetCustomDispatcher() and it's called from the main fiber.
 class Scheduler {
  public:
+  struct Config {
+    uint64_t budget_normal_fib = 1'000'000;   // ns, round_robin_run budget for normal fibers
+    uint64_t budget_background_fib = 50'000;  // ns, round_robin_run budget for background fibers
+    uint64_t background_sleep_freq = 10;   // Each x time background fibers put to sleep proactively
+    uint64_t background_warrant_pct = 10;  // % of minimum cpu time background fibers get
+  };
+
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
@@ -109,6 +116,9 @@ class Scheduler {
     return worker_stack_size_;
   }
 
+  // Update config field with provided value
+  void UpdateConfig(uint64_t Config::*field, uint64_t value);
+
  private:
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
@@ -159,6 +169,7 @@ class Scheduler {
 
   boost::intrusive_ptr<FiberInterface> dispatch_cntx_;
 
+  Config config_;
   struct {
     uint64_t last_normal_ts = 0;  // last timepoint (ns) when NORMAL priority fiber ran
 
@@ -167,7 +178,7 @@ class Scheduler {
     uint64_t took_ns = 0;    // ns, how much round robin took so far
     uint64_t budget_ns = 0;  // ns, budget for running whole round robin
 
-    uint64_t yields = 0;      // number of yields
+    uint64_t yields = 0;  // number of yields
   } round_robin_run_;
 
   RuntimeCounter runtime_ns_;  // total running times of fibers in ns
