@@ -205,9 +205,6 @@ Scheduler::~Scheduler() {
 }
 
 ctx::fiber_context Scheduler::Preempt(bool yield) {
-  // One in X times put background fibers to sleep to increase responsiveness
-  const size_t kBackgroundSleepFrequency = 10;
-
   if (FiberActive() == dispatch_cntx_.get()) {
     LOG(DFATAL) << "Should not preempt dispatcher: " << GetStacktrace();
   }
@@ -242,7 +239,7 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
     // Alternatively sleep every `frequency` time to yield to the OS for long cpu tasks
     if (yield) {
-      if ((hungry && !likely_idle) || last % kBackgroundSleepFrequency == 0) {
+      if ((hungry && !likely_idle) || last % config_.background_sleep_freq == 0) {
         uint64_t took = round_robin_run_.last_ts - last;
         uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
         FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
@@ -493,6 +490,10 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
 }
 
+void Scheduler::UpdateConfig(uint64_t Scheduler::Config::*field, uint64_t value) {
+  config_.*field = value;
+}
+
 void Scheduler::PrintAllFiberStackTraces() {
   auto* active = FiberActive();
   if (!sleep_queue_.empty()) {
@@ -533,7 +534,6 @@ void Scheduler::PrintAllFiberStackTraces() {
 RunFiberResult Scheduler::Run(FiberPriority priority) {
   // TODO: use c++ 20 using enum
   const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
-  const float kBackgroundWarrantPct = 0.1;  // at least 10% of cpu time under any load
 
   ProactorBase::UpdateMonotonicTime();
 
@@ -554,7 +554,7 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
 
   // If background fibers are below their warrant, let them run
   if (HasReady(FiberPriority::BACKGROUND) && priority == FiberPriority::NORMAL) {
-    uint64_t warrant = float(runtime_ns_.total()) * kBackgroundWarrantPct;
+    uint64_t warrant = runtime_ns_.total() * config_.background_warrant_pct / 100;
     if (runtime_ns_[FiberPriority::NORMAL] > 0 && runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
       RunReadyFibersInternal(FiberPriority::BACKGROUND);
   }
@@ -567,14 +567,13 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
 
 RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   DCHECK(HasReady(priority));
-
-  // We limit the time slice for BACKGROUND fibers much more than NORMAL fibers.
-  const uint64_t kBudgets[2] = {1'000'000, 50'000};
+  const uint64_t Config::*kBudgets[2] = {&Config::budget_normal_fib,
+                                         &Config::budget_background_fib};
 
   ProactorBase::UpdateMonotonicTime();
   round_robin_run_.took_ns = 0;
   round_robin_run_.start_ts = round_robin_run_.last_ts = ProactorBase::GetMonotonicTimeNs();
-  round_robin_run_.budget_ns = kBudgets[static_cast<uint8_t>(priority)];
+  round_robin_run_.budget_ns = config_.*kBudgets[static_cast<unsigned>(priority)];
   round_robin_run_.yields = 0;
 
   // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
