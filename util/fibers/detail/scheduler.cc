@@ -546,18 +546,23 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
     }
   }
 
-  auto res = HasReady(priority) ? RunReadyFibersInternal(priority) : RunFiberResult::EXHAUSTED;
+  // Proactor should progress on normal priority fibers first
+  DCHECK(priority == FiberPriority::NORMAL || !HasReady(FiberPriority::NORMAL));
+
+  if (HasReady(priority))
+    RunReadyFibersInternal(priority);
 
   // If background fibers are below their warrant, let them run
   if (HasReady(FiberPriority::BACKGROUND) && priority == FiberPriority::NORMAL) {
     uint64_t warrant = float(runtime_ns_.total()) * kBackgroundWarrantPct;
     if (runtime_ns_[FiberPriority::NORMAL] > 0 && runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
       RunReadyFibersInternal(FiberPriority::BACKGROUND);
-  } else if (priority == FiberPriority::BACKGROUND) {
-    DCHECK(!HasReady(FiberPriority::NORMAL));  // Proactor should progress on higher priority first
   }
 
-  return res;
+  // Fibers can wake each other, so we have to check all fibers of equal or higher priority
+  bool has_ready = HasReady(FiberPriority::NORMAL) ||
+                   (priority == FiberPriority::BACKGROUND && HasReady(FiberPriority::BACKGROUND));
+  return has_ready ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
