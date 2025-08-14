@@ -235,11 +235,13 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     bool hungry = round_robin_run_.last_ts - last > round_robin_run_.budget_ns;
     // No other normal fibers were present in last 5ms, server is likely (almost) idle
     bool likely_idle = round_robin_run_.last_ts - round_robin_run_.last_normal_ts > 5'000'000;
+    // Yield with specified probability (frequency)
+    bool should_yield = round_robin_run_.last_ts % 100 < config_.background_sleep_prob;
 
     // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
     // Alternatively sleep every `frequency` time to yield to the OS for long cpu tasks
     if (yield) {
-      if ((hungry && !likely_idle) || last % config_.background_sleep_freq == 0) {
+      if (likely_idle && (hungry || should_yield)) {
         uint64_t took = round_robin_run_.last_ts - last;
         uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
         FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
