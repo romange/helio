@@ -31,8 +31,8 @@ class Scheduler {
   struct Config {
     uint64_t budget_normal_fib = 1'000'000;   // ns, round_robin_run budget for normal fibers
     uint64_t budget_background_fib = 50'000;  // ns, round_robin_run budget for background fibers
-    uint64_t background_sleep_freq = 10;   // Each x time background fibers put to sleep proactively
-    uint64_t background_warrant_pct = 10;  // % of minimum cpu time background fibers get
+    uint64_t background_sleep_prob = 10;      // [0-100]% probability of sleeps when reaching budget
+    uint64_t background_warrant_pct = 10;     // % of minimum cpu time background fibers get
   };
 
   Scheduler(FiberInterface* main);
