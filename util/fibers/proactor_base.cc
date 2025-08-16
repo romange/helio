@@ -291,7 +291,7 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
 }
 
 uint64_t ProactorBase::GetCurrentBusyCycles() const {
-  return base::CycleClock::Now() - busy_poll_start_cycle_;
+  return base::CycleClock::Now() - io_wait_end_cycle_;
 }
 
 void ProactorBase::SetBusyPollUsec(uint32_t usec) {
@@ -330,6 +330,7 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
 void ProactorBase::IdleEnd(uint64_t start) {
   auto end_cycles = base::CycleClock::Now();
   busy_poll_start_cycle_ = end_cycles;
+  io_wait_end_cycle_ = end_cycles;
 
   // Assuming that cpu clock frequency is
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;

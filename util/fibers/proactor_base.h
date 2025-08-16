@@ -322,7 +322,7 @@ class ProactorBase {
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
   uint64_t busy_poll_start_cycle_ = 0;
   uint64_t busy_poll_cycle_limit_ = 0;
-
+  uint64_t io_wait_end_cycle_ = 0;
   struct TLInfo {
     uint64_t monotonic_time = 0;  // in nanoseconds
     ProactorBase* owner = nullptr;
