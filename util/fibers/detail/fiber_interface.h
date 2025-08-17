@@ -382,6 +382,7 @@ void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
 
 void PrintAllFiberStackTraces();
+void ResetFiberRunSeq();
 
 // Runs fn on all fibers in the thread. See FiberInterface::ExecuteOnFiberStack for details.
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);
