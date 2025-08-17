@@ -228,6 +228,7 @@ TEST_F(FiberTest, Basic) {
   fb1.Join();
   EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
   fb2.Join();
+  EXPECT_GE(GetFiberRunSeq(), 5);
 
   // Second join does not preempt because fb2 finished running before.
   EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
