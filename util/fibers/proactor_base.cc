@@ -342,6 +342,7 @@ void ProactorBase::IdleEnd(uint64_t start) {
     cpu_idle_cycles_ = 0;
     cpu_measure_cycle_start_ = end_cycles;
   }
+  detail::ResetFiberRunSeq();
 }
 
 void ProactorBase::ResetBusyPoll() {
