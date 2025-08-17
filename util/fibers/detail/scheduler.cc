@@ -148,6 +148,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
         cnd_.wait(lk, std::move(cb));
       }
       wake_suspend_ = false;
+      detail::ResetFiberRunSeq();
     }
   }
   sched->DestroyTerminated();

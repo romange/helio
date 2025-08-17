@@ -19,6 +19,7 @@
 #define HWCAP_SB (1 << 29)
 #endif
 #endif  // __aarch64__ __linux__
+// #define RECORD_FIBER_NAMES 1
 
 ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
           "If > 0, ensures the stack each fiber has at least this margin. "
@@ -119,6 +120,10 @@ struct TL_FiberInitializer {
   uint64_t long_runtime_usec = 0;
 
   uint32_t atomic_section = 0;
+  uint32_t fiber_run_seq = 0;
+#if RECORD_FIBER_NAMES
+  array<string, 8> past_fiber_names;
+#endif
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
 
@@ -425,6 +430,12 @@ FiberInterface* FiberInterface::SwitchSetup() {
   FiberInterface* to_suspend = fb_initializer.active;
   fb_initializer.active = this;
 
+#if RECORD_FIBER_NAMES
+  unsigned index = fb_initializer.fiber_run_seq % fb_initializer.past_fiber_names.size();
+  fb_initializer.past_fiber_names[index] = to_suspend->name_;
+#endif
+  fb_initializer.fiber_run_seq++;
+
   uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
@@ -475,6 +486,10 @@ void PrintAllFiberStackTraces() {
   FbInitializer().sched->PrintAllFiberStackTraces();
 }
 
+void ResetFiberRunSeq() {
+  FbInitializer().fiber_run_seq = 0;
+}
+
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
 }
@@ -509,6 +524,24 @@ uint64_t FiberLongRunCnt() noexcept {
 // Together with FiberLongRunCnt we can compute the average time per long running event.
 uint64_t FiberLongRunSumUsec() noexcept {
   return detail::FbInitializer().long_runtime_usec;
+}
+
+// Returns the current fiber run sequence number for this thread since it
+// became active.
+uint32_t GetFiberRunSeq() noexcept {
+  return detail::FbInitializer().fiber_run_seq;
+}
+
+vector<string> GetPastFiberNames() noexcept {
+#if RECORD_FIBER_NAMES
+  auto& init = detail::FbInitializer();
+
+  size_t end = init.fiber_run_seq % init.past_fiber_names.size();
+  return {init.past_fiber_names.begin(),
+          init.past_fiber_names.begin() + end};
+#else
+  return {};
+#endif
 }
 
 void SetFiberLongRunWarningThreshold(uint32_t warn_ms) {
