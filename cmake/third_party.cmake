@@ -238,8 +238,43 @@ if (LEGACY_GLOG)
   target_link_libraries(glog PRIVATE $<BUILD_INTERFACE:absl::flags>)
 endif()
 
-find_package(Boost CONFIG REQUIRED COMPONENTS context system)
+find_package(Boost CONFIG REQUIRED)
 Message(STATUS "Found Boost ${Boost_LIBRARY_DIRS} ${Boost_LIB_VERSION} ${Boost_VERSION}")
+
+# For Boost < 1.89 keep the original behavior
+if(Boost_VERSION VERSION_LESS 1.89)
+  find_package(Boost CONFIG REQUIRED COMPONENTS context system)
+else()
+  # For Boost >= 1.89: do not request system via CONFIG (it may not provide boost_systemConfig)
+  # 1) Still request context via CONFIG (it should exist)
+  find_package(Boost CONFIG QUIET COMPONENTS context)
+
+  # 2) Resolve Boost::system differently
+  if(NOT TARGET Boost::system)
+    # Try FindBoost (module) first
+    set(Boost_NO_BOOST_CMAKE ON)
+    find_package(Boost MODULE QUIET COMPONENTS system)
+  endif()
+
+  if(NOT TARGET Boost::system)
+    # If FindBoost exposed the library path, wrap it into an imported target
+    if(DEFINED Boost_SYSTEM_LIBRARY AND EXISTS "${Boost_SYSTEM_LIBRARY}")
+      add_library(Boost::system UNKNOWN IMPORTED)
+      set_target_properties(Boost::system PROPERTIES
+        IMPORTED_LOCATION "${Boost_SYSTEM_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${Boost_INCLUDE_DIRS}")
+      Message(STATUS "Using Boost_SYSTEM_LIBRARY at ${Boost_SYSTEM_LIBRARY}")
+    else()
+      # Final fallback: header-only
+      add_library(Boost::system INTERFACE IMPORTED)
+      target_compile_definitions(Boost::system INTERFACE BOOST_ERROR_CODE_HEADER_ONLY)
+      if(Boost_INCLUDE_DIRS)
+        target_include_directories(Boost::system INTERFACE "${Boost_INCLUDE_DIRS}")
+      endif()
+      Message(STATUS "Using header-only Boost::system (BOOST_ERROR_CODE_HEADER_ONLY)")
+    endif()
+  endif()
+endif()
 
 add_definitions(-DBOOST_BEAST_SEPARATE_COMPILATION -DBOOST_ASIO_SEPARATE_COMPILATION)
 
