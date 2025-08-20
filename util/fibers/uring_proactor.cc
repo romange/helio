@@ -210,7 +210,8 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   io_uring_params params;
   memset(&params, 0, sizeof(params));
 
-  msgring_f_ = 0;
+  msgring_supported_f_ = 0;
+  msgring_enabled_f_ = 1;
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
@@ -258,9 +259,9 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
-  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  msgring_supported_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
   io_uring_free_probe(uring_probe);
-  VLOG_IF(1, msgring_f_) << "msgring supported!";
+  VLOG_IF(1, msgring_supported_f_) << "msgring supported!";
 
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
   CHECK_EQ(req_feats, params.features & req_feats)
@@ -1059,7 +1060,7 @@ void UringProactor::WakeRing() {
   last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
 #endif
 
-  if (caller && caller->msgring_f_) {
+  if (caller && caller->msgring_supported_f_ && caller->msgring_enabled_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
 

@@ -108,7 +108,7 @@ class UringProactor : public ProactorBase {
   }
 
   void ConfigureMsgRing(bool enable) {
-    msgring_f_ = uint8_t(enable);
+    msgring_enabled_f_ = uint8_t(enable);
   }
 
   void SetSubmitQueueThreshold(uint32_t threshold) {
@@ -209,12 +209,13 @@ class UringProactor : public ProactorBase {
 
   io_uring ring_;
 
-  uint8_t msgring_f_ : 1;
+  uint8_t msgring_supported_f_ : 1;
   uint8_t poll_first_ : 1;
   uint8_t buf_ring_f_ : 1;
   uint8_t bundle_f_ : 1;
   uint8_t submit_on_wake_ : 1;
-  uint8_t : 3;
+  uint8_t msgring_enabled_f_ : 1;
+  uint8_t : 2;
 
   EventCount sqe_avail_;
 
