@@ -20,10 +20,12 @@ FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 void FiberQueue::Run() {
   bool is_closed = false;
   CbFunc func;
+  unsigned task_index = 0;
 
   auto cb = [&] {
     if (queue_.try_dequeue(func)) {
       push_ec_.notify();
+      ++task_index;
       return true;
     }
 
@@ -31,6 +33,10 @@ void FiberQueue::Run() {
       is_closed = true;
       return true;
     }
+
+    // Reset task_index when the queue is empty and not closed.
+    // This indicates the thread is about to be preempted due to an empty queue.
+    task_index = 0;
     return false;
   };
 
@@ -40,7 +46,8 @@ void FiberQueue::Run() {
     if (is_closed)
       break;
     try {
-      func();
+      func(task_index);
+
     } catch (std::exception& e) {
       // std::exception_ptr p = std::current_exception();
       LOG(FATAL) << "Exception " << e.what();
