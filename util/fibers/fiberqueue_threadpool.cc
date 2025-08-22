@@ -34,6 +34,8 @@ void FiberQueue::Run() {
       return true;
     }
 
+    // Reset task_index when the queue is empty and not closed.
+    // This indicates the thread is about to be preempted due to an empty queue.
     task_index = 0;
     return false;
   };
