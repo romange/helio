@@ -23,7 +23,16 @@ class FiberQueue {
   explicit FiberQueue(unsigned queue_size = 128);
 
   template <typename F> bool TryAdd(F&& f) {
-    if (queue_.try_enqueue(std::forward<F>(f))) {
+    // check if f can accept task index argument
+    bool enqueued = false;
+
+    if constexpr (std::is_invocable_v<F, unsigned>) {
+      enqueued = queue_.try_enqueue(std::forward<F>(f));
+    } else {
+      enqueued = queue_.try_enqueue([f = std::forward<F>(f)](unsigned /*id*/) { f(); });
+    }
+
+    if (enqueued) {
       pull_ec_.notify();
       return true;
     }
@@ -85,9 +94,10 @@ class FiberQueue {
   void Run();
 
  private:
-  typedef std::function<void()> CbFunc;
-
+  // task index since the last preemption.
+  using CbFunc = std::function<void(unsigned id)>;
   using FuncQ = base::mpmc_bounded_queue<CbFunc>;
+
   FuncQ queue_;
 
   EventCount push_ec_, pull_ec_;
@@ -105,7 +115,7 @@ class FiberQueueThreadPool {
     using ResultType = decltype(f());
     util::detail::ResultMover<ResultType> mover;
 
-    Add([&, f = std::forward<F>(f), done]() mutable {
+    Add([&, f = std::forward<F>(f), done](unsigned /*id*/) mutable {
       mover.Apply(f);
       done.Notify();
     });
@@ -119,7 +129,7 @@ class FiberQueueThreadPool {
     using ResultType = decltype(f());
     util::detail::ResultMover<ResultType> mover;
 
-    Add(worker_index, [&, f = std::forward<F>(f), done]() mutable {
+    Add(worker_index, [&, f = std::forward<F>(f), done](unsigned /*id*/) mutable {
       mover.Apply(f);
       done.Notify();
     });

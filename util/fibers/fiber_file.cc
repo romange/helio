@@ -149,7 +149,7 @@ auto FiberReadFile::ReadAndPrefetch(size_t offset, const MutableBytes& range) ->
     ssize_t total_read = -1;
 
     // We issue 2 read requests: to fill user buffer and our prefetch buffer.
-    tp_->Add([&] {
+    tp_->Add([&](unsigned /*id*/) {
       total_read = ReadAllPosix(next_->Handle(), offset, io, 2);
       done_.Notify();
     });
@@ -189,7 +189,7 @@ auto FiberReadFile::ReadAndPrefetch(size_t offset, const MutableBytes& range) ->
   // we filled range but we want to issue a readahead fetch.
   // We must keep reference to done_ in pending because of the shutdown flow.
   prefetch_start_ts_ = absl::Now();
-  tp_->Add([this, pending = std::move(pending)]() mutable {
+  tp_->Add([this, pending = std::move(pending)](unsigned /*id*/) mutable {
     auto all_res = ReadAllPosix(next_->Handle(), pending.offs, &pending.io, 1);
     prefetch_res_.store(all_res, std::memory_order_release);
     done_.Notify();
@@ -275,7 +275,7 @@ auto FiberReadFile::Read(size_t offset, const iovec* v, uint32_t len) -> SizeOrE
     return res;
   }
 
-  tp_->Add([&] {
+  tp_->Add([&](unsigned /*id*/) {
     res = next_->Read(offset, v, len);
     done_.Notify();
   });
