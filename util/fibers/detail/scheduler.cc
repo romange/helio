@@ -127,33 +127,29 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
-    if (sched->HasReady(this->prio_)) {
-      FiberInterface* fi = sched->PopReady(this->prio_);
-      DCHECK(!fi->list_hook.is_linked());
-      DCHECK(!fi->sleep_hook.is_linked());
-      sched->AddReady(this);
+    if (sched->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE)
+      continue;
 
-      DVLOG(2) << "Switching to " << fi->name();
+    if (sched->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE)
+      continue;
 
-      fi->SwitchTo();
-      DCHECK(!list_hook.is_linked());
-      DCHECK(FiberActive() == this);
+    sched->DestroyTerminated();
+
+    bool has_sleeping = sched->HasSleepingFibers();
+    auto cb = [this]() { return wake_suspend_; };
+
+    unique_lock<mutex> lk{mu_};
+    DCHECK(!sched->HasReady(FiberPriority::NORMAL) && !sched->HasReady(FiberPriority::BACKGROUND));
+
+    if (has_sleeping) {
+      auto next_tp = sched->NextSleepPoint();
+      cnd_.wait_until(lk, next_tp, std::move(cb));
     } else {
-      sched->DestroyTerminated();
-
-      bool has_sleeping = sched->HasSleepingFibers();
-      auto cb = [this]() { return wake_suspend_; };
-
-      unique_lock<mutex> lk{mu_};
-      if (has_sleeping) {
-        auto next_tp = sched->NextSleepPoint();
-        cnd_.wait_until(lk, next_tp, std::move(cb));
-      } else {
+      if (!sched->IsShutdown())
         cnd_.wait(lk, std::move(cb));
-      }
-      wake_suspend_ = false;
-      detail::ResetFiberRunSeq();
     }
+    wake_suspend_ = false;
+    detail::ResetFiberRunSeq();
   }
   sched->DestroyTerminated();
 }
@@ -226,8 +222,8 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
   round_robin_run_.yields += yield ? 1 : 0;
   round_robin_run_.took_ns = round_robin_run_.last_ts - round_robin_run_.start_ts;
 
-  if (FiberActive()->prio_ == FiberPriority::BACKGROUND) {
-    // Fast path: return directly to the fiber to avoid costly context switch.
+  if (FiberActive()->Priority() == FiberPriority::BACKGROUND) {
+    // Fast path: keep running the active fiber to avoid costly context switch.
     // Other tasks will be run on the next iteration or when this one is done.
     if (yield && round_robin_run_.took_ns < round_robin_run_.budget_ns)
       return {};
@@ -254,24 +250,31 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
 
     // Background fibers always return to the dispatcher
     return dispatch_cntx_->SwitchTo();
-  } else {
-    if (yield)
-      AddReady(FiberActive());
-
-    DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
-    auto idx = static_cast<unsigned>(FiberPriority::NORMAL);
-    FiberInterface* fi = &ready_queue_[idx].front();
-    ready_queue_[idx].pop_front();
-    return fi->SwitchTo();
   }
+
+  if (yield)
+    AddReady(FiberActive());
+
+  DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
+  auto idx = GetQueueIndex(FiberPriority::NORMAL);
+  FiberInterface* fi = &ready_queue_[idx].front();
+  ready_queue_[idx].pop_front();
+  return fi->SwitchTo();
 }
 
-void Scheduler::AddReady(FiberInterface* fibi) {
+void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_[unsigned(fibi->prio_)].push_back(*fibi);
+
+  unsigned q_idx = GetQueueIndex(fibi->prio_);
+
+  if (to_front) {
+    ready_queue_[q_idx].push_front(*fibi);
+  } else {
+    ready_queue_[q_idx].push_back(*fibi);
+  }
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -459,7 +462,7 @@ unsigned Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
-    ready_queue_[unsigned(fi.prio_)].push_back(fi);
+    ready_queue_[GetQueueIndex(fi.prio_)].push_back(fi);
     fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
     ++result;
   } while (!sleep_queue_.empty());
@@ -485,7 +488,7 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   // All our dispatch policies add dispatcher to ready queue, hence it must be there.
   CHECK(dispatch_cntx_->list_hook.is_linked());
 
-  constexpr unsigned prio = unsigned(FiberPriority::NORMAL);
+  constexpr unsigned prio = GetQueueIndex(FiberPriority::NORMAL);
   // We must erase it from the ready queue because we switch to dispatcher "abnormally",
   // not through Preempt().
   ready_queue_[prio].erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
@@ -493,7 +496,7 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
 }
 
-void Scheduler::UpdateConfig(uint64_t Scheduler::Config::*field, uint64_t value) {
+void Scheduler::UpdateConfig(uint64_t Scheduler::Config::* field, uint64_t value) {
   config_.*field = value;
 }
 
@@ -570,8 +573,8 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
 
 RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   DCHECK(HasReady(priority));
-  const uint64_t Config::*kBudgets[2] = {&Config::budget_normal_fib,
-                                         &Config::budget_background_fib};
+  const uint64_t Config::* kBudgets[2] = {&Config::budget_normal_fib,
+                                          &Config::budget_background_fib};
 
   ProactorBase::UpdateMonotonicTime();
   round_robin_run_.took_ns = 0;

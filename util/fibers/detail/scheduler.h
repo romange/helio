@@ -38,7 +38,7 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void AddReady(FiberInterface* fibi);
+  void AddReady(FiberInterface* fibi, bool to_front = false);
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
   // fibi must exist during the run of this function.
@@ -50,7 +50,7 @@ class Scheduler {
   void ScheduleTermination(FiberInterface* fibi);
 
   bool HasReady(FiberPriority p = FiberPriority::NORMAL) const {
-    return !ready_queue_[static_cast<uint8_t>(p)].empty();
+    return !ready_queue_[GetQueueIndex(p)].empty();
   }
 
   ::boost::context::fiber_context Preempt(bool yield);
@@ -60,7 +60,7 @@ class Scheduler {
 
   // Assumes HasReady() is true.
   FiberInterface* PopReady(FiberPriority p = FiberPriority::NORMAL) {
-    auto idx = static_cast<unsigned>(p);
+    auto idx = GetQueueIndex(p);
     assert(!ready_queue_[idx].empty());
     FiberInterface* res = &ready_queue_[idx].front();
     ready_queue_[idx].pop_front();
@@ -122,6 +122,11 @@ class Scheduler {
  private:
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
+
+  // For HIGH priority fibers, we still use NORMAL(0) queue.
+  static constexpr unsigned GetQueueIndex(FiberPriority prio) {
+    return prio == FiberPriority::HIGH ? 0 : unsigned(prio);
+  }
 
   // We use intrusive::list and not slist because slist has O(N) complexity for some operations
   // which may be time consuming for long lists.
