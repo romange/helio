@@ -5,6 +5,7 @@
 #include "util/fibers/fibers.h"
 
 #include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
 
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
@@ -289,6 +290,7 @@ TEST_F(FiberTest, Remote) {
       LOG(INFO) << "set signaled";
     }
     this_thread::sleep_for(10ms);
+    LOG(INFO) << "tb1 exiting";
   });
 
   unique_lock lk(mu);
@@ -550,6 +552,20 @@ TEST_F(FiberTest, StackSize) {
   });
 
   fb1.Join();
+}
+
+TEST_F(FiberTest, HighPriority) {
+  vector<string> run_order;
+  Fiber fb1(Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "bg"},
+            [&] { run_order.push_back("bg"); });
+  Fiber fb2(Fiber::Opts{.priority = FiberPriority::NORMAL, .name = "normal"},
+            [&] { run_order.push_back("normal"); });
+  Fiber fb3(Fiber::Opts{.priority = FiberPriority::HIGH, .name = "high"},
+            [&] { run_order.push_back("high"); });
+  fb1.Join();
+  fb2.Join();
+  fb3.Join();
+  EXPECT_THAT(run_order, testing::ElementsAre("high", "normal", "bg"));
 }
 
 // EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
