@@ -20,6 +20,8 @@
 #endif
 #endif  // __aarch64__ __linux__
 
+// #define RECORD_FIBER_NAMES 1
+
 ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
           "If > 0, ensures the stack each fiber has at least this margin. "
           "The check is done at fiber destruction time.");
@@ -47,11 +49,9 @@ static inline void arm_arch_pause(void) {
 
   if (use_spin_delay_sb == 1) {
     asm volatile(".inst 0xd50330ff");  // SB instruction encoding
-  }
-  else if (use_spin_delay_sb == 0) {
+  } else if (use_spin_delay_sb == 0) {
     asm volatile("isb");
-  }
-  else {
+  } else {
     // Initialize variable and check if SB is supported
     if (getauxval(AT_HWCAP) & HWCAP_SB)
       use_spin_delay_sb = 1;
@@ -112,13 +112,17 @@ struct TL_FiberInitializer {
   // Per-thread scheduler instance.
   // Allows overriding the main dispatch loop
   Scheduler* sched;
-  uint64_t switch_delay_cycles = 0;  // switch delay in cycles.
+  uint64_t runqueue_delay_cycles = 0;  // switch delay in cycles.
 
   // Tracks fiber runtimes that took longer than 1ms.
   uint64_t long_runtime_cnt = 0;
   uint64_t long_runtime_usec = 0;
 
   uint32_t atomic_section = 0;
+  uint32_t fiber_run_seq = 0;
+#if RECORD_FIBER_NAMES
+  array<string, 8> past_fiber_names;
+#endif
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
 
@@ -233,7 +237,7 @@ ctx::fiber_context FiberInterface::Terminate() {
 
   // usually Preempt returns empty fc but here we return the value of where
   // to switch to when this fiber completes. See intrusive_ptr_release for more info.
-  return scheduler_->Preempt();
+  return scheduler_->Preempt(false);
 }
 
 size_t FiberInterface::GetStackMargin(const void* stack_address) const {
@@ -278,7 +282,7 @@ void FiberInterface::Start(Launch launch) {
   switch (launch) {
     case Launch::post:
       // Activate but do not switch to it.
-      fb_init.sched->AddReady(this);
+      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */);
       break;
     case Launch::dispatch:
       // Add the active fiber to the ready queue and switch to the new fiber.
@@ -332,7 +336,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked())
-      scheduler_->AddReady(other);
+      scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
     // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
@@ -425,6 +429,12 @@ FiberInterface* FiberInterface::SwitchSetup() {
   FiberInterface* to_suspend = fb_initializer.active;
   fb_initializer.active = this;
 
+#if RECORD_FIBER_NAMES
+  unsigned index = fb_initializer.fiber_run_seq % fb_initializer.past_fiber_names.size();
+  fb_initializer.past_fiber_names[index] = to_suspend->name_;
+#endif
+  fb_initializer.fiber_run_seq++;
+
   uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
@@ -432,7 +442,8 @@ FiberInterface* FiberInterface::SwitchSetup() {
   if (tsc > cpu_tsc_) {
     ++tl.epoch;
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
-    fb_initializer.switch_delay_cycles += (tsc - cpu_tsc_);
+    uint64_t runqueue_delay = tsc - cpu_tsc_;
+    fb_initializer.runqueue_delay_cycles += runqueue_delay;
 
     // to_suspend points to the fiber that is active and is going to be suspended.
     uint64_t active_cycles = tsc - to_suspend->cpu_tsc_;
@@ -443,7 +454,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
       fb_initializer.long_runtime_usec += (active_cycles * 1000) / g_tsc_cycles_per_ms;
       if (active_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() == WORKER) {
         LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for "
-                     << (active_cycles / g_tsc_cycles_per_ms) << " ms";
+                                << (active_cycles / g_tsc_cycles_per_ms) << " ms";
       }
     }
   }
@@ -475,6 +486,10 @@ void PrintAllFiberStackTraces() {
   FbInitializer().sched->PrintAllFiberStackTraces();
 }
 
+void ResetFiberRunSeq() {
+  FbInitializer().fiber_run_seq = 0;
+}
+
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
   FbInitializer().sched->ExecuteOnAllFiberStacks(std::move(fn));
 }
@@ -497,7 +512,7 @@ void SetCustomDispatcher(DispatchPolicy* policy) {
 // Together with FiberSwitchEpoch we can compute the average delay per fiber.
 uint64_t FiberSwitchDelayUsec() noexcept {
   // in nanoseconds, so lets convert from cycles
-  return detail::FbInitializer().switch_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
+  return detail::FbInitializer().runqueue_delay_cycles * 1000 / detail::g_tsc_cycles_per_ms;
 }
 
 // Total number of events of fibers running too long.
@@ -509,6 +524,24 @@ uint64_t FiberLongRunCnt() noexcept {
 // Together with FiberLongRunCnt we can compute the average time per long running event.
 uint64_t FiberLongRunSumUsec() noexcept {
   return detail::FbInitializer().long_runtime_usec;
+}
+
+// Returns the current fiber run sequence number for this thread since it
+// became active.
+uint32_t GetFiberRunSeq() noexcept {
+  return detail::FbInitializer().fiber_run_seq;
+}
+
+vector<string> GetPastFiberNames() noexcept {
+#if RECORD_FIBER_NAMES
+  auto& init = detail::FbInitializer();
+
+  size_t end = init.fiber_run_seq % init.past_fiber_names.size();
+  return {init.past_fiber_names.begin(),
+          init.past_fiber_names.begin() + end};
+#else
+  return {};
+#endif
 }
 
 void SetFiberLongRunWarningThreshold(uint32_t warn_ms) {

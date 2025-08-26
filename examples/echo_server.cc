@@ -58,7 +58,7 @@ ABSL_FLAG(bool, raw, true,
           "the connection handshake");
 ABSL_FLAG(bool, tcp_nodelay, true, "use tcp_nodelay option for server sockets");
 ABSL_FLAG(bool, multishot, false, "If true, iouring sockets use multishot receives");
-ABSL_FLAG(uint16_t, bufring_size, 256, "Size of the buffer ring for iouring sockets");
+ABSL_FLAG(uint16_t, bufring_size, 8192, "Size of the buffer ring for iouring sockets");
 ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses SO_INCOMING_CPU in order to distribute incoming connections");
 ABSL_FLAG(bool, ipv6, false, "If true, use ipv6 for server");

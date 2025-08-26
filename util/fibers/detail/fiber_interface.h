@@ -23,8 +23,9 @@ enum class Launch {
 };
 
 enum class FiberPriority : uint8_t {
-  NORMAL,      // default priority
-  BACKGROUND,  // background priority, runs when no NORMAL fibers are ready.
+  NORMAL = 0,      // default priority
+  BACKGROUND = 1,  // background priority, runs when no NORMAL fibers are ready.
+  HIGH = 2,       // High priority, activated earlier than other fibers.
 };
 
 // based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
@@ -135,6 +136,10 @@ class FiberInterface {
 
   bool IsDefined() const {
     return bool(entry_);
+  }
+
+  FiberPriority Priority() const {
+    return prio_;
   }
 
   // We need refcounting for referencing handles via .
@@ -382,6 +387,7 @@ void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;
 
 void PrintAllFiberStackTraces();
+void ResetFiberRunSeq();
 
 // Runs fn on all fibers in the thread. See FiberInterface::ExecuteOnFiberStack for details.
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);

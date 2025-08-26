@@ -24,7 +24,7 @@ constexpr int kNumSig = _NSIG;
 
 #else
 constexpr int kNumSig = NSIG;
-#endif // __linux__
+#endif  // __linux__
 
 #include <mutex>  // once_flag
 
@@ -73,11 +73,9 @@ static inline void arm_arch_pause(void) {
 
   if (use_spin_delay_sb == 1) {
     asm volatile(".inst 0xd50330ff");  // SB instruction encoding
-  }
-  else if (use_spin_delay_sb == 0) {
+  } else if (use_spin_delay_sb == 0) {
     asm volatile("isb");
-  }
-  else {
+  } else {
     // Initialize variable and check if SB is supported
     if (getauxval(AT_HWCAP) & HWCAP_SB)
       use_spin_delay_sb = 1;
@@ -86,9 +84,9 @@ static inline void arm_arch_pause(void) {
   }
 #else
   asm volatile("isb");
-#endif // __linux__
+#endif  // __linux__
 }
-#endif // __aarch64__
+#endif  // __aarch64__
 
 unsigned pause_amplifier = 50;
 uint64_t cycles_per_10us = 1000000;  // correctly defined inside ModuleInit.
@@ -102,6 +100,8 @@ __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
+
+  SetBusyPollUsec(20);
 
 #ifdef __linux__
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -196,7 +196,7 @@ bool ProactorBase::RunOnIdleTasks() {
           on_idle_next_ = 0;
           break;  // do/while loop
         }
-      } else {   // level >= 0
+      } else {  // level >= 0
         curr_ts = GetClockNanos();
 
         if (unsigned(level) >= kOnIdleMaxLevel) {
@@ -322,6 +322,14 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
   }
 }
 
+uint64_t ProactorBase::GetCurrentBusyCycles() const {
+  return base::CycleClock::Now() - io_wait_end_cycle_;
+}
+
+void ProactorBase::SetBusyPollUsec(uint32_t usec) {
+  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(usec);
+}
+
 // The threshold is set to ~2.5ms.
 bool ProactorBase::ShouldPollL2Tasks() const {
   uint64_t now = base::CycleClock::Now();
@@ -352,18 +360,25 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
 }
 
 void ProactorBase::IdleEnd(uint64_t start) {
-  uint64_t end = base::CycleClock::Now();
+  auto end_cycles = base::CycleClock::Now();
+  busy_poll_start_cycle_ = end_cycles;
+  io_wait_end_cycle_ = end_cycles;
 
   // Assuming that cpu clock frequency is
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
-  cpu_idle_cycles_ += (end - start);
+  cpu_idle_cycles_ += (end_cycles - start);
 
-  if (end > cpu_measure_cycle_start_ + kMinCyclePeriod) {
+  if (end_cycles > cpu_measure_cycle_start_ + kMinCyclePeriod) {
     load_numerator_ = cpu_idle_cycles_;
-    load_denominator_ = end - cpu_measure_cycle_start_;
+    load_denominator_ = end_cycles - cpu_measure_cycle_start_;
     cpu_idle_cycles_ = 0;
-    cpu_measure_cycle_start_ = end;
+    cpu_measure_cycle_start_ = end_cycles;
   }
+  detail::ResetFiberRunSeq();
+}
+
+void ProactorBase::ResetBusyPoll() {
+  busy_poll_start_cycle_ = base::CycleClock::Now();
 }
 
 void ProactorBase::Pause(unsigned count) {

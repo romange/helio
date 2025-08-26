@@ -103,6 +103,24 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
+  void ConfigureSubmitWakeup(bool enable) {
+    submit_on_wake_ = uint8_t(enable);
+  }
+
+  void ConfigureMsgRing(bool enable) {
+    msgring_enabled_f_ = uint8_t(enable);
+  }
+
+  void SetSubmitQueueThreshold(uint32_t threshold) {
+    submit_q_threshold_ = threshold;
+  }
+
+  /**
+   * Flushes the submit queue if the number of pending submissions reaches the configured threshold.
+   * Returns true if the queue was flushed, false otherwise.
+   */
+  bool FlushSubmitQueueIfNeeded();
+
   // Register buffer with given size and allocate backing storage, calls io_uring_register_buffers.
   // Returns 0 on success, errno on error.
   unsigned RegisterBuffers(size_t size);
@@ -191,11 +209,13 @@ class UringProactor : public ProactorBase {
 
   io_uring ring_;
 
-  uint8_t msgring_f_ : 1;
+  uint8_t msgring_supported_f_ : 1;
   uint8_t poll_first_ : 1;
   uint8_t buf_ring_f_ : 1;
   uint8_t bundle_f_ : 1;
-  uint8_t : 4;
+  uint8_t submit_on_wake_ : 1;
+  uint8_t msgring_enabled_f_ : 1;
+  uint8_t : 2;
 
   EventCount sqe_avail_;
 
@@ -235,12 +255,14 @@ class UringProactor : public ProactorBase {
     base::SegmentPool segments;
   } buf_pool_;
 
+  uint32_t submit_q_threshold_ = UINT32_MAX;
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;
   uint32_t next_free_index_ = 0;  // next available fd for register files.
   uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
   uint64_t reaped_cqe_cnt_ = 0;
+  std::atomic_int64_t last_wake_ts_{0};
 
   struct EpollEntry {
     EpollCB cb;

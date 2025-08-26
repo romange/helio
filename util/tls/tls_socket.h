@@ -132,7 +132,12 @@ class TlsSocket final : public FiberSocketBase {
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
 
-  enum { WRITE_IN_PROGRESS = 1, READ_IN_PROGRESS = 2, SHUTDOWN_IN_PROGRESS = 4, SHUTDOWN_DONE = 8 };
+  enum {
+    WRITE_IN_PROGRESS = 1,
+    READ_IN_PROGRESS = 2,
+    SHUTDOWN_IN_PROGRESS = 4,
+    SHUTDOWN_DONE = 8,
+  };
   uint8_t state_{0};
 
   class AsyncReq {

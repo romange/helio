@@ -6,6 +6,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 
@@ -22,6 +23,9 @@ namespace ctx = boost::context;
 
 using namespace std;
 using base::CycleClock;
+using chrono::duration;
+using chrono::steady_clock;
+
 namespace {
 
 class DispatcherImpl final : public FiberInterface {
@@ -123,32 +127,29 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
       sched->ProcessSleep();
     }
 
-    if (sched->HasReady()) {
-      FiberInterface* fi = sched->PopReady();
-      DCHECK(!fi->list_hook.is_linked());
-      DCHECK(!fi->sleep_hook.is_linked());
-      sched->AddReady(this);
+    if (sched->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE)
+      continue;
 
-      DVLOG(2) << "Switching to " << fi->name();
+    if (sched->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE)
+      continue;
 
-      fi->SwitchTo();
-      DCHECK(!list_hook.is_linked());
-      DCHECK(FiberActive() == this);
+    sched->DestroyTerminated();
+
+    bool has_sleeping = sched->HasSleepingFibers();
+    auto cb = [this]() { return wake_suspend_; };
+
+    unique_lock<mutex> lk{mu_};
+    DCHECK(!sched->HasReady(FiberPriority::NORMAL) && !sched->HasReady(FiberPriority::BACKGROUND));
+
+    if (has_sleeping) {
+      auto next_tp = sched->NextSleepPoint();
+      cnd_.wait_until(lk, next_tp, std::move(cb));
     } else {
-      sched->DestroyTerminated();
-
-      bool has_sleeping = sched->HasSleepingFibers();
-      auto cb = [this]() { return wake_suspend_; };
-
-      unique_lock<mutex> lk{mu_};
-      if (has_sleeping) {
-        auto next_tp = sched->NextSleepPoint();
-        cnd_.wait_until(lk, next_tp, std::move(cb));
-      } else {
+      if (!sched->IsShutdown())
         cnd_.wait(lk, std::move(cb));
-      }
-      wake_suspend_ = false;
     }
+    wake_suspend_ = false;
+    detail::ResetFiberRunSeq();
   }
   sched->DestroyTerminated();
 }
@@ -169,10 +170,12 @@ Scheduler::~Scheduler() {
   shutdown_ = true;
   DCHECK(main_cntx_ == FiberActive());
 
-  while (HasReady()) {
-    FiberInterface* fi = PopReady();
-    DCHECK(!fi->sleep_hook.is_linked());
-    fi->SwitchTo();
+  for (auto prio : {FiberPriority::NORMAL, FiberPriority::BACKGROUND}) {
+    while (HasReady(prio)) {
+      FiberInterface* fi = PopReady(prio);
+      DCHECK(!fi->sleep_hook.is_linked());
+      fi->SwitchTo();
+    }
   }
 
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
@@ -198,13 +201,7 @@ Scheduler::~Scheduler() {
   DestroyTerminated();
 }
 
-void Scheduler::Yield(FiberInterface* me) {
-  AddReady(me);
-  was_yield_ = true;
-  Preempt();
-}
-
-ctx::fiber_context Scheduler::Preempt() {
+ctx::fiber_context Scheduler::Preempt(bool yield) {
   if (FiberActive() == dispatch_cntx_.get()) {
     LOG(DFATAL) << "Should not preempt dispatcher: " << GetStacktrace();
   }
@@ -220,20 +217,64 @@ ctx::fiber_context Scheduler::Preempt() {
     }
   }
 
-  DCHECK(!ready_queue_.empty());  // dispatcher fiber is always in the ready queue.
+  ProactorBase::UpdateMonotonicTime();
+  uint64_t last = exchange(round_robin_run_.last_ts, ProactorBase::GetMonotonicTimeNs());
+  round_robin_run_.yields += yield ? 1 : 0;
+  round_robin_run_.took_ns = round_robin_run_.last_ts - round_robin_run_.start_ts;
 
-  FiberInterface* fi = &ready_queue_.front();
-  ready_queue_.pop_front();
+  if (FiberActive()->Priority() == FiberPriority::BACKGROUND) {
+    // Fast path: keep running the active fiber to avoid costly context switch.
+    // Other tasks will be run on the next iteration or when this one is done.
+    if (yield && round_robin_run_.took_ns < round_robin_run_.budget_ns)
+      return {};
 
+    // Fiber ate a big chunk of cpu time
+    bool hungry = round_robin_run_.last_ts - last > round_robin_run_.budget_ns;
+    // No other normal fibers were present in last 5ms, server is likely (almost) idle
+    bool likely_idle = round_robin_run_.last_ts - round_robin_run_.last_normal_ts > 5'000'000;
+    // Yield with specified probability (frequency)
+    bool should_yield = round_robin_run_.last_ts % 100 < config_.background_sleep_prob;
+
+    // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
+    // Alternatively sleep every `frequency` time to yield to the OS for long cpu tasks
+    if (yield) {
+      if (likely_idle && (hungry || should_yield)) {
+        uint64_t took = round_robin_run_.last_ts - last;
+        uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
+        FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
+        sleep_queue_.insert(*FiberActive());
+      } else {
+        AddReady(FiberActive());
+      }
+    }
+
+    // Background fibers always return to the dispatcher
+    return dispatch_cntx_->SwitchTo();
+  }
+
+  if (yield)
+    AddReady(FiberActive());
+
+  DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
+  auto idx = GetQueueIndex(FiberPriority::NORMAL);
+  FiberInterface* fi = &ready_queue_[idx].front();
+  ready_queue_[idx].pop_front();
   return fi->SwitchTo();
 }
 
-void Scheduler::AddReady(FiberInterface* fibi) {
+void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_.push_back(*fibi);
+
+  unsigned q_idx = GetQueueIndex(fibi->prio_);
+
+  if (to_front) {
+    ready_queue_[q_idx].push_front(*fibi);
+  } else {
+    ready_queue_[q_idx].push_back(*fibi);
+  }
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -329,7 +370,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 
   me->tp_ = tp;
   sleep_queue_.insert(*me);
-  auto fc = Preempt();
+  auto fc = Preempt(false);
   DCHECK(!fc);
   DCHECK(!me->sleep_hook.is_linked());
   bool has_timed_out = (me->tp_ == chrono::steady_clock::time_point::max());
@@ -421,7 +462,7 @@ unsigned Scheduler::ProcessSleep() {
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
     fi.cpu_tsc_ = CycleClock::Now();
-    ready_queue_.push_back(fi);
+    ready_queue_[GetQueueIndex(fi.prio_)].push_back(fi);
     fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
     ++result;
   } while (!sleep_queue_.empty());
@@ -447,11 +488,16 @@ void Scheduler::SuspendAndExecuteOnDispatcher(std::function<void()> fn) {
   // All our dispatch policies add dispatcher to ready queue, hence it must be there.
   CHECK(dispatch_cntx_->list_hook.is_linked());
 
+  constexpr unsigned prio = GetQueueIndex(FiberPriority::NORMAL);
   // We must erase it from the ready queue because we switch to dispatcher "abnormally",
   // not through Preempt().
-  ready_queue_.erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
+  ready_queue_[prio].erase(FI_Queue::s_iterator_to(*dispatch_cntx_));
 
   dispatch_cntx_->SwitchToAndExecute([fn = std::move(fn)] { fn(); });
+}
+
+void Scheduler::UpdateConfig(uint64_t Scheduler::Config::* field, uint64_t value) {
+  config_.*field = value;
 }
 
 void Scheduler::PrintAllFiberStackTraces() {
@@ -481,7 +527,7 @@ void Scheduler::PrintAllFiberStackTraces() {
       uint64_t tsc = CycleClock::Now();
       uint64_t delta = tsc - fb->cpu_tsc_;
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
-      absl::StrAppend(&state, ":", delta / freq_ms , "ms");
+      absl::StrAppend(&state, ":", delta / freq_ms, "ms");
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
@@ -491,22 +537,91 @@ void Scheduler::PrintAllFiberStackTraces() {
   ExecuteOnAllFiberStacks(print_fn);
 }
 
-bool Scheduler::RunWorkerFibersStepImpl() {
-  DCHECK(!ready_queue_.empty());
+RunFiberResult Scheduler::Run(FiberPriority priority) {
+  // TODO: use c++ 20 using enum
+  const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
 
-  FiberInterface* fi = PopReady();
-  DCHECK(!fi->list_hook.is_linked());
-  DCHECK(!fi->sleep_hook.is_linked());
-  AddReady(dispatch_cntx_.get());
-
-  DVLOG(2) << "Switching to " << fi->name();
   ProactorBase::UpdateMonotonicTime();
-  fi->SwitchTo();
 
-  was_yield_ = false;
+  // Reset total runtime every while to restore normal balance.
+  // If background fibers took most of the time, punish them by resetting later.
+  if (runtime_ns_.total() >= kBaseSlice) {
+    if (runtime_ns_[FiberPriority::BACKGROUND] <= runtime_ns_[FiberPriority::NORMAL] ||
+        runtime_ns_.total() >= 5 * kBaseSlice) {
+      runtime_ns_.fill(0);
+    }
+  }
 
-  // We are back to the dispatcher, return true if there are no ready fibers.
-  return !HasReady();
+  // Proactor should progress on normal priority fibers first
+  DCHECK(priority == FiberPriority::NORMAL || !HasReady(FiberPriority::NORMAL));
+
+  if (HasReady(priority))
+    RunReadyFibersInternal(priority);
+
+  // If background fibers are below their warrant, let them run
+  if (HasReady(FiberPriority::BACKGROUND) && priority == FiberPriority::NORMAL) {
+    uint64_t warrant = runtime_ns_.total() * config_.background_warrant_pct / 100;
+    if (runtime_ns_[FiberPriority::NORMAL] > 0 && runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
+      RunReadyFibersInternal(FiberPriority::BACKGROUND);
+  }
+
+  // Fibers can wake each other, so we have to check all fibers of equal or higher priority
+  bool has_ready = HasReady(FiberPriority::NORMAL) ||
+                   (priority == FiberPriority::BACKGROUND && HasReady(FiberPriority::BACKGROUND));
+  return has_ready ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+}
+
+RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
+  DCHECK(HasReady(priority));
+  const uint64_t Config::* kBudgets[2] = {&Config::budget_normal_fib,
+                                          &Config::budget_background_fib};
+
+  ProactorBase::UpdateMonotonicTime();
+  round_robin_run_.took_ns = 0;
+  round_robin_run_.start_ts = round_robin_run_.last_ts = ProactorBase::GetMonotonicTimeNs();
+  round_robin_run_.budget_ns = config_.*kBudgets[static_cast<unsigned>(priority)];
+  round_robin_run_.yields = 0;
+
+  // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
+  // Yields cause it to stop running even with leftover budget to return to processing io events.
+  // Background fibers are run until the budget allows it. Yield instructions don't even cause
+  // fibers to switch to avoid context switch costs.
+  do {
+    FiberInterface* fi = PopReady(priority);
+    DCHECK(!fi->list_hook.is_linked());
+    DCHECK(!fi->sleep_hook.is_linked());
+
+    // Run round robin only with normal priority, returing to the dispatcher after every round.
+    // Background fibers switch back directly to dispatcher
+    if (priority == FiberPriority::NORMAL)
+      AddReady(dispatch_cntx_.get());
+
+    DVLOG(2) << "Switching to " << fi->name();
+
+    // Switch to fiber, next logic is determined by Preempt()
+    fi->SwitchTo();
+
+    // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
+    // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
+    // to kMaxTimeSpentNs.
+    if (round_robin_run_.took_ns > round_robin_run_.budget_ns) {
+      break;
+    }
+
+    // Background fibers yield as often as possible to be cooperative, so break only for normal ones
+    if (priority == FiberPriority::NORMAL && round_robin_run_.yields > 0)
+      break;
+
+    // We may need to break here even if ready_queue_ is not empty if one of the fibers yielded,
+    // because otherwise we may end up in a busy loop with a fiber keeps yielding and we never
+    // return to the dispatcher.
+  } while (HasReady(priority));
+
+  runtime_ns_[static_cast<size_t>(priority)] += round_robin_run_.took_ns;
+  if (priority == FiberPriority::NORMAL)
+    round_robin_run_.last_normal_ts = round_robin_run_.last_ts;
+
+  return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 }  // namespace detail

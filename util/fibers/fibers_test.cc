@@ -5,6 +5,7 @@
 #include "util/fibers/fibers.h"
 
 #include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
 
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
@@ -13,6 +14,7 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
@@ -117,7 +119,8 @@ struct TestParams {
   string_view proactor_type;
   bool use_ipv6;
 
-  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
+  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {
+  }
 
   string ToString() const {
     string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
@@ -143,8 +146,7 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
   void SetUp() final {
     proactor_th_ = CreateProactorThread();
     const TestInfo* const test_info = UnitTest::GetInstance()->current_test_info();
-    LOG(INFO) << "Starting " << test_info->name() << " with "
-              << (UseIPv6() ? "IPv6" : "IPv4");
+    LOG(INFO) << "Starting " << test_info->name() << " with " << (UseIPv6() ? "IPv6" : "IPv4");
   }
 
   void TearDown() final {
@@ -160,28 +162,32 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
   }
 
   // Return the proactor type parameter
-  string_view GetProactorType() const { return GetParam().proactor_type; }
+  string_view GetProactorType() const {
+    return GetParam().proactor_type;
+  }
 
   // Return whether to use IPv6
-  bool UseIPv6() const { return GetParam().use_ipv6; }
+  bool UseIPv6() const {
+    return GetParam().use_ipv6;
+  }
 
   using IoResult = int;
 
   std::unique_ptr<ProactorThread> proactor_th_;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Engines,
-    ProactorTest,
-    testing::Values(
-          TestParams("epoll", false)  // epoll with IPv4
-        , TestParams("epoll", true)   // epoll with IPv6
+INSTANTIATE_TEST_SUITE_P(Engines, ProactorTest,
+                         testing::Values(TestParams("epoll", false)  // epoll with IPv4
+                                         ,
+                                         TestParams("epoll", true)  // epoll with IPv6
 #ifdef __linux__
-        , TestParams("uring", false)  // uring with IPv4
-        , TestParams("uring", true)    // uring with IPv6
+                                         ,
+                                         TestParams("uring", false)  // uring with IPv4
+                                         ,
+                                         TestParams("uring", true)  // uring with IPv6
 #endif
-    ),
-    [](const auto& info) { return info.param.ToString(); });
+                                         ),
+                         [](const auto& info) { return info.param.ToString(); });
 
 struct SlistMember {
   boost::intrusive::slist_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>
@@ -221,11 +227,12 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, WorkerFibersCount());
 
   fb1.Join();
-  EXPECT_EQ(preempt_cnt_start + 1,  ThisFiber::GetPreemptCount());
+  EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
   fb2.Join();
+  EXPECT_GE(GetFiberRunSeq(), 5);
 
   // Second join does not preempt because fb2 finished running before.
-  EXPECT_EQ(preempt_cnt_start+ 1,  ThisFiber::GetPreemptCount());
+  EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
 
   EXPECT_EQ(0, WorkerFibersCount());
   EXPECT_EQ(0, WorkerFibersStackSize());
@@ -235,7 +242,7 @@ TEST_F(FiberTest, Basic) {
 
   Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
-  EXPECT_EQ(preempt_cnt_start + 2,  ThisFiber::GetPreemptCount());
+  EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
 }
 
 TEST_F(FiberTest, Stack) {
@@ -283,6 +290,7 @@ TEST_F(FiberTest, Remote) {
       LOG(INFO) << "set signaled";
     }
     this_thread::sleep_for(10ms);
+    LOG(INFO) << "tb1 exiting";
   });
 
   unique_lock lk(mu);
@@ -546,6 +554,20 @@ TEST_F(FiberTest, StackSize) {
   fb1.Join();
 }
 
+TEST_F(FiberTest, HighPriority) {
+  vector<string> run_order;
+  Fiber fb1(Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "bg"},
+            [&] { run_order.push_back("bg"); });
+  Fiber fb2(Fiber::Opts{.priority = FiberPriority::NORMAL, .name = "normal"},
+            [&] { run_order.push_back("normal"); });
+  Fiber fb3(Fiber::Opts{.priority = FiberPriority::HIGH, .name = "high"},
+            [&] { run_order.push_back("high"); });
+  fb1.Join();
+  fb2.Join();
+  fb3.Join();
+  EXPECT_THAT(run_order, testing::ElementsAre("high", "normal", "bg"));
+}
+
 // EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
 #if 0
 TEST_F(FiberTest, AtomicGuard) {
@@ -619,11 +641,13 @@ TEST_P(ProactorTest, DispatchTest) {
 }
 
 TEST_P(ProactorTest, Sleep) {
-  proactor()->Await([] {
-    LOG(INFO) << "Before Sleep";
-    ThisFiber::SleepFor(20ms);
-    LOG(INFO) << "After Sleep";
-  }, Fiber::Opts{.name = "test_sleep"});
+  proactor()->Await(
+      [] {
+        LOG(INFO) << "Before Sleep";
+        ThisFiber::SleepFor(20ms);
+        LOG(INFO) << "After Sleep";
+      },
+      Fiber::Opts{.name = "test_sleep"});
 }
 
 TEST_P(ProactorTest, LocalCond) {
@@ -962,6 +986,18 @@ TEST_P(ProactorTest, Periodic) {
   });
   LOG(INFO) << "Periodic finished";
   EXPECT_GT(cnt, 0u);
+}
+
+TEST_P(ProactorTest, Background) {
+  proactor()->Await(
+      [&] {
+        EXPECT_EQ(ThisFiber::Priority(), FiberPriority::BACKGROUND);
+        for (unsigned i = 0; i < 1000; ++i) {
+          ThisFiber::Yield();
+        }
+      },
+      Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "background"});
+  LOG(INFO) << "Background finished";
 }
 
 }  // namespace fb2

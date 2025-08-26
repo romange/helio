@@ -13,7 +13,6 @@
 #include <absl/debugging/stacktrace.h>
 #include <absl/strings/str_format.h>
 #include <absl/time/clock.h>
-#include <gperftools/stacktrace.h>
 #include <ucontext.h>
 
 #include "base/gtest.h"

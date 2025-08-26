@@ -207,9 +207,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   while (true) {
     DCHECK(!dest.empty());
 
-    size_t read_len = std::min(dest.size(), size_t(INT_MAX));
-
-    Engine::OpResult op_result = engine_->Read(dest.data(), read_len);
+    Engine::OpResult op_result = engine_->Read(dest.data(), dest.size());
 
     int op_val = op_result;
 
@@ -218,22 +216,27 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     if (op_val > 0) {
       read_total += op_val;
 
-      // I do not understand this code and what the hell I meant to do here. Seems to work
-      // though.
-      if (size_t(op_val) == read_len) {
-        if (size_t(op_val) < dest.size()) {
-          dest.remove_prefix(op_val);
-        } else {
-          ++io;
-          --io_len;
-          if (io_len == 0)
-            break;  // Finished reading everything.
-          dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(io->iov_base), io->iov_len};
-        }
-        // We read everything we asked for but there are still buffers left to fill.
-        continue;
+      if (size_t(op_val) < dest.size()) {
+        // Note that engine can return short reads so we can continue reading until we get
+        // op_val < 0 indicating that an upstream read is needed.
+        dest.remove_prefix(op_val);
+      } else {
+        ++io;
+        --io_len;
+        if (io_len == 0)
+          break;  // Fully filled msg.msg_iovlen
+
+        dest = Engine::MutableBuffer{reinterpret_cast<uint8_t*>(io->iov_base), io->iov_len};
       }
-      break;
+      // Repeat the loop to read the next chunk.
+      continue;
+    }
+
+    if (read_total > 0 && op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
+      // If we have read some data, we should not block on further reads.
+      // TODO: for async reads though we could issue a read request since we know the engine
+      // buffer is empty.
+      return read_total;
     }
 
     error_code ec = HandleOp(op_val);

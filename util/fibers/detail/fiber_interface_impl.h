@@ -14,13 +14,13 @@ inline bool FiberInterface::WaitUntil(std::chrono::steady_clock::time_point tp) 
 }
 
 inline void FiberInterface::Suspend() {
-  auto res = scheduler_->Preempt();
+  auto res = scheduler_->Preempt(false);
   assert(!res);
   assert(!IsScheduledRemotely());
 }
 
 inline void FiberInterface::Yield() {
-  scheduler_->Yield(this);
+  scheduler_->Preempt(true);
 }
 
 }  // namespace detail

@@ -130,6 +130,10 @@ uint64_t FiberLongRunCnt() noexcept;
 
 // Exposes total duration of fibers running for a "long" time (longer than 1ms).
 uint64_t FiberLongRunSumUsec() noexcept;
+uint32_t GetFiberRunSeq() noexcept;
+
+// Returns last K names of fibers that were running in this thread since it became active.
+std::vector<std::string> GetPastFiberNames() noexcept;
 
 void SetFiberLongRunWarningThreshold(uint32_t warn_ms);
 
@@ -179,6 +183,10 @@ inline void SleepUntil(std::chrono::steady_clock::time_point tp) {
 
 inline void Yield() {
   fb2::detail::FiberActive()->Yield();
+}
+
+inline fb2::FiberPriority Priority() {
+  return fb2::detail::FiberActive()->Priority();
 }
 
 inline uint64_t GetRunningTimeCycles() {

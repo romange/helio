@@ -28,6 +28,8 @@ ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd tab
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
+// #define CHECK_WAKE_LATENCY 1
+
 using namespace std;
 
 namespace util {
@@ -208,10 +210,12 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   io_uring_params params;
   memset(&params, 0, sizeof(params));
 
-  msgring_f_ = 0;
+  msgring_supported_f_ = 0;
+  msgring_enabled_f_ = 1;
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
+  submit_on_wake_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -255,9 +259,9 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
-  msgring_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
+  msgring_supported_f_ = io_uring_opcode_supported(uring_probe, IORING_OP_MSG_RING);
   io_uring_free_probe(uring_probe);
-  VLOG_IF(1, msgring_f_) << "msgring supported!";
+  VLOG_IF(1, msgring_supported_f_) << "msgring supported!";
 
   unsigned req_feats = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_FAST_POLL | IORING_FEAT_NODROP;
   CHECK_EQ(req_feats, params.features & req_feats)
@@ -422,6 +426,16 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
 
   return SubmitEntry{res};
 }
+
+bool UringProactor::FlushSubmitQueueIfNeeded() {
+  if (io_uring_sq_ready(&ring_) < submit_q_threshold_) {
+    return false;
+  }
+
+  io_uring_submit(&ring_);
+  return true;
+}
+
 
 unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + kAlign - 1) / kAlign * kAlign;
@@ -634,8 +648,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
-    -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
+                                            uint16_t* head_id) -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 
@@ -776,9 +790,9 @@ LinuxSocketBase* UringProactor::CreateSocket() {
 
 void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   struct io_uring_cqe* cqes[kCqeBatchLen];
+  using namespace detail;
 
   uint32_t tq_seq = 0;
-  uint32_t spin_loops = 0;
   uint32_t busy_sq_cnt = 0;
   Tasklet task;
 
@@ -854,7 +868,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         }
       } while (task_queue_.try_dequeue(task));
       stats_.num_task_runs += cnt;
-      DVLOG(2) << "Tasks runs " << stats_.num_task_runs << "/" << spin_loops;
+      DVLOG(2) << "Tasks runs " << stats_.num_task_runs;
 
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
@@ -875,19 +889,29 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       if (ShouldPollL2Tasks()) {
         RunL2Tasks(scheduler);
       }
+      ResetBusyPoll();
     }
 
-    // Traverses one or more fibers because a worker fiber does not necessarily returns
-    // straight back to the dispatcher. Instead it chooses the next ready worker fiber
-    // from the ready queue.
-    //
-    if (!scheduler->RunWorkerFibersStep()) {
+    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
+
       continue;
     }
 
     if (has_cpu_work || io_uring_sq_ready(&ring_) > 0) {
+      jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
+      continue;
+    }
+
+    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
+      jump_from = JUMP_FROM_READY;
+      continue;
+    }
+
+    if (io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
       continue;
     }
@@ -898,14 +922,20 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool activated = RunL2Tasks(scheduler);
     if (activated) {  // If we have ready fibers - restart the loop.
       jump_from = JUMP_FROM_L2;
+      ResetBusyPoll();
       continue;
     }
 
     DCHECK(!has_cpu_work && !scheduler->HasReady());
+
+    // We put this check to follow up in case it breaks in the future.
+    // In any case we have the io_uring_sq_ready() check below to protect us
+    // in production.
     DCHECK_EQ(io_uring_sq_ready(&ring_), 0u);
 
     if (io_uring_sq_ready(&ring_) > 0) {
       jump_from = JUMP_FROM_READY;
+      ResetBusyPoll();
       continue;
     }
 
@@ -921,16 +951,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    if (!ring_busy && spin_loops++ < 10) {
-      DVLOG(3) << "spin_loops " << spin_loops;
+    bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
+    if (!ring_busy && should_poll) {
+      Pause(3);
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
       jump_from = JUMP_FROM_SPIN;
       continue;
     }
-
-    spin_loops = 0;  // Reset the spinning.
 
     __kernel_timespec ts{0, 0};
     __kernel_timespec* ts_arg = nullptr;
@@ -962,7 +991,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
      * 3. In case compare fails, we do not care about the ordering because we reset tq_seq again
      *    at the beginning of the loop.
      */
-    if (task_queue_.empty() &&
+
+#ifdef CHECK_WAKE_LATENCY
+    last_wake_ts_.store(0, std::memory_order_relaxed);
+#endif
+    if (task_queue_.empty() && scheduler->RemoteEmpty() &&
         tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acq_rel,
                                       memory_order_relaxed)) {
       if (is_stopped_) {
@@ -979,6 +1012,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load(memory_order_relaxed)
               << " tasks:" << stats_.num_task_runs << " " << stats_.loop_cnt;
 
+#ifdef CHECK_WAKE_LATENCY
+      {
+        int64_t now = absl::GetCurrentTimeNanos();
+        int64_t last_wake_ts = last_wake_ts_.load(std::memory_order_relaxed);
+        if (last_wake_ts && now - last_wake_ts > 300'0000) {  // 300 us
+          LOG(INFO) << "WakeRing was sent " << (now - last_wake_ts) / 1000 << " usec ago";
+        }
+      }
+#endif
       ++stats_.num_stalls;
       tq_seq = 0;
       tq_seq_.store(0, std::memory_order_release);
@@ -1014,9 +1056,18 @@ void UringProactor::WakeRing() {
 
   DCHECK(caller != this);
 
-  if (caller && caller->msgring_f_) {
+#ifdef CHECK_WAKE_LATENCY
+  last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
+#endif
+
+  if (caller && caller->msgring_supported_f_ && caller->msgring_enabled_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
+
+    if (caller->submit_on_wake_) {
+      // flush the se asap to wake up the destination proactor as quickly as possible.
+      io_uring_submit(&caller->ring_);
+    }
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));

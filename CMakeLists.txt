@@ -17,13 +17,20 @@ else()
   option (WITH_UNWIND "Enable libunwind support" ON)
 endif()
 
+set(MOLD_DEFAULT_STATE OFF)
+if(NOT DEFINED CACHE{USE_MOLD})
+  find_program(MOLD_EXECUTABLE mold QUIET)
+  if(MOLD_EXECUTABLE)
+    set(MOLD_DEFAULT_STATE ON)
+  endif()
+endif()
+
 option (HELIO_USE_SANITIZER "Use asan and usan sanitizers" OFF)
 option (BUILD_DOCS "Generate documentation " ON)
 option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
-option (USE_MOLD "whether to use mold linker" OFF)
+option (USE_MOLD "whether to use mold linker" ${MOLD_DEFAULT_STATE})
 set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
 set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
-
 
 include(CheckCXXCompilerFlag)
 
