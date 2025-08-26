@@ -231,12 +231,16 @@ ctx::fiber_context Scheduler::Preempt() {
   return fi->SwitchTo();
 }
 
-void Scheduler::AddReady(FiberInterface* fibi) {
+void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(*fibi);
+  if (to_front) {
+    ready_queue_[unsigned(FiberPriority::NORMAL)].push_front(*fibi);
+  } else {
+    ready_queue_[unsigned(FiberPriority::NORMAL)].push_back(*fibi);
+  }
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
