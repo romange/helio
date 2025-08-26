@@ -183,12 +183,19 @@ class TlsSocket final : public FiberSocketBase {
 
     void AsyncProgressCb(io::Result<size_t> result);
 
-    void RunBlocked();
+    // Helper function to handle WRITE_IN_PROGRESS and READ_IN_PROGRESS without preemption.
+    // When an operation can't continue because there is already one in progress, it early returns
+    // and copies itself to blocked_async_req_. When the in progress operation completes,
+    // it resumes the one pending.
+    void RunPending();
   };
 
   std::unique_ptr<AsyncReq> async_read_req_;
   std::unique_ptr<AsyncReq> async_write_req_;
 
+  // Pending request that is blocked on WRITE_IN_PROGRESS or READ_IN_PROGRESS. Since we can't
+  // preempt in function context, we simply subscribe the async request to the one in-flight and
+  // once that completes it will also continue the one pending/blocked.
   AsyncReq* blocked_async_req_ = nullptr;
 };
 

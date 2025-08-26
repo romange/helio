@@ -525,7 +525,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
 
 void TlsSocket::AsyncReq::AsyncProgressCb(io::Result<size_t> read_result) {
   owner_->state_ &= ~READ_IN_PROGRESS;
-  RunBlocked();
+  RunPending();
   if (!read_result) {
     // log any errors as well as situations where we have unflushed output.
     if (read_result.error() != errc::connection_aborted || owner_->engine_->OutputPending() > 0) {
@@ -629,7 +629,7 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
     }
 
     // We are done. Errornous exit.
-    RunBlocked();
+    RunPending();
     CompleteAsyncReq(write_result);
     return;
   }
@@ -657,7 +657,7 @@ void TlsSocket::AsyncReq::CompleteAsyncWrite(io::Result<size_t> write_result) {
   }
 
   owner_->state_ &= ~WRITE_IN_PROGRESS;
-  RunBlocked();
+  RunPending();
 
   // We are done with the write, check if we also need to read because we are
   // in NEED_READ_AND_MAYBE_WRITE state
@@ -772,7 +772,7 @@ void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   async_write_req_->StartUpstreamWrite();
 }
 
-void TlsSocket::AsyncReq::RunBlocked() {
+void TlsSocket::AsyncReq::RunPending() {
   if (!owner_->blocked_async_req_) {
     return;
   }
