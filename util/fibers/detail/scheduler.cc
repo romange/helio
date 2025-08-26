@@ -229,12 +229,16 @@ ctx::fiber_context Scheduler::Preempt() {
   return fi->SwitchTo();
 }
 
-void Scheduler::AddReady(FiberInterface* fibi) {
+void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   fibi->cpu_tsc_ = CycleClock::Now();
-  ready_queue_.push_back(*fibi);
+  if (to_front) {
+    ready_queue_.push_front(*fibi);
+  } else {
+    ready_queue_.push_back(*fibi);
+  }
   fibi->trace_ = FiberInterface::TRACE_READY;
 
   // Case of notifications coming to a sleeping fiber.
@@ -482,7 +486,7 @@ void Scheduler::PrintAllFiberStackTraces() {
       uint64_t tsc = CycleClock::Now();
       uint64_t delta = tsc - fb->cpu_tsc_;
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
-      absl::StrAppend(&state, ":", delta / freq_ms , "ms");
+      absl::StrAppend(&state, ":", delta / freq_ms, "ms");
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"

@@ -283,7 +283,7 @@ void FiberInterface::Start(Launch launch) {
   switch (launch) {
     case Launch::post:
       // Activate but do not switch to it.
-      fb_init.sched->AddReady(this);
+      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */);
       break;
     case Launch::dispatch:
       // Add the active fiber to the ready queue and switch to the new fiber.
@@ -337,7 +337,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked())
-      scheduler_->AddReady(other);
+    scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
     // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
