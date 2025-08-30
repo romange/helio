@@ -402,7 +402,7 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // i.e. when fi is already active. In that case we should not add it to the ready queue.
     if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
-      AddReady(fi);
+      AddReady(fi, fi->prio_ == FiberPriority::HIGH /* to_front */);
     }
   }
 
