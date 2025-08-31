@@ -17,6 +17,10 @@
 namespace util {
 namespace fb2 {
 
+namespace detail {
+class Scheduler;
+}
+
 enum class Launch {
   dispatch,  // switch to the fiber immediately
   post       // enqueue the fiber for activation but continue with the current fiber.
@@ -382,6 +386,7 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, F
 }
 
 FiberInterface* FiberActive() noexcept;
+detail::Scheduler* FiberScheduler() noexcept;
 void EnterFiberAtomicSection() noexcept;
 void LeaveFiberAtomicSection() noexcept;
 bool IsFiberAtomicSection() noexcept;

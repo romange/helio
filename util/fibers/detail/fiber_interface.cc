@@ -182,6 +182,10 @@ FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
 }
 
+detail::Scheduler* FiberScheduler() noexcept {
+  return FbInitializer().sched;
+}
+
 FiberInterface::FiberInterface(Type type, FiberPriority prio, uint32_t cnt, string_view nm)
     : use_count_(cnt), type_(type), prio_(prio) {
   remote_next_.store((FiberInterface*)kRemoteFree, memory_order_relaxed);
