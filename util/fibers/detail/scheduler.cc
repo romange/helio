@@ -163,7 +163,7 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
 
   fibers_.push_back(*main_cntx);
   fibers_.push_back(*dispatch_cntx_);
-  AddReady(dispatch_cntx_.get());
+  ready_queue_.push_back(*dispatch_cntx_);
 }
 
 Scheduler::~Scheduler() {
@@ -233,7 +233,12 @@ void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
-  fibi->cpu_tsc_ = CycleClock::Now();
+  // We measure runqueue time for fibers that are not active. Yielding fibers are
+  // excluded, otherwise they won't be accounted correctly by SwitchSetup when
+  // calculating run_cycles.
+  if (FiberActive() != fibi) {
+    fibi->set_cpu_tsc(CycleClock::Now());
+  }
   if (to_front) {
     ready_queue_.push_front(*fibi);
   } else {
@@ -498,11 +503,20 @@ void Scheduler::PrintAllFiberStackTraces() {
 
 bool Scheduler::RunWorkerFibersStepImpl() {
   DCHECK(!ready_queue_.empty());
+  DCHECK(FiberActive() == dispatch_cntx_.get());
 
   FiberInterface* fi = PopReady();
   DCHECK(!fi->list_hook.is_linked());
   DCHECK(!fi->sleep_hook.is_linked());
-  AddReady(dispatch_cntx_.get());
+
+  // We specifically do not call AddReady here because we do not want to reset
+  // dispatch_cntx_->cpu_tsc_.
+
+  DCHECK(!dispatch_cntx_->list_hook.is_linked());
+  DCHECK(!dispatch_cntx_->sleep_hook.is_linked());
+
+  ready_queue_.push_back(*dispatch_cntx_);
+  dispatch_cntx_->trace_ = FiberInterface::TRACE_READY;
 
   DVLOG(2) << "Switching to " << fi->name();
   ProactorBase::UpdateMonotonicTime();
