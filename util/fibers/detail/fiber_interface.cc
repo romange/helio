@@ -497,6 +497,10 @@ void PrintAllFiberStackTraces() {
 
 void ResetFiberRunSeq() {
   FbInitializer().fiber_run_seq = 0;
+
+  // We reset the CPU timestamp for the dispatch (active) fiber because the fiber was awoken
+  // from I/O blocking.
+  FbInitializer().active->SetRunQueueStart();
 }
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {

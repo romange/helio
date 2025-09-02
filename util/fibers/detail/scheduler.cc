@@ -267,6 +267,13 @@ void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
+  // We measure runqueue time for fibers that are not active. Yielding fibers are
+  // excluded, otherwise they won't be accounted correctly by SwitchSetup when
+  // calculating run_cycles.
+  if (FiberActive() != fibi) {
+    fibi->SetRunQueueStart();
+  }
+
   unsigned q_idx = GetQueueIndex(fibi->prio_);
 
   if (to_front) {
@@ -541,6 +548,7 @@ void Scheduler::PrintAllFiberStackTraces() {
 RunFiberResult Scheduler::Run(FiberPriority priority) {
   // TODO: use c++ 20 using enum
   const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
+  DCHECK(FiberActive() == dispatch_cntx_.get());
 
   ProactorBase::UpdateMonotonicTime();
 
