@@ -244,6 +244,9 @@ class FiberInterface {
 
   uint64_t GetRunningTimeCycles() const;
 
+  void set_cpu_tsc(uint64_t tsc) {
+    cpu_tsc_ = tsc;
+  }
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;

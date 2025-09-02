@@ -190,7 +190,7 @@ FiberInterface::FiberInterface(Type type, FiberPriority prio, uint32_t cnt, stri
   if (len) {
     memcpy(name_, nm.data(), len);
   }
-  cpu_tsc_ = CycleClock::Now();
+  set_cpu_tsc(CycleClock::Now());
 }
 
 FiberInterface::~FiberInterface() {
@@ -446,15 +446,16 @@ FiberInterface* FiberInterface::SwitchSetup() {
     fb_initializer.runqueue_delay_cycles += runqueue_delay;
 
     // to_suspend points to the fiber that is active and is going to be suspended.
-    uint64_t active_cycles = tsc - to_suspend->cpu_tsc_;
-    if (active_cycles > g_tsc_cycles_per_ms) {
+    uint64_t run_cycles = tsc - to_suspend->cpu_tsc_;
+    if (run_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
 
       // improves precision, instead of "active_cycles / (g_tsc_cycles_per_ms / 1000)"
-      fb_initializer.long_runtime_usec += (active_cycles * 1000) / g_tsc_cycles_per_ms;
-      if (active_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() == WORKER) {
+      unsigned run_usec = (run_cycles * 1000) / g_tsc_cycles_per_ms;
+      fb_initializer.long_runtime_usec += run_usec;
+      if (run_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() != MAIN) {
         LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for "
-                                << (active_cycles / g_tsc_cycles_per_ms) << " ms";
+                     << run_usec << " us";
       }
     }
   }
@@ -462,7 +463,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
   to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
   to_suspend->preempt_cnt_++;
 
-  cpu_tsc_ = tsc;
+  set_cpu_tsc(tsc);  // mark when this fiber started running.
   return to_suspend;
 }
 
@@ -488,6 +489,10 @@ void PrintAllFiberStackTraces() {
 
 void ResetFiberRunSeq() {
   FbInitializer().fiber_run_seq = 0;
+
+  // We reset the CPU timestamp for the dispatch (active) fiber because the fiber was awoken
+  // from I/O blocking.
+  FbInitializer().active->set_cpu_tsc(CycleClock::Now());
 }
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
