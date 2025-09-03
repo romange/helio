@@ -190,7 +190,7 @@ FiberInterface::FiberInterface(Type type, FiberPriority prio, uint32_t cnt, stri
   if (len) {
     memcpy(name_, nm.data(), len);
   }
-  cpu_tsc_ = CycleClock::Now();
+  SetRunQueueStart();
 }
 
 FiberInterface::~FiberInterface() {
@@ -230,7 +230,8 @@ ctx::fiber_context FiberInterface::Terminate() {
     }
     CpuPause();
   }
-  trace_ = TRACE_TERMINATE;
+
+  FIBER_TRACE(this, TRACE_TERMINATE);
   join_q_.NotifyAll(this);
 
   flags_.fetch_and(~kBusyBit, memory_order_release);
@@ -335,8 +336,10 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
 
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
-    if (!other->list_hook.is_linked())
+    if (!other->list_hook.is_linked()) {
+      other->SetRunQueueStart();
       scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
+    }
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
     // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
@@ -354,6 +357,7 @@ void FiberInterface::DetachScheduler() {
 void FiberInterface::AttachScheduler() {
   scheduler_ = detail::FbInitializer().sched;
   scheduler_->Attach(this);
+
   scheduler_->AddReady(this);
 }
 
@@ -446,15 +450,16 @@ FiberInterface* FiberInterface::SwitchSetup() {
     fb_initializer.runqueue_delay_cycles += runqueue_delay;
 
     // to_suspend points to the fiber that is active and is going to be suspended.
-    uint64_t active_cycles = tsc - to_suspend->cpu_tsc_;
-    if (active_cycles > g_tsc_cycles_per_ms) {
+    uint64_t run_cycles = tsc - to_suspend->cpu_tsc_;
+    if (run_cycles > g_tsc_cycles_per_ms) {
       fb_initializer.long_runtime_cnt++;
 
       // improves precision, instead of "active_cycles / (g_tsc_cycles_per_ms / 1000)"
-      fb_initializer.long_runtime_usec += (active_cycles * 1000) / g_tsc_cycles_per_ms;
-      if (active_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() == WORKER) {
+      unsigned run_usec = (run_cycles * 1000) / g_tsc_cycles_per_ms;
+      fb_initializer.long_runtime_usec += run_usec;
+      if (run_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() != MAIN) {
         LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for "
-                                << (active_cycles / g_tsc_cycles_per_ms) << " ms";
+                     << run_usec << " us";
       }
     }
   }
@@ -462,7 +467,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
   to_suspend->cpu_tsc_ = tsc;  // mark when the fiber was suspended.
   to_suspend->preempt_cnt_++;
 
-  cpu_tsc_ = tsc;
+  cpu_tsc_ = tsc;  // mark when this fiber started running.
   return to_suspend;
 }
 

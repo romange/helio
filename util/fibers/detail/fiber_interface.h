@@ -10,6 +10,7 @@
 #include <boost/intrusive/set.hpp>
 #include <chrono>
 
+#include "base/cycle_clock.h"
 #include "base/mpsc_intrusive_queue.h"
 #include "base/pmr/memory_resource.h"
 #include "util/fibers/detail/wait_queue.h"
@@ -244,6 +245,10 @@ class FiberInterface {
 
   uint64_t GetRunningTimeCycles() const;
 
+  void SetRunQueueStart() {
+    cpu_tsc_ = base::CycleClock::Now();
+  }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -256,6 +261,7 @@ class FiberInterface {
 
   std::atomic<uint32_t> use_count_;  // used for intrusive_ptr refcounting.
 
+#if 0
   // trace_ variable - used only for debugging purposes.
   enum TraceState : uint8_t {
     TRACE_NONE,
@@ -263,6 +269,10 @@ class FiberInterface {
     TRACE_TERMINATE,
     TRACE_READY
   } trace_ = TRACE_NONE;
+  #define FIBER_TRACE(fi, state) (fi)->trace_ = (FiberInterface::state)
+#else
+  #define FIBER_TRACE(fi, state) (void)0
+#endif
   Type type_;
 
   std::atomic<uint16_t> flags_{0};
