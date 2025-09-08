@@ -446,7 +446,7 @@ void WorkerThread(unsigned index) {
     Fiber accept_fb("accept", [&] { AcceptFiber(policy->ring(), listen_fd); });
     accept_fb.Join();
   } else {
-    ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt();
+    ctx::fiber_context fc = fb2::detail::FiberActive()->scheduler()->Preempt(true);
 
     DCHECK(!fc);
 
