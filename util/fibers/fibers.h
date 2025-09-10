@@ -19,7 +19,7 @@ class Fiber {
   struct Opts {
     Launch launch = Launch::post;
     FiberPriority priority = FiberPriority::NORMAL;
-    std::string_view name;
+    std::string name;
     uint32_t stack_size = 64 * 1024;
   };
 
@@ -43,7 +43,7 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : Fiber(Opts{.launch = policy, .name = name}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
+      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
