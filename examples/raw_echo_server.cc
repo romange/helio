@@ -17,6 +17,7 @@
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/pthread_utils.h"
+#include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/fibers.h"
 
 ABSL_FLAG(int16_t, port, 8081, "Echo server port");
@@ -297,7 +298,7 @@ void DispatchCqe(FiberInterface* current, const io_uring_cqe& cqe) {
 
 void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) {
   VLOG(1) << "RunEventLoop ";
-  DCHECK(!sched->HasReady());
+  DCHECK(!sched->HasReady(fb2::FiberPriority::NORMAL));
 
   io_uring_cqe* cqe = nullptr;
   unsigned spins = 0;
@@ -331,14 +332,14 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
       sched->ProcessSleep();
     }
 
-    if (sched->HasReady()) {
+    if (sched->HasReady(fb2::FiberPriority::NORMAL)) {
       do {
         FiberInterface* fi = sched->PopReady();
         sched->AddReady(dispatcher);
 
         auto fc = fi->SwitchTo();
         DCHECK(!fc);
-      } while (sched->HasReady());
+      } while (sched->HasReady(fb2::FiberPriority::NORMAL));
       continue;
     }
 

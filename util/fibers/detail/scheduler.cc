@@ -566,9 +566,7 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
   }
 
   // Fibers can wake each other, so we have to check all fibers of equal or higher priority
-  bool has_ready = HasReady(FiberPriority::NORMAL) ||
-                   (priority == FiberPriority::BACKGROUND && HasReady(FiberPriority::BACKGROUND));
-  return has_ready ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
+  return HasReadyAtLeast(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
 
 RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
