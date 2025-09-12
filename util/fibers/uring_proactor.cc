@@ -926,7 +926,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    DCHECK(!has_cpu_work && !scheduler->HasReady());
+    DCHECK(!has_cpu_work && !scheduler->HasAnyReady());
 
     // We put this check to follow up in case it breaks in the future.
     // In any case we have the io_uring_sq_ready() check below to protect us
@@ -1003,7 +1003,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         break;
       }
 
-      DCHECK(!scheduler->HasReady());
+      DCHECK(!scheduler->HasAnyReady());
 
       VPRO(2) << "wait_for_cqe " << stats_.loop_cnt;
       uint64_t start_cycle = base::CycleClock::Now();

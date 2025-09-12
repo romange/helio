@@ -238,7 +238,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     // 1. No other fibers are active.
     // 2. Specifically SuspendIoLoop was called and returned true.
     // 3. Task queue is empty otherwise we should spin more to unload it.
-    if (task_queue_exhausted && !scheduler->HasReady() && spin_loops >= kMaxSpinLimit) {
+    if (task_queue_exhausted && !scheduler->HasAnyReady() && spin_loops >= kMaxSpinLimit) {
       spin_loops = 0;
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
         // We check stop condition when all the pending events were processed.
