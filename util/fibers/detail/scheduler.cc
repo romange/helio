@@ -163,7 +163,7 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
 
   fibers_.push_back(*main_cntx);
   fibers_.push_back(*dispatch_cntx_);
-  AddReady(dispatch_cntx_.get());
+  ready_queue_[GetQueueIndex(FiberPriority::NORMAL)].push_back(*dispatch_cntx_);
 }
 
 Scheduler::~Scheduler() {
@@ -202,7 +202,8 @@ Scheduler::~Scheduler() {
 }
 
 ctx::fiber_context Scheduler::Preempt(bool yield) {
-  if (FiberActive() == dispatch_cntx_.get()) {
+  auto* active_fiber = FiberActive();
+  if (active_fiber == dispatch_cntx_.get()) {
     LOG(DFATAL) << "Should not preempt dispatcher: " << GetStacktrace();
   }
 
@@ -222,7 +223,7 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
   round_robin_run_.yields += yield ? 1 : 0;
   round_robin_run_.took_ns = round_robin_run_.last_ts - round_robin_run_.start_ts;
 
-  if (FiberActive()->Priority() == FiberPriority::BACKGROUND) {
+  if (active_fiber->Priority() == FiberPriority::BACKGROUND) {
     // Fast path: keep running the active fiber to avoid costly context switch.
     // Other tasks will be run on the next iteration or when this one is done.
     if (yield && round_robin_run_.took_ns < round_robin_run_.budget_ns)
@@ -241,10 +242,10 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
       if (likely_idle && (hungry || should_yield)) {
         uint64_t took = round_robin_run_.last_ts - last;
         uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
-        FiberActive()->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
-        sleep_queue_.insert(*FiberActive());
+        active_fiber->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
+        sleep_queue_.insert(*active_fiber);
       } else {
-        AddReady(FiberActive());
+        AddReady(active_fiber);
       }
     }
 
@@ -253,20 +254,18 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
   }
 
   if (yield)
-    AddReady(FiberActive());
+    AddReady(active_fiber);
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
-  auto idx = GetQueueIndex(FiberPriority::NORMAL);
-  FiberInterface* fi = &ready_queue_[idx].front();
-  ready_queue_[idx].pop_front();
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  FiberInterface* fi = &rq.front();
+  rq.pop_front();
   return fi->SwitchTo();
 }
 
 void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
-
-  fibi->cpu_tsc_ = CycleClock::Now();
 
   unsigned q_idx = GetQueueIndex(fibi->prio_);
 
@@ -275,7 +274,8 @@ void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
   } else {
     ready_queue_[q_idx].push_back(*fibi);
   }
-  fibi->trace_ = FiberInterface::TRACE_READY;
+
+  FIBER_TRACE(fibi, TRACE_READY);
 
   // Case of notifications coming to a sleeping fiber.
   if (fibi->sleep_hook.is_linked()) {
@@ -438,6 +438,7 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // i.e. when fi is already active. In that case we should not add it to the ready queue.
     if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
+      fi->SetRunQueueStart();
       AddReady(fi, fi->prio_ == FiberPriority::HIGH /* to_front */);
     }
   }
@@ -461,9 +462,9 @@ unsigned Scheduler::ProcessSleep() {
 
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
-    fi.cpu_tsc_ = CycleClock::Now();
+    fi.SetRunQueueStart();
     ready_queue_[GetQueueIndex(fi.prio_)].push_back(fi);
-    fi.trace_ = FiberInterface::TRACE_SLEEP_WAKE;
+    FIBER_TRACE(&fi, TRACE_SLEEP_WAKE);
     ++result;
   } while (!sleep_queue_.empty());
 
