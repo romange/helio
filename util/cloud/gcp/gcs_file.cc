@@ -159,8 +159,7 @@ error_code GcsWriteFile::Close() {
       return ec;
     }
     h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
-    auto client_handle = std::move(send_res.client_handle);
-    RETURN_ERROR(client_handle->Recv(&resp));
+    RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
     body = std::move(resp.get().body());
 

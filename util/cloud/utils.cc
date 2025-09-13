@@ -126,6 +126,12 @@ error_code AbstractStorageFile::FillBuf(const uint8_t* buffer, size_t length) {
 
 }  // namespace detail
 
+RobustSender::SenderResult::~SenderResult() {
+  if (client_handle && !reuse_connection) {
+    client_handle->Shutdown();
+  }
+}
+
 RobustSender::RobustSender(http::ClientPool* pool, CredentialsProvider* provider)
     : pool_(pool), provider_(provider) {
 }
@@ -172,7 +178,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
       VLOG(1) << "RespHeader" << i << ": " << msg;
 
       if (!result->eb_parser->keep_alive()) {
-        LOG(FATAL) << "TBD: Schedule reconnect due to conn-close header";
+        result->reuse_connection = false;
       }
 
       if (IsResponseOK(msg.result())) {

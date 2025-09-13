@@ -46,3 +46,10 @@ jobs:
             https_client_cli s3_demo
           ./fibers_test --logtostderr --gtest_repeat=10
           GLOG_logtostderr=1 ctest -V -L CI
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: third_party_logs
+          path: |
+            ${{github.workspace}}/build/third_party/src/**/*.log

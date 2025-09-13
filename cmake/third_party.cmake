@@ -336,7 +336,7 @@ add_third_party(jemalloc
 
 add_third_party(
   xxhash
-  URL https://github.com/Cyan4973/xxHash/archive/v0.8.2.tar.gz
+  URL https://github.com/Cyan4973/xxHash/archive/v0.8.3.tar.gz
 
   # A bug in xxhash 0.8.1 that searches for a file that doesn't exist
   PATCH_COMMAND touch <SOURCE_DIR>/xxhsum.1
@@ -356,7 +356,7 @@ add_third_party(
 
 add_third_party(
   pugixml
-  URL https://github.com/zeux/pugixml/archive/refs/tags/v1.14.tar.gz
+  URL https://github.com/zeux/pugixml/archive/refs/tags/v1.15.tar.gz
 )
 
 if (WITH_AWS)
@@ -368,7 +368,7 @@ if (WITH_AWS)
     GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
     GIT_SHALLOW TRUE
     PATCH_COMMAND "${AWS_PATCH_COMMAND}"
-    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib"
+    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF  -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
   )
 endif()
@@ -379,14 +379,14 @@ if (WITH_GCP)
     GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
     GIT_TAG ab1842a
     CMAKE_PASS_FLAGS "-DRAPIDJSON_BUILD_TESTS=OFF -DRAPIDJSON_BUILD_EXAMPLES=OFF \
-                      -DRAPIDJSON_BUILD_DOC=OFF"
+                      -DRAPIDJSON_BUILD_DOC=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     LIB "none"
   )
 endif()
 
 add_third_party(
   cares
-  URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.34.1
+  URL https://codeload.github.com/c-ares/c-ares/tar.gz/refs/tags/v1.34.5
   CMAKE_PASS_FLAGS "-DCARES_SHARED:BOOL=OFF -DCARES_STATIC:BOOL=ON -DCARES_STATIC_PIC:BOOL=ON \
                     -DCMAKE_INSTALL_LIBDIR=lib"
 )
