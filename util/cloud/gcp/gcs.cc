@@ -359,13 +359,12 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
   RobustSender sender(client_pool_.get(), &creds_provider_);
 
   while (true) {
-    RobustSender::SenderResult result;
-    RETURN_ERROR(sender.Send(2, &empty_req, &result));
+    RobustSender::SenderResult send_res;
+    RETURN_ERROR(sender.Send(2, &empty_req, &send_res));
 
-    h2::response_parser<h2::string_body> resp(std::move(*result.eb_parser));
-    auto client = std::move(result.client_handle);
+    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
 
-    RETURN_ERROR(client->Recv(&resp));
+    RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
     auto msg = resp.release();
 
@@ -416,13 +415,12 @@ error_code GCS::List(string_view bucket, string_view prefix, bool recursive, Lis
   rj::Document doc;
   RobustSender sender(client_pool_.get(), &creds_provider_);
   while (true) {
-    RobustSender::SenderResult parse_res;
-    RETURN_ERROR(sender.Send(2, &empty_req, &parse_res));
+    RobustSender::SenderResult send_res;
+    RETURN_ERROR(sender.Send(2, &empty_req, &send_res));
 
-    h2::response_parser<h2::string_body> resp(std::move(*parse_res.eb_parser));
-    auto client = std::move(parse_res.client_handle);
+    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
 
-    RETURN_ERROR(client->Recv(&resp));
+    RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
     auto msg = resp.release();
     VLOG(1) << "List response: " << msg.body();
