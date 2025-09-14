@@ -991,15 +991,32 @@ TEST_P(ProactorTest, Periodic) {
 }
 
 TEST_P(ProactorTest, Background) {
-  proactor()->Await(
-      [&] {
+  auto fb = proactor()->LaunchFiber(
+      Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "background"}, [&] {
         EXPECT_EQ(ThisFiber::Priority(), FiberPriority::BACKGROUND);
         for (unsigned i = 0; i < 1000; ++i) {
           ThisFiber::Yield();
         }
-      },
-      Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "background"});
-  LOG(INFO) << "Background finished";
+      });
+  fb.Join();
+}
+
+TEST_P(ProactorTest, Mixed) {
+  vector<Fiber> fibers;
+  for (size_t i = 0; i < 100u; i++) {
+    Fiber::Opts opts{
+        .priority = i % 2 == 0 ? FiberPriority::NORMAL : FiberPriority::BACKGROUND,  //
+        .name = absl::StrCat("fb", i)                                                //
+    };
+    auto fb = proactor()->LaunchFiber(opts, [times = i * 2 + 500] {
+      for (unsigned i = 0; i < times; ++i) {
+        ThisFiber::Yield();
+      };
+    });
+    fibers.emplace_back(std::move(fb));
+  }
+  for (auto& fb : fibers)
+    fb.Join();
 }
 
 }  // namespace fb2

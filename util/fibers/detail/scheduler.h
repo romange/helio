@@ -49,8 +49,18 @@ class Scheduler {
 
   void ScheduleTermination(FiberInterface* fibi);
 
-  bool HasReady(FiberPriority p = FiberPriority::NORMAL) const {
+  bool HasReady(FiberPriority p) const {
     return !ready_queue_[GetQueueIndex(p)].empty();
+  }
+
+  bool HasReadyAtLeast(FiberPriority p = FiberPriority::BACKGROUND) const {
+    // TODO: Move high prioity to 0 index and use enum value based comparison
+    return HasReady(FiberPriority::NORMAL) ||
+           (p == FiberPriority::BACKGROUND && HasReady(FiberPriority::BACKGROUND));
+  }
+
+  bool HasAnyReady() const {
+    return HasReadyAtLeast(FiberPriority::BACKGROUND);
   }
 
   ::boost::context::fiber_context Preempt(bool yield);
