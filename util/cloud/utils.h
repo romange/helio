@@ -179,6 +179,9 @@ class RobustSender {
   struct SenderResult {
     std::unique_ptr<boost::beast::http::response_parser<boost::beast::http::empty_body>> eb_parser;
     http::ClientPool::ClientHandle client_handle;
+    bool reuse_connection = true;
+
+    ~SenderResult();
   };
 
   RobustSender(http::ClientPool* pool, CredentialsProvider* provider);
