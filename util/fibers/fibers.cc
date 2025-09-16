@@ -11,6 +11,11 @@ using namespace std;
 namespace util {
 namespace fb2 {
 
+void JoinHandle::Wait() const {
+  if (handle_)
+    handle_->Join();
+}
+
 Fiber::~Fiber() {
   CHECK(!impl_) << "Fiber destructor called on a joinable fiber " << impl_->name();
 }
@@ -26,8 +31,8 @@ Fiber& Fiber::operator=(Fiber&& other) noexcept {
   return *this;
 }
 
-void Fiber::Detach() {
-  impl_.reset();
+JoinHandle Fiber::Detach() {
+  return {std::move(impl_)};
 }
 
 void Fiber::Join() {
