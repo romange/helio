@@ -12,6 +12,19 @@
 namespace util {
 namespace fb2 {
 
+// Handle to fiber to wait for its completion.
+// Contrary to Fiber class, it's non owning - i.e. can be dropped without waiting
+struct JoinHandle {
+  friend class Fiber;
+  void Wait() const;
+
+ private:
+  JoinHandle(boost::intrusive_ptr<util::fb2::detail::FiberInterface> ptr)
+      : handle_(std::move(ptr)) {
+  }
+  boost::intrusive_ptr<util::fb2::detail::FiberInterface> handle_;
+};
+
 class Fiber {
  public:
   using ID = uint64_t;
@@ -43,7 +56,8 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
+      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn),
+              std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
@@ -101,7 +115,7 @@ class Fiber {
   // Join fiber if it's running, else do nothing.
   void JoinIfNeeded();
 
-  void Detach();
+  JoinHandle Detach();
 
   // Returns true if this is the active (calling) fiber.
   bool IsActive() const {
