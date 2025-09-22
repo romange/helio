@@ -5,6 +5,7 @@
 #pragma once
 
 #include <sys/types.h>  // for mode_t
+#include <sys/stat.h> // statx
 
 #include "io/file.h"
 
@@ -75,6 +76,9 @@ class LinuxFile {
   void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
   void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
   void FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb);
+
+  std::error_code FSync(unsigned flags = 0 /* full sync */);
+
  protected:
   int fd_ = -1;
   union {
@@ -89,6 +93,10 @@ class LinuxFile {
 
 // Equivalent to open(2) call. "flags" is the OR mask of O_XXX constants.
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode);
+
+
+// Equivalent to statx() call
+std::error_code StatX(const char* filepath, struct statx *stat, int fd);
 
 }  // namespace fb2
 }  // namespace util
