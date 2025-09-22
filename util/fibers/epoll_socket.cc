@@ -76,8 +76,8 @@ int AcceptSock(int fd) {
   socklen_t addr_len = sizeof(client_addr);
   int res = accept(fd, (struct sockaddr*)&client_addr, &addr_len);
   if (res >= 0) {
-    SetNonBlocking(fd);
-    SetCloexec(fd);
+    SetNonBlocking(res);
+    SetCloexec(res);
   }
 
   return res;
