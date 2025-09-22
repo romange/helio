@@ -5,6 +5,7 @@
 #pragma once
 
 #include <sys/types.h>  // for mode_t
+#include <sys/stat.h> // statx
 
 #include "io/file.h"
 
@@ -75,6 +76,10 @@ class LinuxFile {
   void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
   void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
   void FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb);
+
+  std::error_code StatX(std::string_view filepath, struct statx *stat);
+  std::error_code FSyncBlocking();
+
  protected:
   int fd_ = -1;
   union {

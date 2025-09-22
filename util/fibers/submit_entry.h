@@ -5,6 +5,7 @@
 #pragma once
 
 #include <liburing/io_uring.h>
+#include <string_view>
 
 namespace util {
 namespace fb2 {
@@ -119,8 +120,8 @@ class SubmitEntry {
   void PrepFallocate(int fd, int mode, off_t offset, off_t len) {
     PrepFd(IORING_OP_FALLOCATE, fd);
     sqe_->off = offset;
-    sqe_->len = mode;
-    sqe_->addr = uint64_t(len);
+    sqe_->len = len;
+    sqe_->cmd_op = mode;
   }
 
   void PrepFadvise(int fd, off_t offset, off_t len, int advice) {
@@ -129,6 +130,22 @@ class SubmitEntry {
     sqe_->len = len;
     sqe_->off = offset;
   }
+
+  void PrepFSync(int fd) {
+    PrepFd(IORING_OP_FSYNC, fd);
+    // TODO fsync with flags = fdatasync
+    sqe_->sync_range_flags = 0;
+  }
+
+  void PrepStatX(std::string_view filepath, struct statx *stat) {
+    //AT_FDCWD is ignored when addr is an absolute path
+	  PrepFd(IORING_OP_STATX, AT_FDCWD);
+    sqe_->len = STATX_BASIC_STATS;
+    sqe_->off = 0;
+    sqe_->addr = reinterpret_cast<unsigned long>(filepath.data());
+    sqe_->addr2 = reinterpret_cast<unsigned long>(stat);
+  }
+
 
   void PrepSend(int fd, const void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_SEND, fd);

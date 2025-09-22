@@ -6,6 +6,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <system_error>
 
 #include "base/logging.h"
 #include "util/fibers/uring_proactor.h"
@@ -460,6 +461,46 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
     }
   }
   return make_unique<LinuxFile>(io_res, p);
+}
+
+std::error_code LinuxFile::FSyncBlocking() {
+  DCHECK(fd_);
+  ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+
+  Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
+  FiberCall::IoResult io_res;
+
+  {
+    FiberCall fc(p);
+    fc->PrepFSync(fd_);
+    io_res = fc.Get();
+
+    if (io_res < 0) {
+      return {-io_res, system_category()};
+    }
+  }
+  return {};
+}
+
+std::error_code LinuxFile::StatX(std::string_view filepath, struct statx *stat) {
+  DCHECK(fd_);
+  ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+
+  Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
+  FiberCall::IoResult io_res;
+
+  {
+    FiberCall fc(p);
+    fc->PrepStatX(filepath, stat);
+    io_res = fc.Get();
+
+    if (io_res < 0) {
+      return {-io_res, system_category()};
+    }
+  }
+  return {};
 }
 
 }  // namespace fb2
