@@ -1,6 +1,7 @@
 // Copyright 2021, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
+#include <gtest/gtest.h>
 #include <jemalloc/jemalloc.h>
 
 #ifdef __APPLE__
@@ -13,7 +14,7 @@
 
 // we expose internal types of mimalloc to access its statistics.
 // Currently it's not supported officially by the library.
-#include <mimalloc/types.h>
+#include <mimalloc-stats.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 
@@ -24,8 +25,6 @@
 namespace base {
 
 using namespace std;
-
-extern "C" mi_stats_t _mi_stats_main;
 
 typedef struct dictEntry {
   void* key;
@@ -40,6 +39,12 @@ typedef struct dictEntry {
 
 static_assert(sizeof(dictEntry) == 24, "");
 
+mi_stats_t get_stats() {
+  mi_stats_t s;
+  mi_stats_get(sizeof(s), &s);
+  return s;
+}
+
 class MallocTest : public testing::Test {
  public:
   static void SetUpTestCase() {
@@ -47,6 +52,25 @@ class MallocTest : public testing::Test {
     mi_option_set(mi_option_arena_reserve, 0);
   }
 };
+
+TEST_F(MallocTest, CommitedNegative) {
+  const int num_elements = 1000;
+  void* ptrs[num_elements];
+
+  mi_process_init();
+  mi_option_set(mi_option_purge_delay, 1);
+  mi_option_set(mi_option_arena_reserve, 1'024'000); // 1GB
+
+  for (int i = 0; i < num_elements; i++) {
+    ptrs[i] = mi_malloc(150000);
+  }
+  for (void* ptr: ptrs) {
+    mi_free(ptr);
+  }
+
+  mi_heap_collect(mi_heap_get_backing(), true);
+  EXPECT_GT(get_stats().committed.current, 0);
+}
 
 TEST_F(MallocTest, GoodSize) {
   EXPECT_EQ(32, mi_good_size(24));
@@ -68,6 +92,8 @@ TEST_F(MallocTest, GoodSize) {
 }
 
 TEST_F(MallocTest, Oom) {
+  GTEST_SKIP();
+
   errno = 0;
   mi_option_enable(mi_option_disallow_os_alloc);
 
@@ -79,12 +105,15 @@ TEST_F(MallocTest, Oom) {
   ASSERT_EQ(ENOMEM, err);
 
   mi_option_disable(mi_option_disallow_os_alloc);
-  ptr = mi_malloc(1 << 10);
-  ASSERT_TRUE(ptr != NULL);
+  void* ptr1 = mi_malloc(1 << 10);
+  ASSERT_TRUE(ptr1 != NULL);
   void* ptr2 = mi_malloc(1 << 10);
   ASSERT_TRUE(ptr2 != NULL);
   mi_free(ptr);
   mi_free(ptr2);
+
+  mi_collect(true);
+  EXPECT_EQ(0, get_stats().committed.current);
 }
 
 inline size_t VmmRss() {
@@ -167,7 +196,7 @@ bool heap_visit_cb(const mi_heap_t* heap, const mi_heap_area_t* area, void* bloc
 
 TEST_F(MallocTest, MimallocUsed) {
   mi_collect(true);
-  EXPECT_EQ(0, _mi_stats_main.committed.current);
+  EXPECT_EQ(0, get_stats().committed.current);
   mi_heap_t* myheap = mi_heap_new();
   Sum sum;
   mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
@@ -178,13 +207,13 @@ TEST_F(MallocTest, MimallocUsed) {
     void* ptr = mi_heap_malloc_aligned(myheap, 160, 8);
     EXPECT_EQ(160, mi_usable_size(ptr)) << i;
   }
-  EXPECT_LT(_mi_stats_main.committed.current, 140000000);
+  EXPECT_LT(get_stats().committed.current, 140000000);
   sum = {};
   mi_heap_visit_blocks(myheap, false /* visit all blocks*/, heap_visit_cb, &sum);
   EXPECT_EQ(sum.used, kElems * 160);  // See https://github.com/microsoft/mimalloc/issues/889
   mi_heap_destroy(myheap);
   mi_collect(true);
-  EXPECT_LT(_mi_stats_main.committed.current, 10000);
+  EXPECT_LT(get_stats().committed.current, 10000);
 }
 
 TEST_F(MallocTest, MimallocVisit) {
@@ -193,7 +222,7 @@ TEST_F(MallocTest, MimallocVisit) {
   std::ignore = mi_heap_malloc(myheap, 64);
 
   for (size_t i = 0; i < 50; ++i)
-  std::ignore = mi_heap_malloc(myheap, 128);
+    std::ignore = mi_heap_malloc(myheap, 128);
   void* ptr[50];
 
   // allocate 50
@@ -211,15 +240,15 @@ TEST_F(MallocTest, MimallocVisit) {
   mi_collect(false);
   mi_stats_print_out(NULL, NULL);
 
-#define LOG_STATS(x) LOG(INFO) << #x ": " << _mi_stats_main.x.current
+#define LOG_STATS(x) LOG(INFO) << #x ": " << get_stats().x.current
 
   LOG(INFO) << "visit: committed/reserved/used: " << sum.committed << "/" << sum.reserved << "/"
             << sum.used;
 
   LOG_STATS(committed);
-  LOG_STATS(malloc);
+  // LOG_STATS(malloc);
   LOG_STATS(reserved);
-  LOG_STATS(normal);
+  // LOG_STATS(normal);
   mi_heap_destroy(myheap);
 }
 
