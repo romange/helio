@@ -463,7 +463,7 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
   return make_unique<LinuxFile>(io_res, p);
 }
 
-std::error_code LinuxFile::FSyncBlocking() {
+std::error_code LinuxFile::FSyncBlocking(unsigned flags) {
   DCHECK(fd_);
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);
@@ -473,7 +473,7 @@ std::error_code LinuxFile::FSyncBlocking() {
 
   {
     FiberCall fc(p);
-    fc->PrepFSync(fd_);
+    fc->PrepFSync(fd_, flags);
     io_res = fc.Get();
 
     if (io_res < 0) {
@@ -483,8 +483,8 @@ std::error_code LinuxFile::FSyncBlocking() {
   return {};
 }
 
-std::error_code LinuxFile::StatX(std::string_view filepath, struct statx *stat) {
-  DCHECK(fd_);
+std::error_code StatX(std::string_view filepath, struct statx *stat, int fd) {
+  DCHECK(fd);
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);
 

@@ -120,8 +120,8 @@ class SubmitEntry {
   void PrepFallocate(int fd, int mode, off_t offset, off_t len) {
     PrepFd(IORING_OP_FALLOCATE, fd);
     sqe_->off = offset;
-    sqe_->len = len;
-    sqe_->cmd_op = mode;
+    sqe_->len = mode;
+    sqe_->addr = uint64_t(len);
   }
 
   void PrepFadvise(int fd, off_t offset, off_t len, int advice) {
@@ -131,19 +131,19 @@ class SubmitEntry {
     sqe_->off = offset;
   }
 
-  void PrepFSync(int fd) {
+  void PrepFSync(int fd, unsigned flags) {
     PrepFd(IORING_OP_FSYNC, fd);
-    // TODO fsync with flags = fdatasync
-    sqe_->sync_range_flags = 0;
+    sqe_->fsync_flags = flags;
   }
 
   void PrepStatX(std::string_view filepath, struct statx *stat) {
-    //AT_FDCWD is ignored when addr is an absolute path
+    // AT_FDCWD is ignored when addr is an absolute path
 	  PrepFd(IORING_OP_STATX, AT_FDCWD);
-    sqe_->len = STATX_BASIC_STATS;
-    sqe_->off = 0;
+    sqe_->off = reinterpret_cast<uint64_t>(stat);
     sqe_->addr = reinterpret_cast<unsigned long>(filepath.data());
-    sqe_->addr2 = reinterpret_cast<unsigned long>(stat);
+    // mask
+    sqe_->len = STATX_BASIC_STATS;
+    sqe_->statx_flags = 0;
   }
 
 
