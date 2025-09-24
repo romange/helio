@@ -463,7 +463,7 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
   return make_unique<LinuxFile>(io_res, p);
 }
 
-std::error_code LinuxFile::FSyncBlocking(unsigned flags) {
+std::error_code LinuxFile::FSync(unsigned flags) {
   DCHECK(fd_);
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);
@@ -483,7 +483,7 @@ std::error_code LinuxFile::FSyncBlocking(unsigned flags) {
   return {};
 }
 
-std::error_code StatX(std::string_view filepath, struct statx *stat, int fd) {
+std::error_code StatX(const char* filepath, struct statx *stat, int fd) {
   DCHECK(fd);
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);

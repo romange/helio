@@ -77,7 +77,7 @@ class LinuxFile {
   void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
   void FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb);
 
-  std::error_code FSyncBlocking(unsigned flags = 0 /* full sync */);
+  std::error_code FSync(unsigned flags = 0 /* full sync */);
 
  protected:
   int fd_ = -1;
@@ -96,7 +96,7 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
 
 
 // Equivalent to statx() call
-std::error_code StatX(std::string_view filepath, struct statx *stat, int fd);
+std::error_code StatX(const char* filepath, struct statx *stat, int fd);
 
 }  // namespace fb2
 }  // namespace util

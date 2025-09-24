@@ -136,11 +136,11 @@ class SubmitEntry {
     sqe_->fsync_flags = flags;
   }
 
-  void PrepStatX(std::string_view filepath, struct statx *stat) {
+  void PrepStatX(const char* filepath, struct statx *stat) {
     // AT_FDCWD is ignored when addr is an absolute path
 	  PrepFd(IORING_OP_STATX, AT_FDCWD);
     sqe_->off = reinterpret_cast<uint64_t>(stat);
-    sqe_->addr = reinterpret_cast<unsigned long>(filepath.data());
+    sqe_->addr = reinterpret_cast<unsigned long>(filepath);
     // mask
     sqe_->len = STATX_BASIC_STATS;
     sqe_->statx_flags = 0;

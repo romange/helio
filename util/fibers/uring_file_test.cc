@@ -119,7 +119,7 @@ TEST_F(UringFileTest, FAllocateAndStatX) {
     done.Reset();
 
     struct statx stat;
-    auto ec = StatX(path, &stat, wf->fd());
+    auto ec = StatX(path.c_str(), &stat, wf->fd());
     ASSERT_FALSE(ec);
     // File size remained zero even if we allocated block size
     ASSERT_EQ(stat.stx_size, 0);
@@ -127,7 +127,7 @@ TEST_F(UringFileTest, FAllocateAndStatX) {
     wf->FallocateAsync(0, 0, 8192, io_cb);
     ASSERT_TRUE(done.WaitFor(100ms));
 
-    ec = StatX(path, &stat, wf->fd());
+    ec = StatX(path.c_str(), &stat, wf->fd());
     ASSERT_FALSE(ec);
     ASSERT_EQ(stat.stx_size, 8192);
 
@@ -154,11 +154,11 @@ TEST_F(UringFileTest, FSync) {
     done.Reset();
 
     struct statx stat;
-    auto ec = StatX(path, &stat, wf->fd());
+    auto ec = StatX(path.c_str(), &stat, wf->fd());
     ASSERT_FALSE(ec);
     ASSERT_EQ(stat.stx_size, 4096);
 
-    ec = wf->FSyncBlocking();
+    ec = wf->FSync();
     ASSERT_FALSE(ec);
 
     ASSERT_FALSE(wf->Close());
