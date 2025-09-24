@@ -130,6 +130,22 @@ class SubmitEntry {
     sqe_->off = offset;
   }
 
+  void PrepFSync(int fd, unsigned flags) {
+    PrepFd(IORING_OP_FSYNC, fd);
+    sqe_->fsync_flags = flags;
+  }
+
+  void PrepStatX(const char* filepath, struct statx *stat) {
+    // AT_FDCWD is ignored when addr is an absolute path
+	  PrepFd(IORING_OP_STATX, AT_FDCWD);
+    sqe_->off = reinterpret_cast<uint64_t>(stat);
+    sqe_->addr = reinterpret_cast<unsigned long>(filepath);
+    // mask
+    sqe_->len = STATX_BASIC_STATS;
+    sqe_->statx_flags = 0;
+  }
+
+
   void PrepSend(int fd, const void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_SEND, fd);
     sqe_->addr = (__u64)buf;
