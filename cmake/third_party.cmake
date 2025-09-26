@@ -29,11 +29,27 @@ option (LEGACY_GLOG "whether to use legacy glog library" ON)
 set(THIRD_PARTY_LIB_DIR "${THIRD_PARTY_DIR}/libs")
 file(MAKE_DIRECTORY ${THIRD_PARTY_LIB_DIR})
 
-set(THIRD_PARTY_CXX_FLAGS "-std=c++17 -O3 -DNDEBUG -fPIC -fno-stack-protector \
-    -fno-stack-clash-protection")
+set(THIRD_PARTY_CXX_FLAGS "-std=c++17 -O3 -DNDEBUG -fPIC -fno-stack-protector")
 
-if (APPLE) 
-  set(THIRD_PARTY_CXX_FLAGS "${THIRD_PARTY_CXX_FLAGS} -Wl,-ld_classic")
+# Add platform-specific flags based on compiler
+if (APPLE)
+  # On macOS, always use clang-compatible flags regardless of symlinks/aliases
+  # Check compiler ID first (most reliable), then fall back to real compiler check
+  if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    message(STATUS "THIRD_PARTY: Using clang (ID=${CMAKE_CXX_COMPILER_ID}) - no GCC flags needed")
+  else()
+    # Double-check: even if ID is not Clang, see if it's actually clang under the hood
+    execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version OUTPUT_VARIABLE COMPILER_VERSION)
+    if (COMPILER_VERSION MATCHES "clang")
+      message(STATUS "THIRD_PARTY: Detected clang via --version check - no GCC flags needed")
+    else()
+      message(STATUS "THIRD_PARTY: Real GCC detected - adding GCC-specific flags")
+      set(THIRD_PARTY_CXX_FLAGS "${THIRD_PARTY_CXX_FLAGS} -fno-stack-clash-protection -Wl,-ld_classic")
+    endif()
+  endif()
+else()
+  # Linux/other platforms - assume GCC support
+  set(THIRD_PARTY_CXX_FLAGS "${THIRD_PARTY_CXX_FLAGS} -fno-stack-clash-protection")
 endif()
 
 find_package(Threads REQUIRED)
