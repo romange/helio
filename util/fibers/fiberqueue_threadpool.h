@@ -88,8 +88,7 @@ class FiberQueue {
   void Run();
 
  private:
-  // task index since the last preemption.
-  using CbFunc = std::function<void(unsigned id)>;
+  using CbFunc = std::function<void()>;
   using FuncQ = base::mpmc_bounded_queue<CbFunc>;
 
   FuncQ queue_;
@@ -109,7 +108,7 @@ class FiberQueueThreadPool {
     using ResultType = decltype(f());
     util::detail::ResultMover<ResultType> mover;
 
-    Add([&, f = std::forward<F>(f), done](unsigned /*id*/) mutable {
+    Add([&, f = std::forward<F>(f), done]() mutable {
       mover.Apply(f);
       done.Notify();
     });
@@ -123,7 +122,7 @@ class FiberQueueThreadPool {
     using ResultType = decltype(f());
     util::detail::ResultMover<ResultType> mover;
 
-    Add(worker_index, [&, f = std::forward<F>(f), done](unsigned /*id*/) mutable {
+    Add(worker_index, [&, f = std::forward<F>(f), done]() mutable {
       mover.Apply(f);
       done.Notify();
     });

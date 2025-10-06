@@ -4,7 +4,12 @@
 
 #pragma once
 
+#include <fcntl.h>
 #include <liburing/io_uring.h>
+#include <linux/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <cstdint>
 
 namespace util {
 namespace fb2 {
