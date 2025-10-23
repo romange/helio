@@ -108,6 +108,10 @@ class TlsSocket final : public FiberSocketBase {
   // simulate it does not reproduce NEED_WRITE and for now I use this function to simulate it.
   void __DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
 
+  // Used to test AsyncWrite  NEED_WRITE on first PushToEngine. As this scenario is difficult to
+  // time, this function helps simulate it.
+  void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+
  private:
   struct PushResult {
     size_t written = 0;
@@ -179,9 +183,14 @@ class TlsSocket final : public FiberSocketBase {
     void StartUpstreamRead();
 
     void CompleteAsyncReq(io::Result<size_t> result);
-    void CompleteAsyncWrite(io::Result<size_t> write_result);
 
-    void AsyncProgressCb(io::Result<size_t> result);
+    void AsyncWriteProgressCb(io::Result<size_t> write_result);
+    void AsyncReadProgressCb(io::Result<size_t> result);
+
+    // Both reader and writer can at any point dispatch a RW operation.
+    // So, AsyncWriteProgress* must decide how to complete based on its role and this
+    // function extracts the common execution paths.
+    void AsyncRoleBasedAction();
 
     // Helper function to handle WRITE_IN_PROGRESS and READ_IN_PROGRESS without preemption.
     // When an operation can't continue because there is already one in progress, it early returns

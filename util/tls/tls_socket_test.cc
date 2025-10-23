@@ -394,13 +394,17 @@ class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
     ssl_ctx_ = CreateSslCntx(SERVER);
     tls_socket_->InitSSL(ssl_ctx_);
     tls_socket_->Accept();
-
+    
     Done done;
     // Without handling NEED_WRITE in AsyncReq::CompleteAsyncReq we would deadlock here
-    uint8_t res[1024];
-    iovec v{.iov_base = &res, .iov_len = 1024};
+    uint8_t res[256];
+    iovec v{.iov_base = &res, .iov_len = 256};
     tls_socket_->__DebugForceNeedWriteOnAsyncRead(&v, 1, [&](auto res) { done.Notify(); });
 
+    done.Wait();
+    done.Reset();
+
+    tls_socket_->__DebugForceNeedWriteOnAsyncWrite(&v, 1, [&](auto res) { done.Notify(); });
     done.Wait();
   }
 };
@@ -428,12 +432,35 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
       Done done;
       iovec v{.iov_base = &res, .iov_len = 256};
 
+      for(size_t i = 0; i < 2; ++i) {
+        tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
+          EXPECT_FALSE(result);
+          done.Notify();
+        });
+
+        done.Wait();
+        done.Reset();
+      }
+
+      // Write it again to simulate NEED_READ_AND_MAYBE_WRITE in __DebugForceNeedWriteOnAsyncWrite
       tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
         done.Notify();
       });
 
       done.Wait();
+      done.Reset();
+
+      uint8_t buf[256] = {1};
+      v.iov_base = &buf;
+      v.iov_len = 256;
+      tls_sock->AsyncRead(&v, 1, [&](auto result) mutable {
+        EXPECT_FALSE(result);
+        done.Notify();
+      });
+
+      done.Wait();
+      EXPECT_EQ(memcmp(begin(res), begin(buf), 256), 0);
     }
     VLOG(1) << "closing client sock " << tls_sock->native_handle();
     std::ignore = tls_sock->Close();
