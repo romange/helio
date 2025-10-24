@@ -111,6 +111,30 @@ uint16_t UringProactor::BufRingGroup::HandleCompletion(uint16_t bid, uint16_t mu
 
   cached_head += (1 + (res - 1) / entry_size);
 
+  //  head (where kernel takes bids from) .... tail (where we add bids to)
+  //        ^                                   ^
+  //      cached_head                        bufring_tail
+  // Suppose ring has 4 available items overall (head is at 0, tail is at 4)
+  // and kernel took 2 entries pos_0,B1, pos_1,B2 for receive completion A, so head is at 2.
+  // Then kernel takes another 2 entries B3..B4 at positions 2..3 for completion B, so head=tail=4.
+  // Now we replenish the buffers for completion B first via AddToRing, so ring buffer looks like:
+  // bufring: [B3][B4][   ][   ]
+  //          ^       ^
+  //         head    tail
+  // That means positions 0,1 are overriden with new bids. Therefore, we can not rely on
+  // ring->buf[pos] tracking bids anymore once cached_head passes that position.
+  // This is relevant for bundle mode only, where we must rely on subsequent positions
+  // in the ring to fetch appropriate buffer ids.
+  // To summarize:
+  // - non-bundle mode: we do not need pos->bid tracking, as we get bid from CQE directly.
+  // - bundle mode: we must rely on pos->bid tracking, but once we exit this callback,
+  //                something else can override ring entries in [bufring_pos, cached_head).
+  //                and the mapping will be lost.
+  // TODO: we must gather all the bids inside BufRingGroup::HandleCompletion for bundle mode
+  //       multishot_arr is inefficient here as we can use bufring and not linked list.
+  // We allocate enough space for all the completions in multishot_arr so circular/bufring
+  // can be used. Another option is to allocate completions on-demand.
+  // Each completion should have an optional bundle extension (up to K entries).
   if (!multishot_arr) {
     multishot_exp = nentries_exp;
 
