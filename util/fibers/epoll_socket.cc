@@ -548,12 +548,11 @@ io::Result<size_t> EpollSocket::Recv(const io::MutableBytes& mb, int flags) {
 auto EpollSocket::Shutdown(int how) -> error_code {
   auto ec = LinuxSocketBase::Shutdown(how);
 
-#ifdef __APPLE__
-  // Since kqueue won't notify listen sockets when shutdown, explicitly wake
-  // up any read contexts. Note this will do nothing if there is no
-  // read_req_ so its safe to call multiple times.
-  Wakey(EpollProactor::EPOLL_IN, 0, nullptr);
-#endif
+  // Wake any suspended fibers so that they can handle the shutdown event before the socket closes.
+  // In the absence of this wake if the socket closes soon after shutdown without any yields in
+  // between, suspended read/write fibers can hang indefinitely because socket close removes the fd
+  // from epoll interest set and unsets the callback handler.
+  Wakey(EpollProactor::EPOLL_IN | ProactorBase::EPOLL_OUT, 0, nullptr);
 
   return ec;
 }
