@@ -2,9 +2,10 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
+#include <gmock/gmock.h>
+
 #include <thread>
 
-#include <gmock/gmock.h>
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
@@ -679,6 +680,44 @@ TEST_P(FiberSocketTest, SendProvided) {
 }
 
 #endif
+
+TEST_P(FiberSocketTest, EpollShutdownWhileReading) {
+  if (GetProactorType() != "epoll") {
+    GTEST_SKIP() << "only relevant for epoll proactor";
+    return;
+  }
+
+  unique_ptr<FiberSocketBase> sock;
+  Done d;
+  Done pre_read;
+
+  proactor_->Dispatch([&] {
+    sock.reset(proactor_->CreateSocket());
+    EXPECT_FALSE(sock->Connect(listen_ep_));
+    accept_fb_.Join();
+    std::array<char, 1> a;
+    const io::MutableBytes buffer{reinterpret_cast<unsigned char*>(a.data()), a.size()};
+
+    pre_read.Notify();
+    auto ec = sock->ReadAtLeast(buffer, 1);
+
+    EXPECT_FALSE(ec.has_value());
+    EXPECT_EQ(ec.error(), std::make_error_code(errc::connection_aborted));
+
+    d.Notify();
+  });
+
+  // Make sure the socket is within RecvMsg
+  pre_read.Wait();
+  EXPECT_FALSE(d.WaitFor(100ms));
+
+  proactor_->Await([&] {
+    EXPECT_FALSE(sock->Shutdown(SHUT_RDWR));
+    EXPECT_FALSE(sock->Close());
+  });
+
+  EXPECT_TRUE(d.WaitFor(100ms));
+}
 
 }  // namespace fb2
 }  // namespace util
