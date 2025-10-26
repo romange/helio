@@ -143,6 +143,8 @@ class FiberSocketBase : public io::Sink,
   virtual ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
                                                     unsigned backlog) = 0;
 
+  void AsyncWrite2(io::Bytes buf);
+  void AsyncWrite2(const iovec* v, uint32_t len);
  protected:
   virtual void OnSetProactor() {
   }

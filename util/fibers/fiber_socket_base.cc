@@ -57,6 +57,29 @@ Result<size_t> FiberSocketBase::Recv(const iovec* ptr, size_t len) {
   return RecvMsg(msg, 0);
 }
 
+void FiberSocketBase::AsyncWrite2(io::Bytes buf) {
+  int fd = native_handle();
+  ssize_t res = send(fd, buf.data(), buf.size(), MSG_NOSIGNAL);
+  CHECK_EQ(res, static_cast<ssize_t>(buf.size()));
+}
+
+void FiberSocketBase::AsyncWrite2(const iovec* v, uint32_t len) {
+  int fd = native_handle();
+  size_t total_len = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    total_len += v[i].iov_len;
+  }
+
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_iov = const_cast<iovec*>(v);
+  msg.msg_iovlen = len;
+
+  ssize_t res = sendmsg(fd, &msg, MSG_NOSIGNAL);
+
+  CHECK_EQ(res, static_cast<ssize_t>(total_len));
+}
+
 LinuxSocketBase::~LinuxSocketBase() {
   int fd = native_handle();
 
