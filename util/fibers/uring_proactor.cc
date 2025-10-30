@@ -436,7 +436,6 @@ bool UringProactor::FlushSubmitQueueIfNeeded() {
   return true;
 }
 
-
 unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + kAlign - 1) / kAlign * kAlign;
 
@@ -596,44 +595,29 @@ int UringProactor::CancelRequests(int fd, unsigned flags) {
   return io_uring_register_sync_cancel(&ring_, &reg_arg);
 }
 
-UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask) {
+UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask,
+                                                  bool multishot) {
   CHECK_GT(event_mask, 0U);
 
-  if (next_epoll_free_ == -1) {
-    size_t prev = epoll_entries_.size();
-    if (prev == 0) {
-      epoll_entries_.resize(8);
-    } else {
-      epoll_entries_.resize(prev * 2);
-    }
-    next_epoll_free_ = prev;
-    for (; prev < epoll_entries_.size() - 1; ++prev)
-      epoll_entries_[prev].index = prev + 1;
-  }
+  EpollEntry* entry = new EpollEntry();
+  entry->cb = std::move(cb);
+  entry->fd = fd;
+  entry->event_mask = event_mask | (multishot ? EpollEntry::kMultishot : 0);
+  EpollAddInternal(entry);
 
-  auto& epoll = epoll_entries_[next_epoll_free_];
-  unsigned id = next_epoll_free_;
-  next_epoll_free_ = epoll.index;
-
-  epoll.cb = std::move(cb);
-  epoll.fd = fd;
-  epoll.event_mask = event_mask;
-  EpollAddInternal(id);
-
-  return id;
+  return reinterpret_cast<EpollIndex>(entry);
 }
 
 void UringProactor::EpollDel(EpollIndex id) {
-  CHECK_LT(id, epoll_entries_.size());
-  auto& epoll = epoll_entries_[id];
-  epoll.event_mask = 0;
-  unsigned uid = epoll.index;
+  EpollEntry* entry = reinterpret_cast<EpollEntry*>(id);
+  entry->event_mask &= ~EpollEntry::kMultishot;  // disable mask to signal no further events.
+  unsigned uid = entry->index;
 
   FiberCall fc(this);
   fc->PrepPollRemove(uid);
   IoResult res = fc.Get();
-  if (res == 0) {  // removed from iouring.
-    EpollDelInternal(id);
+  if (res == 0) {  // removed from iouring, othwerwise it run already and deleted itself.
+    delete entry;
   }
 }
 
@@ -648,8 +632,8 @@ uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult r
   return buf_group.HandleCompletion(bid, tail_id, res);
 }
 
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id,
-                                            uint16_t* head_id) -> CompletionResult {
+auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
+    -> CompletionResult {
   DCHECK_LT(group_id, bufring_groups_.size());
   DCHECK_NE(*head_id, kMultiShotUndef);
 
@@ -1074,36 +1058,33 @@ void UringProactor::WakeRing() {
   }
 }
 
-void UringProactor::EpollAddInternal(EpollIndex id) {
-  auto uring_cb = [id, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
-    auto& epoll = epoll_entries_[id];
+void UringProactor::EpollAddInternal(EpollEntry* entry) {
+  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
     if (res >= 0) {
-      epoll.cb(res);
+      entry->cb(res);
 
-      if (epoll.event_mask)
-        EpollAddInternal(id);
-      else
-        EpollDelInternal(id);
+      if (flags & IORING_CQE_F_MORE || (entry->event_mask & EpollEntry::kMultishot)) {
+        // multishot, can exit now as it rearms itself.
+        return;
+      }
+
+      // one-shot, need to re-add if mask is still set.
+      if (entry->event_mask)
+        EpollAddInternal(entry);
+      else  // EpollDel started deletion but the callback was already in flight.
+        delete entry;
     } else {
       res = -res;
-      LOG_IF(ERROR, res != ECANCELED) << "EpollAddInternal: unexpected error " << res;
+      LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
     }
   };
 
   SubmitEntry se = GetSubmitEntry(std::move(uring_cb));
-  auto& epoll = epoll_entries_[id];
-  se.PrepPollAdd(epoll.fd, epoll.event_mask);
-  epoll.index = se.sqe()->user_data;
-}
-
-void UringProactor::EpollDelInternal(EpollIndex id) {
-  DVLOG(1) << "EpollDelInternal " << id;
-
-  auto& epoll = epoll_entries_[id];
-  epoll.index = next_epoll_free_;
-  epoll.cb = nullptr;
-
-  next_epoll_free_ = id;
+  se.PrepPollAdd(entry->fd, entry->event_mask & ~EpollEntry::kMultishot);
+  entry->index = se.sqe()->user_data;
+  if (entry->event_mask & EpollEntry::kMultishot) {
+    se.sqe()->len = IORING_POLL_ADD_MULTI;
+  }
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {

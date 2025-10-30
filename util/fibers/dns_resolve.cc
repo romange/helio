@@ -31,8 +31,8 @@ struct DnsResolveCallbackArgs {
 
 struct AresSocketState {
   unsigned mask;
-  unsigned arm_index;
   bool removed = false;  // Used to indicate that the socket was removed, without modifying the map
+  ptrdiff_t arm_index;
 };
 
 struct AresChannelState {
@@ -98,7 +98,10 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
           VLOG(2) << "ArmCb: " << event_mask << " " << state->sockets_state.size();
           state->cond.notify_one();
         };
-        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
+
+        // multishot epoll supported from 5.13 kernel onwards. we do not use it for now
+        // to keep the compatibility with older kernels.
+        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask, false);
         DVLOG(1) << "EpollAdd " << socket_fd << ", mask: " << mask
                  << " index: " << socket_state.arm_index;
 #endif
