@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <fcntl.h>
 #include <liburing/io_uring.h>
 
 namespace util {
