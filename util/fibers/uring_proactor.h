@@ -163,8 +163,8 @@ class UringProactor : public ProactorBase {
   int CancelRequests(int fd, unsigned flags);
 
   using EpollCB = std::function<void(uint32_t)>;
-  using EpollIndex = unsigned;
-  EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
+  using EpollIndex = uintptr_t;
+  EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask, bool multishot = false);
   void EpollDel(EpollIndex id);
 
   static constexpr uint16_t kMultiShotUndef = 0xFFFF;
@@ -190,6 +190,14 @@ class UringProactor : public ProactorBase {
   CompletionResult PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id);
 
  private:
+  struct EpollEntry {
+    EpollCB cb;
+    int fd = -1;
+    static constexpr uint32_t kMultishot = 1u << 31;
+    uint32_t event_mask = 0;
+    int64_t index = -1;
+  };
+
   void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
   void ReapCompletions(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
 
@@ -204,8 +212,7 @@ class UringProactor : public ProactorBase {
 
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
-  void EpollAddInternal(EpollIndex id);
-  void EpollDelInternal(EpollIndex id);
+  void EpollAddInternal(EpollEntry* entry);
 
   io_uring ring_;
 
@@ -263,15 +270,6 @@ class UringProactor : public ProactorBase {
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
   uint64_t reaped_cqe_cnt_ = 0;
   std::atomic_int64_t last_wake_ts_{0};
-
-  struct EpollEntry {
-    EpollCB cb;
-    int fd = -1;
-    uint32_t event_mask = 0;
-    int64_t index = -1;
-  };
-  std::vector<EpollEntry> epoll_entries_;
-  int32_t next_epoll_free_ = -1;
 };
 
 class FiberCall {
