@@ -17,12 +17,12 @@ env:
 
 jobs:
   build-macos:
-    runs-on: macos-13
+    runs-on: macos-14
     timeout-minutes: 40  # ✨✨✨✨
     steps:
       - uses: actions/checkout@v4
       - run: |
-          brew update && brew install ninja boost automake
+          brew update && brew install ninja boost automake libtool
       - name: Configure CMake
         run: |
           cmake --version
