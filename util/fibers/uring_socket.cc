@@ -65,7 +65,7 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
       CHECK_GT(res, 0);
 
       DVLOG(2) << "Multishot completion " << res << " bid: " << (flags >> IORING_CQE_BUFFER_SHIFT)
-        << " has_more: " << ((flags & IORING_CQE_F_MORE) ? 1 : 0) << " len:" << res;
+               << " has_more: " << ((flags & IORING_CQE_F_MORE) ? 1 : 0) << " len:" << res;
 
       this->tail = proactor->EnqueueMultishotCompletion(bufring_id, res, flags, this->tail);
       if (this->head == UringProactor::kMultiShotUndef)
@@ -98,7 +98,9 @@ void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags
   sqe.flags |= (flags | IOSQE_BUFFER_SELECT);
   sqe.buf_group = bufring_id;
   uint16_t prio_flags = (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
-  if (proactor->HasBundleSupport()) {
+
+  // disable as we do not support bundles yet.
+  if (false && proactor->HasBundleSupport()) {
     prio_flags |= IORING_RECVSEND_BUNDLE;
   }
   sqe.ioprio |= prio_flags;
@@ -153,9 +155,20 @@ auto UringSocket::Close() -> error_code {
   DVSOCK(1) << "Closing socket";
   CancelMultiShot();
 
+  if (error_cb_wrapper_) {
+    LOG(DFATAL) << "Error callback still registered on Close";
+    ErrorCbRefWrapper::Destroy(error_cb_wrapper_);
+    error_cb_wrapper_ = nullptr;
+  }
+
+  UringProactor* proactor = GetProactor();
+  if (recv_poll_id_ != 0) {
+    proactor->EpollDel(recv_poll_id_);
+    recv_poll_id_ = 0;
+  }
+
   int fd;
   if (is_direct_fd_) {
-    UringProactor* proactor = GetProactor();
     unsigned direct_fd = ShiftedFd();
     fd = proactor->UnregisterFd(direct_fd);
     if (fd < 0) {
@@ -217,8 +230,7 @@ auto UringSocket::Accept() -> AcceptResult {
   return fs;
 }
 
-auto UringSocket::Connect(const endpoint_type& ep,
-                          std::function<void(int)> on_pre_connect) -> error_code {
+error_code UringSocket::Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect) {
   CHECK_EQ(fd_, -1);
   CHECK(proactor() && proactor()->InMyThread());
 
@@ -510,6 +522,27 @@ void UringSocket::CancelOnErrorCb() {
     // The callback could have been already called or being in process of calling.
     LOG_IF(WARNING, io_res != ENOENT && io_res != EALREADY)
         << "Error canceling error cb " << io_res;
+  }
+}
+
+void UringSocket::RegisterOnRecv(OnRecvCb cb) {
+  CHECK(!multishot_);  // TBD
+  DCHECK(IsOpen());
+  CHECK_EQ(recv_poll_id_, 0u);
+
+  Proactor* p = GetProactor();
+  auto epoll_cb = [cb = std::move(cb)](uint32_t mask) {
+    cb(RecvNotification{mask});
+  };
+
+  recv_poll_id_ = p->EpollAdd(ShiftedFd(), std::move(epoll_cb), POLLIN, true);
+}
+
+void UringSocket::ResetOnRecvHook() {
+  if (recv_poll_id_) {
+    Proactor* p = GetProactor();
+    p->EpollDel(recv_poll_id_);
+    recv_poll_id_ = 0;
   }
 }
 

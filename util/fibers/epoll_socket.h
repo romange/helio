@@ -44,6 +44,8 @@ class EpollSocket : public LinuxSocketBase {
   void CancelOnErrorCb() final;
 
   using FiberSocketBase::IsConnClosed;
+  void RegisterOnRecv(std::function<void (const RecvNotification&)> cb) final;
+  void ResetOnRecvHook() final;
 
  private:
   class PendingReq;
@@ -57,6 +59,7 @@ class EpollSocket : public LinuxSocketBase {
     }
 
     // Caller is responsible for *calling* cb.
+    // Returns true if the callback
     std::pair<bool, Result<size_t>> Run(int fd, bool is_send);
   };
 
@@ -76,9 +79,15 @@ class EpollSocket : public LinuxSocketBase {
     AsyncReq* async_write_req_;
   };
 
+  // Read path
+  struct OnRecvRecord {
+    std::function<void (const RecvNotification&)> cb;
+  };
+
   union {
     PendingReq* read_req_;
     AsyncReq* async_read_req_;
+    OnRecvRecord* on_recv_;
   };
 
   int32_t arm_index_ = -1;
@@ -86,8 +95,14 @@ class EpollSocket : public LinuxSocketBase {
   static constexpr uint32_t kMaxBufSize = 1 << 16;
   static constexpr uint32_t kMinBufSize = 1 << 4;
   uint32_t bufreq_sz_ = kMinBufSize;
-  uint8_t async_write_pending_ : 1;
-  uint8_t async_read_pending_ : 1;
+  union {
+    struct {
+      uint8_t async_write_pending_ : 1;
+      uint8_t async_read_pending_ : 1;
+      uint8_t recv_hook_registered_ : 1;
+    };
+    uint8_t flags_;
+  };
   std::function<void(uint32_t)> error_cb_;
 };
 

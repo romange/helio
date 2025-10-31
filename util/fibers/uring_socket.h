@@ -47,6 +47,8 @@ class UringSocket : public LinuxSocketBase {
 
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
   void CancelOnErrorCb() final;
+  void RegisterOnRecv(OnRecvCb cb) final;
+  void ResetOnRecvHook() final;
 
   // Returns the native linux fd even for direct-fd iouring mode.
   native_handle_type native_handle() const final;
@@ -113,6 +115,7 @@ class UringSocket : public LinuxSocketBase {
   };
 
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
+  UringProactor::EpollIndex recv_poll_id_ = 0;
 
   // A multishot state object. Manages the multishot completions in the shared completion array
   // of proactor. The socket must drain all its completions before it can be destroyed.
