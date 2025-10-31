@@ -616,7 +616,7 @@ void UringProactor::EpollDel(EpollIndex id) {
   FiberCall fc(this);
   fc->PrepPollRemove(uid);
   IoResult res = fc.Get();
-  if (res == 0) {  // removed from iouring, othwerwise it run already and deleted itself.
+  if (res == 0) {  // removed from iouring, otherwise it run already and deleted itself.
     delete entry;
   }
 }
