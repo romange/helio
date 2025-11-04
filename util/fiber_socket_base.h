@@ -123,6 +123,14 @@ class FiberSocketBase : public io::Sink,
   //! Cancels a callback that was registered with RegisterOnErrorCb. Must be reentrant.
   virtual void CancelOnErrorCb() = 0;
 
+  struct RecvNotification {
+    // TODO: move ProvidedBuffer functionality here and remove RecvProvided interface.
+  };
+
+  using OnRecvCb = std::function<void (const RecvNotification&)>;
+  virtual void RegisterOnRecv(OnRecvCb cb) = 0;
+  virtual void ResetOnRecvHook() = 0;
+
   virtual bool IsUDS() const = 0;
 
   using native_handle_type = int;
