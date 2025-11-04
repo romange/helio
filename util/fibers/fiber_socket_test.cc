@@ -45,7 +45,8 @@ struct TestParams {
   string_view proactor_type;
   bool use_ipv6;
 
-  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {}
+  TestParams(string_view type, bool ipv6) : proactor_type(type), use_ipv6(ipv6) {
+  }
 
   string ToString() const {
     string ip_ver = use_ipv6 ? "IPv6" : "IPv4";
@@ -64,10 +65,14 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
   }
 
   // Return the proactor type parameter
-  string_view GetProactorType() const { return GetParam().proactor_type; }
+  string_view GetProactorType() const {
+    return GetParam().proactor_type;
+  }
 
   // Return whether to use IPv6
-  bool UseIPv6() const { return GetParam().use_ipv6; }
+  bool UseIPv6() const {
+    return GetParam().use_ipv6;
+  }
 
   using IoResult = int;
 
@@ -83,18 +88,18 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
   uint32_t conn_sock_err_mask_ = 0;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    Engines,
-    FiberSocketTest,
-    testing::Values(
-          TestParams("epoll", false)  // epoll with IPv4
-        , TestParams("epoll", true)   // epoll with IPv6
+INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
+                         testing::Values(TestParams("epoll", false)  // epoll with IPv4
+                                         ,
+                                         TestParams("epoll", true)  // epoll with IPv6
 #ifdef __linux__
-        , TestParams("uring", false)  // uring with IPv4
-        , TestParams("uring", true)    // uring with IPv6
+                                         ,
+                                         TestParams("uring", false)  // uring with IPv4
+                                         ,
+                                         TestParams("uring", true)  // uring with IPv6
 #endif
-    ),
-    [](const auto& info) { return info.param.ToString(); });
+                                         ),
+                         [](const auto& info) { return info.param.ToString(); });
 
 void FiberSocketTest::SetUp() {
 #if __linux__
@@ -171,6 +176,7 @@ void FiberSocketTest::TearDown() {
   proactor_->Await([&] {
     std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
     if (conn_socket_) {
+      conn_socket_->CancelOnErrorCb();
       std::ignore = conn_socket_->Close();
     }
   });
@@ -543,9 +549,7 @@ TEST_P(FiberSocketTest, RecvMultiShot) {
   EXPECT_EQ(total_size, buf.size());
 
   proactor_->Await([&] { std::ignore = sock->Close(); });
-  res = proactor_->Await([&] {
-    return conn_socket_->RecvProvided(8, pbuf);
-  });
+  res = proactor_->Await([&] { return conn_socket_->RecvProvided(8, pbuf); });
 
   ASSERT_EQ(res, 1);
   ASSERT_EQ(pbuf[0].res_len, -ECONNABORTED);

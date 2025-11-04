@@ -151,6 +151,7 @@ void TlsSocketTest::TearDown() {
   proactor_->Await([&] {
     std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
     if (server_socket_) {
+      server_socket_->CancelOnErrorCb();
       std::ignore = server_socket_->Close();
     }
   });
@@ -228,11 +229,6 @@ class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
   using IoResult = int;
 
   virtual void HandleRequest() {
-    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    ssl_ctx_ = CreateSslCntx(SERVER);
-    tls_socket_->InitSSL(ssl_ctx_);
-    tls_socket_->Accept();
-
     uint8_t buf[16];
     auto res = tls_socket_->Recv(buf);
     EXPECT_TRUE(res.has_value());
@@ -308,6 +304,11 @@ void AsyncTlsSocketTest::SetUp() {
         LOG(INFO) << "Error mask: " << mask;
         conn_sock_err_mask_ = mask;
       });
+      tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
+      ssl_ctx_ = CreateSslCntx(SERVER);
+      tls_socket_->InitSSL(ssl_ctx_);
+      tls_socket_->Accept();
+
       conn_fb_ = proactor_->LaunchFiber([this]() { HandleRequest(); });
     } else {
       accept_ec_ = accept_res.error();
@@ -320,11 +321,9 @@ void AsyncTlsSocketTest::TearDown() {
 
   proactor_->Await([&] {
     std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
-    if (conn_socket_) {
-      std::ignore = conn_socket_->Close();
-    } else {
-      std::ignore = tls_socket_->Close();
-    }
+    CHECK(!conn_socket_);
+    tls_socket_->CancelOnErrorCb();
+    std::ignore = tls_socket_->Close();
   });
 
   conn_fb_.JoinIfNeeded();
@@ -390,11 +389,6 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
 
 class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
-    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    ssl_ctx_ = CreateSslCntx(SERVER);
-    tls_socket_->InitSSL(ssl_ctx_);
-    tls_socket_->Accept();
-    
     Done done;
     // Without handling NEED_WRITE in AsyncReq::CompleteAsyncReq we would deadlock here
     uint8_t res[256];
@@ -476,11 +470,6 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
 
 class AsyncTlsSocketTestPartialRW : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
-    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    ssl_ctx_ = CreateSslCntx(SERVER);
-    tls_socket_->InitSSL(ssl_ctx_);
-    tls_socket_->Accept();
-
     uint8_t buf[payload_sz_];
     auto res = tls_socket_->ReadAtLeast(buf, payload_sz_);
     EXPECT_TRUE(res.has_value());
@@ -564,11 +553,6 @@ TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
 
 class AsyncTlsSocketRenegotiate : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
-    tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
-    ssl_ctx_ = CreateSslCntx(SERVER);
-    tls_socket_->InitSSL(ssl_ctx_);
-    tls_socket_->Accept();
-
     uint8_t buf[payload_sz_];
     auto res = tls_socket_->ReadAtLeast(buf, payload_sz_);
     EXPECT_TRUE(res.has_value());
