@@ -143,8 +143,13 @@ class UringProactor : public ProactorBase {
   uint8_t* GetBufRingPtr(uint16_t group_id, uint16_t bufid);
   uint16_t GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const;
 
-  // Replenishes one or more buffers
-  void ReplenishBuffers(uint16_t group_id, uint16_t bid, uint16_t ring_pos, size_t bytes);
+  // Advances the recv completion position (used for synchronizing bundles).
+  // Returns the pointer to bufid.
+  uint8_t* AdvanceRecvCompletion(uint16_t group_id, uint16_t bufid);
+
+  // Replenishes a single buffer. Once it's replenished, it becomes available
+  // for reuse by the kernel.
+  void ReplenishBuffer(uint16_t group_id, uint16_t bid);
 
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
@@ -153,7 +158,7 @@ class UringProactor : public ProactorBase {
   // Returns number of available entries at the time of the call.
   // Every time a kernel event with IORING_CQE_F_BUFFER is processed,
   // it consumes one or more entries from the buffer ring and available decreases.
-  // ReplenishBuffers returns the entries back to the ring.
+  // ReplenishBuffer returns the entries back to the ring.
   // Returns number of available entries or -errno if group_id is invalid or kernel is too old.
   // Available since kernel 6.8.
   int BufRingAvailable(unsigned group_id) const;
@@ -166,28 +171,6 @@ class UringProactor : public ProactorBase {
   using EpollIndex = uintptr_t;
   EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask, bool multishot = false);
   void EpollDel(EpollIndex id);
-
-  static constexpr uint16_t kMultiShotUndef = 0xFFFF;
-
-  // Enqueues a completion from recv multishot. Can be later fetched by RecvProvided() via
-  // PullMultiShotCompletion call. The list of completions is managed internally by the proactor
-  // but the caller socket keeps the head/tail of his completion queue.
-  // This allows us to maintain multiple completion lists in the same bufring.
-  // tail: is the input/output argument that is updated by EnqueueMultishotCompletion.
-  uint16_t EnqueueMultishotCompletion(uint16_t group_id, IoResult res, uint32_t cqe_flags,
-                                      uint16_t tail_id);
-
-  struct CompletionResult {
-    uint16_t bid;
-    uint16_t bufring_pos;
-    IoResult res;
-  };
-
-  // Pulls a single completion request from the completion queue maintained by the proactor.
-  // tail must point to a valid id (i,.e. not kMultiShotUndef).
-  // Once the completion queue is exhausted, tail is updated to kMultiShotUndef.
-
-  CompletionResult PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id);
 
  private:
   struct EpollEntry {
@@ -242,18 +225,8 @@ class UringProactor : public ProactorBase {
   // TODO: start using IORING_TIMEOUT_MULTISHOT (see io_uring_prep_timeout(3)).
   std::vector<std::pair<uint32_t, PeriodicItem*>> schedule_periodic_list_;
 
-  struct MultiShotCompletion {
-    IoResult res;
-
-    uint16_t next;         // Composes a ring buffer.
-    uint16_t bid;          // buffer id.
-    uint16_t bufring_pos;  // position in the buffer ring.
-  } __attribute__((packed));
-  static_assert(sizeof(MultiShotCompletion) == 10);
-
   struct BufRingGroup;
 
-  // static_assert(sizeof(BufRingGroup) == 40);
   std::vector<BufRingGroup> bufring_groups_;
 
   // Keeps track of requested buffers

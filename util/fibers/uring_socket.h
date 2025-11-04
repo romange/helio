@@ -64,10 +64,10 @@ class UringSocket : public LinuxSocketBase {
   unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
   void ReturnProvided(const ProvidedBuffer& pbuf) final;
 
-  // Sends provided buffers from the group. Not sure yet how to use this API.
-  void SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb);
+  void EnableRecvMultishot() {
+    enable_multi_shot_ = 1;
+  }
 
-  void EnableRecvMultishot();
   void set_bufring_id(uint16_t id) {
     bufring_id_ = id;
   }
@@ -92,8 +92,6 @@ class UringSocket : public LinuxSocketBase {
     fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
 
-  void CancelMultiShot();
-
   struct ErrorCbRefWrapper {
     uint32_t error_cb_id = 0;
     uint32_t ref_count = 2;  // one for the socket reference, one for the completion lambda.
@@ -117,47 +115,14 @@ class UringSocket : public LinuxSocketBase {
   ErrorCbRefWrapper* error_cb_wrapper_ = nullptr;
   UringProactor::EpollIndex recv_poll_id_ = 0;
 
-  // A multishot state object. Manages the multishot completions in the shared completion array
-  // of proactor. The socket must drain all its completions before it can be destroyed.
-  struct MultiShot {
-    detail::FiberInterface* poll_pending = nullptr;
-
-    uint16_t head = UringProactor::kMultiShotUndef;
-    uint16_t tail = UringProactor::kMultiShotUndef;
-
-    uint16_t err_no = 0;
-
-    union {
-      struct {
-        uint8_t refcnt : 4; // range [0-2]: socket + callback or deleted.
-        uint8_t error_raised : 1;
-      };
-      uint8_t flags_;
-    };
-
-    // Returns true if this object was deleted.
-    bool DecRef();
-
-    void Activate(int fd, uint16_t bufring_id, uint8_t flags, UringProactor* proactor);
-
-    MultiShot() : flags_(0) { refcnt = 1; }
-    ~MultiShot();
-
-    bool HasBuffers() const {
-      return head != UringProactor::kMultiShotUndef;
-    }
-  };
-
-  static_assert(sizeof(MultiShot) == 16, "");
-
-  MultiShot* multishot_ = nullptr;
-
   union {
     uint16_t flags_;
     struct {
       uint16_t has_pollfirst_ : 1;
       uint16_t has_recv_data_ : 1;
       uint16_t is_direct_fd_ : 1;
+      uint16_t enable_multi_shot_ : 1;
+      uint16_t register_recv_multishot_ : 1;
     };
   };
   uint16_t bufring_id_ = 0;

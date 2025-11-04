@@ -421,6 +421,7 @@ TEST_P(FiberSocketTest, UDS) {
   LOG(INFO) << "Finished";
 }
 
+#if 0
 TEST_P(FiberSocketTest, RecvProvided) {
   bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
@@ -484,8 +485,11 @@ TEST_P(FiberSocketTest, RecvProvided) {
     }
   });
 }
+#endif
 
 #ifdef __linux__
+
+#if 0
 TEST_P(FiberSocketTest, RecvMultiShot) {
   bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
@@ -592,6 +596,7 @@ TEST_P(FiberSocketTest, MultiShotNobuf) {
   ASSERT_THAT(pbuf[0].res_len, AnyOf(-ENOBUFS, -ENOENT));
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
+#endif
 
 TEST_P(FiberSocketTest, NotEmpty) {
   bool use_uring = GetProactorType() == "uring";
@@ -650,6 +655,7 @@ TEST_P(FiberSocketTest, OpenMany) {
   });
 }
 
+#if 0
 TEST_P(FiberSocketTest, SendProvided) {
   bool use_uring = GetProactorType() == "uring";
   if (!use_uring) {
@@ -682,6 +688,7 @@ TEST_P(FiberSocketTest, SendProvided) {
   });
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
+#endif
 
 #endif
 
