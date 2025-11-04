@@ -685,6 +685,36 @@ TEST_P(FiberSocketTest, SendProvided) {
 
 #endif
 
+TEST_P(FiberSocketTest, OnRecvHook) {
+  unique_ptr<FiberSocketBase> sock;
+  Done done;
+  atomic_int recv_count = 0;
+
+  // Create a socket and register OnRecv hook.
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    sock->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& notif) {
+      ++recv_count;
+    });
+  });
+
+  // From another socket write some data to trigger the OnRecv hook.
+  proactor_->Await([&] {
+    uint8_t buf[16];
+    memset(buf, 'y', sizeof(buf));
+    error_code ec = conn_socket_->Write(io::Bytes(buf));
+    EXPECT_FALSE(ec);
+  });
+
+  // Make sure the OnRecv hook was called.
+  ThisFiber::SleepFor(10ms);
+  EXPECT_EQ(recv_count, 1);
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
 TEST_P(FiberSocketTest, ShutdownWhileReading) {
   unique_ptr<FiberSocketBase> sock;
   Done d;

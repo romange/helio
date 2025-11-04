@@ -565,6 +565,36 @@ void EpollSocket::CancelOnErrorCb() {
   error_cb_ = {};
 }
 
+void EpollSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb) {
+  CHECK(!async_read_pending_);
+  CHECK(!recv_hook_registered_);
+
+  int fd = native_handle();
+  CHECK_GE(fd, 0);
+
+  recv_hook_registered_ = 1;
+  on_recv_ = new OnRecvRecord{std::move(cb)};
+
+  // It is possible that by the time we register the hook there is already pending data.
+  // TODO: a cleaner approach would be if epoll socket would track notifications itself.
+  char buffer[2];  // A small buffer is sufficient for peeking
+  ssize_t bytes_peeked = recv(fd, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT);
+
+  if (bytes_peeked > 0) {
+    on_recv_->cb(RecvNotification{});
+  } else if (bytes_peeked != -1 || errno != EAGAIN) {
+    LOG(FATAL) << "TBD: " << bytes_peeked << " " << errno;
+  }
+}
+
+void EpollSocket::ResetOnRecvHook() {
+  if (recv_hook_registered_) {
+    recv_hook_registered_ = 0;
+    delete on_recv_;
+    on_recv_ = nullptr;
+  }
+}
+
 void EpollSocket::HandleAsyncRequest(error_code ec, bool is_send) {
   uint8_t async_pending = is_send ? async_write_pending_ : async_read_pending_;
   if (async_pending) {
@@ -589,6 +619,8 @@ void EpollSocket::HandleAsyncRequest(error_code ec, bool is_send) {
       auto cb = finalize_and_fetch_cb();
       cb(res.second);
     }
+  } else if (recv_hook_registered_ && !is_send && !ec) {
+    on_recv_->cb(RecvNotification{});
   } else {
     auto& sync_request = is_send ? write_req_ : read_req_;
     // It could be that we activated context already, but has not switched to it yet.

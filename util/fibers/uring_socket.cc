@@ -162,6 +162,10 @@ auto UringSocket::Close() -> error_code {
   }
 
   UringProactor* proactor = GetProactor();
+  if (recv_poll_id_ != 0) {
+    proactor->EpollDel(recv_poll_id_);
+    recv_poll_id_ = 0;
+  }
 
   int fd;
   if (is_direct_fd_) {
@@ -518,6 +522,27 @@ void UringSocket::CancelOnErrorCb() {
     // The callback could have been already called or being in process of calling.
     LOG_IF(WARNING, io_res != ENOENT && io_res != EALREADY)
         << "Error canceling error cb " << io_res;
+  }
+}
+
+void UringSocket::RegisterOnRecv(OnRecvCb cb) {
+  CHECK(!multishot_);  // TBD
+  DCHECK(IsOpen());
+  CHECK_EQ(recv_poll_id_, 0u);
+
+  Proactor* p = GetProactor();
+  auto epoll_cb = [cb = std::move(cb)](uint32_t mask) {
+    cb(RecvNotification{});
+  };
+
+  recv_poll_id_ = p->EpollAdd(ShiftedFd(), std::move(epoll_cb), POLLIN, true);
+}
+
+void UringSocket::ResetOnRecvHook() {
+  if (recv_poll_id_) {
+    Proactor* p = GetProactor();
+    p->EpollDel(recv_poll_id_);
+    recv_poll_id_ = 0;
   }
 }
 

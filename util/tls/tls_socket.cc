@@ -468,6 +468,14 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
+void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
+  LOG(FATAL) << "Not implemented";
+}
+
+void TlsSocket::ResetOnRecvHook() {
+  LOG(FATAL) << "Not implemented";
+}
+
 unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
   LOG(DFATAL) << "Not implemented";
 

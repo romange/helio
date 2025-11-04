@@ -44,6 +44,8 @@ class EpollSocket : public LinuxSocketBase {
   void CancelOnErrorCb() final;
 
   using FiberSocketBase::IsConnClosed;
+  void RegisterOnRecv(std::function<void (const RecvNotification&)> cb) final;
+  void ResetOnRecvHook() final;
 
  private:
   class PendingReq;
@@ -77,9 +79,15 @@ class EpollSocket : public LinuxSocketBase {
     AsyncReq* async_write_req_;
   };
 
+  // Read path
+  struct OnRecvRecord {
+    std::function<void (const RecvNotification&)> cb;
+  };
+
   union {
     PendingReq* read_req_;
     AsyncReq* async_read_req_;
+    OnRecvRecord* on_recv_;
   };
 
   int32_t arm_index_ = -1;
@@ -91,6 +99,7 @@ class EpollSocket : public LinuxSocketBase {
     struct {
       uint8_t async_write_pending_ : 1;
       uint8_t async_read_pending_ : 1;
+      uint8_t recv_hook_registered_ : 1;
     };
     uint8_t flags_;
   };
