@@ -179,8 +179,7 @@ std::pair<bool, EpollSocket::Result<size_t>> EpollSocket::AsyncReq::Run(int fd, 
   return {true, make_unexpected(from_errno())};
 }
 
-EpollSocket::EpollSocket(int fd)
-    : LinuxSocketBase(fd, nullptr), async_write_pending_(0), async_read_pending_(0) {
+EpollSocket::EpollSocket(int fd) : LinuxSocketBase(fd, nullptr), flags_(0) {
   write_req_ = read_req_ = nullptr;
 }
 
@@ -567,7 +566,7 @@ void EpollSocket::CancelOnErrorCb() {
 }
 
 void EpollSocket::HandleAsyncRequest(error_code ec, bool is_send) {
-  auto async_pending = is_send ? async_write_pending_ : async_read_pending_;
+  uint8_t async_pending = is_send ? async_write_pending_ : async_read_pending_;
   if (async_pending) {
     auto& async_request = is_send ? async_write_req_ : async_read_req_;
     DCHECK(async_request);
@@ -617,13 +616,11 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   }
 
   if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
-    bool is_send = false;
-    HandleAsyncRequest(ec, is_send);
+    HandleAsyncRequest(ec, false /*is_send */);
   }
 
   if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
-    bool is_send = true;
-    HandleAsyncRequest(ec, is_send);
+    HandleAsyncRequest(ec, true /*is_send */);
   }
 
   if (error_cb_ && (ev_mask & kErrMask)) {

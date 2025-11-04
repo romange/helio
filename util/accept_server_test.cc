@@ -333,6 +333,7 @@ TEST_P(AcceptServerTest, Shutdown) {
     // See https://man7.org/linux/man-pages/man2/poll.2.html for more details.
     EXPECT_GE(called, socks.size());
     for (unsigned i = 0; i < socks.size(); ++i) {
+      socks[i]->CancelOnErrorCb();
       std::ignore = socks[i]->Close();
     }
   });

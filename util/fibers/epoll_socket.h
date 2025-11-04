@@ -57,6 +57,7 @@ class EpollSocket : public LinuxSocketBase {
     }
 
     // Caller is responsible for *calling* cb.
+    // Returns true if the callback has run.
     std::pair<bool, Result<size_t>> Run(int fd, bool is_send);
   };
 
@@ -86,8 +87,13 @@ class EpollSocket : public LinuxSocketBase {
   static constexpr uint32_t kMaxBufSize = 1 << 16;
   static constexpr uint32_t kMinBufSize = 1 << 4;
   uint32_t bufreq_sz_ = kMinBufSize;
-  uint8_t async_write_pending_ : 1;
-  uint8_t async_read_pending_ : 1;
+  union {
+    struct {
+      uint8_t async_write_pending_ : 1;
+      uint8_t async_read_pending_ : 1;
+    };
+    uint8_t flags_;
+  };
   std::function<void(uint32_t)> error_cb_;
 };
 
