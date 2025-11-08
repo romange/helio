@@ -89,6 +89,9 @@ class TlsSocket final : public FiberSocketBase {
 
   virtual void SetProactor(ProactorBase* p) override;
 
+  virtual void RegisterOnRecv(OnRecvCb cb) final;
+  virtual void ResetOnRecvHook() final;
+
   // * NOT PART OF THE API -- USED FOR TESTING PURPOSES ONLY *
   // This function is used to simulate a corner case of AsyncReadSome. In particular,
   // when engine_->Read(...) returns NEED_WRITE. According to chatgpt and google
