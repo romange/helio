@@ -158,16 +158,10 @@ void EchoConnection::HandleRequests() {
 
   CHECK_LE(req_len_, 1UL << 26);
   socket_->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
-    if (std::holds_alternative<int>(n.read_result)) {
-      int res = std::get<int>(n.read_result);
-      if (res == 0) {
-        VLOG(1) << "Close notify received " << this;
-        // connection closed.
-        ec_ = make_error_code(errc::connection_aborted);
-        recv_notify_.notify_one();
-        return;
-      }
-      LOG(FATAL) << "Recv error: " << res;
+    if (std::holds_alternative<error_code>(n.read_result)) {
+      ec_ = std::get<error_code>(n.read_result);
+      recv_notify_.notify_one();
+      return;
     } else if (std::holds_alternative<io::MutableBytes>(n.read_result)) {
       auto mb = std::get<io::MutableBytes>(n.read_result);
       DVLOG(2) << "Got buffer of size " << mb.size();

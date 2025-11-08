@@ -530,14 +530,13 @@ int UringProactor::CancelRequests(int fd, unsigned flags) {
   return io_uring_register_sync_cancel(&ring_, &reg_arg);
 }
 
-UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask,
-                                                  bool multishot) {
+UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask) {
   CHECK_GT(event_mask, 0U);
 
   EpollEntry* entry = new EpollEntry();
   entry->cb = std::move(cb);
   entry->fd = fd;
-  entry->event_mask = event_mask | (multishot ? EpollEntry::kMultishot : 0);
+  entry->event_mask = event_mask;
   EpollAddInternal(entry);
 
   return reinterpret_cast<EpollIndex>(entry);
@@ -545,7 +544,6 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
 
 void UringProactor::EpollDel(EpollIndex id) {
   EpollEntry* entry = reinterpret_cast<EpollEntry*>(id);
-  entry->event_mask &= ~EpollEntry::kMultishot;  // disable mask to signal no further events.
   unsigned uid = entry->index;
 
   FiberCall fc(this);
@@ -553,6 +551,8 @@ void UringProactor::EpollDel(EpollIndex id) {
   IoResult res = fc.Get();
   if (res == 0) {  // removed from iouring, otherwise it run already and deleted itself.
     delete entry;
+  } else {
+    LOG(ERROR) << "EpollDel: unexpected result " << res;
   }
 }
 
@@ -972,20 +972,10 @@ void UringProactor::WakeRing() {
 }
 
 void UringProactor::EpollAddInternal(EpollEntry* entry) {
-  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+  auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
     if (res >= 0) {
+      DCHECK(flags & IORING_CQE_F_MORE);
       entry->cb(res);
-
-      if (flags & IORING_CQE_F_MORE || (entry->event_mask & EpollEntry::kMultishot)) {
-        // multishot, can exit now as it rearms itself.
-        return;
-      }
-
-      // one-shot, need to re-add if mask is still set.
-      if (entry->event_mask)
-        EpollAddInternal(entry);
-      else  // EpollDel started deletion but the callback was already in flight.
-        delete entry;
     } else {
       res = -res;
       LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
@@ -993,11 +983,9 @@ void UringProactor::EpollAddInternal(EpollEntry* entry) {
   };
 
   SubmitEntry se = GetSubmitEntry(std::move(uring_cb));
-  se.PrepPollAdd(entry->fd, entry->event_mask & ~EpollEntry::kMultishot);
+  se.PrepPollAdd(entry->fd, entry->event_mask);
   entry->index = se.sqe()->user_data;
-  if (entry->event_mask & EpollEntry::kMultishot) {
-    se.sqe()->len = IORING_POLL_ADD_MULTI;
-  }
+  se.sqe()->len = IORING_POLL_ADD_MULTI;
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {

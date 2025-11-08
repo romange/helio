@@ -169,14 +169,14 @@ class UringProactor : public ProactorBase {
 
   using EpollCB = std::function<void(uint32_t)>;
   using EpollIndex = uintptr_t;
-  EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask, bool multishot = false);
+  EpollIndex EpollAdd(int fd, EpollCB cb, uint32_t event_mask);
   void EpollDel(EpollIndex id);
 
  private:
   struct EpollEntry {
     EpollCB cb;
     int fd = -1;
-    static constexpr uint32_t kMultishot = 1u << 31;
+
     uint32_t event_mask = 0;
     int64_t index = -1;
   };

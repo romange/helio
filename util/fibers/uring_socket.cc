@@ -464,7 +464,7 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
   int fd = ShiftedFd();
   if (enable_multi_shot_) {
     auto recv_cb = [this, cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                        uint32_t flags, uint32_t bufring_id) {
+                                              uint32_t flags, uint32_t bufring_id) {
       UringProactor* up = static_cast<UringProactor*>(ProactorBase::me());
 
       if (flags & IORING_CQE_F_BUFFER) {
@@ -492,8 +492,12 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
           // b) to reissue recv with buffer select.
           LOG(FATAL) << "TBD";
         }
+        // When we get an error, the multishot stops automatically.
+        // we align by resetting register_recv_multishot_ and propagate the error.
         this->register_recv_multishot_ = 0;
-        cb(RecvNotification{res});
+        error_code ec = res < 0 ? error_code(-res, system_category())
+                                : make_error_code(errc::connection_aborted);
+        cb(RecvNotification{ec});
       }
     };
 
@@ -513,7 +517,7 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
   } else {
     auto epoll_cb = [cb = std::move(cb)](uint32_t mask) { cb(RecvNotification{}); };
 
-    recv_poll_id_ = proactor->EpollAdd(fd, std::move(epoll_cb), POLLIN, true);
+    recv_poll_id_ = proactor->EpollAdd(fd, std::move(epoll_cb), POLLIN);
   }
 }
 

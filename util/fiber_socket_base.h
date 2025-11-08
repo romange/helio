@@ -129,7 +129,7 @@ class FiberSocketBase : public io::Sink,
     // For iouring/bufring notifications, it contains either the positive error code,
     // or the received data buffer. In latter case, the callback must consume the data before
     // returning.
-    std::variant<std::monostate, int, io::MutableBytes> read_result;
+    std::variant<std::monostate, std::error_code, io::MutableBytes> read_result;
   };
 
   using OnRecvCb = std::function<void (const RecvNotification&)>;
