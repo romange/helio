@@ -532,7 +532,7 @@ TEST_F(FiberTest, WaitFor) {
 }
 
 TEST_F(FiberTest, StackSize) {
-  Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{7000}, "fb1", [] {
+  Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{8000}, "fb1", [] {
     LOG(INFO) << "fb1 started";
     detail::FiberInterface* active = detail::FiberActive();
 

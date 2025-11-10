@@ -101,7 +101,7 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 
         // multishot epoll supported from 5.13 kernel onwards. we do not use it for now
         // to keep the compatibility with older kernels.
-        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask, false);
+        socket_state.arm_index = uring->EpollAdd(socket_fd, std::move(cb), mask);
         DVLOG(1) << "EpollAdd " << socket_fd << ", mask: " << mask
                  << " index: " << socket_state.arm_index;
 #endif

@@ -67,12 +67,10 @@ constexpr size_t kAlign = 4096;
 struct UringProactor::BufRingGroup {
   io_uring_buf_ring* ring = nullptr;
   uint8_t* storage = nullptr;
-  MultiShotCompletion* multishot_arr = nullptr;  // Array of a cardinality of nentries.
 
   // Insertion order map of a cardinality of nentries. bufring_next[x] points to the next
   // bid element after x.
   uint32_t entry_size = 0;
-  uint16_t free_multi_shot_id = 0;  // head of the free list in multishot_arr.
 
   // Tracks the head of the ring. Updated upon each multishot completion. Relevant only
   // for bundles. In case we decide to enable bundled for non-multishot configurations
@@ -80,16 +78,10 @@ struct UringProactor::BufRingGroup {
   uint16_t cached_head = 0;
 
   uint8_t nentries_exp = 0;   // 2^nentries_exp is the number of entries.
-  uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
+  // uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
   uint16_t reserved1 = 0;
   uint32_t reserved2 = 0;
 
-  // Returns the new tail.
-  uint16_t HandleCompletion(uint16_t bid, uint16_t multishot_tail_id, IoResult res);
-
-  // Manages multishot completions.
-  CompletionResult PullCHead(uint16_t* head);
-  uint16_t PushCTail(uint16_t tail, uint16_t bid, uint16_t bufring_pos, IoResult res);
   void AddToRing(uint16_t bid, uint16_t mask, uint16_t offset);
 
   uint16_t size() const {
@@ -102,64 +94,6 @@ struct UringProactor::BufRingGroup {
     return storage + bid * entry_size;
   }
 };
-
-uint16_t UringProactor::BufRingGroup::HandleCompletion(uint16_t bid, uint16_t multishot_tail_id,
-                                                       IoResult res) {
-  DCHECK_GT(res, 0);
-  DCHECK_EQ(ring->bufs[cached_head & (size() - 1)].bid, bid);
-  uint16_t bufring_pos = cached_head;
-
-  cached_head += (1 + (res - 1) / entry_size);
-
-  if (!multishot_arr) {
-    multishot_exp = nentries_exp;
-
-    size_t arr_len = 1U << multishot_exp;
-    multishot_arr = new MultiShotCompletion[arr_len];
-    free_multi_shot_id = 0;
-
-    for (uint16_t i = 0; i < arr_len; ++i) {
-      multishot_arr[i].next = i + 1;
-    }
-    multishot_arr[arr_len - 1].next = kMultiShotUndef;
-  }
-
-  return PushCTail(multishot_tail_id, bid, bufring_pos, res);
-}
-
-auto UringProactor::BufRingGroup::PullCHead(uint16_t* head_id) -> CompletionResult {
-  uint16_t src_id = *head_id;
-  DCHECK_NE(src_id, kMultiShotUndef);
-
-  MultiShotCompletion& head_entry = multishot_arr[src_id];
-
-  // We remove head from list.
-  *head_id = head_entry.next;
-
-  // push head to the free list.
-  head_entry.next = free_multi_shot_id;
-  free_multi_shot_id = src_id;
-  return {.bid = head_entry.bid, .bufring_pos = head_entry.bufring_pos, .res = head_entry.res};
-}
-
-uint16_t UringProactor::BufRingGroup::PushCTail(uint16_t tail_id, uint16_t bid,
-                                                uint16_t bufring_pos, IoResult res) {
-  uint16_t next_id = free_multi_shot_id;
-  DCHECK_LT(next_id, size());
-
-  auto& entry = multishot_arr[next_id];
-  free_multi_shot_id = entry.next;
-
-  entry.bid = bid;
-  entry.bufring_pos = bufring_pos;
-  entry.res = res;
-  entry.next = kMultiShotUndef;
-  if (tail_id != kMultiShotUndef) {
-    auto& tail_entry = multishot_arr[tail_id];
-    tail_entry.next = next_id;
-  }
-  return next_id;
-}
 
 void UringProactor::BufRingGroup::AddToRing(uint16_t bid, uint16_t mask, uint16_t offset) {
   uint8_t* cur_buf = storage + bid * entry_size;
@@ -182,7 +116,7 @@ UringProactor::~UringProactor() {
       if (group.ring != nullptr) {
         io_uring_free_buf_ring(&ring_, group.ring, group.size(), i);
         delete[] group.storage;
-        delete[] group.multishot_arr;
+        // delete[] group.multishot_arr;
       }
     }
 
@@ -546,28 +480,29 @@ uint8_t* UringProactor::GetBufRingPtr(uint16_t group_id, uint16_t bufid) {
   return buf_group.GetBufPtr(bufid);
 }
 
+uint8_t* UringProactor::AdvanceRecvCompletion(uint16_t group_id, uint16_t bufid) {
+  DCHECK_LT(group_id, bufring_groups_.size());
+  auto& buf_group = bufring_groups_[group_id];
+
+  buf_group.cached_head++;
+  auto* res = buf_group.GetBufPtr(bufid);
+
+  return res;
+}
+
 uint16_t UringProactor::GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const {
   auto& buf_group = bufring_groups_[group_id];
   return buf_group.ring->bufs[buf_pos & io_uring_buf_ring_mask(buf_group.size())].bid;
 }
 
-void UringProactor::ReplenishBuffers(uint16_t group_id, uint16_t bid, uint16_t ring_pos,
-                                     size_t bytes) {
+void UringProactor::ReplenishBuffer(uint16_t group_id, uint16_t bid) {
   auto& buf_group = bufring_groups_[group_id];
   unsigned mask = io_uring_buf_ring_mask(buf_group.size());
 
-  uint16_t offset = 0;
-  while (true) {
-    DCHECK_LT(bid, buf_group.size());
-    buf_group.AddToRing(bid, mask, offset++);
-    if (bytes <= buf_group.entry_size)
-      break;
-    bytes -= buf_group.entry_size;
-    ++ring_pos;
-    bid = buf_group.ring->bufs[ring_pos & mask].bid;
-  }
+  DCHECK_LT(bid, buf_group.size());
+  buf_group.AddToRing(bid, mask, 0);
 
-  io_uring_buf_ring_advance(buf_group.ring, offset);
+  io_uring_buf_ring_advance(buf_group.ring, 1);
 }
 
 int UringProactor::BufRingEntrySize(unsigned group_id) const {
@@ -595,14 +530,13 @@ int UringProactor::CancelRequests(int fd, unsigned flags) {
   return io_uring_register_sync_cancel(&ring_, &reg_arg);
 }
 
-UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask,
-                                                  bool multishot) {
+UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t event_mask) {
   CHECK_GT(event_mask, 0U);
 
   EpollEntry* entry = new EpollEntry();
   entry->cb = std::move(cb);
   entry->fd = fd;
-  entry->event_mask = event_mask | (multishot ? EpollEntry::kMultishot : 0);
+  entry->event_mask = event_mask;
   EpollAddInternal(entry);
 
   return reinterpret_cast<EpollIndex>(entry);
@@ -610,7 +544,6 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
 
 void UringProactor::EpollDel(EpollIndex id) {
   EpollEntry* entry = reinterpret_cast<EpollEntry*>(id);
-  entry->event_mask &= ~EpollEntry::kMultishot;  // disable mask to signal no further events.
   unsigned uid = entry->index;
 
   FiberCall fc(this);
@@ -618,29 +551,9 @@ void UringProactor::EpollDel(EpollIndex id) {
   IoResult res = fc.Get();
   if (res == 0) {  // removed from iouring, otherwise it run already and deleted itself.
     delete entry;
+  } else {
+    LOG(ERROR) << "EpollDel: unexpected result " << res;
   }
-}
-
-uint16_t UringProactor::EnqueueMultishotCompletion(uint16_t group_id, IoResult res,
-                                                   uint32_t cqe_flags, uint16_t tail_id) {
-  DCHECK_LT(group_id, bufring_groups_.size());
-  DCHECK(cqe_flags & IORING_CQE_F_BUFFER) << res;
-  DCHECK_GT(res, 0) << cqe_flags;
-
-  auto& buf_group = bufring_groups_[group_id];
-  uint16_t bid = cqe_flags >> IORING_CQE_BUFFER_SHIFT;
-  return buf_group.HandleCompletion(bid, tail_id, res);
-}
-
-auto UringProactor::PullMultiShotCompletion(uint16_t group_id, uint16_t* head_id)
-    -> CompletionResult {
-  DCHECK_LT(group_id, bufring_groups_.size());
-  DCHECK_NE(*head_id, kMultiShotUndef);
-
-  auto& buf_group = bufring_groups_[group_id];
-  DCHECK(buf_group.multishot_arr);
-
-  return buf_group.PullCHead(head_id);
 }
 
 void UringProactor::RegrowCentries() {
@@ -1059,20 +972,10 @@ void UringProactor::WakeRing() {
 }
 
 void UringProactor::EpollAddInternal(EpollEntry* entry) {
-  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+  auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
     if (res >= 0) {
+      DCHECK(flags & IORING_CQE_F_MORE);
       entry->cb(res);
-
-      if (flags & IORING_CQE_F_MORE || (entry->event_mask & EpollEntry::kMultishot)) {
-        // multishot, can exit now as it rearms itself.
-        return;
-      }
-
-      // one-shot, need to re-add if mask is still set.
-      if (entry->event_mask)
-        EpollAddInternal(entry);
-      else  // EpollDel started deletion but the callback was already in flight.
-        delete entry;
     } else {
       res = -res;
       LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
@@ -1080,11 +983,9 @@ void UringProactor::EpollAddInternal(EpollEntry* entry) {
   };
 
   SubmitEntry se = GetSubmitEntry(std::move(uring_cb));
-  se.PrepPollAdd(entry->fd, entry->event_mask & ~EpollEntry::kMultishot);
+  se.PrepPollAdd(entry->fd, entry->event_mask);
   entry->index = se.sqe()->user_data;
-  if (entry->event_mask & EpollEntry::kMultishot) {
-    se.sqe()->len = IORING_POLL_ADD_MULTI;
-  }
+  se.sqe()->len = IORING_POLL_ADD_MULTI;
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {

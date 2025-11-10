@@ -77,44 +77,31 @@ class EchoConnection : public Connection {
  private:
   struct SendMsgState {
     bool is_raw = false;
-    error_code ec;
     size_t cur_sendmsg_len = 0;
     vector<iovec> vec;
-    vector<FiberSocketBase::ProvidedBuffer> kept_buffers;
-    FiberSocketBase::ProvidedBuffer pbuf;
-    unsigned buf_len;
+    vector<string> kept_blobs;
+    string blob;
   };
 
   void HandleRequests() final;
 
-  error_code ReadMsg();
+  void ReadMsg();
 
   // Returns true if we still need the buffer because it's referenced by iovec.
   bool ProcessSingleBuffer(SendMsgState* state);
-  void ProcessFully(SendMsgState* state);
 
-  error_code Send(bool is_raw, const vector<iovec>& vec);
+  void Send(bool is_raw, const vector<iovec>& vec);
 
-  queue<FiberSocketBase::ProvidedBuffer> prov_buffers_;
+  queue<string> blobs_;
+  std::error_code ec_;
+  fb2::CondVarAny recv_notify_;
   uint64_t replies_ = 0;
   size_t req_len_ = 0;
 };
 
-std::error_code EchoConnection::ReadMsg() {
-  FiberSocketBase::ProvidedBuffer pb[8];
-  VLOG(2) << "Waiting for socket read";
-  unsigned num_bufs = socket_->RecvProvided(8, pb);
-
-  for (unsigned i = 0; i < num_bufs; ++i) {
-    if (pb[i].res_len > 0) {
-      prov_buffers_.push(pb[i]);
-    } else {
-      DCHECK_EQ(i, 0u);
-      return error_code(-pb[i].res_len, system_category());
-    }
-  }
-  VLOG(2) << "Received " << num_bufs << " buffers";
-  return {};
+void EchoConnection::ReadMsg() {
+  fb2::NoOpLock lk;
+  recv_notify_.wait(lk, [this] { return !blobs_.empty() || ec_; });
 }
 
 static thread_local base::Histogram send_hist;
@@ -140,7 +127,7 @@ void EchoConnection::HandleRequests() {
 
   auto ep = socket_->RemoteEndpoint();
 
-  VLOG(1) << "New connection from " << ep;
+  VLOG(1) << "New connection " << this << " from " << ep;
 
   SendMsgState state;
   state.vec.resize(1);
@@ -170,97 +157,103 @@ void EchoConnection::HandleRequests() {
   }
 
   CHECK_LE(req_len_, 1UL << 26);
+  socket_->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
+    if (std::holds_alternative<error_code>(n.read_result)) {
+      ec_ = std::get<error_code>(n.read_result);
+      recv_notify_.notify_one();
+      return;
+    } else if (std::holds_alternative<io::MutableBytes>(n.read_result)) {
+      auto mb = std::get<io::MutableBytes>(n.read_result);
+      DVLOG(2) << "Got buffer of size " << mb.size();
+      DCHECK(mb.size() > 0);
+      blobs_.emplace(string(reinterpret_cast<const char*>(mb.data()), mb.size()));
+      recv_notify_.notify_one();
+    } else if (std::holds_alternative<monostate>(n.read_result)) {
+      bool cont = true;
+      while (cont) {
+        string blob(req_len_ * 8, 0);
+        int res = recv(socket_->native_handle(), blob.data(), blob.size(), 0);
+        if (res < 0) {
+          LOG(FATAL) << "Recv error: " << strerror(-res);
+          return;
+        } else if (res == 0) {
+          // connection closed.
+          ec_ = make_error_code(errc::connection_aborted);
+          recv_notify_.notify_one();
+          return;
+        }
+
+        DCHECK_GT(res, 0);
+        cont = (size_t(res) == blob.size());
+        blob.resize(res);
+        blobs_.emplace(std::move(blob));
+      }
+      recv_notify_.notify_one();
+    }
+  });
 
   // after the handshake.
-  while (true) {
-    state.ec = ReadMsg();
-    if (FiberSocketBase::IsConnClosed(state.ec)) {
-      VLOG(1) << "Closing " << ep << " after " << replies_ << " replies";
+  while (!ec_) {
+    ReadMsg();
+
+    if (FiberSocketBase::IsConnClosed(ec_)) {
+      VLOG(1) << "Closing " << this << " " << ep << " after " << replies_ << " replies";
       break;
     }
-    CHECK(!state.ec) << state.ec;
+    CHECK(!ec_) << ec_;
     ping_qps.Inc();
 
     state.vec[0].iov_base = buf;
     state.vec[0].iov_len = 4;
     absl::little_endian::Store32(buf, req_len_);
 
-    while (!prov_buffers_.empty()) {
-      state.pbuf = prov_buffers_.front();
-      state.buf_len = state.pbuf.res_len;
-      prov_buffers_.pop();
-      ProcessFully(&state);
-      if (state.ec)
+    while (!blobs_.empty()) {
+      state.blob = std::move(blobs_.front());
+      blobs_.pop();
+      ProcessSingleBuffer(&state);
+      if (ec_)
         break;
     }
-    if (state.ec)
-      break;
   }
 
+  socket_->ResetOnRecvHook();
   VLOG(1) << "Connection ended " << ep;
   connections.IncBy(-1);
 }
 
 bool EchoConnection::ProcessSingleBuffer(SendMsgState* state) {
-  auto GetBufferStart = [](const FiberSocketBase::ProvidedBuffer& pb) -> uint8_t* {
-    if (pb.type == FiberSocketBase::kHeapType)
-      return pb.start;
-#ifdef __linux__
-    return static_cast<fb2::UringProactor*>(ProactorBase::me())->GetBufRingPtr(0, pb.buf_id);
-#endif
-    return nullptr;
-  };
+  DCHECK(!state->blob.empty());
 
-  size_t len = std::min<unsigned>(state->buf_len, kBufLen);
+  size_t len = std::min<unsigned>(state->blob.size(), kBufLen);
   size_t buf_offset = 0;
-  uint8_t* start = GetBufferStart(state->pbuf);
+  char* start = state->blob.data();
   while (state->cur_sendmsg_len + len >= req_len_) {
     unsigned needed = req_len_ - state->cur_sendmsg_len;
     state->vec.push_back({start + buf_offset, needed});
-    state->ec = Send(state->is_raw, state->vec);
+    Send(state->is_raw, state->vec);
     state->vec.resize(1);
-    for (auto& pb : state->kept_buffers) {
-      VLOG(2) << "Return buffer id " << pb.buf_id << " " << pb.res_len;
-      socket_->ReturnProvided(pb);
-    }
-    state->kept_buffers.clear();
+
     state->cur_sendmsg_len = 0;
     buf_offset += needed;
+    state->kept_blobs.clear();
     len -= needed;
-    if (state->ec)
+    if (ec_)
       return false;
   }
 
   if (len) {  // consume the whole buffer and can not send yet.
-    state->vec.push_back({start + buf_offset, len});
+    state->kept_blobs.push_back(state->blob.substr(buf_offset));
+    auto& kept = state->kept_blobs.back();
+    DCHECK(kept.size() == len);
+    state->vec.push_back({kept.data(), kept.size()});
     state->cur_sendmsg_len += len;
     return true;
   }
   return true;
 }
 
-void EchoConnection::ProcessFully(SendMsgState* state) {
-#ifdef __linux__
-  fb2::UringProactor* up = static_cast<fb2::UringProactor*>(socket_->proactor());
-  while (state->buf_len > kBufLen) {  // process bundle
-    ProcessSingleBuffer(state);
-    state->buf_len -= kBufLen;
-    ++state->pbuf.buf_pos;
-    state->pbuf.buf_id = up->GetBufIdByPos(0, state->pbuf.buf_pos);
-    if (state->ec)
-      return;
-  }
-#endif
-  if (ProcessSingleBuffer(state)) {
-    state->kept_buffers.push_back(state->pbuf);
-  } else {
-    VLOG(1) << "Return buffer id " << state->pbuf.buf_id << " " << state->pbuf.res_len;
-    socket_->ReturnProvided(state->pbuf);
-  }
-}
-
-error_code EchoConnection::Send(bool is_raw, const vector<iovec>& vec) {
-  VLOG(1) << "Send response " << replies_;
+void EchoConnection::Send(bool is_raw, const vector<iovec>& vec) {
+  VLOG(2) << "Send response " << replies_;
 
   error_code ec;
   if (is_raw) {
@@ -273,7 +266,9 @@ error_code EchoConnection::Send(bool is_raw, const vector<iovec>& vec) {
   }
 
   ++replies_;
-  return ec;
+  if (!ec_) {
+    ec_ = ec;
+  }
 }
 
 class EchoListener : public ListenerInterface {
@@ -436,6 +431,7 @@ void Driver::Connect(unsigned index, const tcp::endpoint& ep) {
 void Driver::SendSingle() {
   size_t req_size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> msg(new uint8_t[req_size]);
+  memset(msg.get(), 'x', req_size);
   memcpy(msg.get(), &send_id_, std::min(sizeof(send_id_), req_size));
   ++send_id_;
 
@@ -450,7 +446,7 @@ size_t Driver::Run(base::Histogram* dest) {
   base::Histogram hist;
   size_t req_size = absl::GetFlag(FLAGS_size);
   std::unique_ptr<uint8_t[]> msg(new uint8_t[req_size]);
-
+  memset(msg.get(), 'x', req_size);
   iovec vec[2];
   vec[0].iov_len = 4;
   vec[0].iov_base = buf_;

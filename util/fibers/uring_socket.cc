@@ -40,74 +40,6 @@ auto Unexpected(std::errc e) {
 
 }  // namespace
 
-bool UringSocket::MultiShot::DecRef() {
-  if (--refcnt > 0)
-    return false;
-
-  delete this;
-  return true;
-}
-
-UringSocket::MultiShot::~MultiShot() {
-  CHECK(!HasBuffers());
-}
-
-void UringSocket::MultiShot::Activate(int fd, uint16_t bufring_id, uint8_t flags,
-                                      UringProactor* proactor) {
-  if (refcnt > 1)
-    return;
-
-  auto cb = [this](detail::FiberInterface* current, IoResult res, uint32_t flags,
-                   uint32_t bufring_id) {
-    UringProactor* proactor = static_cast<UringProactor*>(ProactorBase::me());
-
-    if (flags & IORING_CQE_F_BUFFER) {
-      CHECK_GT(res, 0);
-
-      DVLOG(2) << "Multishot completion " << res << " bid: " << (flags >> IORING_CQE_BUFFER_SHIFT)
-               << " has_more: " << ((flags & IORING_CQE_F_MORE) ? 1 : 0) << " len:" << res;
-
-      this->tail = proactor->EnqueueMultishotCompletion(bufring_id, res, flags, this->tail);
-      if (this->head == UringProactor::kMultiShotUndef)
-        this->head = this->tail;
-      DCHECK_NE(tail, UringProactor::kMultiShotUndef);
-    } else {
-      CHECK_LE(res, 0);
-      DCHECK_EQ(0u, flags & IORING_CQE_F_MORE);
-
-      err_no = -res;
-      error_raised = 1;
-      DVLOG(2) << "Multishot error " << err_no;
-    }
-
-    if ((flags & IORING_CQE_F_MORE) == 0) {
-      if (DecRef())  // Last reference.
-        return;
-    }
-
-    if (poll_pending) {
-      ActivateSameThread(current, poll_pending);
-      poll_pending = nullptr;
-    }
-  };
-
-  fb2::SubmitEntry entry = proactor->GetSubmitEntry(std::move(cb), bufring_id);
-  entry.PrepRecv(fd, nullptr, 0, 0);
-  auto& sqe = *entry.sqe();
-
-  sqe.flags |= (flags | IOSQE_BUFFER_SELECT);
-  sqe.buf_group = bufring_id;
-  uint16_t prio_flags = (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
-
-  // disable as we do not support bundles yet.
-  if (false && proactor->HasBundleSupport()) {
-    prio_flags |= IORING_RECVSEND_BUNDLE;
-  }
-  sqe.ioprio |= prio_flags;
-
-  ++refcnt;
-}
-
 UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
   if (p) {
     // This flag has a clear positive impact of the CPU usage for server side sockets.
@@ -153,7 +85,6 @@ auto UringSocket::Close() -> error_code {
   DCHECK(proactor());
   DCHECK(proactor()->InMyThread());
   DVSOCK(1) << "Closing socket";
-  CancelMultiShot();
 
   if (error_cb_wrapper_) {
     LOG(DFATAL) << "Error callback still registered in Close";
@@ -161,15 +92,13 @@ auto UringSocket::Close() -> error_code {
     error_cb_wrapper_ = nullptr;
   }
 
-  UringProactor* proactor = GetProactor();
-  if (recv_poll_id_ != 0) {
-    proactor->EpollDel(recv_poll_id_);
-    recv_poll_id_ = 0;
-  }
+  ResetOnRecvHook();
 
   int fd;
   if (is_direct_fd_) {
     unsigned direct_fd = ShiftedFd();
+    UringProactor* proactor = GetProactor();
+
     fd = proactor->UnregisterFd(direct_fd);
     if (fd < 0) {
       LOG(WARNING) << "Error unregistering fd " << direct_fd;
@@ -526,16 +455,70 @@ void UringSocket::CancelOnErrorCb() {
 }
 
 void UringSocket::RegisterOnRecv(OnRecvCb cb) {
-  CHECK(!multishot_);  // TBD
   DCHECK(IsOpen());
   CHECK_EQ(recv_poll_id_, 0u);
+  CHECK(!register_recv_multishot_);
 
-  Proactor* p = GetProactor();
-  auto epoll_cb = [cb = std::move(cb)](uint32_t mask) {
-    cb(RecvNotification{});
-  };
+  Proactor* proactor = GetProactor();
 
-  recv_poll_id_ = p->EpollAdd(ShiftedFd(), std::move(epoll_cb), POLLIN, true);
+  int fd = ShiftedFd();
+  if (enable_multi_shot_) {
+    auto recv_cb = [this, cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
+                                              uint32_t flags, uint32_t bufring_id) {
+      UringProactor* up = static_cast<UringProactor*>(ProactorBase::me());
+
+      if (flags & IORING_CQE_F_BUFFER) {
+        CHECK_GT(res, 0);
+
+        DCHECK(flags & IORING_CQE_F_MORE);
+
+        // holds only for non-bundle spec.
+        DCHECK_LE(res, up->BufRingEntrySize(bufring_id));
+        uint16_t bid = flags >> IORING_CQE_BUFFER_SHIFT;
+        DVLOG(2) << "Multishot recv got buffer " << bid << " of size " << res;
+
+        uint8_t* buf_ptr = up->AdvanceRecvCompletion(bufring_id, bid);
+        cb(RecvNotification{io::MutableBytes(buf_ptr, static_cast<size_t>(res))});
+        up->ReplenishBuffer(bufring_id, bid);
+      } else {
+        CHECK_LE(res, 0);
+        res = -res;
+        DCHECK_EQ(0u, flags & IORING_CQE_F_MORE);
+
+        if (res == ENOBUFS) {
+          // TODO: we should reregister the recv here, there is no need to for the
+          // app to know about it. There are two options:
+          // a) to fallback to epoll or
+          // b) to reissue recv with buffer select.
+          LOG(FATAL) << "TBD";
+        }
+        // When we get an error, the multishot stops automatically.
+        // we align by resetting register_recv_multishot_ and propagate the error.
+        this->register_recv_multishot_ = 0;
+        error_code ec = res < 0 ? error_code(-res, system_category())
+                                : make_error_code(errc::connection_aborted);
+        cb(RecvNotification{ec});
+      }
+    };
+
+    fb2::SubmitEntry entry = proactor->GetSubmitEntry(std::move(recv_cb), bufring_id_);
+    entry.PrepRecv(fd, nullptr, 0, 0);
+    auto& sqe = *entry.sqe();
+
+    sqe.flags |= (register_flag() | IOSQE_BUFFER_SELECT);
+    sqe.buf_group = bufring_id_;
+    uint16_t prio_flags = (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
+
+    // disable as we do not support bundles yet.
+    if (false && proactor->HasBundleSupport()) {
+      prio_flags |= IORING_RECVSEND_BUNDLE;
+    }
+    sqe.ioprio |= prio_flags;
+  } else {
+    auto epoll_cb = [cb = std::move(cb)](uint32_t mask) { cb(RecvNotification{}); };
+
+    recv_poll_id_ = proactor->EpollAdd(fd, std::move(epoll_cb), POLLIN);
+  }
 }
 
 void UringSocket::ResetOnRecvHook() {
@@ -543,6 +526,12 @@ void UringSocket::ResetOnRecvHook() {
     Proactor* p = GetProactor();
     p->EpollDel(recv_poll_id_);
     recv_poll_id_ = 0;
+  } else if (register_recv_multishot_) {
+    register_recv_multishot_ = 0;
+    int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
+
+    int res = GetProactor()->CancelRequests(ShiftedFd(), flags);
+    LOG_IF(WARNING, res < 0) << "Error canceling multishot " << -res;
   }
 }
 
@@ -556,150 +545,12 @@ auto UringSocket::native_handle() const -> native_handle_type {
 }
 
 unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
-  DCHECK_GT(buf_len, 0u);
-
-  int fd = ShiftedFd();
-  Proactor* p = GetProactor();
-  DCHECK(ProactorBase::me() == p);
-
-  if (multishot_) {
-    // Multishot mode.
-    unsigned res = 0;
-    if (!multishot_->error_raised && !multishot_->HasBuffers()) {
-      DCHECK(multishot_->poll_pending == nullptr);
-      DCHECK_GT(multishot_->refcnt, 1);
-      multishot_->poll_pending = detail::FiberActive();
-      multishot_->poll_pending->Suspend();
-    }
-
-    while (multishot_->HasBuffers()) {
-      UringProactor* up = GetProactor();
-      // result may corresponds to several ring buffers in case the bundle option is active.
-      UringProactor::CompletionResult result =
-          up->PullMultiShotCompletion(bufring_id_, &multishot_->head);
-
-      if (multishot_->head == UringProactor::kMultiShotUndef) {
-        multishot_->tail = UringProactor::kMultiShotUndef;
-      }
-
-      auto& pbuf = dest[res++];
-      pbuf.buf_id = result.bid;
-      pbuf.buf_pos = result.bufring_pos;
-      pbuf.allocated = 0;
-      pbuf.res_len = result.res;
-      pbuf.type = kBufRingType;
-      if (res == buf_len) {
-        return res;
-      }
-    };
-
-    if (res > 0)
-      return res;
-
-    CHECK(multishot_->error_raised);
-
-    dest[0].SetError(multishot_->err_no == 0 ? ECONNABORTED : multishot_->err_no);
-    CHECK(multishot_->DecRef());  // Last reference, we disable multishot.
-    multishot_ = nullptr;
-    return 1;
-  }
-
-  // Non-multishot mode.
-  FiberCall fc(p, timeout());
-
-  fc->PrepRecv(fd, nullptr, 0, 0);
-  fc->sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
-  fc->sqe()->buf_group = bufring_id_;
-
-  // Note, we do not support bundles for non-multishot mode.
-  if (has_pollfirst_ && !has_recv_data_) {
-    fc->sqe()->ioprio |= IORING_RECVSEND_POLL_FIRST;
-  }
-  ssize_t res = fc.Get();
-
-  dest[0].type = kBufRingType;
-  dest[0].allocated = 0;
-
-  if (res > 0) {
-    uint32_t flags = fc.flags();
-    DCHECK(IORING_CQE_F_BUFFER & flags);
-
-    has_recv_data_ = flags & IORING_CQE_F_SOCK_NONEMPTY ? 1 : 0;
-    DVSOCK(2) << "Received " << res << " bytes";
-    dest[0].buf_id = flags >> IORING_CQE_BUFFER_SHIFT;
-    dest[0].res_len = res;
-
-    if (multishot_) {
-      multishot_->Activate(fd, bufring_id_, register_flag(), p);
-    }
-    return 1;
-  }
-  res = -res;
-
-  if (res == 0)
-    res = ECONNABORTED;
-  else if (res == ENOBUFS)
-    has_recv_data_ = 1;
-  dest[0].SetError(res);
-
-  return 1;
+  LOG(FATAL) << "Not implemented";
+  return 0;
 }
 
 void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  CHECK_GT(pbuf.res_len, 0);
-  CHECK_EQ(pbuf.type, kBufRingType);  // kHeapType is not supported yet.
-
-  Proactor* p = GetProactor();
-
-  p->ReplenishBuffers(bufring_id_, pbuf.buf_id, pbuf.buf_pos, pbuf.res_len);
-}
-
-void UringSocket::SendProvided(uint16_t buf_gid, io::AsyncProgressCb cb) {
-  Proactor* proactor = GetProactor();
-  auto io_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                    uint32_t flags, uint32_t) {
-    DVLOG(2) << "SendProvided completion " << res << " flags: " << flags;
-    if (res >= 0) {
-      cb(res);
-    } else {
-      cb(make_unexpected(error_code{-res, generic_category()}));
-    }
-  };
-
-  int fd = ShiftedFd();
-  SubmitEntry se = proactor->GetSubmitEntry(io_cb);
-  se.PrepSend(fd, nullptr, 0, MSG_NOSIGNAL);
-  se.sqe()->flags |= (register_flag() | IOSQE_BUFFER_SELECT);
-  se.sqe()->buf_group = buf_gid;
-}
-
-void UringSocket::EnableRecvMultishot() {
-  if (!multishot_) {
-    multishot_ = new MultiShot();
-  }
-
-  // noop if already activated.
-  multishot_->Activate(ShiftedFd(), bufring_id_, register_flag(), GetProactor());
-}
-
-void UringSocket::CancelMultiShot() {
-  if (!multishot_)
-    return;
-
-  while (multishot_->HasBuffers()) {
-    UringProactor::CompletionResult result =
-        GetProactor()->PullMultiShotCompletion(bufring_id_, &multishot_->head);
-    DCHECK_GT(result.res, 0);
-    GetProactor()->ReplenishBuffers(bufring_id_, result.bid, result.bufring_pos, result.res);
-  }
-
-  if (!multishot_->DecRef()) {  // Still has references because of the armed callback.
-    int flags = is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD;
-
-    int res = GetProactor()->CancelRequests(ShiftedFd(), flags);
-    LOG_IF(WARNING, res < 0) << "Error canceling multishot " << -res;
-  }
-  multishot_ = nullptr;
+  LOG(FATAL) << "Not implemented";
 }
 
 void UringSocket::OnSetProactor() {
