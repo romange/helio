@@ -168,7 +168,7 @@ class AsyncSink {
   // The caller must make sure that (v, len) are valid until cb is called.
   virtual void AsyncWriteSome(const iovec* v, uint32_t len, AsyncProgressCb cb) = 0;
 
-  // Wrapper around AsyncWriteSome that makes sure that the passed vectir is written to
+  // Wrapper around AsyncWriteSome that makes sure that the passed vector is written to
   // completion. Copies (v, len) internally so it can be discarded after the call.
   void AsyncWrite(const iovec* v, uint32_t len, AsyncResultCb cb);
 

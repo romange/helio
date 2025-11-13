@@ -156,9 +156,9 @@ class FiberSocketBase : public io::Sink,
   virtual ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
                                                     unsigned backlog) = 0;
 
-  // Direct send just calls send(2) syscall without any wrapping by helio.
-  ssize_t RawSend(io::Bytes buf);
-  ssize_t RawSend(const iovec* v, uint32_t len);
+  // Try sending without blocking the calling fiber in case EAGAIN was encountered.
+  virtual io::Result<size_t> TrySend(io::Bytes buf) = 0;
+  virtual io::Result<size_t> TrySend(const iovec* v, uint32_t len) = 0;
  protected:
   virtual void OnSetProactor() {
   }
@@ -227,6 +227,9 @@ class LinuxSocketBase : public FiberSocketBase {
   bool IsUDS() const override {
     return fd_ & IS_UDS;
   }
+
+  io::Result<size_t> TrySend(io::Bytes buf) override;
+  io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
 
  protected:
   constexpr static unsigned kFdShift = 4;

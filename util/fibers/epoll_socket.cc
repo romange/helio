@@ -319,35 +319,21 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
   return ec;
 }
 
-auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
+io::Result<size_t> EpollSocket::WriteSome(const iovec* ptr, uint32_t len) {
   CHECK(proactor());
   CHECK_GT(len, 0U);
   CHECK_GE(fd_, 0);
-  DCHECK(!async_write_pending_);
+  DCHECK(!async_write_req_);
 
-  msghdr msg;
-  memset(&msg, 0, sizeof(msg));
-  msg.msg_iov = const_cast<iovec*>(ptr);
-  msg.msg_iovlen = len;
-
-  int fd = native_handle();
   error_code ec;
-
   do {
-    if (fd_ & IS_SHUTDOWN) {
-      ec = make_error_code(errc::broken_pipe);
-      break;
-    }
-
-    ssize_t res = sendmsg(fd, &msg, MSG_NOSIGNAL);
-    if (res >= 0) {
+    Result<size_t> res = TrySend(ptr, len);
+    if (res) {
       return res;
     }
 
-    DCHECK_EQ(res, -1);
-
-    if (errno != EAGAIN) {
-      ec = from_errno();
+    if (res.error().value() != EAGAIN) {
+      ec = res.error();
       break;
     }
     PendingReq req(&write_req_);
@@ -359,7 +345,8 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   // TCP connection did indeed stopped getting tcp keep alive packets.
   // ECANCELED if the operation was cancelled due to timeout, see PendingReq::Suspend().
   if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET, ECANCELED})) {
-    LOG(ERROR) << "sock[" << fd << "] Unexpected error " << ec.message() << " " << RemoteEndpoint();
+    LOG(ERROR) << "sock[" << native_handle() << "] Unexpected error " << ec.message() << " "
+               << RemoteEndpoint();
   }
 
   VSOCK(1) << "Error " << ec << " on " << RemoteEndpoint();
@@ -367,21 +354,16 @@ auto EpollSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 }
 
 void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  if (fd_ & IS_SHUTDOWN) {
-    cb(make_unexpected(make_error_code(errc::broken_pipe)));
+  Result<size_t> res = TrySend(v, len);
+
+  if (res || res.error().value() != EAGAIN) {
+    cb(res);
     return;
   }
 
   CHECK(async_write_req_ == nullptr);  // we do not allow queuing multiple async requests.
 
-  AsyncReq req{const_cast<iovec*>(v), len, std::move(cb)};
-  auto [completed, result] = req.Run(native_handle(), true);
-  if (completed) {
-    req.cb(result);
-    return;
-  }
-
-  async_write_req_ = new AsyncReq(std::move(req));
+  async_write_req_ = new AsyncReq(const_cast<iovec*>(v), len, std::move(cb));
   async_write_pending_ = 1;
 }
 
