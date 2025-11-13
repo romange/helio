@@ -92,6 +92,10 @@ class TlsSocket final : public FiberSocketBase {
   virtual void RegisterOnRecv(OnRecvCb cb) final;
   virtual void ResetOnRecvHook() final;
 
+  io::Result<size_t> TrySend(io::Bytes buf) override;
+  io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
+
+
   // * NOT PART OF THE API -- USED FOR TESTING PURPOSES ONLY *
   // This function is used to simulate a corner case of AsyncReadSome. In particular,
   // when engine_->Read(...) returns NEED_WRITE. According to chatgpt and google
@@ -124,7 +128,7 @@ class TlsSocket final : public FiberSocketBase {
   // Pushes the buffers into input ssl buffer until either everything is written,
   // or an error occurs or the engine needs to flush its output. Does not interact with the network,
   // just with the engine. It's up to the caller to send the output buffer to the network.
-  io::Result<PushResult> PushToEngine(const iovec* ptr, uint32_t len);
+  PushResult PushToEngine(const iovec* ptr, uint32_t len);
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();

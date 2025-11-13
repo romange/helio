@@ -260,31 +260,27 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   while (true) {
-    io::Result<PushResult> push_res = PushToEngine(ptr, len);
-    if (!push_res) {
-      return make_unexpected(push_res.error());
-    }
-
-    if (push_res->engine_opcode < 0) {
-      auto ec = HandleOp(push_res->engine_opcode);
+    PushResult push_res = PushToEngine(ptr, len);
+    if (push_res.engine_opcode < 0) {
+      auto ec = HandleOp(push_res.engine_opcode);
       if (ec) {
         VLOG(1) << "HandleOp failed " << ec.message();
         return make_unexpected(ec);
       }
     }
 
-    if (push_res->written > 0) {
+    if (push_res.written > 0) {
       auto ec = MaybeSendOutput();
       if (ec) {
         VLOG(1) << "MaybeSendOutput failed " << ec.message();
         return make_unexpected(ec);
       }
-      return push_res->written;
+      return push_res.written;
     }
   }
 }
 
-io::Result<TlsSocket::PushResult> TlsSocket::PushToEngine(const iovec* ptr, uint32_t len) {
+TlsSocket::PushResult TlsSocket::PushToEngine(const iovec* ptr, uint32_t len) {
   PushResult res;
 
   // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
@@ -483,8 +479,19 @@ unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
 }
 
 void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  proactor()->DeallocateBuffer(io::MutableBytes{const_cast<uint8_t*>(pbuf.start), pbuf.allocated});
+  LOG(FATAL) << "Not implemented";
 }
+
+io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
+  LOG(DFATAL) << "Not implemented";
+  return 0;
+}
+
+io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
+  LOG(DFATAL) << "Not implemented";
+  return 0;
+}
+
 
 bool TlsSocket::IsUDS() const {
   return next_sock_->IsUDS();
@@ -694,13 +701,9 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
     return;
   }
   // We need to call PushToTheEngine again
-  io::Result<PushResult> push_res = owner_->PushToEngine(vec_, len_);
-  if (!push_res) {
-    CompleteAsyncReq(make_unexpected(push_res.error()));
-    return;
-  }
-  op_val_ = push_res->engine_opcode;
-  engine_written_ = push_res->written;
+  PushResult push_res = owner_->PushToEngine(vec_, len_);
+  op_val_ = push_res.engine_opcode;
+  engine_written_ = push_res.written;
   if (op_val_ < 0) {
     HandleOpAsync();
     return;
@@ -749,15 +752,11 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
   // Write to the engine
-  io::Result<PushResult> push_res = PushToEngine(v, len);
-  if (!push_res) {
-    cb(make_unexpected(push_res.error()));
-    return;
-  }
+  PushResult push_res = PushToEngine(v, len);
 
-  const int op_val = push_res->engine_opcode;
+  const int op_val = push_res.engine_opcode;
   auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::WRITER};
-  req.SetEngineWritten(push_res->written);
+  req.SetEngineWritten(push_res.written);
 
   async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
   // Handle engine state.

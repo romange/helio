@@ -19,16 +19,17 @@ namespace util {
 
 using namespace std;
 using io::Result;
-
+using nonstd::make_unexpected;
 namespace {
 
-inline ssize_t posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec) {
+// Return true if error occurred and ec is set, false otherwise.
+inline bool posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec) {
   if (res == -1) {
     *ec = FiberSocketBase::error_code(errno, std::system_category());
-  } else if (res < 0) {
-    LOG(WARNING) << "Bad posix error " << res;
+    return true;
   }
-  return res;
+
+  return false;
 }
 
 }  // namespace
@@ -57,22 +58,6 @@ Result<size_t> FiberSocketBase::Recv(const iovec* ptr, size_t len) {
   return RecvMsg(msg, 0);
 }
 
-ssize_t FiberSocketBase::RawSend(io::Bytes buf) {
-  int fd = native_handle();
-  return send(fd, buf.data(), buf.size(), MSG_NOSIGNAL);
-}
-
-ssize_t FiberSocketBase::RawSend(const iovec* v, uint32_t len) {
-  int fd = native_handle();
-
-  msghdr msg;
-  memset(&msg, 0, sizeof(msg));
-  msg.msg_iov = const_cast<iovec*>(v);
-  msg.msg_iovlen = len;
-
-  return sendmsg(fd, &msg, MSG_NOSIGNAL);
-}
-
 LinuxSocketBase::~LinuxSocketBase() {
   int fd = native_handle();
 
@@ -96,7 +81,7 @@ error_code LinuxSocketBase::Create(unsigned short pfamily) {
 #endif
 
   int fd = socket(pfamily, kMask, 0);
-  if (posix_err_wrap(fd, &ec) < 0)
+  if (posix_err_wrap(fd, &ec))
     return ec;
 
 #ifndef __linux__
@@ -119,7 +104,7 @@ error_code LinuxSocketBase::Listen(uint16_t port, unsigned backlog) {
     server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = INADDR_ANY;
     ec = Bind((struct sockaddr*)&server_addr, sizeof(server_addr));
- } else {
+  } else {
     sockaddr_in6 server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin6_family = AF_INET6;
@@ -152,8 +137,8 @@ error_code LinuxSocketBase::ListenUDS(const char* path, mode_t permissions, unsi
 
   // Set permissions for the socket file
   int res = chmod(path, permissions);
-  if (posix_err_wrap(res, &ec) < 0) {
-    (void)Close();
+  if (posix_err_wrap(res, &ec)) {
+    std::ignore = Close();
     return ec;
   }
 
@@ -171,8 +156,8 @@ error_code LinuxSocketBase::Bind(const struct sockaddr* bind_addr, unsigned addr
   int fd = native_handle();
 
   int res = bind(fd, bind_addr, addr_len);
-  if (posix_err_wrap(res, &ec) < 0) {
-    (void)Close();
+  if (posix_err_wrap(res, &ec)) {
+    std::ignore = Close();
     return ec;
   }
   return ec;
@@ -184,9 +169,8 @@ error_code LinuxSocketBase::Listen(unsigned backlog) {
 
   VSOCK(1) << "Listening " << fd;
 
-  int res = posix_err_wrap(listen(fd, backlog), &ec);
-  if (posix_err_wrap(res, &ec) < 0) {
-    (void)Close();
+  if (posix_err_wrap(listen(fd, backlog), &ec)) {
+    std::ignore = Close();
     return ec;
   }
 
@@ -241,6 +225,37 @@ auto LinuxSocketBase::RemoteEndpoint() const -> endpoint_type {
     endpoint.resize(addr_len);
 
   return endpoint;
+}
+
+io::Result<size_t> LinuxSocketBase::TrySend(io::Bytes buf) {
+  if (fd_ & IS_SHUTDOWN)
+    return make_unexpected(make_error_code(errc::broken_pipe));
+
+  int fd = ShiftedFd();
+  // MSG_NOSIGNAL so that SIGPIPE is ignored.
+  ssize_t res = send(fd, buf.data(), buf.size(), MSG_NOSIGNAL);
+
+  error_code ec;
+  if (posix_err_wrap(res, &ec))
+    return nonstd::make_unexpected(ec);
+  return res;
+}
+
+io::Result<size_t> LinuxSocketBase::TrySend(const iovec* v, uint32_t len) {
+  if (fd_ & IS_SHUTDOWN)
+    return make_unexpected(make_error_code(errc::broken_pipe));
+
+  int fd = ShiftedFd();
+  msghdr msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.msg_iov = const_cast<iovec*>(v);
+  msg.msg_iovlen = len;
+  // MSG_NOSIGNAL so that SIGPIPE is ignored.
+  ssize_t res = sendmsg(fd, &msg, MSG_NOSIGNAL);
+  error_code ec;
+  if (posix_err_wrap(res, &ec))
+    return nonstd::make_unexpected(ec);
+  return res;
 }
 
 void SetNonBlocking(int fd) {
