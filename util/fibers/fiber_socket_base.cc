@@ -258,6 +258,18 @@ io::Result<size_t> LinuxSocketBase::TrySend(const iovec* v, uint32_t len) {
   return res;
 }
 
+io::Result<size_t> LinuxSocketBase::TryRecv(io::MutableBytes buf) {
+  if (fd_ & IS_SHUTDOWN)
+    return make_unexpected(make_error_code(errc::connection_aborted));
+
+  int fd = ShiftedFd();
+  ssize_t res = recv(fd, buf.data(), buf.size(), 0);
+  error_code ec;
+  if (posix_err_wrap(res, &ec))
+    return nonstd::make_unexpected(ec);
+  return res;
+}
+
 void SetNonBlocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   CHECK_EQ(0, fcntl(fd, F_SETFL, flags | O_NONBLOCK));
