@@ -33,19 +33,6 @@ inline EpollSocket::error_code from_errno() {
   return EpollSocket::error_code(errno, system_category());
 }
 
-inline ssize_t posix_err_wrap(ssize_t res, EpollSocket::error_code* ec) {
-  if (res == -1) {
-    *ec = from_errno();
-  } else if (res < 0) {
-    LOG(WARNING) << "Bad posix error " << res;
-  }
-  return res;
-}
-
-nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
-  return make_unexpected(make_error_code(code));
-}
-
 #ifdef __linux__
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 
@@ -267,7 +254,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
   error_code ec;
 
   int fd = CreateSockFd(ep.address().is_v4() ? AF_INET : AF_INET6);
-  if (posix_err_wrap(fd, &ec) < 0)
+  if (posix_err_wrap(fd, &ec))
     return ec;
 
   CHECK(read_req_ == NULL);

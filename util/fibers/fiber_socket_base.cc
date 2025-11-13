@@ -20,19 +20,21 @@ namespace util {
 using namespace std;
 using io::Result;
 using nonstd::make_unexpected;
-namespace {
 
 // Return true if error occurred and ec is set, false otherwise.
-inline bool posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec) {
+bool posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec) {
   if (res == -1) {
     *ec = FiberSocketBase::error_code(errno, std::system_category());
     return true;
+  } else if (res < 0) {
+    LOG(WARNING) << "Bad posix error " << res;
   }
-
   return false;
 }
 
-}  // namespace
+nonstd::unexpected<error_code> MakeUnexpected(std::errc code) {
+  return make_unexpected(make_error_code(code));
+}
 
 void FiberSocketBase::SetProactor(ProactorBase* p) {
   if (p == proactor_)

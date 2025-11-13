@@ -25,19 +25,6 @@ namespace {
 // Disable direct fd for sockets due to https://github.com/axboe/liburing/issues/1192
 constexpr bool kEnableDirect = false;
 
-inline ssize_t posix_err_wrap(ssize_t res, UringSocket::error_code* ec) {
-  if (res == -1) {
-    *ec = UringSocket::error_code(errno, system_category());
-  } else if (res < 0) {
-    LOG(WARNING) << "Bad posix error " << res;
-  }
-  return res;
-}
-
-auto Unexpected(std::errc e) {
-  return make_unexpected(make_error_code(e));
-}
-
 }  // namespace
 
 UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
@@ -142,7 +129,7 @@ auto UringSocket::Accept() -> AcceptResult {
 
       // tcp sockets set POLLERR but UDS set POLLHUP.
       if ((io_res & (POLLERR | POLLHUP)) != 0) {
-        return Unexpected(errc::connection_aborted);
+        return MakeUnexpected(errc::connection_aborted);
       }
 
       continue;
@@ -166,7 +153,7 @@ error_code UringSocket::Connect(const endpoint_type& ep, std::function<void(int)
   error_code ec;
 
   int fd = socket(ep.protocol().family(), SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
-  if (posix_err_wrap(fd, &ec) < 0)
+  if (posix_err_wrap(fd, &ec))
     return ec;
 
   VSOCK(1) << "Connect [" << fd << "] " << ep.address().to_string() << ":" << ep.port();
@@ -195,7 +182,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   DCHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
-    return Unexpected(errc::connection_aborted);
+    return MakeUnexpected(errc::connection_aborted);
   }
 
   int fd = ShiftedFd();
@@ -257,7 +244,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 
 void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   if (fd_ & IS_SHUTDOWN) {
-    cb(Unexpected(errc::connection_aborted));
+    cb(MakeUnexpected(errc::connection_aborted));
     return;
   }
 
@@ -291,7 +278,7 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
 
 void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   if (fd_ & IS_SHUTDOWN) {
-    cb(Unexpected(errc::connection_aborted));
+    cb(MakeUnexpected(errc::connection_aborted));
     return;
   }
 
@@ -325,7 +312,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   DCHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
-    return Unexpected(errc::connection_aborted);
+    return MakeUnexpected(errc::connection_aborted);
   }
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
