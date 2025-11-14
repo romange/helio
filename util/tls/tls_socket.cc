@@ -492,6 +492,10 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   return 0;
 }
 
+io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
+  LOG(DFATAL) << "Not implemented";
+  return 0;
+}
 
 bool TlsSocket::IsUDS() const {
   return next_sock_->IsUDS();
@@ -564,8 +568,8 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   // wake up we will poll the SSL engine which will dictate the next action/step.
   should_read_ = false;
   if (owner_->state_ & READ_IN_PROGRESS) {
-    CHECK(owner_->blocked_async_req_ == nullptr);
-    owner_->blocked_async_req_ = this;
+    auto* prev = std::exchange(owner_->blocked_async_req_, this);
+    CHECK(prev == nullptr);
     return;
   }
 
@@ -589,12 +593,12 @@ void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
   current->caller_completion_cb_(result);
 }
 
-void TlsSocket::AsyncReq::HandleOpAsync() {
-  if (op_val_ > 0) {
-    CompleteAsyncReq(op_val_);
+void TlsSocket::AsyncReq::HandleOpAsync(int op_val) {
+  if (op_val > 0) {
+    CompleteAsyncReq(op_val);
     return;
   }
-  switch (op_val_) {
+  switch (op_val) {
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       MaybeSendOutputAsyncWithRead();
       break;
@@ -606,7 +610,7 @@ void TlsSocket::AsyncReq::HandleOpAsync() {
       break;
     default:
       // EOF_STREAM should be handled earlier
-      LOG(DFATAL) << "Unsupported " << op_val_;
+      LOG(DFATAL) << "Unsupported " << op_val;
   }
 }
 
@@ -628,9 +632,9 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
 
   // We could not read from the engine. Dispatch async op.
   DCHECK_GT(len, 0u);
-  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::READER};
+  auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::READER};
   async_read_req_ = std::make_unique<AsyncReq>(std::move(req));
-  async_read_req_->HandleOpAsync();
+  async_read_req_->HandleOpAsync(op_val);
 }
 
 void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
@@ -688,9 +692,9 @@ void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) 
 
 void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
   if (role_ == READER) {
-    op_val_ = owner_->engine_->Read(reinterpret_cast<uint8_t*>(vec_->iov_base), vec_->iov_len);
-    DVLOG(2) << "Engine::Read tried to read " << vec_->iov_len << " bytes, got " << op_val_;
-    HandleOpAsync();
+    auto op_val = owner_->engine_->Read(reinterpret_cast<uint8_t*>(vec_->iov_base), vec_->iov_len);
+    DVLOG(2) << "Engine::Read tried to read " << vec_->iov_len << " bytes, got " << op_val;
+    HandleOpAsync(op_val);
     return;
   }
 
@@ -702,10 +706,10 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
   }
   // We need to call PushToTheEngine again
   PushResult push_res = owner_->PushToEngine(vec_, len_);
-  op_val_ = push_res.engine_opcode;
+  Engine::OpResult op_val = push_res.engine_opcode;
   engine_written_ = push_res.written;
-  if (op_val_ < 0) {
-    HandleOpAsync();
+  if (op_val < 0) {
+    HandleOpAsync(op_val);
     return;
   }
 
@@ -749,27 +753,37 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
   StartUpstreamWrite();
 }
 
+/*
+   TODO: Async write path can be improved. We should separate the asynchronous flow that pulls
+   data from the engine and pushes it to the upstream socket and the flow that pushes data
+   from the user to the engine. We could call AsyncProgressCb with the result as soon as we push data to the engine, even if the engine is not flushed yet, as long as we guarantee that
+   the engine is eventually flushed. This may create cases where we "miss" socket errors,
+   as we discover them eventually. But it's fine as long as we manage this properly in tls socket
+   states. Why it is better? Because during happy path, we can push data to the engine, and then
+   flush to the socket via TrySend and all this without allocations and asynchronous state
+   that needs to be managed. Only if TrySend does not flush everything, we need to enter the async state machine. All this is similar to how posix write path works.
+*/
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
   // Write to the engine
   PushResult push_res = PushToEngine(v, len);
 
-  const int op_val = push_res.engine_opcode;
-  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::WRITER};
+  auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::WRITER};
   req.SetEngineWritten(push_res.written);
 
   async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
+  const int op_val = push_res.engine_opcode;
+
   // Handle engine state.
   // NEED_WRITE or NEED_READ_AND_MAYBE_WRITE or EOF
   if (op_val < 0) {
     //  We pay for the allocation if op_val=EOF_STREAM but this is a very unlikely case
     //  and I rather keep this function small than actually handling this case explicitly
     //  with an if branch.
-    async_write_req_->HandleOpAsync();
-    return;
+    async_write_req_->HandleOpAsync(op_val);
+  } else {
+    async_write_req_->StartUpstreamWrite();
   }
-
-  async_write_req_->StartUpstreamWrite();
 }
 
 void TlsSocket::AsyncReq::RunPending() {
@@ -797,23 +811,22 @@ void TlsSocket::__DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len,
                                                  io::AsyncProgressCb cb) {
   // Engine read
   CHECK(!async_read_req_);
-  // Simulate NEED_WRITE
-  int op_val = -3;
-  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::READER};
+  auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::READER};
   async_read_req_ = std::make_unique<AsyncReq>(std::move(req));
-  async_read_req_->HandleOpAsync();
+  async_read_req_->HandleOpAsync(Engine::NEED_WRITE);
 }
 
 void TlsSocket::__DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len,
                                                  io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
-  // Simulate NEED_WRITE. By the end of the async write we should have sent 2x v->iov_len.
+  auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::WRITER};
+  async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
+
+  // Simulate NEED_READ_AND_MAYBE_WRITE. By the end of the async write we should have
+  // sent 2x v->iov_len.
   // The reason for this is that we "mock" the state machine with v->iov_len data
   // which we treat as protocol data.
-  int op_val = -2;
-  auto req = AsyncReq{this, std::move(cb), v, len, op_val, AsyncReq::WRITER};
-  async_write_req_ = std::make_unique<AsyncReq>(std::move(req));
-  async_write_req_->HandleOpAsync();
+  async_write_req_->HandleOpAsync(Engine::NEED_READ_AND_MAYBE_WRITE);
 }
 
 }  // namespace tls

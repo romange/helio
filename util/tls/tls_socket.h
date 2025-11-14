@@ -94,7 +94,7 @@ class TlsSocket final : public FiberSocketBase {
 
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
-
+  io::Result<size_t> TryRecv(io::MutableBytes buf) override;
 
   // * NOT PART OF THE API -- USED FOR TESTING PURPOSES ONLY *
   // This function is used to simulate a corner case of AsyncReadSome. In particular,
@@ -156,12 +156,12 @@ class TlsSocket final : public FiberSocketBase {
     enum Role : std::uint8_t { READER, WRITER };
 
     AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len,
-             Engine::OpResult op_val, Role role)
-        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), op_val_(op_val),
+             Role role)
+        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len),
           role_(role) {
     }
 
-    void HandleOpAsync();
+    void HandleOpAsync(int op_val);
     void StartUpstreamWrite();
     void SetEngineWritten(size_t written) {
       engine_written_ = written;
@@ -174,7 +174,6 @@ class TlsSocket final : public FiberSocketBase {
 
     const iovec* vec_;
     uint32_t len_;
-    Engine::OpResult op_val_;
 
     Role role_;
 

@@ -159,6 +159,10 @@ class FiberSocketBase : public io::Sink,
   // Try sending without blocking the calling fiber in case EAGAIN was encountered.
   virtual io::Result<size_t> TrySend(io::Bytes buf) = 0;
   virtual io::Result<size_t> TrySend(const iovec* v, uint32_t len) = 0;
+
+  // Try receiving without blocking the calling fiber in case EAGAIN was encountered.
+  virtual io::Result<size_t> TryRecv(io::MutableBytes buf) = 0;
+
  protected:
   virtual void OnSetProactor() {
   }
@@ -230,6 +234,7 @@ class LinuxSocketBase : public FiberSocketBase {
 
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
+  io::Result<size_t> TryRecv(io::MutableBytes buf) override;
 
  protected:
   constexpr static unsigned kFdShift = 4;
