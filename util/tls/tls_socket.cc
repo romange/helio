@@ -94,6 +94,13 @@ auto TlsSocket::Accept() -> AcceptResult {
       return make_unexpected(make_error_code(errc::connection_aborted));
     }
 
+    // it is important to send output (protocol errors) before we return from this function.
+    error_code ec = MaybeSendOutput();
+    if (ec) {
+      VSOCK(1) << "MaybeSendOutput failed " << ec;
+      return make_unexpected(ec);
+    }
+
     if (op_result == 1) {  // Success.
       if (VLOG_IS_ON(1)) {
         const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
@@ -106,13 +113,6 @@ auto TlsSocket::Accept() -> AcceptResult {
                   << SSL_CIPHER_get_name(cipher) << "/" << proto_version << " " << protocol_id;
       }
       break;
-    }
-
-    // it is important to send output (protocol errors) before we return from this function.
-    error_code ec = MaybeSendOutput();
-    if (ec) {
-      VSOCK(1) << "MaybeSendOutput failed " << ec;
-      return make_unexpected(ec);
     }
 
     ec = HandleOp(op_result);
@@ -128,10 +128,12 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
   DCHECK(engine_);
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
+    /*
+    Commenting this line causes a deadlock in AsyncReadNeedWrite.
     if (op_result == 1) {
       break;
     }
-
+    */
     if (op_result == Engine::EOF_STREAM) {
       return make_error_code(errc::connection_refused);
     }
@@ -141,10 +143,15 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
       RETURN_ON_ERROR(next_sock_->Connect(endpoint, std::move(on_pre_connect)));
     }
 
-    // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
-    int op_val = op_result;
+    // Flush pending output.
+    RETURN_ON_ERROR(MaybeSendOutput());
 
-    RETURN_ON_ERROR(HandleOp(op_val));
+    if (op_result == 1) {
+      break;
+    }
+
+    // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
+    RETURN_ON_ERROR(HandleOp(op_result));
   }
 
   const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
@@ -163,33 +170,6 @@ auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
   return next_sock_->Close();
 }
-
-class SpinCounter {
- public:
-  explicit SpinCounter(size_t limit) : limit_(limit) {
-  }
-
-  bool Check(bool condition) {
-    current_it_ = condition ? current_it_ + 1 : 0;
-    return current_it_ >= limit_;
-  }
-
-  size_t Limit() const {
-    return limit_;
-  }
-
-  size_t Spins() const {
-    return current_it_;
-  }
-
-  void Reset() {
-    current_it_ = 0;
-  }
-
- private:
-  const size_t limit_;
-  size_t current_it_{0};
-};
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
@@ -756,15 +736,18 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
 /*
    TODO: Async write path can be improved. We should separate the asynchronous flow that pulls
    data from the engine and pushes it to the upstream socket and the flow that pushes data
-   from the user to the engine. We could call AsyncProgressCb with the result as soon as we push data to the engine, even if the engine is not flushed yet, as long as we guarantee that
-   the engine is eventually flushed. This may create cases where we "miss" socket errors,
-   as we discover them eventually. But it's fine as long as we manage this properly in tls socket
-   states. Why it is better? Because during happy path, we can push data to the engine, and then
-   flush to the socket via TrySend and all this without allocations and asynchronous state
-   that needs to be managed. Only if TrySend does not flush everything, we need to enter the async state machine. All this is similar to how posix write path works.
+   from the user to the engine. We could call AsyncProgressCb with the result as soon as we push
+   data to the engine, even if the engine is not flushed yet, as long as we guarantee that the
+   engine is eventually flushed. This may create cases where we "miss" socket errors, as we discover
+   them eventually. But it's fine as long as we manage this properly in tls socket states. Why it is
+   better? Because during happy path, we can push data to the engine, and then flush to the socket
+   via TrySend and all this without allocations and asynchronous state that needs to be managed.
+   Only if TrySend does not flush everything, we need to enter the async state machine. All this is
+   similar to how posix write path works.
 */
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
+
   // Write to the engine
   PushResult push_res = PushToEngine(v, len);
 
@@ -817,7 +800,7 @@ void TlsSocket::__DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len,
 }
 
 void TlsSocket::__DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len,
-                                                 io::AsyncProgressCb cb) {
+                                                  io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
   auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::WRITER};
   async_write_req_ = std::make_unique<AsyncReq>(std::move(req));

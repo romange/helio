@@ -90,16 +90,6 @@ auto Engine::PeekOutputBuf() -> Buffer {
 
 void Engine::ConsumeOutputBuf(unsigned sz) {
   int res = BIO_nread(external_bio_, NULL, sz);
-
-  if (res <= 0) {
-    unsigned long error = ::ERR_get_error();
-    char buf[256];
-    ERR_error_string_n(error, buf, sizeof(buf));
-    int retry = BIO_should_retry(external_bio_);
-    LOG(FATAL) << "Unexpected error " << buf << " " << error << " when consuming " << sz
-               << " bytes from BIO, retry is " << retry;
-  }
-  CHECK_GT(res, 0);
   CHECK_EQ(unsigned(res), sz);
 }
 
