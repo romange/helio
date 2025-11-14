@@ -229,14 +229,17 @@ class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
   using IoResult = int;
 
   virtual void HandleRequest() {
-    uint8_t buf[16];
-    auto res = tls_socket_->Recv(buf);
-    EXPECT_TRUE(res.has_value());
-    EXPECT_TRUE(res.value() == 16);
+    const size_t kBufSize = 1 << 20;
+    unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
 
-    auto write_res = tls_socket_->Write(buf);
+    auto res = tls_socket_->Recv(io::MutableBytes{buf.get(), kBufSize});
+    EXPECT_TRUE(res.has_value());
+
+    auto write_res = tls_socket_->Write(io::Bytes{buf.get(), *res});
     EXPECT_FALSE(write_res);
   }
+
+  unique_ptr<tls::TlsSocket> CreateClientSock();
 
   unique_ptr<ProactorBase> proactor_;
   thread proactor_thread_;
@@ -307,8 +310,9 @@ void AsyncTlsSocketTest::SetUp() {
       tls_socket_ = std::make_unique<tls::TlsSocket>(conn_socket_.release());
       ssl_ctx_ = CreateSslCntx(SERVER);
       tls_socket_->InitSSL(ssl_ctx_);
-      tls_socket_->Accept();
 
+      tls_socket_->Accept();
+      VLOG(1) << "TLS Accept succeeded";
       conn_fb_ = proactor_->LaunchFiber([this]() { HandleRequest(); });
     } else {
       accept_ec_ = accept_res.error();
@@ -338,10 +342,22 @@ void AsyncTlsSocketTest::TearDown() {
   SSL_CTX_free(ssl_ctx_);
 }
 
+unique_ptr<tls::TlsSocket> AsyncTlsSocketTest::CreateClientSock() {
+  unique_ptr<tls::TlsSocket> client_sock;
+  {
+    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+
+    proactor_->Await([&] {
+      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+      client_sock->InitSSL(ssl_ctx);
+    });
+    SSL_CTX_free(ssl_ctx);
+  }
+  return client_sock;
+}
+
 TEST_P(AsyncTlsSocketTest, AsyncRW) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
+  unique_ptr tls_sock = CreateClientSock();
 
   proactor_->Await([&] {
     ThisFiber::SetName("ConnectFb");
@@ -384,7 +400,38 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
     ASSERT_FALSE(ec) << ec.message();
     ASSERT_FALSE(accept_ec_);
   });
-  SSL_CTX_free(ssl_ctx);
+}
+
+TEST_P(AsyncTlsSocketTest, TrySend) {
+  unique_ptr tls_sock = CreateClientSock();
+
+  proactor_->Await([&] {
+    ThisFiber::SetName("ConnectFb");
+
+    error_code ec = tls_sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    accept_fb_.Join();
+
+    constexpr size_t kBufSize = 1 << 15;
+    unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
+    memset(buf.get(), 'X', kBufSize);
+    iovec v{.iov_base = buf.get(), .iov_len = kBufSize};
+
+
+    auto op_res = tls_sock->TrySend(&v, 1);
+    EXPECT_TRUE(op_res);
+    size_t sent_bytes = *op_res;
+    EXPECT_LE(sent_bytes, kBufSize);
+
+
+    memset(buf.get(), 0, kBufSize);
+    op_res = tls_sock->Recv(io::MutableBytes{buf.get(), kBufSize});
+    EXPECT_TRUE(op_res);
+    EXPECT_EQ(*op_res, sent_bytes);
+    EXPECT_TRUE(std::all_of(buf.get(), buf.get() + sent_bytes, [](uint8_t c) { return c == 'X'; }));
+    std::ignore = tls_sock->Close();
+  });
 }
 
 class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
@@ -411,9 +458,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketNeedWrite, testing::Values("epol
                          [](const auto& info) { return string(info.param); });
 
 TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
+  unique_ptr tls_sock = CreateClientSock();
 
   proactor_->Await([&] {
     error_code ec = tls_sock->Connect(listen_ep_);
@@ -463,7 +508,6 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
     ASSERT_FALSE(ec) << ec.message();
     ASSERT_FALSE(accept_ec_);
   });
-  SSL_CTX_free(ssl_ctx);
 }
 
 #endif
@@ -497,9 +541,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketTestPartialRW,
                          [](const auto& info) { return string(info.param); });
 
 TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
+  unique_ptr tls_sock = CreateClientSock();
 
   std::string name = "main stack";
   Fiber::Opts opts{.name = name, .stack_size = 128 * 1024};
@@ -548,7 +590,6 @@ TEST_P(AsyncTlsSocketTestPartialRW, PartialAsyncReadWrite) {
         ASSERT_FALSE(accept_ec_);
       },
       opts);
-  SSL_CTX_free(ssl_ctx);
 }
 
 class AsyncTlsSocketRenegotiate : public AsyncTlsSocketTest {
@@ -582,9 +623,7 @@ INSTANTIATE_TEST_SUITE_P(Engines, AsyncTlsSocketRenegotiate, testing::Values("ur
                          [](const auto& info) { return string(info.param); });
 
 TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
-  unique_ptr tls_sock = std::make_unique<tls::TlsSocket>(proactor_->CreateSocket());
-  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-  tls_sock->InitSSL(ssl_ctx);
+  unique_ptr tls_sock = CreateClientSock();
 
   std::string name = "main stack";
   Fiber::Opts opts{.name = name, .stack_size = 128 * 1024};
@@ -630,7 +669,6 @@ TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
         ASSERT_FALSE(accept_ec_);
       },
       opts);
-  SSL_CTX_free(ssl_ctx);
 }
 
 #endif

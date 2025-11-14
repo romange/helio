@@ -141,11 +141,16 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
       RETURN_ON_ERROR(next_sock_->Connect(endpoint, std::move(on_pre_connect)));
     }
 
+    RETURN_ON_ERROR(MaybeSendOutput());
+
     // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
     int op_val = op_result;
 
     RETURN_ON_ERROR(HandleOp(op_val));
   }
+
+  // Final flush of any pending output data.
+  RETURN_ON_ERROR(MaybeSendOutput());
 
   const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
   string_view proto_version = SSL_get_version(engine_->native_handle());
@@ -161,35 +166,13 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
+
+  // We still have active send callback.
+  if (upstream_write_state_) {
+    upstream_write_state_->owner = nullptr;  // mark as detached.
+  }
   return next_sock_->Close();
 }
-
-class SpinCounter {
- public:
-  explicit SpinCounter(size_t limit) : limit_(limit) {
-  }
-
-  bool Check(bool condition) {
-    current_it_ = condition ? current_it_ + 1 : 0;
-    return current_it_ >= limit_;
-  }
-
-  size_t Limit() const {
-    return limit_;
-  }
-
-  size_t Spins() const {
-    return current_it_;
-  }
-
-  void Reset() {
-    current_it_ = 0;
-  }
-
- private:
-  const size_t limit_;
-  size_t current_it_{0};
-};
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
@@ -433,6 +416,32 @@ error_code TlsSocket::HandleUpstreamWrite() {
   return error_code{};
 }
 
+// Non blocking attempt to send data upstream.
+error_code TlsSocket::TryUpstreamSend() {
+  Engine::Buffer buffer = engine_->PeekOutputBuf();
+  if (buffer.empty()) {
+    return {};
+  }
+
+  // Pending callback will pick it up.
+  if (state_ & WRITE_IN_PROGRESS) {
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+
+  io::Result<size_t> write_result = next_sock_->TrySend(buffer);
+  if (write_result) {
+    upstream_write_ += *write_result;
+    engine_->ConsumeOutputBuf(*write_result);
+    if (*write_result == buffer.size()) {
+      // No preemptions so we wrote everything.
+      DCHECK_EQ(engine_->OutputPending(), 0u);
+      return {};
+    }
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+  return write_result.error();
+}
+
 error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
@@ -446,6 +455,67 @@ error_code TlsSocket::HandleOp(int op_val) {
       LOG(DFATAL) << "Unsupported " << op_val;
   }
   return {};
+}
+
+error_code TlsSocket::TryHandleOp(int op) {
+  switch (op) {
+    case Engine::EOF_STREAM:
+      VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
+      return make_error_code(errc::connection_aborted);
+    case Engine::NEED_READ_AND_MAYBE_WRITE: {
+      // Note: we stop writing for NEED_READ cases. The reason for this, is that whatever
+      // context had issued NEED_WRITE before, should make sure that OutputPending() is flushed to
+      // completion. Therefore, we can focus only on reading here.
+      auto mut_buf = engine_->PeekInputBuf();
+      io::Result<size_t> esz = next_sock_->TryRecv(mut_buf);
+      if (!esz)
+        return esz.error();
+      engine_->CommitInput(*esz);
+      break;
+    }
+    case Engine::NEED_WRITE:
+      return TryUpstreamSend();
+    default:
+      LOG(DFATAL) << "Unsupported " << op;
+  }
+  return {};
+}
+
+void TlsSocket::AsyncSendCb(io::Result<size_t> res, UpstreamWriteState* upstream_state) {
+  if (upstream_state->owner == nullptr) {
+    // The TlsSocket was already destroyed.
+    delete upstream_state;
+    return;
+  }
+
+  auto* owner = upstream_state->owner;
+  DCHECK(owner->upstream_write_state_ == upstream_state);
+
+  owner->state_ &= ~WRITE_IN_PROGRESS;
+  if (!res) {
+    VLOG(1) << "AsyncWriteSome failed " << res.error();
+    owner->state_ |= SHUTDOWN_DONE;
+    owner->upstream_write_state_ = nullptr;
+    delete upstream_state;
+
+    return;
+  }
+
+  owner->engine_->ConsumeOutputBuf(*res);
+  owner->upstream_write_ += *res;
+  auto buffer = owner->engine_->PeekOutputBuf();
+  if (buffer.empty()) {  // Done.
+    owner->upstream_write_state_ = nullptr;
+    delete upstream_state;
+    return;
+  }
+
+  owner->state_ |= WRITE_IN_PROGRESS;
+  upstream_state->vec.iov_base = const_cast<uint8_t*>(buffer.data());
+  upstream_state->vec.iov_len = buffer.size();
+  owner->next_sock_->AsyncWriteSome(
+      &upstream_state->vec, 1,
+      [upstream_state](io::Result<size_t> res) { AsyncSendCb(res, upstream_state); });
 }
 
 TlsSocket::endpoint_type TlsSocket::LocalEndpoint() const {
@@ -483,12 +553,58 @@ void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  iovec iov{const_cast<uint8_t*>(buf.data()), buf.size()};
+  return TrySend(&iov, 1);
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  LOG(DFATAL) << "Not implemented";
+  if (state_ & SHUTDOWN_DONE) {
+    return make_unexpected(make_error_code(errc::broken_pipe));
+  }
+
+  // We do not reject writes if WRITE_IN_PROGRESS is set because it could be
+  // that the engine has capacity to accept more data even if the upstream socket is
+  // busy flushing previous data.
+
+  while (true) {
+    PushResult push_res = PushToEngine(v, len);
+    if (push_res.engine_opcode < 0) {
+      auto ec = TryHandleOp(push_res.engine_opcode);
+      if (ec) {
+        return make_unexpected(ec);
+      }
+    }
+
+    if (push_res.written > 0) {                 // we wrote something to the engine.
+      if ((state_ & WRITE_IN_PROGRESS) == 0) {  // try flush only if no flush is in progress.
+        DCHECK(upstream_write_state_ == nullptr);
+
+        // First try to push data upstream in a non-blocking fashion.
+        error_code ec = TryUpstreamSend();
+        if (ec) {
+          if (ec != errc::resource_unavailable_try_again) {
+            return make_unexpected(ec);
+          }
+
+          // Socket is busy, we need to schedule an async write to flush the engine output buffer.
+          // We can not just return since from caller perspective, "written" bytes were consumed
+          // by TrySend. If nothing pushes data to the upstream socket, the socket will starve.
+          // To maintain the same semantics as with posix sockets, we do it automatically here
+          // using async interface.
+          auto buffer = engine_->PeekOutputBuf();
+
+          state_ |= WRITE_IN_PROGRESS;
+          upstream_write_state_ = new UpstreamWriteState();
+          upstream_write_state_->owner = this;
+          upstream_write_state_->vec = {const_cast<uint8_t*>(buffer.data()), buffer.size()};
+          next_sock_->AsyncWriteSome(
+              &upstream_write_state_->vec, 1,
+              [state = upstream_write_state_](io::Result<size_t> res) { AsyncSendCb(res, state); });
+        }
+      }
+      return push_res.written;
+    }
+  }
   return 0;
 }
 
@@ -496,7 +612,6 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   LOG(DFATAL) << "Not implemented";
   return 0;
 }
-
 bool TlsSocket::IsUDS() const {
   return next_sock_->IsUDS();
 }
@@ -580,7 +695,8 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  owner_->next_sock_->AsyncReadSome(&scratch, 1, [this](auto res) { this->AsyncReadProgressCb(res); });
+  owner_->next_sock_->AsyncReadSome(&scratch, 1,
+                                    [this](auto res) { this->AsyncReadProgressCb(res); });
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
@@ -756,15 +872,18 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
 /*
    TODO: Async write path can be improved. We should separate the asynchronous flow that pulls
    data from the engine and pushes it to the upstream socket and the flow that pushes data
-   from the user to the engine. We could call AsyncProgressCb with the result as soon as we push data to the engine, even if the engine is not flushed yet, as long as we guarantee that
-   the engine is eventually flushed. This may create cases where we "miss" socket errors,
-   as we discover them eventually. But it's fine as long as we manage this properly in tls socket
-   states. Why it is better? Because during happy path, we can push data to the engine, and then
-   flush to the socket via TrySend and all this without allocations and asynchronous state
-   that needs to be managed. Only if TrySend does not flush everything, we need to enter the async state machine. All this is similar to how posix write path works.
+   from the user to the engine. We could call AsyncProgressCb with the result as soon as we push
+   data to the engine, even if the engine is not flushed yet, as long as we guarantee that the
+   engine is eventually flushed. This may create cases where we "miss" socket errors, as we discover
+   them eventually. But it's fine as long as we manage this properly in tls socket states. Why it is
+   better? Because during happy path, we can push data to the engine, and then flush to the socket
+   via TrySend and all this without allocations and asynchronous state that needs to be managed.
+   Only if TrySend does not flush everything, we need to enter the async state machine. All this is
+   similar to how posix write path works.
 */
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
+
   // Write to the engine
   PushResult push_res = PushToEngine(v, len);
 
@@ -817,7 +936,7 @@ void TlsSocket::__DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len,
 }
 
 void TlsSocket::__DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len,
-                                                 io::AsyncProgressCb cb) {
+                                                  io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
   auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::WRITER};
   async_write_req_ = std::make_unique<AsyncReq>(std::move(req));

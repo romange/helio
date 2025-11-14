@@ -120,10 +120,20 @@ class TlsSocket final : public FiberSocketBase {
   void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
 
  private:
+  // Both opcode and written can be updated, so it's not a variant.
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
   };
+
+  // This state is responsible only for uploading pending output buffer to the upstream socket.
+  // The only reason we hold it in the TlsSocket is that we need to handle shutdown while there is
+  // still active callback in flight. AsyncInterface should rely on this state as well.
+  struct UpstreamWriteState {
+    iovec vec;
+    TlsSocket* owner = nullptr;
+  };
+
 
   // Pushes the buffers into input ssl buffer until either everything is written,
   // or an error occurs or the engine needs to flush its output. Does not interact with the network,
@@ -137,10 +147,20 @@ class TlsSocket final : public FiberSocketBase {
   error_code HandleUpstreamRead();
 
   error_code HandleUpstreamWrite();
+
+  // Non blocking attempt to send data upstream.
+  // Returns resource_unavailable_try_again if the socket would block.
+  error_code TryUpstreamSend();
+
   error_code HandleOp(int op);
+  error_code TryHandleOp(int op);
+
+  // Used in TrySend. TODO: to consolidate with AsyncReadProgressCb.
+  static void AsyncSendCb(io::Result<size_t> res, UpstreamWriteState* state);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
+
   size_t upstream_write_ = 0;
 
   enum {
@@ -207,6 +227,9 @@ class TlsSocket final : public FiberSocketBase {
 
   std::unique_ptr<AsyncReq> async_read_req_;
   std::unique_ptr<AsyncReq> async_write_req_;
+
+  // The ownership over this state object belongs to the armed AsyncSendCb.
+  UpstreamWriteState* upstream_write_state_ = nullptr;
 
   // Pending request that is blocked on WRITE_IN_PROGRESS or READ_IN_PROGRESS. Since we can't
   // preempt in function context, we simply subscribe the async request to the one in-flight and
