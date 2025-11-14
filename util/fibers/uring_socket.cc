@@ -544,15 +544,6 @@ auto UringSocket::native_handle() const -> native_handle_type {
   return fd;
 }
 
-unsigned UringSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
-  LOG(FATAL) << "Not implemented";
-  return 0;
-}
-
-void UringSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  LOG(FATAL) << "Not implemented";
-}
-
 void UringSocket::OnSetProactor() {
   UringProactor* proactor = GetProactor();
 

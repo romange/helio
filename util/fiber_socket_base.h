@@ -83,13 +83,6 @@ class FiberSocketBase : public io::Sink,
     }
   };
 
-  // Unlike Recv/ReadSome, this method returns buffers managed by the socket.
-  // They should be returned back to the socket after the data is read.
-  // Returns - number of buffers filled.
-  virtual unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) = 0;
-
-  virtual void ReturnProvided(const ProvidedBuffer& pbuf) = 0;
-
   static bool IsConnClosed(const error_code& ec) {
     return (ec == std::errc::connection_aborted) || (ec == std::errc::connection_reset) ||
            (ec == std::errc::broken_pipe);

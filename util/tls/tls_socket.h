@@ -68,9 +68,6 @@ class TlsSocket final : public FiberSocketBase {
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) override;
   void CancelOnErrorCb() override;
 
-  unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
-  void ReturnProvided(const ProvidedBuffer& pbuf) final;
-
   bool IsUDS() const override;
 
   using FiberSocketBase::native_handle_type;
