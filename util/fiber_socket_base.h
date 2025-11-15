@@ -267,4 +267,9 @@ void SetNonBlocking(int fd);
 
 void SetCloexec(int fd);
 
+bool posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec);
+
+nonstd::unexpected<std::error_code> MakeUnexpected(std::errc code);
+
+
 }  // namespace util
