@@ -37,9 +37,6 @@ class EpollSocket : public LinuxSocketBase {
 
   error_code Shutdown(int how) override;
 
-  unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
-  void ReturnProvided(const ProvidedBuffer& pbuf) final;
-
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
   void CancelOnErrorCb() final;
 

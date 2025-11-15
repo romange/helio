@@ -57,13 +57,6 @@ class UringSocket : public LinuxSocketBase {
     return has_recv_data_;
   }
 
-  // ProvidedBuffer is a struct that contains a pointer to the buffer and its size or an error code.
-  // When called in Multishot mode, if an error is filled, the multishot mode is
-  // disabled automatically.
-  // If no provided buffers are available, the function will fill in the ENOBUFS error.
-  unsigned RecvProvided(unsigned buf_len, ProvidedBuffer* dest) final;
-  void ReturnProvided(const ProvidedBuffer& pbuf) final;
-
   void EnableRecvMultishot() {
     enable_multi_shot_ = 1;
   }

@@ -472,16 +472,6 @@ void TlsSocket::ResetOnRecvHook() {
   LOG(FATAL) << "Not implemented";
 }
 
-unsigned TlsSocket::RecvProvided(unsigned buf_len, ProvidedBuffer* dest) {
-  LOG(DFATAL) << "Not implemented";
-
-  return 0;
-}
-
-void TlsSocket::ReturnProvided(const ProvidedBuffer& pbuf) {
-  LOG(FATAL) << "Not implemented";
-}
-
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
   LOG(DFATAL) << "Not implemented";
   return 0;
