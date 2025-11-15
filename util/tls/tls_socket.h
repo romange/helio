@@ -117,6 +117,7 @@ class TlsSocket final : public FiberSocketBase {
   void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
 
  private:
+  // Both opcode and written can be set.
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
