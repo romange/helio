@@ -10,6 +10,7 @@
 
 #include "util/fiber_socket_base.h"
 #include "util/tls/tls_engine.h"
+#include "util/fibers/synchronization.h"
 
 namespace util {
 namespace tls {
@@ -210,6 +211,7 @@ class TlsSocket final : public FiberSocketBase {
   // preempt in function context, we simply subscribe the async request to the one in-flight and
   // once that completes it will also continue the one pending/blocked.
   AsyncReq* blocked_async_req_ = nullptr;
+  fb2::CondVarAny block_concurrent_cv_;
 };
 
 }  // namespace tls

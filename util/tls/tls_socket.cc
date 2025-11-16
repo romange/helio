@@ -63,7 +63,15 @@ auto TlsSocket::Shutdown(int how) -> error_code {
 
   state_ |= SHUTDOWN_IN_PROGRESS;
   Engine::OpResult op_result = engine_->Shutdown();
-  if (op_result) {
+
+  // TODO: this flow is hacky and should be reworked.
+  // 1. If we are blocked on writes, then MaybeSendOutput() will block as well and shutdown
+  // might deadlock. but if we do not call MaybeSendOutput, then the peer will not get
+  // the close_notify message.
+  // Furthermore, the call `next_sock_->Shutdown` below can race with sending close_notify
+  // message.
+  // For now we just try to call MaybeSendOutput only if there is no ongoing write.
+  if (op_result && (state_ & WRITE_IN_PROGRESS) == 0) {
     // engine_ could send notification messages to the peer.
     std::ignore = MaybeSendOutput();
   }
@@ -322,8 +330,10 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   // meaning that both of them can be called concurrently from differrent fibers and then
   // race over flushing the output buffer. We use state_ to prevent that.
   if (state_ & WRITE_IN_PROGRESS) {
-    // Do not remove the Yield from here because it can enter an infinite loop
-    // which can be described by the following chore:
+    // This should not happen, as we call MaybeSendOutput from reads only when
+    // there is no ongoing write.
+    LOG(DFATAL) << "Should not happen";
+
     // Fiber1 (Connection fiber):
     // Reads SSL renegotiation request
     // Sets WRITE_IN_PROGRESS in state_
@@ -331,10 +341,12 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
     // BIO (SSL buffer) gets filled up
     // Fiber2 (runs command):
     // Tries to write response to socket
-    // Can't write to socket because WRITE_IN_PROGRESS is set
-    // Live blocks indefinitely
-    // Fiber2 is in infinite loop, Fiber1 can't progress
-    ThisFiber::Yield();
+    // Can't write to socket because WRITE_IN_PROGRESS is set.
+
+    // Wait for the other write to complete.
+    fb2::NoOpLock lock;
+    block_concurrent_cv_.wait(lock, [&] { return !(state_ & WRITE_IN_PROGRESS); });
+
     return error_code{};
   }
 
@@ -342,13 +354,25 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 }
 
 auto TlsSocket::HandleUpstreamRead() -> error_code {
-  RETURN_ON_ERROR(MaybeSendOutput());
+  if (engine_->OutputPending() != 0) {
+    // All tls operations should make sure that output is flushed before finisihing.
+    // If the state machine requested reading, then the output has been flushed,
+    // or there is a concurrent write in progress.
+    if ((state_ & WRITE_IN_PROGRESS) == 0) {
+      LOG(DFATAL) << "Should not happen";
+      RETURN_ON_ERROR(MaybeSendOutput());
+    }
+  }
 
   if (state_ & READ_IN_PROGRESS) {
-    // We need to Yield because otherwise we might end up in an infinite loop.
-    // See also comments in MaybeSendOutput.
-    ThisFiber::Yield();
-    VSOCK(1) << "HandleUpstreamRead: Yielded";
+    // This may happen as both write and read paths may request reading from upstream during
+    // renegotiation. There is assymetry with write and reads, as writes are controlled by
+    // our process, and every write by the Engine should follow with SSL_WANT_WRITE, while
+    // reads may be the result of renegotiation requests from the peer.
+
+    // Wait for the other read to complete.
+    fb2::NoOpLock lock;
+    block_concurrent_cv_.wait(lock, [&] { return !(state_ & READ_IN_PROGRESS); });
     return error_code{};
   }
 
@@ -356,6 +380,7 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
   state_ |= READ_IN_PROGRESS;
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
   state_ &= ~READ_IN_PROGRESS;
+  block_concurrent_cv_.notify_one();
   if (!esz) {
     // log any errors as well as situations where we have unflushed output.
     if (esz.error() != errc::connection_aborted || engine_->OutputPending() > 0) {
@@ -380,6 +405,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   DVSOCK(2) << "HandleUpstreamWrite " << buffer.size();
 
+  error_code ec;
   // we do not allow concurrent writes from multiple fibers.
   state_ |= WRITE_IN_PROGRESS;
   do {
@@ -387,14 +413,8 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
     DCHECK(engine_);
     if (!write_result) {
-      state_ &= ~WRITE_IN_PROGRESS;
-
-      // broken_pipe - happens when the other side closes the connection. do not log this.
-      if (write_result.error() != errc::broken_pipe) {
-        VSOCK(1) << "HandleUpstreamWrite failed " << write_result.error();
-      }
-
-      return write_result.error();
+      ec = write_result.error();
+      break;
     }
     CHECK_GT(*write_result, 0u);
 
@@ -406,11 +426,12 @@ error_code TlsSocket::HandleUpstreamWrite() {
     buffer = engine_->PeekOutputBuf();
   } while (!buffer.empty());
 
-  DCHECK_EQ(engine_->OutputPending(), 0u);
+  DCHECK(engine_->OutputPending() == 0 || ec);
 
   state_ &= ~WRITE_IN_PROGRESS;
+  block_concurrent_cv_.notify_one();
 
-  return error_code{};
+  return ec;
 }
 
 error_code TlsSocket::HandleOp(int op_val) {
