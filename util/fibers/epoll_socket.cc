@@ -35,6 +35,7 @@ inline EpollSocket::error_code from_errno() {
 
 #ifdef __linux__
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
+constexpr int kErrMask = EPOLLERR | EPOLLHUP | EPOLLRDHUP;
 
 int AcceptSock(int fd) {
   sockaddr_storage client_addr;
@@ -57,6 +58,7 @@ int CreateSockFd(int family) {
 #elif defined(__FreeBSD__) || defined(__APPLE__)
 
 constexpr int kEventMask = POLLIN | POLLOUT;
+constexpr int kErrMask = POLLERR | POLLHUP;
 
 int AcceptSock(int fd) {
   sockaddr_storage client_addr;
@@ -471,18 +473,12 @@ void EpollSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb
   int fd = native_handle();
   CHECK_GE(fd, 0);
 
+  DVLOG(1) << "RegisterOnRecvHook " << fd;
   recv_hook_registered_ = 1;
   on_recv_ = new OnRecvRecord{std::move(cb)};
-
-  // It is possible that by the time we register the hook there is already pending data.
-  // TODO: a cleaner approach would be if epoll socket would track notifications itself.
-  char buffer[2];  // A small buffer is sufficient for peeking
-  ssize_t bytes_peeked = recv(fd, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT);
-
-  if (bytes_peeked > 0) {
+  if (read_notified_) {
+    read_notified_ = 0;
     on_recv_->cb(RecvNotification{});
-  } else if (bytes_peeked != -1 || errno != EAGAIN) {
-    LOG(FATAL) << "TBD: " << bytes_peeked << " " << errno;
   }
 }
 
@@ -494,66 +490,72 @@ void EpollSocket::ResetOnRecvHook() {
   }
 }
 
-void EpollSocket::HandleAsyncRequest(error_code ec, bool is_send) {
-  uint8_t async_pending = is_send ? async_write_pending_ : async_read_pending_;
-  if (async_pending) {
-    auto& async_request = is_send ? async_write_req_ : async_read_req_;
-    DCHECK(async_request);
+void EpollSocket::HandleAsyncRequest(unsigned epoll_mask) {
+  uint8_t masks[2] = {EpollProactor::EPOLL_IN, EpollProactor::EPOLL_OUT};
 
-    auto finalize_and_fetch_cb = [this, &async_request, is_send]() {
-      auto cb = std::move(async_request->cb);
-      delete async_request;
-      async_request = nullptr;
-      if (is_send)
-        async_write_pending_ = 0;
-      else
-        async_read_pending_ = 0;
-      return cb;
-    };
-
-    if (ec) {
-      auto cb = finalize_and_fetch_cb();
-      cb(make_unexpected(ec));
-    } else if (auto res = async_request->Run(native_handle(), is_send); res.first) {
-      auto cb = finalize_and_fetch_cb();
-      cb(res.second);
+  for (unsigned i = 0; i < 2; ++i) {
+    if ((epoll_mask & (masks[i] | kErrMask)) == 0) {
+      continue;
     }
-  } else if (recv_hook_registered_ && !is_send && !ec) {
-    on_recv_->cb(RecvNotification{});
-  } else {
-    auto& sync_request = is_send ? write_req_ : read_req_;
-    // It could be that we activated context already, but has not switched to it yet.
-    // Meanwhile a new event has arrived that triggered this callback again.
-    if (sync_request && sync_request->IsSuspended()) {
-      DVSOCK(2) << "Wakey: Schedule read in " << sync_request->name();
-      sync_request->Activate(ec);
+
+    bool is_send = (i == 1);
+    uint8_t async_pending = is_send ? async_write_pending_ : async_read_pending_;
+
+    error_code ec;
+    bool close_socket = false;
+
+    if (epoll_mask & POLLERR) {
+      ec = make_error_code(errc::connection_aborted);
+    } else if (epoll_mask & POLLHUP) {
+      close_socket = true;
+      ec = make_error_code(errc::connection_aborted);
+    }
+
+    if (async_pending) {
+      auto& async_request = is_send ? async_write_req_ : async_read_req_;
+      DCHECK(async_request);
+
+      auto finalize_and_fetch_cb = [this, &async_request, is_send]() {
+        auto cb = std::move(async_request->cb);
+        delete async_request;
+        async_request = nullptr;
+        if (is_send)
+          async_write_pending_ = 0;
+        else
+          async_read_pending_ = 0;
+        return cb;
+      };
+
+      // If we got notification, try to run the async request.
+      if (auto res = async_request->Run(native_handle(), is_send); res.first) {
+        auto cb = finalize_and_fetch_cb();
+        cb(res.second);
+      }
+    } else if (recv_hook_registered_ && !is_send) {
+      read_notified_ = 0;
+      on_recv_->cb(close_socket ? RecvNotification{make_error_code(errc::connection_aborted)}
+                                : RecvNotification{});
+    } else {
+      auto* sync_request = is_send ? write_req_ : read_req_;
+      // It could be that we activated context already, but has not switched to it yet.
+      // Meanwhile a new event has arrived that triggered this callback again.
+      if (sync_request && sync_request->IsSuspended()) {
+        DVSOCK(2) << "Wakey: Schedule read in " << sync_request->name();
+        read_notified_ = 0;
+        sync_request->Activate(ec);
+      } else if (epoll_mask & POLLIN) {
+        // If nothing processed the read event, set the flag so that we won't miss it
+        // in case we register a recv hook later.
+        read_notified_ = 1;
+      }
     }
   }
 }
 
 void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
-  DVSOCK(2) << "Wakey " << ev_mask;
-#ifdef __linux__
-  constexpr uint32_t kErrMask = EPOLLERR | EPOLLHUP | EPOLLRDHUP;
-#else
-  constexpr uint32_t kErrMask = POLLERR | POLLHUP;
-#endif
+  DVSOCK(2) << "Wakey " << ev_mask << " " << error;
 
-  error_code ec;
-  if ((ev_mask & POLLERR) && error)
-    ec = error_code{error, system_category()};
-  else if (ev_mask & POLLHUP) {
-    ec = make_error_code(errc::connection_aborted);
-  }
-
-  if (ev_mask & (EpollProactor::EPOLL_IN | kErrMask)) {
-    HandleAsyncRequest(ec, false /*is_send */);
-  }
-
-  if (ev_mask & (EpollProactor::EPOLL_OUT | kErrMask)) {
-    HandleAsyncRequest(ec, true /*is_send */);
-  }
-
+  HandleAsyncRequest(ev_mask);
   if (error_cb_ && (ev_mask & kErrMask)) {
     error_cb_(ev_mask);
   }

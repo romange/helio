@@ -69,7 +69,7 @@ class EpollSocket : public LinuxSocketBase {
   // kevent pass error code together with completion event.
   void Wakey(uint32_t event_flags, int error, EpollProactor* cntr);
 
-  void HandleAsyncRequest(error_code ec, bool is_send);
+  void HandleAsyncRequest(unsigned epoll_mask);
 
   union {
     PendingReq* write_req_;
@@ -94,6 +94,7 @@ class EpollSocket : public LinuxSocketBase {
       uint8_t async_write_pending_ : 1;
       uint8_t async_read_pending_ : 1;
       uint8_t recv_hook_registered_ : 1;
+      uint8_t read_notified_ : 1;
     };
     uint8_t flags_;
   };

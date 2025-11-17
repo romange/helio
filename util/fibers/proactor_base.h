@@ -38,7 +38,7 @@ class ProactorBase {
   enum { kTaskQueueLen = 256 };
 
   enum Kind { EPOLL = 1, IOURING = 2 };
-  enum EpollFlags { EPOLL_IN = 1, EPOLL_OUT = 4 };
+  enum EpollFlags : uint8_t { EPOLL_IN = 1, EPOLL_OUT = 4 };
 
   // Corresponds to level 0.
   // Idle tasks will rest at least kIdleCycleMaxMicros / (2^level) time between runs.
