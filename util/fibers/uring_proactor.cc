@@ -77,8 +77,7 @@ struct UringProactor::BufRingGroup {
   // we must change the proactor code to support cached_head in this case.
   uint16_t cached_head = 0;
 
-  uint8_t nentries_exp = 0;   // 2^nentries_exp is the number of entries.
-  // uint8_t multishot_exp = 0;  // 2^multishot_exp is the number of multishot entries.
+  uint8_t nentries_exp = 0;  // 2^nentries_exp is the number of entries.
   uint16_t reserved1 = 0;
   uint32_t reserved2 = 0;
 
@@ -149,7 +148,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
-  submit_on_wake_ = 0;
+  sync_cancel_f_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -165,6 +164,8 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   }
 
   if (kver.kernel >= 6 && kver.major >= 1) {
+    sync_cancel_f_ = 1;
+
     // This has a positive effect on CPU usage, latency and throughput.
     params.flags |=
         (IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SINGLE_ISSUER);
@@ -545,15 +546,29 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
 void UringProactor::EpollDel(EpollIndex id) {
   EpollEntry* entry = reinterpret_cast<EpollEntry*>(id);
   unsigned uid = entry->index;
+  int fd = entry->fd;
 
-  FiberCall fc(this);
-  fc->PrepPollRemove(uid);
-  IoResult res = fc.Get();
-  if (res == 0) {  // removed from iouring, otherwise it run already and deleted itself.
-    delete entry;
+  if (sync_cancel_f_) {
+    io_uring_sync_cancel_reg reg_arg;
+    memset(&reg_arg, 0, sizeof(reg_arg));
+    reg_arg.timeout.tv_nsec = -1;
+    reg_arg.timeout.tv_sec = -1;
+    reg_arg.flags = 0;
+    reg_arg.addr = uid;
+
+    int res = io_uring_register_sync_cancel(&ring_, &reg_arg);
+
+    LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << -res;
   } else {
-    LOG(ERROR) << "EpollDel: unexpected result " << res;
+    IoResult res;
+    do {
+      FiberCall fc(this);
+      fc->PrepPollRemove(uid);
+      res = fc.Get();
+    } while (res == -EALREADY);
+    LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << res;
   }
+  delete entry;
 }
 
 void UringProactor::RegrowCentries() {
@@ -960,11 +975,6 @@ void UringProactor::WakeRing() {
   if (caller && caller->msgring_supported_f_ && caller->msgring_enabled_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
-
-    if (caller->submit_on_wake_) {
-      // flush the se asap to wake up the destination proactor as quickly as possible.
-      io_uring_submit(&caller->ring_);
-    }
   } else {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));

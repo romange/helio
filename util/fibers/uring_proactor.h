@@ -103,8 +103,8 @@ class UringProactor : public ProactorBase {
     return IOURING;
   }
 
-  void ConfigureSubmitWakeup(bool enable) {
-    submit_on_wake_ = uint8_t(enable);
+  // Deprecated: not needed.
+  void ConfigureSubmitWakeup(bool) {
   }
 
   void ConfigureMsgRing(bool enable) {
@@ -203,8 +203,8 @@ class UringProactor : public ProactorBase {
   uint8_t poll_first_ : 1;
   uint8_t buf_ring_f_ : 1;
   uint8_t bundle_f_ : 1;
-  uint8_t submit_on_wake_ : 1;
   uint8_t msgring_enabled_f_ : 1;
+  uint8_t sync_cancel_f_ : 1;
   uint8_t : 2;
 
   EventCount sqe_avail_;
