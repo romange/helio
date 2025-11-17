@@ -149,7 +149,7 @@ Result<size_t> Source::ReadAtLeast(const MutableBytes& dest, size_t min_size) {
     if (!res)
       return res;
 
-    if (*res == 0)
+    if (*res == 0)  // EOF
       break;
 
     to_read += *res;

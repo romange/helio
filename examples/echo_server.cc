@@ -160,38 +160,38 @@ void EchoConnection::HandleRequests() {
   socket_->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
     if (std::holds_alternative<error_code>(n.read_result)) {
       ec_ = std::get<error_code>(n.read_result);
-      recv_notify_.notify_one();
-      return;
-    } else if (std::holds_alternative<io::MutableBytes>(n.read_result)) {
+    } else if (std::holds_alternative<io::MutableBytes>(n.read_result)) {  // provided buffer.
       auto mb = std::get<io::MutableBytes>(n.read_result);
       DVLOG(2) << "Got buffer of size " << mb.size();
       DCHECK(mb.size() > 0);
       blobs_.emplace(string(reinterpret_cast<const char*>(mb.data()), mb.size()));
-      recv_notify_.notify_one();
-    } else if (std::holds_alternative<monostate>(n.read_result)) {
-      bool cont = true;
-      while (cont) {
+    } else if (std::holds_alternative<bool>(n.read_result)) {  // read notification.
+      bool contin = std::get<bool>(n.read_result);
+      if (!contin) {
+        ec_ = make_error_code(errc::connection_aborted);
+      }
+      while (contin) {
         string blob(req_len_ * 8, 0);
         int res = recv(socket_->native_handle(), blob.data(), blob.size(), 0);
         if (res < 0) {
-          VLOG(1) << "Recv error: " << strerror(-res);
-          ec_ = make_error_code(errc::connection_aborted);
-          recv_notify_.notify_one();
-          return;
-        } else if (res == 0) {
-          // connection closed.
-          ec_ = make_error_code(errc::connection_aborted);
-          recv_notify_.notify_one();
-          return;
+          if (errno != EAGAIN) {
+            ec_ = error_code(errno, std::system_category());
+          }
+          break;
         }
 
+        if (res == 0) {
+          // connection closed.
+          ec_ = make_error_code(errc::connection_aborted);
+          break;
+        }
         DCHECK_GT(res, 0);
-        cont = (size_t(res) == blob.size());
+        contin = (size_t(res) == blob.size());
         blob.resize(res);
         blobs_.emplace(std::move(blob));
       }
-      recv_notify_.notify_one();
     }
+    recv_notify_.notify_one();
   });
 
   // after the handshake.

@@ -51,10 +51,13 @@ void TestConnection::HandleRequests() {
 
   while (true) {
     size_t res = asa.read_some(boost::asio::buffer(buf), ec);
-    if (ec == std::errc::connection_aborted)
+    if (ec == std::errc::connection_aborted)  // TODO: still holds for macos.
       break;
 
     CHECK(!ec) << ec << "/" << ec.message();
+    if (res == 0)
+      break;
+
     string_view sv(buf, res);
     if (sv == "migrate") {
       ++migrations;

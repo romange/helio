@@ -153,13 +153,8 @@ std::pair<bool, EpollSocket::Result<size_t>> EpollSocket::AsyncReq::Run(int fd, 
   ssize_t res;
   res = is_send ? sendmsg(fd, &msg, MSG_NOSIGNAL) : recvmsg(fd, &msg, 0);
 
-  if (res > 0) {
+  if (res >= 0) {
     return {true, res};
-  }
-
-  if (res == 0) {
-    CHECK(!is_send);  // can only happen with recvmsg
-    return {true, MakeUnexpected(errc::connection_aborted)};
   }
 
   if (errno == EAGAIN)
@@ -397,18 +392,12 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   error_code ec;
   do {
     if (fd_ & IS_SHUTDOWN) {
-      ec = make_error_code(errc::connection_aborted);
-      break;
+      return 0;  // EOF
     }
 
     ssize_t res = recvmsg(fd, const_cast<msghdr*>(&msg), flags);
-    if (res > 0) {  // if res is 0, that means a peer closed the socket.
+    if (res >= 0) {  // if res is 0, that means a peer closed the socket.
       return res;
-    }
-
-    if (res == 0) {
-      ec = make_error_code(errc::connection_aborted);
-      break;
     }
 
     if (errno != EAGAIN) {
@@ -478,7 +467,7 @@ void EpollSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb
   on_recv_ = new OnRecvRecord{std::move(cb)};
   if (read_notified_) {
     read_notified_ = 0;
-    on_recv_->cb(RecvNotification{});
+    on_recv_->cb(RecvNotification{true});  // notify we have data to read
   }
 }
 
@@ -533,8 +522,7 @@ void EpollSocket::HandleAsyncRequest(unsigned epoll_mask) {
       }
     } else if (recv_hook_registered_ && !is_send) {
       read_notified_ = 0;
-      on_recv_->cb(close_socket ? RecvNotification{make_error_code(errc::connection_aborted)}
-                                : RecvNotification{});
+      on_recv_->cb(RecvNotification{!close_socket});
     } else {
       auto* sync_request = is_send ? write_req_ : read_req_;
       // It could be that we activated context already, but has not switched to it yet.

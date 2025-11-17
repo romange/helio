@@ -118,11 +118,12 @@ class FiberSocketBase : public io::Sink,
   virtual void CancelOnErrorCb() = 0;
 
   struct RecvNotification {
-    // For pure epoll notifications, this contains a monostate.
+    // For classic recv notifications, this contains RecvCompletion (false on close, true on data).
     // For iouring/bufring notifications, it contains either the positive error code,
     // or the received data buffer. In latter case, the callback must consume the data before
     // returning.
-    std::variant<std::monostate, std::error_code, io::MutableBytes> read_result;
+    using RecvCompletion = bool;
+    std::variant<RecvCompletion, std::error_code, io::MutableBytes> read_result;
   };
 
   using OnRecvCb = std::function<void (const RecvNotification&)>;
