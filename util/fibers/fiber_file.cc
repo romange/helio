@@ -88,7 +88,7 @@ class WriteFileImpl : public WriteFile {
   void AsyncWrite(std::string blob) final;
 #endif
  private:
-  WriteFile* upstream_;
+  unique_ptr<WriteFile> upstream_;
 
   FiberQueueThreadPool* tp_;
   ssize_t hash_;
