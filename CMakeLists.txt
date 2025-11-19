@@ -56,6 +56,9 @@ else()
 
   if (HELIO_USE_SANITIZER AND SUPPORT_USAN)
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} --start-no-unused-arguments --rtlib=compiler-rt --end-no-unused-arguments")
+    endif()
   endif()
 
   if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

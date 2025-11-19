@@ -44,7 +44,7 @@ TEST_F(FileTest, LineReader) {
   Result<Source*> src = OpenUncompressed(path);
   ASSERT_TRUE(src);
 
-  LineReader lr(*src, DO_NOT_TAKE_OWNERSHIP);
+  LineReader lr(*src, TAKE_OWNERSHIP);
   string_view line;
   uint64_t val;
   while (lr.Next(&line)) {
@@ -59,7 +59,7 @@ TEST_F(FileTest, Direct) {
   opts.direct = true;
   auto res = OpenWrite(path, opts);
   ASSERT_TRUE(res);
-  WriteFile* file =  *res;
+  unique_ptr<WriteFile> file(*res);
   char* src = nullptr;
   constexpr unsigned kLen = 4096;
   CHECK_EQ(0, posix_memalign((void**)&src, 4096, kLen));

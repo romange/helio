@@ -12,6 +12,10 @@
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
 
+#if ABSL_HAVE_ADDRESS_SANITIZER
+#include <sanitizer/asan_interface.h>
+#endif
+
 #if defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
 
@@ -370,9 +374,19 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   FiberInterface* prev = SwitchSetup();
 
   // pass pointer to the context that resumes `this`
-  return std::move(entry_).resume_with([prev](ctx::fiber_context&& c) {
+  void* fake_stack_save = nullptr;
+#if ABSL_HAVE_ADDRESS_SANITIZER
+  __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
+#endif
+
+  return std::move(entry_).resume_with([prev, fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
+#if ABSL_HAVE_ADDRESS_SANITIZER
+    __sanitizer_finish_switch_fiber(fake_stack_save, nullptr, nullptr);
+#else
+   (void)fake_stack_save;
+#endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
@@ -381,9 +395,19 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   FiberInterface* prev = SwitchSetup();
 
+  void* fake_stack_save = nullptr;
+#if ABSL_HAVE_ADDRESS_SANITIZER
+  __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
+#endif
+
   // pass pointer to the context that resumes `this`
-  std::move(entry_).resume_with([prev, fn = std::move(fn)](ctx::fiber_context&& c) {
+  std::move(entry_).resume_with([prev, fn = std::move(fn), fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_ && c);
+#if ABSL_HAVE_ADDRESS_SANITIZER
+    __sanitizer_finish_switch_fiber(fake_stack_save, nullptr, nullptr);
+#else
+    (void)fake_stack_save;
+#endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     fn();
 

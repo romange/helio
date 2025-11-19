@@ -69,8 +69,8 @@ auto UringSocket::Close() -> error_code {
   if (fd_ < 0)
     return {};
 
-  DCHECK(proactor());
-  DCHECK(proactor()->InMyThread());
+  // We may close a socket that was never registered with a proactor.
+  DCHECK(!proactor() || proactor()->InMyThread());
   DVSOCK(1) << "Closing socket";
 
   if (error_cb_wrapper_) {

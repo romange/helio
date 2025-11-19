@@ -180,7 +180,7 @@ EpollSocket::~EpollSocket() {
 auto EpollSocket::Close() -> error_code {
   error_code ec;
   if (fd_ >= 0) {
-    DCHECK_EQ(GetProactor()->thread_id(), pthread_self());
+    DCHECK(!proactor() || proactor()->InMyThread());
 
     int fd = native_handle();
     DVSOCK(1) << "Closing socket";
@@ -189,6 +189,23 @@ auto EpollSocket::Close() -> error_code {
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
     arm_index_ = -1;
+
+    // Cleanup pending requests
+    if (async_write_pending_) {
+      delete async_write_req_;
+      async_write_req_ = nullptr;
+      async_write_pending_ = 0;
+    }
+
+    if (async_read_pending_) {
+      delete async_read_req_;
+      async_read_req_ = nullptr;
+      async_read_pending_ = 0;
+    } else if (recv_hook_registered_) {
+      delete on_recv_;
+      on_recv_ = nullptr;
+      recv_hook_registered_ = 0;
+    }
   }
   return ec;
 }
@@ -296,7 +313,10 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
 #endif
 
   if (ec) {
-    GetProactor()->Disarm(fd, arm_index_);
+    if (arm_index_ >= 0) {
+      GetProactor()->Disarm(fd, arm_index_);
+      arm_index_ = -1;
+    }
     if (close(fd) < 0) {
       LOG(WARNING) << "Could not close fd " << strerror(errno);
     }
