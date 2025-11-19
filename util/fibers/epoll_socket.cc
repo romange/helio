@@ -192,12 +192,16 @@ auto EpollSocket::Close() -> error_code {
 
     // Cleanup pending requests
     if (async_write_pending_) {
+      DCHECK(async_write_req_);
+      async_write_req_->cb(MakeUnexpected(errc::operation_canceled));
       delete async_write_req_;
       async_write_req_ = nullptr;
       async_write_pending_ = 0;
     }
 
     if (async_read_pending_) {
+      DCHECK(async_read_req_);
+      async_read_req_->cb(MakeUnexpected(errc::operation_canceled));
       delete async_read_req_;
       async_read_req_ = nullptr;
       async_read_pending_ = 0;

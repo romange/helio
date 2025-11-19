@@ -756,5 +756,22 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
   fb.Join();
 }
 
+TEST_P(FiberSocketTest, LeakAsyncWrite) {
+  unique_ptr<FiberSocketBase> sock;
+  constexpr size_t kBufSize = 10 * 1024 * 1024;
+  std::unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    sock->AsyncWrite(io::Bytes(buf.get(), kBufSize), [](error_code ec) {
+    });
+  });
+
+  // Close immediately without waiting for completion
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
 }  // namespace fb2
 }  // namespace util

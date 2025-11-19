@@ -183,7 +183,7 @@ class SubmitEntry {
   void PrepTimeoutRemove(unsigned long long userdata) {
     PrepFd(IORING_OP_TIMEOUT_REMOVE, -1);
     sqe_->addr = userdata;
-    sqe_->len = 1;
+    sqe_->timeout_flags = 0;
   }
 
   // Sets up link timeout with relative timespec.
