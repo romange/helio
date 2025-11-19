@@ -18,6 +18,7 @@ env:
   BUILD_TYPE: Debug
 jobs:
   build:
+    name: ${{ matrix.config.name }} on (${{ matrix.os.arch }})
     strategy:
       matrix:
         os:
@@ -28,15 +29,23 @@ jobs:
 
         # Test of these containers
         config:
-          - container: alpine-dev:latest
+          - name: alpine-clang
+            container: alpine-dev:latest
             compiler: {cxx: clang++, c: clang}
-          - container: ubuntu-dev:20
+          - name: ubuntu20-gcc-coverage
+            container: ubuntu-dev:20
             compiler: {cxx: g++, c: gcc}
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
-          - container: fedora:30
+          - name: fedora30-gcc
+            container: fedora:30
             compiler: {cxx: g++, c: gcc}
-          - container: ubuntu-dev:24
+          - name: ubuntu24-gcc
+            container: ubuntu-dev:24
             compiler: {cxx: g++, c: gcc}
+          - name: ubuntu24-clang-asan
+            container: ubuntu-dev:24
+            compiler: {cxx: clang++, c: clang}
+            cmake_flags: "-DHELIO_USE_SANITIZER=ON"
         
         exclude:
           - os: { arch: arm64 }
@@ -66,6 +75,7 @@ jobs:
             -DCMAKE_C_COMPILER="${{matrix.config.compiler.c}}" \
             -DCMAKE_CXX_COMPILER="${{matrix.config.compiler.cxx}}" \
             -DCMAKE_CXX_FLAGS_DEBUG="${{matrix.config.cxx_flags}}" \
+            ${{matrix.config.cmake_flags}} \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
 
     - name: Build

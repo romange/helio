@@ -282,7 +282,7 @@ TEST_F(FiberTest, Remote) {
   bool set = false;
   std::thread t1([&] {
     fb1 = Fiber("test1", [] { LOG(INFO) << "test1 run"; });
-
+    ThisFiber::Yield();
     {
       unique_lock lk(mu);
       set = true;
@@ -533,7 +533,11 @@ TEST_F(FiberTest, WaitFor) {
 
 TEST_F(FiberTest, StackSize) {
   Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{8000}, "fb1", [] {
+
+#ifndef ABSL_HAVE_ADDRESS_SANITIZER // with asan log blows up the stack
     LOG(INFO) << "fb1 started";
+#endif
+
     detail::FiberInterface* active = detail::FiberActive();
 
     // we can not have bigger buffer here because LOG(INFO) callchain also uses stack,
@@ -544,10 +548,13 @@ TEST_F(FiberTest, StackSize) {
     // active is on the right side of the stack address range but variables on stack
     // grow from high to low addresses.
     {
+      // Approximate stack bottom calculation for logging (assuming active is near top)
       unsigned free_space =
           reinterpret_cast<uintptr_t>(&free_space) - (reinterpret_cast<uintptr_t>(active) - 4096);
 
+#ifndef ABSL_HAVE_ADDRESS_SANITIZER
       LOG(INFO) << "fb1 ends, free space on the stack: " << free_space;
+#endif
     }
   });
 
@@ -796,6 +803,18 @@ TEST_P(ProactorTest, Migrate) {
   });
   fb.Join();
 }
+
+TEST_P(ProactorTest, LeakOnFiber) {
+  // This test verifies that ASAN correctly scans the fiber stack.
+  // If it didn't, this would be reported as a leak because the pointer
+  // is only held on the fiber stack.
+  proactor()->Await([&] {
+    int* leak = new int(42);
+    // Uncomment to see the leak reported in ASAN.
+    delete leak;
+  });
+}
+
 
 TEST_P(ProactorTest, NotifyRemote) {
   EventCount ec;

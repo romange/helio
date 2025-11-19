@@ -89,9 +89,6 @@ class EpollSocket : public LinuxSocketBase {
 
   int32_t arm_index_ = -1;
 
-  static constexpr uint32_t kMaxBufSize = 1 << 16;
-  static constexpr uint32_t kMinBufSize = 1 << 4;
-  uint32_t bufreq_sz_ = kMinBufSize;
   union {
     struct {
       uint8_t async_write_pending_ : 1;

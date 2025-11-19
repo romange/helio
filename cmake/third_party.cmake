@@ -199,6 +199,7 @@ FetchContent_Declare(
   abseil_cpp
   URL https://github.com/abseil/abseil-cpp/releases/download/20250512.1/abseil-cpp-20250512.1.tar.gz
   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20250512.1.patch"
+  COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-gcc-undefined-sanitizer-compilation-fix.patch"
 )
 
 FetchContent_GetProperties(abseil_cpp)

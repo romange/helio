@@ -384,10 +384,12 @@ TEST_P(FiberSocketTest, UDS) {
   auto uds_accept = proactor_->LaunchFiber("AcceptFb", [&sock, &got_connection] {
     auto accept_res = sock->Accept();
     EXPECT_TRUE(accept_res) << accept_res.error().message();
-    auto linux_sock = dynamic_cast<LinuxSocketBase*>(*accept_res);
+    auto* linux_sock = dynamic_cast<LinuxSocketBase*>(*accept_res);
     EXPECT_NE(linux_sock, nullptr);
     EXPECT_TRUE(linux_sock->IsUDS());
     got_connection = true;
+    std::ignore = linux_sock->Close();
+    delete linux_sock;
   });
 
   proactor_->Await([&] {
@@ -724,10 +726,9 @@ TEST_P(FiberSocketTest, OnRecvHook) {
 
 TEST_P(FiberSocketTest, ShutdownWhileReading) {
   unique_ptr<FiberSocketBase> sock;
-  Done d;
   Done pre_read;
 
-  proactor_->Dispatch([&] {
+  auto fb = proactor_->LaunchFiber([&] {
     sock.reset(proactor_->CreateSocket());
     EXPECT_FALSE(sock->Connect(listen_ep_));
     accept_fb_.Join();
@@ -735,31 +736,24 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
     const io::MutableBytes buffer{reinterpret_cast<unsigned char*>(a.data()), a.size()};
 
     pre_read.Notify();
-    auto ec = sock->ReadAtLeast(buffer, 1);
+    auto read_res = sock->ReadAtLeast(buffer, 1);
 
-    EXPECT_FALSE(ec.has_value());
+    ASSERT_FALSE(read_res);
 
-    const auto actual_err = ec.error();
-    // TODO: can there be same categories for the two proactors
-    const auto expected =
-        std::error_code{ECONNABORTED, GetProactorType() == "epoll" ? std::generic_category()
-                                                                   : std::system_category()};
-    EXPECT_EQ(actual_err.value(), expected.value());
-    EXPECT_EQ(actual_err.category(), expected.category());
-
-    d.Notify();
+    const auto actual_err = read_res.error();
+    EXPECT_EQ(actual_err, errc::connection_aborted);
   });
 
   // Make sure the socket is within RecvMsg
   pre_read.Wait();
-  EXPECT_FALSE(d.WaitFor(100ms));
+  ThisFiber::SleepFor(10ms);
 
   proactor_->Await([&] {
     EXPECT_FALSE(sock->Shutdown(SHUT_RDWR));
     EXPECT_FALSE(sock->Close());
   });
 
-  EXPECT_TRUE(d.WaitFor(100ms));
+  fb.Join();
 }
 
 }  // namespace fb2
