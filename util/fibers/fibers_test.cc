@@ -16,6 +16,8 @@
 #include "base/logging.h"
 #include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/epoll_proactor.h"
+#include "util/fibers/fiberqueue_threadpool.h"
+#include "util/fibers/fiber_file.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
 
@@ -1038,6 +1040,18 @@ TEST_P(ProactorTest, Mixed) {
   }
   for (auto& fb : fibers)
     fb.Join();
+}
+
+TEST_P(ProactorTest,  FiberFile) {
+  string path = base::GetTestTempPath("fiber_write.bin");
+  FiberQueueThreadPool tp(1);
+
+  proactor()->Await([&] {
+    auto res = OpenFiberWriteFile(path, &tp);
+    ASSERT_TRUE(res.has_value()) << res.error().message();
+    unique_ptr<io::WriteFile> file(std::move(res.value()));
+    std::ignore = file->Close();
+  });
 }
 
 }  // namespace fb2
