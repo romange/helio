@@ -174,7 +174,9 @@ void EchoConnection::HandleRequests() {
         string blob(req_len_ * 8, 0);
         int res = recv(socket_->native_handle(), blob.data(), blob.size(), 0);
         if (res < 0) {
-          LOG(FATAL) << "Recv error: " << strerror(-res);
+          VLOG(1) << "Recv error: " << strerror(-res);
+          ec_ = make_error_code(errc::connection_aborted);
+          recv_notify_.notify_one();
           return;
         } else if (res == 0) {
           // connection closed.
