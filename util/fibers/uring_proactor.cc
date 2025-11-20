@@ -362,15 +362,6 @@ SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
   return SubmitEntry{res};
 }
 
-bool UringProactor::FlushSubmitQueueIfNeeded() {
-  if (io_uring_sq_ready(&ring_) < submit_q_threshold_) {
-    return false;
-  }
-
-  io_uring_submit(&ring_);
-  return true;
-}
-
 unsigned UringProactor::RegisterBuffers(size_t size) {
   size = (size + kAlign - 1) / kAlign * kAlign;
 
