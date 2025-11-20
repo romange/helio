@@ -330,7 +330,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 
     res = fc.Get();
 
-    if (res > 0) {
+    if (res >= 0) {
       return res;
     }
     DVSOCK(2) << "Got " << res;
@@ -341,8 +341,6 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
       continue;
     }
 
-    if (res == 0)
-      res = ECONNABORTED;
     break;
   }
 
@@ -368,7 +366,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
     }
     res = fc.Get();
 
-    if (res > 0) {
+    if (res >= 0) {
       has_recv_data_ = (fc.flags() & IORING_CQE_F_SOCK_NONEMPTY) ? 1 : 0;
       DVSOCK(2) << "Received " << res << " bytes " << ", has_more " << has_recv_data_;
       return res;
@@ -381,8 +379,6 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
       continue;
     }
 
-    if (res == 0)
-      res = ECONNABORTED;
     break;
   }
 
@@ -476,12 +472,16 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
           // b) to reissue recv with buffer select.
           LOG(FATAL) << "TBD";
         }
+
         // When we get an error, the multishot stops automatically.
         // we align by resetting register_recv_multishot_ and propagate the error.
         this->register_recv_multishot_ = 0;
-        error_code ec = res < 0 ? error_code(-res, system_category())
-                                : make_error_code(errc::connection_aborted);
-        cb(RecvNotification{ec});
+        if (res == 0) {
+          // connection closed.
+          cb(RecvNotification{false});
+        } else {
+          cb(RecvNotification{error_code(-res, system_category())});
+        }
       }
     };
 
@@ -499,7 +499,10 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
     }
     sqe.ioprio |= prio_flags;
   } else {
-    auto epoll_cb = [cb = std::move(cb)](uint32_t mask) { cb(RecvNotification{}); };
+    auto epoll_cb = [cb = std::move(cb)](uint32_t mask) {
+      bool is_valid = (mask & (POLLERR | POLLHUP)) == 0;
+      cb(RecvNotification{is_valid});
+    };
 
     recv_poll_id_ = proactor->EpollAdd(fd, std::move(epoll_cb), POLLIN);
   }

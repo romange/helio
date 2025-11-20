@@ -738,10 +738,8 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
     pre_read.Notify();
     auto read_res = sock->ReadAtLeast(buffer, 1);
 
-    ASSERT_FALSE(read_res);
-
-    const auto actual_err = read_res.error();
-    EXPECT_EQ(actual_err, errc::connection_aborted);
+    ASSERT_TRUE(read_res);
+    ASSERT_EQ(*read_res, 0);  // EOF
   });
 
   // Make sure the socket is within RecvMsg
@@ -750,10 +748,12 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
 
   proactor_->Await([&] {
     EXPECT_FALSE(sock->Shutdown(SHUT_RDWR));
-    EXPECT_FALSE(sock->Close());
   });
 
   fb.Join();
+  proactor_->Await([&] {
+    std::ignore = sock->Close();
+  });
 }
 
 TEST_P(FiberSocketTest, LeakAsyncWrite) {

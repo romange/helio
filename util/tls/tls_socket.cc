@@ -382,11 +382,13 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
   state_ &= ~READ_IN_PROGRESS;
   block_concurrent_cv_.notify_one();
   if (!esz) {
-    // log any errors as well as situations where we have unflushed output.
-    if (esz.error() != errc::connection_aborted || engine_->OutputPending() > 0) {
-      VSOCK(1) << "HandleUpstreamRead failed " << esz.error();
-    }
     return esz.error();
+  }
+
+  if (*esz == 0) {
+    // TODO: For TLS sockets we still propagate EOF via connection_aborted errors,
+    // as it requires more changes to the upper layers to handle EOF properly.
+    return make_error_code(errc::connection_aborted);
   }
 
   DVSOCK(1) << "HandleUpstreamRead " << *esz << " bytes";
@@ -537,15 +539,13 @@ void TlsSocket::AsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
   owner_->state_ &= ~READ_IN_PROGRESS;
   RunPending();
   if (!read_result) {
-    // log any errors as well as situations where we have unflushed output.
-    if (read_result.error() != errc::connection_aborted || owner_->engine_->OutputPending() > 0) {
-      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << int(owner_->state_)
-              << ", write_total:" << owner_->upstream_write_ << " "
-              << " pending output: " << owner_->engine_->OutputPending() << " "
-              << "AsyncProgressCb failed " << read_result.error();
-    }
     // Erronous path. Apply the completion callback and exit.
     CompleteAsyncReq(read_result);
+    return;
+  }
+
+  if (*read_result == 0) {  // TODO: EOF, but we should propagate 0 to the user callback.
+    CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
     return;
   }
 
