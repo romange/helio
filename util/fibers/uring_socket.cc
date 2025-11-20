@@ -197,7 +197,6 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       FiberCall fc(proactor, timeout());
       fc->PrepSend(fd, ptr->iov_base, ptr->iov_len, MSG_NOSIGNAL);
       fc->sqe()->flags |= register_flag();
-      proactor->FlushSubmitQueueIfNeeded();
       res = fc.Get();  // Interrupt point
       if (res >= 0) {
         return res;  // Fastpath
@@ -220,8 +219,6 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
       FiberCall fc(proactor, timeout());
       fc->PrepSendMsg(fd, &msg, MSG_NOSIGNAL);
       fc->sqe()->flags |= register_flag();
-      proactor->FlushSubmitQueueIfNeeded();
-
       res = fc.Get();  // Interrupt point
       if (res >= 0) {
         return res;  // Fastpath
