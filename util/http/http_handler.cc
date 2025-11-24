@@ -274,7 +274,6 @@ bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx)
 }
 
 bool HttpListenerBase::RegisterCb(std::string_view path, RequestCb cb) {
-
   auto res = cb_map_.emplace(path, std::move(cb));
   return res.second;
 }
@@ -366,7 +365,8 @@ void HttpConnection::HandleRequests() {
   }
 
   VLOG(1) << "HttpConnection exit " << ec.message();
-  LOG_IF(INFO, !FiberSocketBase::IsConnClosed(ec)) << "Http error " << ec.message();
+  LOG_IF(INFO, ec != h2::error::end_of_stream && !FiberSocketBase::IsConnClosed(ec))
+      << "Http error " << ec.message();
 }
 
 bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpContext* cntx,
