@@ -46,8 +46,12 @@ size_t AsioStreamAdapter<Socket>::read_some(const MBS& bufs, error_code& ec) {
   badapter bsa(bufs);
 
   auto res = s_.Recv(bsa.buffers(), bsa.count());
-  if (res)
-    return res.value();
+  if (res) {
+    if (*res == 0) {
+      ec = boost::asio::error::eof;
+    }
+    return *res;
+  }
   ec = error_code(std::move(res.error()).value(), boost::system::system_category());
 
   return 0;

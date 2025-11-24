@@ -51,7 +51,9 @@ void TestConnection::HandleRequests() {
 
   while (true) {
     size_t res = asa.read_some(boost::asio::buffer(buf), ec);
-    if (ec == std::errc::connection_aborted)  // TODO: still holds for macos.
+
+    // holds for macos or epoll.
+    if (ec == std::errc::connection_aborted || ec == boost::asio::error::eof)
       break;
 
     CHECK(!ec) << ec << "/" << ec.message();
