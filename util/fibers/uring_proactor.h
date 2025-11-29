@@ -171,7 +171,6 @@ class UringProactor : public ProactorBase {
     EpollCB cb;
     int fd = -1;
 
-    uint32_t event_mask = 0;
     int64_t index = -1;
   };
 
@@ -189,7 +188,6 @@ class UringProactor : public ProactorBase {
 
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
-  void EpollAddInternal(EpollEntry* entry);
 
   io_uring ring_;
 
@@ -234,6 +232,7 @@ class UringProactor : public ProactorBase {
   uint32_t next_free_index_ = 0;  // next available fd for register files.
   uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
+  uint32_t epoll_add_id_ = 1;
   uint64_t reaped_cqe_cnt_ = 0;
   std::atomic_int64_t last_wake_ts_{0};
 };
