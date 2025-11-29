@@ -528,15 +528,28 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   EpollEntry* entry = new EpollEntry();
   entry->cb = std::move(cb);
   entry->fd = fd;
-  entry->event_mask = event_mask;
-  EpollAddInternal(entry);
+
+  auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+    if (res >= 0) {
+      DCHECK(flags & IORING_CQE_F_MORE);
+      entry->cb(res);
+    } else {
+      res = -res;
+      LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
+    }
+  };
+
+  SubmitEntry se = GetSubmitEntry(std::move(uring_cb), epoll_add_id_++);
+  se.PrepPollAdd(entry->fd, event_mask);
+  entry->index = se.sqe()->user_data;
+  se.sqe()->len = IORING_POLL_ADD_MULTI;
 
   return reinterpret_cast<EpollIndex>(entry);
 }
 
 void UringProactor::EpollDel(EpollIndex id) {
   EpollEntry* entry = reinterpret_cast<EpollEntry*>(id);
-  unsigned uid = entry->index;
+  uint64_t uid = entry->index;
   int fd = entry->fd;
 
   if (sync_cancel_f_) {
@@ -970,23 +983,6 @@ void UringProactor::WakeRing() {
     // it's wake_fd_ and not wake_fixed_fd_ deliberately since we use plain write and not iouring.
     CHECK_EQ(8, write(wake_fd_, &wake_val, sizeof(wake_val)));
   }
-}
-
-void UringProactor::EpollAddInternal(EpollEntry* entry) {
-  auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
-    if (res >= 0) {
-      DCHECK(flags & IORING_CQE_F_MORE);
-      entry->cb(res);
-    } else {
-      res = -res;
-      LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
-    }
-  };
-
-  SubmitEntry se = GetSubmitEntry(std::move(uring_cb));
-  se.PrepPollAdd(entry->fd, entry->event_mask);
-  entry->index = se.sqe()->user_data;
-  se.sqe()->len = IORING_POLL_ADD_MULTI;
 }
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
