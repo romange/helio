@@ -36,7 +36,7 @@ class Engine {
   using MutableBuffer = io::MutableBytes;
 
   // If OpResult has error code then it's an openssl error (as returned by ERR_get_error()).
-  // In that case the wrapping flow should be stopped since any error there is unretriable.
+  // In that case the wrapping flow should be stopped since any error there is unreliable.
   // if OpResult has value, then its non-negative value means success depending on the context
   // of the operation. If value == EOF_STREAM it means that a peer closed the SSL connection.
   // if value == NEED_XXX then it means that it should either write data to IO and then read or just
@@ -84,10 +84,6 @@ class Engine {
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
   void ConsumeOutputBuf(unsigned sz);
 
-  //! Writes encrypted data into input ssl buffer.
-  //! Returns number of written bytes or the error.
-  //! TODO: should be replaced with PeekInputBuf, memcpy, CommitInput sequence.
-  unsigned WriteBuf(const Buffer& buf);
 
   // We usually use this function to write from the raw socket to SSL engine.
   // Returns direct reference to the input (write) buffer. This operation is not destructive.

@@ -50,8 +50,10 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   CHECK(!engine_);
   engine_.reset(new Engine{context});
   if (!prefix.empty()) {
-    Engine::OpResult op_result = engine_->WriteBuf(prefix);
-    CHECK_EQ(unsigned(op_result), prefix.size());
+    auto input_buf = engine_->PeekInputBuf();
+    CHECK_GE(input_buf.size(), prefix.size());
+    std::memcpy(input_buf.data(), prefix.data(), prefix.size());
+    engine_->CommitInput(prefix.size());
   }
 }
 
@@ -512,10 +514,13 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  size_t total_written = 0;
-  size_t iov_idx = 0;
-  size_t iov_offset = 0;
+  size_t total_written{};
+  size_t iov_idx{};
+  size_t iov_offset{};
+
   while (iov_idx < len) {
+    // Create a temporary iovec representing the unsent portion of the current buffer.
+    // This allows us to handle partial writes and retries without modifying the original iovec array.
     iovec tmp;
     tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
     tmp.iov_len = v[iov_idx].iov_len - iov_offset;
