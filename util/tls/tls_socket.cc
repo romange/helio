@@ -13,9 +13,9 @@
 #include "util/fibers/proactor_base.h"
 #include "util/tls/tls_engine.h"
 
-#define VSOCK(verbosity)                                                      \
+#define VSOCK(verbosity)                                                            \
   VLOG(verbosity) << "sock[" << native_handle() << "], state " << state_.to_ulong() \
-                  << ", write_total:" << upstream_write_ << " "               \
+                  << ", write_total:" << upstream_write_ << " "                     \
                   << " pending output: " << engine_->OutputPending() << " "
 
 #define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
@@ -43,7 +43,8 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 
 TlsSocket::~TlsSocket() {
   // sanity check that all pending ops are done.
-  DCHECK_EQ((state_[WRITE_IN_PROGRESS] || state_[READ_IN_PROGRESS] || state_[SHUTDOWN_IN_PROGRESS]), false);
+  DCHECK_EQ((state_[WRITE_IN_PROGRESS] || state_[READ_IN_PROGRESS] || state_[SHUTDOWN_IN_PROGRESS]),
+            false);
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
@@ -189,6 +190,7 @@ auto TlsSocket::Close() -> error_code {
 }
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
+  LOG(INFO) << "TlsSocket::RecvMsg called";
   DCHECK(engine_);
   DCHECK_GT(size_t(msg.msg_iovlen), 0u);
   DLOG_IF(INFO, flags) << "Flags argument is not supported " << flags;
@@ -228,8 +230,9 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     }
 
     if ((read_total > 0) && (op_val == Engine::NEED_READ_AND_MAYBE_WRITE)) {
-      // After reading some data, the TLS engine may have generated protocol output (e.g., handshake or alerts).
-      // Flush any pending output to ensure protocol progress and avoid stalling the peer.
+      // After reading some data, the TLS engine may have generated protocol output (e.g., handshake
+      // or alerts). Flush any pending output to ensure protocol progress and avoid stalling the
+      // peer.
       if (engine_->OutputPending() > 0) {
         auto ec = MaybeSendOutput();
         if (ec) {
@@ -247,6 +250,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 }
 
 io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
+  LOG(INFO) << "TlsSocket::Recv called";
   msghdr msg;
   memset(&msg, 0, sizeof(msg));
   iovec vec[1];
@@ -365,8 +369,21 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   return WriteToUpstreamSocket();
 }
 
+auto TlsSocket::MaybeSendOutputNonBlocking() -> error_code {
+  if (engine_->OutputPending() == 0)
+    return {};
+
+  if (state_[WRITE_IN_PROGRESS]) {
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+
+  return WriteToUpstreamSocketNonBlocking();
+}
+
 auto TlsSocket::ReadFromUpstreamSocket() -> error_code {
   if (engine_->OutputPending() != 0) {
+    VLOG(1) << "ReadFromUpstreamSocket OutputPending: " << engine_->OutputPending()
+            << " WriteInProgress: " << state_[WRITE_IN_PROGRESS];
     // All tls operations should make sure that output is flushed before finishing.
     // If the state machine requested reading, then the output has been flushed,
     // or there is a concurrent write in progress.
@@ -404,6 +421,42 @@ auto TlsSocket::ReadFromUpstreamSocket() -> error_code {
   }
 
   DVSOCK(1) << "ReadFromUpstreamSocket " << *esz << " bytes";
+
+  engine_->CommitInput(*esz);
+
+  return error_code{};
+}
+
+error_code TlsSocket::ReadFromUpstreamSocketNonBlocking() {
+  if (engine_->OutputPending() != 0) {
+    // All tls operations should make sure that output is flushed before finishing.
+    // If the state machine requested reading, then the output has been flushed,
+    // or there is a concurrent write in progress.
+    if (!state_[WRITE_IN_PROGRESS]) {
+      RETURN_ON_ERROR(MaybeSendOutputNonBlocking());
+    }
+  }
+
+  if (state_[READ_IN_PROGRESS]) {
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+
+  auto mut_buf = engine_->PeekInputBuf();
+  state_.set(READ_IN_PROGRESS);
+  io::Result<size_t> esz = next_sock_->TryRecv(mut_buf);
+  state_.reset(READ_IN_PROGRESS);
+  block_concurrent_cv_.notify_one();
+  if (!esz) {
+    return esz.error();
+  }
+
+  if (*esz == 0) {
+    // TODO: For TLS sockets we still propagate EOF via connection_aborted errors,
+    // as it requires more changes to the upper layers to handle EOF properly.
+    return make_error_code(errc::connection_aborted);
+  }
+
+  DVSOCK(1) << "ReadFromUpstreamSocketNonBlocking " << *esz << " bytes";
 
   engine_->CommitInput(*esz);
 
@@ -448,6 +501,39 @@ error_code TlsSocket::WriteToUpstreamSocket() {
   return ec;
 }
 
+error_code TlsSocket::WriteToUpstreamSocketNonBlocking() {
+  Engine::Buffer buffer = engine_->PeekOutputBuf();
+  DCHECK(!buffer.empty());
+
+  if (buffer.empty())
+    return {};
+
+  DVSOCK(2) << "WriteToUpstreamSocketNonBlocking " << buffer.size();
+
+  error_code ec;
+  // we do not allow concurrent writes from multiple fibers.
+  state_.set(WRITE_IN_PROGRESS);
+
+  io::Result<size_t> write_result = next_sock_->TrySend(buffer);
+
+  DCHECK(engine_);
+  if (!write_result) {
+    ec = write_result.error();
+    VLOG(1) << "WriteToUpstreamSocketNonBlocking failed: " << ec.message();
+  } else {
+    CHECK_GT(*write_result, 0u);
+    upstream_write_ += *write_result;
+    engine_->ConsumeOutputBuf(*write_result);
+    VLOG(1) << "WriteToUpstreamSocketNonBlocking wrote " << *write_result
+            << " bytes. Pending: " << engine_->OutputPending();
+  }
+
+  state_.reset(WRITE_IN_PROGRESS);
+  block_concurrent_cv_.notify_one();
+
+  return ec;
+}
+
 error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
@@ -457,6 +543,21 @@ error_code TlsSocket::HandleOp(int op_val) {
       return ReadFromUpstreamSocket();
     case Engine::NEED_WRITE:
       return MaybeSendOutput();
+    default:
+      LOG(DFATAL) << "Unsupported " << op_val;
+  }
+  return {};
+}
+
+error_code TlsSocket::HandleOpNonBlocking(int op_val) {
+  switch (op_val) {
+    case Engine::EOF_STREAM:
+      VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
+      return make_error_code(errc::connection_aborted);
+    case Engine::NEED_READ_AND_MAYBE_WRITE:
+      return ReadFromUpstreamSocketNonBlocking();
+    case Engine::NEED_WRITE:
+      return MaybeSendOutputNonBlocking();
     default:
       LOG(DFATAL) << "Unsupported " << op_val;
   }
@@ -479,6 +580,29 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
+void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
+  recv_cb_ = std::move(cb);
+
+  if (engine_->OutputPending() > 0) {
+    fb2::Fiber("tls_flush", [this] {
+      while (engine_->OutputPending() > 0) {
+        auto ec = MaybeSendOutputNonBlocking();
+        if (ec) {
+          VLOG(1) << "Flush failed: " << ec.message();
+          break;
+        }
+      }
+    }).Detach();
+  }
+
+  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { RecvAsync(rn); });
+}
+
+void TlsSocket::ResetOnRecvHook() {
+  recv_cb_ = nullptr;
+  next_sock_->ResetOnRecvHook();
+}
+
 void TlsSocket::RecvAsync(const RecvNotification& rn) {
   if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
     RecvNotification internal_rn;
@@ -495,52 +619,73 @@ void TlsSocket::RecvAsync(const RecvNotification& rn) {
         continue;
       } else if (red_res == Engine::NEED_READ_AND_MAYBE_WRITE || red_res == Engine::NEED_WRITE) {
         // TLS engine need to read/write before it can provide us with data. Do not call the
-        // callback, upper layers (socket/fiber) drive the state machine.
+        // callback.
+        HandleOp(red_res);
         break;
       } else {
-        internal_rn.read_result = (red_res == Engine::EOF_STREAM)
-                                      ? make_error_code(std::errc::connection_aborted)
-                                      : make_error_code(std::errc::io_error);
-        recv_cb_(internal_rn);
         break;
       }
     }
-  } else {
-    recv_cb_(rn);
   }
 }
 
-void TlsSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb) {
-  recv_cb_ = std::move(cb);
-  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { RecvAsync(rn); });
-}
-
-void TlsSocket::ResetOnRecvHook() {
-  recv_cb_ = nullptr;
-  next_sock_->ResetOnRecvHook();
-}
-
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  iovec vec{const_cast<void*>(static_cast<const void*>(buf.data())), buf.size()};
-  return TrySend(&vec, 1);
+  iovec v{const_cast<uint8_t*>(buf.data()), buf.size()};
+  return TrySend(&v, 1);
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
+  FiberAtomicGuard guard;
   size_t total_written{};
   size_t iov_idx{};
   size_t iov_offset{};
 
+  // DEBUG: Print total bytes to send for all iovec
+  size_t total_bytes_to_send = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    total_bytes_to_send += v[i].iov_len;
+  }
+  VLOG(1) << "[DEBUG] TrySend total bytes to send: " << total_bytes_to_send << " (" << len
+          << " iovecs)";
+
   while (iov_idx < len) {
+    // Flush any pending output from previous iterations or previous calls.
+    while (engine_->OutputPending() > 0) {
+      auto ec = MaybeSendOutputNonBlocking();
+      if (ec) {
+        if (ec == errc::resource_unavailable_try_again) {
+          // If we have already consumed some input in this call, return that amount.
+          // The caller will retry the rest.
+          if (total_written > 0) {
+            return total_written;
+          }
+          // If we haven't consumed anything, return EAGAIN so the caller waits.
+          return make_unexpected(ec);
+        }
+        VLOG(1) << "MaybeSendOutputNonBlocking failed " << ec.message();
+        return make_unexpected(ec);
+      }
+      // If MaybeSendOutputNonBlocking succeeded, it means we wrote something.
+      // We loop to check if there is more pending output.
+    }
+
     // Create a temporary iovec representing the unsent portion of the current buffer.
-    // This allows us to handle partial writes and retries without modifying the original iovec array.
+    // This allows us to handle partial writes and retries without modifying the original
+    // iovec array.
     iovec tmp;
     tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
     tmp.iov_len = v[iov_idx].iov_len - iov_offset;
     PushResult push_res = PushToEngine(&tmp, 1);
     if (push_res.engine_opcode < 0) {
-      auto ec = HandleOp(push_res.engine_opcode);
+      auto ec = HandleOpNonBlocking(push_res.engine_opcode);
       if (ec) {
-        VLOG(1) << "HandleOp failed " << ec.message();
+        if (ec == errc::resource_unavailable_try_again && total_written > 0) {
+          return total_written;
+        }
+        if (ec == errc::resource_unavailable_try_again) {
+          return make_unexpected(ec);
+        }
+        VLOG(1) << "HandleOpNonBlocking failed " << ec.message();
         return make_unexpected(ec);
       }
     }
@@ -554,14 +699,45 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
         ++iov_idx;
         iov_offset = 0;
       }
-      auto ec = MaybeSendOutput();
-      if (ec) {
-        VLOG(1) << "MaybeSendOutput failed " << ec.message();
-        return make_unexpected(ec);
-      }
+      // We pushed data, so we likely have output.
+      // The next iteration of the loop will handle flushing it.
       continue;
     }
   }
+
+  // We finished consuming input. Try to flush one last time.
+  // If we fail to flush here, we still return total_written (success).
+  // This creates a risk of buffered data not being sent.
+  // However, since we flushed at the start of the loop, the amount of buffered data
+  // is limited to what was generated by the last chunk(s).
+  // To handle this case, RegisterOnRecv (and Recv) must ensure pending output is flushed.
+  while (engine_->OutputPending() > 0) {
+    auto ec = MaybeSendOutputNonBlocking();
+    if (ec) {
+      VLOG(1) << "MaybeSendOutputNonBlocking returned error: " << ec.message();
+      // If EAGAIN, we can't flush everything.
+      // We must return total_written because we consumed the input.
+      break;
+    }
+  }
+
+  if (engine_->OutputPending() > 0) {
+    VLOG(1) << "Spawning flush fiber. Pending: " << engine_->OutputPending();
+    fb2::Fiber("tls_flush_trysend", [this] {
+      VLOG(1) << "Flush fiber started. Pending: " << engine_->OutputPending();
+      while (engine_->OutputPending() > 0) {
+        auto ec = MaybeSendOutputNonBlocking();
+        if (ec) {
+          VLOG(1) << "Flush failed: " << ec.message();
+          break;
+        }
+      }
+      VLOG(1) << "Flush fiber finished. Pending: " << engine_->OutputPending();
+    }).Detach();
+  } else {
+    VLOG(1) << "TrySend flushed everything.";
+  }
+
   return total_written;
 }
 

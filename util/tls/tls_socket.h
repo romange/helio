@@ -136,14 +136,18 @@ class TlsSocket final : public FiberSocketBase {
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
+  error_code MaybeSendOutputNonBlocking();
 
   /// Read encrypted data from the network socket and feed it into the TLS engine's input buffer.
   error_code ReadFromUpstreamSocket();
+  error_code ReadFromUpstreamSocketNonBlocking();
 
   /// Write all pending encrypted data from the TLS engine's output buffer to the network socket (blocking).
   error_code WriteToUpstreamSocket();
+  error_code WriteToUpstreamSocketNonBlocking();
 
   error_code HandleOp(int op);
+  error_code HandleOpNonBlocking(int op);
 
   // Asynchronously receives and delivers decrypted data, handling TLS engine state.
   void RecvAsync(const RecvNotification& rn);
