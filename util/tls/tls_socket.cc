@@ -196,10 +196,8 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     DCHECK(!dest.empty());
 
     Engine::OpResult op_result = engine_->Read(dest.data(), dest.size());
-
+    DVLOG(2) << "Engine::Read tried to read " << dest.size() << " bytes, got " << op_result;
     int op_val = op_result;
-
-    DVSOCK(2) << "Engine::Read " << dest.size() << " bytes, got " << op_val;
 
     if (op_val > 0) {
       read_total += op_val;
@@ -355,7 +353,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 auto TlsSocket::HandleUpstreamRead() -> error_code {
   if (engine_->OutputPending() != 0) {
-    // All tls operations should make sure that output is flushed before finisihing.
+    // All tls operations should make sure that output is flushed before finishing.
     // If the state machine requested reading, then the output has been flushed,
     // or there is a concurrent write in progress.
     if ((state_ & WRITE_IN_PROGRESS) == 0) {
@@ -366,7 +364,7 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 
   if (state_ & READ_IN_PROGRESS) {
     // This may happen as both write and read paths may request reading from upstream during
-    // renegotiation. There is assymetry with write and reads, as writes are controlled by
+    // renegotiation. There is asymmetry with write and reads, as writes are controlled by
     // our process, and every write by the Engine should follow with SSL_WANT_WRITE, while
     // reads may be the result of renegotiation requests from the peer.
 
@@ -471,13 +469,14 @@ void TlsSocket::AsyncRecv(const RecvNotification& rn) {
   if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
     RecvNotification internal_rn;
     auto& buf = std::get<io::MutableBytes>(rn.read_result);
-    // Feed raw bytes to the TLS engine.
-    engine_->CommitInput(buf.size());
 
     // Loop to read all available decrypted application data.
-    while (true) {
-      std::array<uint8_t, 4096> app_buf{};
+    while (true) {  // TODO - refactor out with TryRecv
+      static constexpr size_t kAppBufSize = 4096;
+      std::array<uint8_t, kAppBufSize> app_buf{};
+      // engine_->CommitInput(buf.size());
       int n = engine_->Read(app_buf.data(), app_buf.size());
+      DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << n;
       if (n > 0) {
         internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(n)};
         recv_cb_(internal_rn);
@@ -510,18 +509,77 @@ void TlsSocket::ResetOnRecvHook() {
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  iovec vec{const_cast<void*>(static_cast<const void*>(buf.data())), buf.size()};
+  return TrySend(&vec, 1);
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+    size_t total_written = 0;
+    size_t iov_idx = 0;
+    size_t iov_offset = 0;
+    while (iov_idx < len) {
+      iovec tmp;
+      tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
+      tmp.iov_len = v[iov_idx].iov_len - iov_offset;
+      PushResult push_res = PushToEngine(&tmp, 1);
+      if (push_res.engine_opcode < 0) {
+        auto ec = HandleOp(push_res.engine_opcode);
+        if (ec) {
+          VLOG(1) << "HandleOp failed " << ec.message();
+          return make_unexpected(ec);
+        }
+      }
+
+      if (push_res.written > 0) {
+        size_t written = push_res.written;
+        total_written += written;
+        if (written < tmp.iov_len) {
+          iov_offset += written;
+        } else {
+          ++iov_idx;
+          iov_offset = 0;
+        }
+        auto ec = MaybeSendOutput();
+        if (ec) {
+          VLOG(1) << "MaybeSendOutput failed " << ec.message();
+          return make_unexpected(ec);
+        }
+        continue;
+      }
+    }
+    return total_written;
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  size_t total_read = 0;
+  while (!buf.empty()) {
+    // engine_->CommitInput(buf.size());
+    int n = engine_->Read(buf.data(), buf.size());
+    DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << n;
+    if (n > 0) {
+      buf.remove_prefix(n);
+      total_read += n;
+      continue;
+    } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
+      // Need more upstream data or output flush before more plaintext is available.
+      auto input_buf = engine_->PeekInputBuf();
+      if (input_buf.empty()) {
+        break;
+      }
+      io::Result<size_t> res = next_sock_->TryRecv(input_buf);
+      if (res && *res > 0) {
+        engine_->CommitInput(*res);
+        continue;
+      }
+      break;
+    } else {
+      // Error or EOF
+      return make_unexpected(n == Engine::EOF_STREAM
+                                 ? make_error_code(std::errc::connection_aborted)
+                                 : make_error_code(std::errc::io_error));
+    }
+  }
+  return total_read;
 }
 
 bool TlsSocket::IsUDS() const {
