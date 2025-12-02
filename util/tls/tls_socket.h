@@ -137,10 +137,11 @@ class TlsSocket final : public FiberSocketBase {
 
   error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
+  void AsyncRecv(const RecvNotification& rn);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
-  size_t upstream_write_ = 0;
+  size_t upstream_write_{};
 
   enum {
     WRITE_IN_PROGRESS = 1,
@@ -148,8 +149,9 @@ class TlsSocket final : public FiberSocketBase {
     SHUTDOWN_IN_PROGRESS = 4,
     SHUTDOWN_DONE = 8,
   };
-  uint8_t state_{0};
+  uint8_t state_{};
 
+  std::function<void(const RecvNotification&)> recv_cb_;
   class AsyncReq {
    public:
     enum Role : std::uint8_t { READER, WRITER };
