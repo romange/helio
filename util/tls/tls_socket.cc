@@ -4,6 +4,7 @@
 
 #include "util/tls/tls_socket.h"
 
+#include <absl/strings/escaping.h>
 #include <openssl/err.h>
 
 #include <algorithm>
@@ -370,6 +371,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 }
 
 auto TlsSocket::MaybeSendOutputNonBlocking() -> error_code {
+  FiberAtomicGuard guard;
   if (engine_->OutputPending() == 0)
     return {};
 
@@ -428,6 +430,7 @@ auto TlsSocket::ReadFromUpstreamSocket() -> error_code {
 }
 
 error_code TlsSocket::ReadFromUpstreamSocketNonBlocking() {
+  FiberAtomicGuard guard;
   if (engine_->OutputPending() != 0) {
     // All tls operations should make sure that output is flushed before finishing.
     // If the state machine requested reading, then the output has been flushed,
@@ -502,6 +505,7 @@ error_code TlsSocket::WriteToUpstreamSocket() {
 }
 
 error_code TlsSocket::WriteToUpstreamSocketNonBlocking() {
+  FiberAtomicGuard guard;
   Engine::Buffer buffer = engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
 
@@ -550,6 +554,7 @@ error_code TlsSocket::HandleOp(int op_val) {
 }
 
 error_code TlsSocket::HandleOpNonBlocking(int op_val) {
+  FiberAtomicGuard guard;
   switch (op_val) {
     case Engine::EOF_STREAM:
       VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
@@ -604,25 +609,52 @@ void TlsSocket::ResetOnRecvHook() {
 }
 
 void TlsSocket::RecvAsync(const RecvNotification& rn) {
-  if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
-    RecvNotification internal_rn;
-    auto& buf = std::get<io::MutableBytes>(rn.read_result);
+  if (std::holds_alternative<FiberSocketBase::RecvCompletion>(rn.read_result) ||
+      std::holds_alternative<std::error_code>(rn.read_result)) {
+    if (recv_cb_) {
+      recv_cb_(rn);
+    }
+    return;
+  }
 
-    while (true) {  // Loop to read all available decrypted application data.
+  if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
+    VLOG(1) << "[TLS DBG] RecvAsync: got MutableBytes, size="
+            << std::get<io::MutableBytes>(rn.read_result).size();
+    auto& buf = std::get<io::MutableBytes>(rn.read_result);
+    VLOG(1) << "[TLS DBG] RecvAsync: buf.data="
+            << std::string(reinterpret_cast<const char*>(buf.data()), buf.size());
+
+    auto input_buf = engine_->PeekInputBuf();
+    VLOG(1) << "[TLS DBG] RecvAsync: engine_->PeekInputBuf size=" << input_buf.size();
+    CHECK_GE(input_buf.size(), buf.size());
+    std::memcpy(input_buf.data(), buf.data(), buf.size());
+    engine_->CommitInput(buf.size());
+    VLOG(1) << "[TLS DBG] RecvAsync: committed " << buf.size() << " bytes to engine input";
+
+    // Loop to read and deliver all available decrypted application data.
+    while (true) {
       static constexpr size_t kAppBufSize = 4096;
       std::array<uint8_t, kAppBufSize> app_buf{};
       int red_res = engine_->Read(app_buf.data(), app_buf.size());
-      DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << red_res;
+      VLOG(1) << "[TLS DBG] RecvAsync: engine_->Read tried to read " << app_buf.size()
+              << " bytes, got " << red_res;
       if (red_res > 0) {
+        VLOG(1) << "[TLS DBG] RecvAsync: decrypted " << red_res << " bytes: "
+                << std::string(reinterpret_cast<const char*>(app_buf.data()), red_res);
+        RecvNotification internal_rn;
         internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(red_res)};
+        VLOG(1) << "[TLS DBG] RecvAsync: calling recv_cb_ with decrypted data";
         recv_cb_(internal_rn);
+        // Continue looping to deliver all buffered decrypted data.
         continue;
       } else if (red_res == Engine::NEED_READ_AND_MAYBE_WRITE || red_res == Engine::NEED_WRITE) {
-        // TLS engine need to read/write before it can provide us with data. Do not call the
-        // callback.
+        VLOG(1) << "[TLS DBG] RecvAsync: engine needs more read/write, calling HandleOp(" << red_res
+                << ")";
         HandleOp(red_res);
-        break;
+        // After handling, check if more decrypted data is available and continue loop.
+        continue;
       } else {
+        VLOG(1) << "[TLS DBG] RecvAsync: engine->Read returned " << red_res << ", breaking";
         break;
       }
     }
@@ -640,13 +672,18 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   size_t iov_idx{};
   size_t iov_offset{};
 
-  // DEBUG: Print total bytes to send for all iovec
+  // DEBUG: Print total bytes to send and plaintext payload for all iovec
   size_t total_bytes_to_send = 0;
+  std::string plaintext;
   for (uint32_t i = 0; i < len; ++i) {
     total_bytes_to_send += v[i].iov_len;
+    const auto* data_ptr = reinterpret_cast<const char*>(v[i].iov_base);
+    plaintext.append(data_ptr, v[i].iov_len);
   }
-  VLOG(1) << "[DEBUG] TrySend total bytes to send: " << total_bytes_to_send << " (" << len
-          << " iovecs)";
+  if (total_bytes_to_send > 0) {
+    VLOG(1) << "[DEBUG] TrySend total bytes to send: " << total_bytes_to_send << " (" << len
+            << " iovecs), plaintext payload: " << absl::CHexEscape(plaintext);
+  }
 
   while (iov_idx < len) {
     // Flush any pending output from previous iterations or previous calls.
@@ -743,41 +780,50 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   size_t total_read = 0;
+  VLOG(1) << "[TLS DBG] TryRecv: buf.size=" << buf.size();
   while (!buf.empty()) {
-    // engine_->CommitInput(buf.size());
     int n = engine_->Read(buf.data(), buf.size());
-    DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << n;
+    VLOG(1) << "[TLS DBG] TryRecv: engine_->Read tried to read " << buf.size() << " bytes, got "
+            << n;
     if (n > 0) {
+      VLOG(1) << "[TLS DBG] TryRecv: read " << n
+              << " bytes, data=" << std::string(reinterpret_cast<const char*>(buf.data()), n);
       buf.remove_prefix(n);
       total_read += n;
       continue;
     } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
-      // Need more upstream data or output flush before more plaintext is available.
+      VLOG(1) << "[TLS DBG] TryRecv: engine needs more read/write, n=" << n;
       auto input_buf = engine_->PeekInputBuf();
+      VLOG(1) << "[TLS DBG] TryRecv: engine_->PeekInputBuf size=" << input_buf.size();
       if (input_buf.empty()) {
-        // Return EAGAIN if no data was read, to distinguish from EOF (0 means closed / EOF).
+        VLOG(1) << "[TLS DBG] TryRecv: input_buf empty, total_read=" << total_read;
         if (total_read == 0) {
+          VLOG(1) << "[TLS DBG] TryRecv: returning EAGAIN";
           return make_unexpected(make_error_code(std::errc::resource_unavailable_try_again));
         }
         break;
       }
       io::Result<size_t> res = next_sock_->TryRecv(input_buf);
+      VLOG(1) << "[TLS DBG] TryRecv: next_sock_->TryRecv returned "
+              << (res ? std::to_string(*res) : res.error().message());
       if (res && (*res > 0)) {
+        VLOG(1) << "[TLS DBG] TryRecv: committing " << *res << " bytes to engine input";
         engine_->CommitInput(*res);
         continue;
       }
       if (total_read == 0) {
-        // Propagate EAGAIN or error if no data was read from the socket.
+        VLOG(1) << "[TLS DBG] TryRecv: returning error from next_sock_->TryRecv";
         return res;
       }
       break;
     } else {
-      // Error or EOF
+      VLOG(1) << "[TLS DBG] TryRecv: engine_->Read returned " << n << " (error/EOF)";
       return make_unexpected(n == Engine::EOF_STREAM
                                  ? make_error_code(std::errc::connection_aborted)
                                  : make_error_code(std::errc::io_error));
     }
   }
+  VLOG(1) << "[TLS DBG] TryRecv: returning total_read=" << total_read;
   return total_read;
 }
 
@@ -1062,6 +1108,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
    state machine. All this is similar to how posix write path works.
 */
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  FiberAtomicGuard guard;
   CHECK(!async_write_req_);
 
   // Write to the engine
