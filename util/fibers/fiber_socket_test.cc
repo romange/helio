@@ -705,9 +705,7 @@ TEST_P(FiberSocketTest, OnRecvHook) {
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
 
-    sock->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& notif) {
-      ++recv_count;
-    });
+    sock->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& notif) { ++recv_count; });
   });
 
   // From another socket write some data to trigger the OnRecv hook.
@@ -722,6 +720,22 @@ TEST_P(FiberSocketTest, OnRecvHook) {
   ThisFiber::SleepFor(10ms);
   EXPECT_EQ(recv_count, 1);
   proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
+TEST_P(FiberSocketTest, OnRecvHookReset) {
+  unique_ptr<FiberSocketBase> sock;
+
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+
+    sock->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& notif) {});
+    sock->ResetOnRecvHook();
+    std::ignore = sock->Shutdown(SHUT_RDWR);
+    ThisFiber::SleepFor(10ms);
+    std::ignore = sock->Close();
+  });
 }
 
 TEST_P(FiberSocketTest, ShutdownWhileReading) {
@@ -746,14 +760,10 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
   pre_read.Wait();
   ThisFiber::SleepFor(10ms);
 
-  proactor_->Await([&] {
-    EXPECT_FALSE(sock->Shutdown(SHUT_RDWR));
-  });
+  proactor_->Await([&] { EXPECT_FALSE(sock->Shutdown(SHUT_RDWR)); });
 
   fb.Join();
-  proactor_->Await([&] {
-    std::ignore = sock->Close();
-  });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 
 TEST_P(FiberSocketTest, LeakAsyncWrite) {
@@ -765,8 +775,7 @@ TEST_P(FiberSocketTest, LeakAsyncWrite) {
     error_code ec = sock->Connect(listen_ep_);
     EXPECT_FALSE(ec);
 
-    sock->AsyncWrite(io::Bytes(buf.get(), kBufSize), [](error_code ec) {
-    });
+    sock->AsyncWrite(io::Bytes(buf.get(), kBufSize), [](error_code ec) {});
   });
 
   // Close immediately without waiting for completion
