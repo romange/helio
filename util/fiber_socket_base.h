@@ -131,6 +131,8 @@ class FiberSocketBase : public io::Sink,
   virtual void RegisterOnRecv(OnRecvCb cb) = 0;
   virtual void ResetOnRecvHook() = 0;
 
+  virtual void EnableRecvMultishot(uint16_t bufring_id) {}
+
   virtual bool IsUDS() const = 0;
 
   using native_handle_type = int;

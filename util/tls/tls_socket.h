@@ -91,6 +91,10 @@ class TlsSocket final : public FiberSocketBase {
   virtual void RegisterOnRecv(OnRecvCb cb) final;
   virtual void ResetOnRecvHook() final;
 
+  void EnableRecvMultishot(uint16_t bufring_id) override {
+      next_sock_->EnableRecvMultishot(bufring_id);
+  }
+
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
   io::Result<size_t> TryRecv(io::MutableBytes buf) override;
