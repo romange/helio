@@ -18,4 +18,15 @@ cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::ca
 
 cxx_test(fibers_test fibers2 LABELS CI)
 cxx_test(fiber_socket_test fibers2 LABELS CI)
+cxx_test(gdb_fiber_test fibers2 LABELS CI)
+
+# Install GDB debugging scripts
+set(GDB_SCRIPTS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gdb)
+install(FILES
+    ${GDB_SCRIPTS_DIR}/helio_gdb.py
+    ${GDB_SCRIPTS_DIR}/helio_fiber.py
+    ${GDB_SCRIPTS_DIR}/regstash.py
+    ${GDB_SCRIPTS_DIR}/README.md
+    DESTINATION share/helio/gdb
+)
 
