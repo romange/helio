@@ -137,7 +137,9 @@ class TlsSocket final : public FiberSocketBase {
 
   error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
-  void AsyncRecv(const RecvNotification& rn);
+
+  // Asynchronously receives and delivers decrypted data, handling TLS engine state.
+  void RecvAsync(const RecvNotification& rn);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;

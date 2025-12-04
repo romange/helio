@@ -465,28 +465,26 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
-void TlsSocket::AsyncRecv(const RecvNotification& rn) {
+void TlsSocket::RecvAsync(const RecvNotification& rn) {
   if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
     RecvNotification internal_rn;
     auto& buf = std::get<io::MutableBytes>(rn.read_result);
 
-    // Loop to read all available decrypted application data.
-    while (true) {  // TODO - refactor out with TryRecv
+    while (true) {  // Loop to read all available decrypted application data.
       static constexpr size_t kAppBufSize = 4096;
       std::array<uint8_t, kAppBufSize> app_buf{};
-      // engine_->CommitInput(buf.size());
-      int n = engine_->Read(app_buf.data(), app_buf.size());
-      DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << n;
-      if (n > 0) {
-        internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(n)};
+      int red_res = engine_->Read(app_buf.data(), app_buf.size());
+      DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << red_res;
+      if (red_res > 0) {
+        internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(red_res)};
         recv_cb_(internal_rn);
         continue;
-      } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
+      } else if (red_res == Engine::NEED_READ_AND_MAYBE_WRITE || red_res == Engine::NEED_WRITE) {
         // TLS engine need to read/write before it can provide us with data. Do not call the
         // callback, upper layers (socket/fiber) drive the state machine.
         break;
       } else {
-        internal_rn.read_result = (n == Engine::EOF_STREAM)
+        internal_rn.read_result = (red_res == Engine::EOF_STREAM)
                                       ? make_error_code(std::errc::connection_aborted)
                                       : make_error_code(std::errc::io_error);
         recv_cb_(internal_rn);
@@ -500,7 +498,7 @@ void TlsSocket::AsyncRecv(const RecvNotification& rn) {
 
 void TlsSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb) {
   recv_cb_ = std::move(cb);
-  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { AsyncRecv(rn); });
+  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { RecvAsync(rn); });
 }
 
 void TlsSocket::ResetOnRecvHook() {
@@ -514,40 +512,40 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-    size_t total_written = 0;
-    size_t iov_idx = 0;
-    size_t iov_offset = 0;
-    while (iov_idx < len) {
-      iovec tmp;
-      tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
-      tmp.iov_len = v[iov_idx].iov_len - iov_offset;
-      PushResult push_res = PushToEngine(&tmp, 1);
-      if (push_res.engine_opcode < 0) {
-        auto ec = HandleOp(push_res.engine_opcode);
-        if (ec) {
-          VLOG(1) << "HandleOp failed " << ec.message();
-          return make_unexpected(ec);
-        }
-      }
-
-      if (push_res.written > 0) {
-        size_t written = push_res.written;
-        total_written += written;
-        if (written < tmp.iov_len) {
-          iov_offset += written;
-        } else {
-          ++iov_idx;
-          iov_offset = 0;
-        }
-        auto ec = MaybeSendOutput();
-        if (ec) {
-          VLOG(1) << "MaybeSendOutput failed " << ec.message();
-          return make_unexpected(ec);
-        }
-        continue;
+  size_t total_written = 0;
+  size_t iov_idx = 0;
+  size_t iov_offset = 0;
+  while (iov_idx < len) {
+    iovec tmp;
+    tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
+    tmp.iov_len = v[iov_idx].iov_len - iov_offset;
+    PushResult push_res = PushToEngine(&tmp, 1);
+    if (push_res.engine_opcode < 0) {
+      auto ec = HandleOp(push_res.engine_opcode);
+      if (ec) {
+        VLOG(1) << "HandleOp failed " << ec.message();
+        return make_unexpected(ec);
       }
     }
-    return total_written;
+
+    if (push_res.written > 0) {
+      size_t written = push_res.written;
+      total_written += written;
+      if (written < tmp.iov_len) {
+        iov_offset += written;
+      } else {
+        ++iov_idx;
+        iov_offset = 0;
+      }
+      auto ec = MaybeSendOutput();
+      if (ec) {
+        VLOG(1) << "MaybeSendOutput failed " << ec.message();
+        return make_unexpected(ec);
+      }
+      continue;
+    }
+  }
+  return total_written;
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
