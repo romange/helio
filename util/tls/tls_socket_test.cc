@@ -317,10 +317,17 @@ TEST_P(TlsSocketTest, TrySendVector) {
 TEST_P(TlsSocketTest, RegisterOnRecv) {
   auto client_sock = CreateClientSocket();
   ASSERT_TRUE(client_sock);
-  const std::string send_data{"Async Recv Data " + std::to_string(::getpid()) + std::to_string(::time(nullptr))};
+  const std::string send_data{"Async Recv Data " + std::to_string(::getpid()) +
+                              std::to_string(::time(nullptr))};
   std::string received_data;
-  Done send_done;
   Done data_ready;
+
+  // Register the callback to only notify a waiting fiber, but only after send_done is signaled.
+  proactor_->DispatchBrief([&] {
+    server_socket_->RegisterOnRecv([&](const util::FiberSocketBase::RecvNotification&) {
+      data_ready.Notify();
+    });
+  });
 
   // Launch sender fiber first so send_done can be signaled before RegisterOnRecv callback waits on
   // it.
@@ -328,15 +335,6 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
     io::Bytes data(reinterpret_cast<const uint8_t*>(send_data.data()), send_data.size());
     auto res = client_sock->TrySend(data);
     ASSERT_TRUE(res);
-    send_done.Notify();
-  });
-
-  // Register the callback to only notify a waiting fiber, but only after send_done is signaled.
-  proactor_->Await([&] {
-    server_socket_->RegisterOnRecv([&](const util::FiberSocketBase::RecvNotification&) {
-      send_done.Wait();
-      data_ready.Notify();
-    });
   });
 
   // Launch a fiber to perform the actual TryRecv and store the result.

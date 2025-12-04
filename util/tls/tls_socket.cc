@@ -487,6 +487,7 @@ error_code TlsSocket::WriteToUpstreamSocket() {
   return ec;
 }
 
+// Low-level function, Try once only, higher level caller maybe loop to retry.
 error_code TlsSocket::WriteToUpstreamSocketAsync() {
   DCHECK(engine_);
   error_code ec;
@@ -582,6 +583,9 @@ void TlsSocket::RecvAsync(const RecvNotification& rn, const OnRecvCb& recv_cb) {
     engine_->CommitInput(buf.size());
 
     // Loop to read and deliver all available decrypted application data.
+    // Note: app_buf is stack-allocated and only valid during this function's scope.
+    // RecvNotification's buffer must not be accessed after the callback returns.
+    // See fiber_socket_base.h:131-132 for buffer lifetime contract.
     while (true) {
       static constexpr size_t kAppBufSize = 4096;
       std::array<uint8_t, kAppBufSize> app_buf{};
@@ -594,7 +598,7 @@ void TlsSocket::RecvAsync(const RecvNotification& rn, const OnRecvCb& recv_cb) {
         continue;
       } else if ((red_res == Engine::NEED_READ_AND_MAYBE_WRITE) ||
                  (red_res == Engine::NEED_WRITE)) {
-        HandleOp(red_res);
+        HandleOpAsync(red_res);
         // After handling, check if more decrypted data is available and continue loop.
         continue;
       } else {
@@ -694,23 +698,18 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       buf.remove_prefix(n);
       total_read += n;
       continue;
-    } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
-      auto input_buf = engine_->PeekInputBuf();
-      if (input_buf.empty()) {
-        if (total_read == 0) {
-          return make_unexpected(make_error_code(std::errc::resource_unavailable_try_again));
+    } else if ((n == Engine::NEED_READ_AND_MAYBE_WRITE) || (n == Engine::NEED_WRITE)) {
+      auto ec{HandleOpAsync(n)};
+      if (ec) {
+        if (ec == errc::resource_unavailable_try_again) {
+          if (total_read == 0) {
+            return make_unexpected(ec);
+          }
+          break;
         }
-        break;
+        return make_unexpected(ec);
       }
-      io::Result<size_t> res = next_sock_->TryRecv(input_buf);
-      if (res && (*res > 0)) {
-        engine_->CommitInput(*res);
-        continue;
-      }
-      if (total_read == 0) {
-        return res;
-      }
-      break;
+      continue;
     } else {
       return make_unexpected(n == Engine::EOF_STREAM
                                  ? make_error_code(std::errc::connection_aborted)
