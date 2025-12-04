@@ -544,6 +544,8 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   entry->index = se.sqe()->user_data;
   se.sqe()->len = IORING_POLL_ADD_MULTI;
 
+  // flush SQEs. Important to avoid data-race with subsequent calls to EpollDel.
+  io_uring_submit(&ring_);
   return reinterpret_cast<EpollIndex>(entry);
 }
 
