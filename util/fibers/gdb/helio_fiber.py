@@ -206,8 +206,11 @@ class FiberInterface:
         """Check if fiber is in a ready/terminate queue."""
         try:
             hook = self.ptr.dereference()['list_hook']
-            # Check if the hook is linked (next_ pointer is not null/sentinel)
-            return True  # Simplified - proper check would inspect the hook
+            # For boost::intrusive safe_link mode, check if next_ pointer
+            # is non-null (linked hooks have valid pointers)
+            next_ptr = hook['next_']
+            # A linked hook has a non-null next pointer
+            return int(next_ptr) != 0
         except gdb.error:
             return False
 
@@ -215,7 +218,10 @@ class FiberInterface:
         """Check if fiber is in sleep queue."""
         try:
             hook = self.ptr.dereference()['sleep_hook']
-            return True  # Simplified
+            # For boost::intrusive set hooks, check parent/left/right pointers
+            # A linked hook will have at least one non-null pointer
+            parent = hook['parent_']
+            return int(parent) != 0
         except gdb.error:
             return False
 
@@ -366,13 +372,29 @@ class Scheduler:
             fi_p = gdb.lookup_type("util::fb2::detail::FiberInterface").pointer()
 
             # Get offset of fibers_hook in FiberInterface
+            offset = None
             try:
-                # Try to get offset using gdb
+                # Try to get offset using gdb's offsetof-like expression
                 offset = int(gdb.parse_and_eval(
                     "&((util::fb2::detail::FiberInterface*)0)->fibers_hook"
                 ))
             except gdb.error:
-                # Fallback: estimate offset (this may vary)
+                pass
+
+            if offset is None:
+                # Alternative: try to compute offset from type info
+                try:
+                    fi_type = gdb.lookup_type("util::fb2::detail::FiberInterface")
+                    for field in fi_type.fields():
+                        if field.name == 'fibers_hook':
+                            offset = field.bitpos // 8
+                            break
+                except gdb.error:
+                    pass
+
+            if offset is None:
+                # Last resort fallback with warning
+                print("Warning: Could not determine fibers_hook offset, using estimated value")
                 offset = 128  # Approximate offset based on struct layout
 
             max_iters = 1000  # Safety limit

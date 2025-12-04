@@ -5,7 +5,7 @@
 // This program creates multiple fibers and can be used to test the GDB commands.
 //
 // To test GDB scripts manually:
-//   gdb -x test_gdb_script.gdb ./gdb_fiber_test
+//   gdb -x test_gdb_commands.gdb ./gdb_fiber_test
 
 #include <atomic>
 #include <iostream>

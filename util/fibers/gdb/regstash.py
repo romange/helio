@@ -37,10 +37,11 @@ EXTRA_REGISTERS = [
     "mxcsr"
 ]
 
-# Vector registers
+# Vector registers (x86_64 specific, silently ignored on other platforms)
+# These are optional and failure to read them is handled gracefully
 VECTOR_REGISTERS = [f"ymm{x}.v4_int64[{y}]" for x in range(16) for y in range(4)]
 
-# All registers to save
+# All registers to save (base registers are required, others are optional)
 ALL_REGISTERS = BASE_REGISTERS + EXTRA_REGISTERS + VECTOR_REGISTERS
 
 
@@ -61,7 +62,12 @@ def read_register(name):
 
 def write_register(name, value):
     """Write a value to a register in GDB."""
+    # format_string with 'x' format returns the value without '0x' prefix
+    # but we need to add it for GDB's set command
     hex_value = value.format_string(format='x')
+    # Ensure we have a valid hex format for GDB
+    if not hex_value.startswith('0x'):
+        hex_value = '0x' + hex_value.lstrip('0') if hex_value.lstrip('0') else '0x0'
     cmd = f"set ${name} = {hex_value}"
     gdb.execute(cmd)
 
