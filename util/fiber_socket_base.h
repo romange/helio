@@ -127,6 +127,9 @@ class FiberSocketBase : public io::Sink,
     std::variant<RecvCompletion, std::error_code, io::MutableBytes> read_result;
   };
 
+  /// Callback invoked on socket receive events.
+  /// Any buffer in RecvNotification is only valid for the duration of the callback.
+  ///       The callback must consume the data synchronously; copy if you need to use it asynchronously.
   using OnRecvCb = std::function<void (const RecvNotification&)>;
   virtual void RegisterOnRecv(OnRecvCb cb) = 0;
   virtual void ResetOnRecvHook() = 0;

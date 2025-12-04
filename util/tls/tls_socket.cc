@@ -13,9 +13,9 @@
 #include "util/fibers/proactor_base.h"
 #include "util/tls/tls_engine.h"
 
-#define VSOCK(verbosity)                                                      \
+#define VSOCK(verbosity)                                                            \
   VLOG(verbosity) << "sock[" << native_handle() << "], state " << state_.to_ulong() \
-                  << ", write_total:" << upstream_write_ << " "               \
+                  << ", write_total:" << upstream_write_ << " "                     \
                   << " pending output: " << engine_->OutputPending() << " "
 
 #define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
@@ -43,7 +43,8 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 
 TlsSocket::~TlsSocket() {
   // sanity check that all pending ops are done.
-  DCHECK_EQ((state_[WRITE_IN_PROGRESS] || state_[READ_IN_PROGRESS] || state_[SHUTDOWN_IN_PROGRESS]), false);
+  DCHECK_EQ((state_[WRITE_IN_PROGRESS] || state_[READ_IN_PROGRESS] || state_[SHUTDOWN_IN_PROGRESS]),
+            false);
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
@@ -226,8 +227,9 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
     }
 
     if ((read_total > 0) && (op_val == Engine::NEED_READ_AND_MAYBE_WRITE)) {
-      // After reading some data, the TLS engine may have generated protocol output (e.g., handshake or alerts).
-      // Flush any pending output to ensure protocol progress and avoid stalling the peer.
+      // After reading some data, the TLS engine may have generated protocol output (e.g., handshake
+      // or alerts). Flush any pending output to ensure protocol progress and avoid stalling the
+      // peer.
       if (engine_->OutputPending() > 0) {
         auto ec = MaybeSendOutput();
         if (ec) {
@@ -363,9 +365,20 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   return WriteToUpstreamSocket();
 }
 
+auto TlsSocket::MaybeSendOutputAsync() -> error_code {
+  if (engine_->OutputPending() == 0)
+    return {};
+
+  if (state_[WRITE_IN_PROGRESS]) {
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+
+  return WriteToUpstreamSocketAsync();
+}
+
 auto TlsSocket::ReadFromUpstreamSocket() -> error_code {
   if (engine_->OutputPending() != 0) {
-    // All tls operations should make sure that output is flushed before finisihing.
+    // All TLS operations should make sure that output is flushed before finishing.
     // If the state machine requested reading, then the output has been flushed,
     // or there is a concurrent write in progress.
     if (!state_[WRITE_IN_PROGRESS]) {
@@ -408,6 +421,34 @@ auto TlsSocket::ReadFromUpstreamSocket() -> error_code {
   return error_code{};
 }
 
+error_code TlsSocket::ReadFromUpstreamSocketAsync() {
+  if ((engine_->OutputPending() != 0) && (!state_[WRITE_IN_PROGRESS])) {
+    // All TLS operations should make sure that output is flushed before finishing.
+    // If the state machine requested reading, then the output has been flushed,
+    // or there is a concurrent write in progress.
+    RETURN_ON_ERROR(MaybeSendOutputAsync());
+  }
+
+  if (state_[READ_IN_PROGRESS]) {
+    return make_error_code(errc::resource_unavailable_try_again);
+  }
+
+  auto mut_buf{engine_->PeekInputBuf()};
+  state_.set(READ_IN_PROGRESS);
+  io::Result<size_t> esz{next_sock_->TryRecv(mut_buf)};
+  state_.reset(READ_IN_PROGRESS);
+  block_concurrent_cv_.notify_one();
+  if (!esz) {
+    return esz.error();
+  }
+  if ((*esz) == 0) {
+    return make_error_code(errc::connection_aborted);
+  }
+
+  engine_->CommitInput(*esz);
+  return error_code{};
+}
+
 error_code TlsSocket::WriteToUpstreamSocket() {
   Engine::Buffer buffer = engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
@@ -446,6 +487,34 @@ error_code TlsSocket::WriteToUpstreamSocket() {
   return ec;
 }
 
+error_code TlsSocket::WriteToUpstreamSocketAsync() {
+  DCHECK(engine_);
+  error_code ec;
+  Engine::Buffer buffer{engine_->PeekOutputBuf()};
+  DCHECK(!buffer.empty());
+
+  if (buffer.empty())
+    return {};
+
+  // we do not allow concurrent writes from multiple fibers.
+  state_.set(WRITE_IN_PROGRESS);
+  io::Result<size_t> write_result{next_sock_->TrySend(buffer)};
+
+  if (!write_result) {
+    ec = write_result.error();
+    VLOG(1) << "WriteToUpstreamSocketAsync failed: " << ec.message();
+  } else {
+    CHECK_GT(*write_result, 0u);
+    upstream_write_ += *write_result;
+    engine_->ConsumeOutputBuf(*write_result);
+  }
+
+  state_.reset(WRITE_IN_PROGRESS);
+  block_concurrent_cv_.notify_one();
+
+  return ec;
+}
+
 error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_STREAM:
@@ -455,6 +524,20 @@ error_code TlsSocket::HandleOp(int op_val) {
       return ReadFromUpstreamSocket();
     case Engine::NEED_WRITE:
       return MaybeSendOutput();
+    default:
+      LOG(DFATAL) << "Unsupported " << op_val;
+  }
+  return {};
+}
+
+error_code TlsSocket::HandleOpAsync(int op_val) {
+  switch (op_val) {
+    case Engine::EOF_STREAM:
+      return make_error_code(errc::connection_aborted);
+    case Engine::NEED_READ_AND_MAYBE_WRITE:
+      return ReadFromUpstreamSocketAsync();
+    case Engine::NEED_WRITE:
+      return MaybeSendOutputAsync();
     default:
       LOG(DFATAL) << "Unsupported " << op_val;
   }
@@ -477,50 +560,55 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
-void TlsSocket::RecvAsync(const RecvNotification& rn) {
-  if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
-    RecvNotification internal_rn;
-    auto& buf = std::get<io::MutableBytes>(rn.read_result);
+void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
+  next_sock_->RegisterOnRecv(
+      [recv_cb = std::move(cb), this](const RecvNotification& rn) { RecvAsync(rn, recv_cb); });
+}
 
-    while (true) {  // Loop to read all available decrypted application data.
+void TlsSocket::RecvAsync(const RecvNotification& rn, const OnRecvCb& recv_cb) {
+  if (std::holds_alternative<FiberSocketBase::RecvCompletion>(rn.read_result) ||
+      std::holds_alternative<std::error_code>(rn.read_result)) {
+    if (recv_cb) {
+      recv_cb(rn);
+    }
+    return;
+  }
+
+  if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
+    auto& buf{std::get<io::MutableBytes>(rn.read_result)};
+    auto input_buf{engine_->PeekInputBuf()};
+    CHECK_GE(input_buf.size(), buf.size());
+    std::memcpy(input_buf.data(), buf.data(), buf.size());
+    engine_->CommitInput(buf.size());
+
+    // Loop to read and deliver all available decrypted application data.
+    while (true) {
       static constexpr size_t kAppBufSize = 4096;
       std::array<uint8_t, kAppBufSize> app_buf{};
       int red_res = engine_->Read(app_buf.data(), app_buf.size());
-      DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << red_res;
       if (red_res > 0) {
+        RecvNotification internal_rn;
         internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(red_res)};
-        recv_cb_(internal_rn);
+        recv_cb(internal_rn);
+        // Continue looping to deliver all buffered decrypted data to upstream socket.
         continue;
-      } else if (red_res == Engine::NEED_READ_AND_MAYBE_WRITE || red_res == Engine::NEED_WRITE) {
-        // TLS engine need to read/write before it can provide us with data. Do not call the
-        // callback, upper layers (socket/fiber) drive the state machine.
-        break;
+      } else if ((red_res == Engine::NEED_READ_AND_MAYBE_WRITE) ||
+                 (red_res == Engine::NEED_WRITE)) {
+        HandleOp(red_res);
+        // After handling, check if more decrypted data is available and continue loop.
+        continue;
       } else {
-        internal_rn.read_result = (red_res == Engine::EOF_STREAM)
-                                      ? make_error_code(std::errc::connection_aborted)
-                                      : make_error_code(std::errc::io_error);
-        recv_cb_(internal_rn);
+        // EOF_STREAM (connection closed probably), 0 (no data read) or unexpected error
+
         break;
       }
     }
-  } else {
-    recv_cb_(rn);
   }
 }
 
-void TlsSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb) {
-  recv_cb_ = std::move(cb);
-  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { RecvAsync(rn); });
-}
-
-void TlsSocket::ResetOnRecvHook() {
-  recv_cb_ = nullptr;
-  next_sock_->ResetOnRecvHook();
-}
-
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  iovec vec{const_cast<void*>(static_cast<const void*>(buf.data())), buf.size()};
-  return TrySend(&vec, 1);
+  iovec v{const_cast<uint8_t*>(buf.data()), buf.size()};
+  return TrySend(&v, 1);
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
@@ -528,14 +616,43 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   size_t iov_idx = 0;
   size_t iov_offset = 0;
   while (iov_idx < len) {
+    // Flush any pending output from previous iterations or previous calls.
+    while (engine_->OutputPending() > 0) {
+      auto ec = MaybeSendOutputAsync();
+      if (ec) {
+        if (ec == errc::resource_unavailable_try_again) {
+          // If we have already consumed some input in this call, return that amount.
+          // The caller will retry the rest.
+          if (total_written > 0) {
+            return total_written;
+          }
+          // If we haven't consumed anything, return EAGAIN so the caller waits.
+          return make_unexpected(ec);
+        }
+        VLOG(1) << "MaybeSendOutputAsync failed " << ec.message();
+        return make_unexpected(ec);
+      }
+      // If MaybeSendOutputAsync succeeded, it means we wrote something.
+      // We loop to check if there is more pending output.
+    }
+
+    // Create a temporary iovec (view) representing the unsent portion of the current buffer.
+    // This allows us to handle partial writes and retries without modifying the original
+    // iovec array.
     iovec tmp;
     tmp.iov_base = static_cast<uint8_t*>(v[iov_idx].iov_base) + iov_offset;
     tmp.iov_len = v[iov_idx].iov_len - iov_offset;
-    PushResult push_res = PushToEngine(&tmp, 1);
+    PushResult push_res{PushToEngine(&tmp, 1)};
     if (push_res.engine_opcode < 0) {
-      auto ec = HandleOp(push_res.engine_opcode);
+      auto ec = HandleOpAsync(push_res.engine_opcode);
       if (ec) {
-        VLOG(1) << "HandleOp failed " << ec.message();
+        if (ec == errc::resource_unavailable_try_again && total_written > 0) {
+          return total_written;
+        }
+        if (ec == errc::resource_unavailable_try_again) {
+          return make_unexpected(ec);
+        }
+        VLOG(1) << "HandleOpAsync failed " << ec.message();
         return make_unexpected(ec);
       }
     }
@@ -549,32 +666,37 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
         ++iov_idx;
         iov_offset = 0;
       }
-      auto ec = MaybeSendOutput();
-      if (ec) {
-        VLOG(1) << "MaybeSendOutput failed " << ec.message();
-        return make_unexpected(ec);
-      }
+      // We pushed data, so we likely have output.
+      // The next iteration of the loop will handle flushing it.
       continue;
     }
   }
+
+  // This loop is necessary because the TLS engine may generate additional output after each flush,
+  // and we must drain the output buffer completely to maintain protocol progress and avoid stalling.
+  // Without this, the engine's output buffer could overflow or block further writes.
+  while (engine_->OutputPending() > 0) {
+    auto ec = MaybeSendOutputAsync();
+    if (ec) {
+      VLOG(1) << "MaybeSendOutputAsync returned error: " << ec.message();
+      break;
+    }
+  }
+
   return total_written;
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   size_t total_read = 0;
   while (!buf.empty()) {
-    // engine_->CommitInput(buf.size());
     int n = engine_->Read(buf.data(), buf.size());
-    DVLOG(2) << "Engine::Read tried to read " << buf.size() << " bytes, got " << n;
     if (n > 0) {
       buf.remove_prefix(n);
       total_read += n;
       continue;
     } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
-      // Need more upstream data or output flush before more plaintext is available.
       auto input_buf = engine_->PeekInputBuf();
       if (input_buf.empty()) {
-        // Return EAGAIN if no data was read, to distinguish from EOF (0 means closed / EOF).
         if (total_read == 0) {
           return make_unexpected(make_error_code(std::errc::resource_unavailable_try_again));
         }
@@ -586,12 +708,10 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         continue;
       }
       if (total_read == 0) {
-        // Propagate EAGAIN or error if no data was read from the socket.
         return res;
       }
       break;
     } else {
-      // Error or EOF
       return make_unexpected(n == Engine::EOF_STREAM
                                  ? make_error_code(std::errc::connection_aborted)
                                  : make_error_code(std::errc::io_error));
