@@ -137,6 +137,7 @@ class TlsSocket final : public FiberSocketBase {
 
   error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
+  void AsyncRecv(const RecvNotification& rn);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
@@ -150,6 +151,7 @@ class TlsSocket final : public FiberSocketBase {
   };
   uint8_t state_{0};
 
+  std::function<void(const RecvNotification&)> recv_cb_;
   class AsyncReq {
    public:
     enum Role : std::uint8_t { READER, WRITER };

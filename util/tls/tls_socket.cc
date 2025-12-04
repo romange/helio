@@ -467,12 +467,46 @@ void TlsSocket::CancelOnErrorCb() {
   return next_sock_->CancelOnErrorCb();
 }
 
-void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
-  LOG(FATAL) << "Not implemented";
+void TlsSocket::AsyncRecv(const RecvNotification& rn) {
+  if (std::holds_alternative<io::MutableBytes>(rn.read_result)) {
+    RecvNotification internal_rn;
+    auto& buf = std::get<io::MutableBytes>(rn.read_result);
+    // Feed raw bytes to the TLS engine.
+    engine_->CommitInput(buf.size());
+
+    // Loop to read all available decrypted application data.
+    while (true) {
+      std::array<uint8_t, 4096> app_buf{};
+      int n = engine_->Read(app_buf.data(), app_buf.size());
+      if (n > 0) {
+        internal_rn.read_result = io::MutableBytes{app_buf.data(), static_cast<size_t>(n)};
+        recv_cb_(internal_rn);
+        continue;
+      } else if (n == Engine::NEED_READ_AND_MAYBE_WRITE || n == Engine::NEED_WRITE) {
+        // TLS engine need to read/write before it can provide us with data. Do not call the
+        // callback, upper layers (socket/fiber) drive the state machine.
+        break;
+      } else {
+        internal_rn.read_result = (n == Engine::EOF_STREAM)
+                                      ? make_error_code(std::errc::connection_aborted)
+                                      : make_error_code(std::errc::io_error);
+        recv_cb_(internal_rn);
+        break;
+      }
+    }
+  } else {
+    recv_cb_(rn);
+  }
+}
+
+void TlsSocket::RegisterOnRecv(std::function<void(const RecvNotification&)> cb) {
+  recv_cb_ = std::move(cb);
+  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { AsyncRecv(rn); });
 }
 
 void TlsSocket::ResetOnRecvHook() {
-  LOG(FATAL) << "Not implemented";
+  recv_cb_ = nullptr;
+  next_sock_->ResetOnRecvHook();
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
@@ -571,7 +605,8 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  owner_->next_sock_->AsyncReadSome(&scratch, 1, [this](auto res) { this->AsyncReadProgressCb(res); });
+  owner_->next_sock_->AsyncReadSome(&scratch, 1,
+                                    [this](auto res) { this->AsyncReadProgressCb(res); });
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
@@ -749,12 +784,12 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
    data from the engine and pushes it to the upstream socket and the flow that pushes data
    from the user to the engine. We could call AsyncProgressCb with the result as soon as we push
    data to the engine, even if the engine is not flushed yet, as long as we guarantee that the
-   engine is eventually flushed. This may create cases where we "miss" socket errors, as we discover
-   them eventually. But it's fine as long as we manage this properly in tls socket states. Why it is
-   better? Because during happy path, we can push data to the engine, and then flush to the socket
-   via TrySend and all this without allocations and asynchronous state that needs to be managed.
-   Only if TrySend does not flush everything, we need to enter the async state machine. All this is
-   similar to how posix write path works.
+   engine is eventually flushed. This may create cases where we "miss" socket errors, as we
+   discover them eventually. But it's fine as long as we manage this properly in tls socket
+   states. Why it is better? Because during happy path, we can push data to the engine, and then
+   flush to the socket via TrySend and all this without allocations and asynchronous state that
+   needs to be managed. Only if TrySend does not flush everything, we need to enter the async
+   state machine. All this is similar to how posix write path works.
 */
 void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!async_write_req_);
