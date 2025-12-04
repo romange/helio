@@ -137,10 +137,12 @@ class TlsSocket final : public FiberSocketBase {
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
 
-  /// Read encrypted data from the network socket and feed it into the TLS engine.
-  error_code HandleUpstreamRead();
+  /// Read encrypted data from the network socket and feed it into the TLS engine's input buffer.
+  error_code ReadFromUpstreamSocket();
 
-  error_code HandleUpstreamWrite();
+  /// Write all pending encrypted data from the TLS engine's output buffer to the network socket (blocking).
+  error_code WriteToUpstreamSocket();
+
   error_code HandleOp(int op);
 
   // Asynchronously receives and delivers decrypted data, handling TLS engine state.
@@ -171,7 +173,7 @@ class TlsSocket final : public FiberSocketBase {
     }
 
     void HandleOpAsync(int op_val);
-    void StartUpstreamWrite();
+    void WriteToUpstreamSocketAsync();
     void SetEngineWritten(size_t written) {
       engine_written_ = written;
     }
