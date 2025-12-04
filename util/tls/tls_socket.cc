@@ -14,7 +14,7 @@
 #include "util/tls/tls_engine.h"
 
 #define VSOCK(verbosity)                                                      \
-  VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(state_) \
+  VLOG(verbosity) << "sock[" << native_handle() << "], state " << state_.to_ulong() \
                   << ", write_total:" << upstream_write_ << " "               \
                   << " pending output: " << engine_->OutputPending() << " "
 
@@ -43,7 +43,7 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 
 TlsSocket::~TlsSocket() {
   // sanity check that all pending ops are done.
-  DCHECK_EQ(state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS), 0);
+  DCHECK_EQ((state_[WRITE_IN_PROGRESS] || state_[READ_IN_PROGRESS] || state_[SHUTDOWN_IN_PROGRESS]), false);
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
@@ -57,11 +57,11 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
-  if (state_ & (SHUTDOWN_DONE | SHUTDOWN_IN_PROGRESS)) {
+  if (state_[SHUTDOWN_DONE] || state_[SHUTDOWN_IN_PROGRESS]) {
     return {};
   }
 
-  state_ |= SHUTDOWN_IN_PROGRESS;
+  state_.set(SHUTDOWN_IN_PROGRESS);
   Engine::OpResult op_result = engine_->Shutdown();
 
   // TODO: this flow is hacky and should be reworked.
@@ -71,7 +71,7 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   // Furthermore, the call `next_sock_->Shutdown` below can race with sending close_notify
   // message.
   // For now we just try to call MaybeSendOutput only if there is no ongoing write.
-  if (op_result && (state_ & WRITE_IN_PROGRESS) == 0) {
+  if (op_result && !state_[WRITE_IN_PROGRESS]) {
     // engine_ could send notification messages to the peer.
     std::ignore = MaybeSendOutput();
   }
@@ -86,8 +86,8 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(how);
   }
-  state_ |= SHUTDOWN_DONE;
-  state_ &= ~SHUTDOWN_IN_PROGRESS;
+  state_.set(SHUTDOWN_DONE);
+  state_.reset(SHUTDOWN_IN_PROGRESS);
 
   return res;
 }
@@ -327,7 +327,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   // This function is present in both read and write paths.
   // meaning that both of them can be called concurrently from differrent fibers and then
   // race over flushing the output buffer. We use state_ to prevent that.
-  if (state_ & WRITE_IN_PROGRESS) {
+  if (state_[WRITE_IN_PROGRESS]) {
     // This should not happen, as we call MaybeSendOutput from reads only when
     // there is no ongoing write.
     LOG(DFATAL) << "Should not happen";
@@ -343,7 +343,7 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
     // Wait for the other write to complete.
     fb2::NoOpLock lock;
-    block_concurrent_cv_.wait(lock, [&] { return !(state_ & WRITE_IN_PROGRESS); });
+    block_concurrent_cv_.wait(lock, [&] { return !state_[WRITE_IN_PROGRESS]; });
 
     return error_code{};
   }
@@ -356,13 +356,13 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
     // All tls operations should make sure that output is flushed before finisihing.
     // If the state machine requested reading, then the output has been flushed,
     // or there is a concurrent write in progress.
-    if ((state_ & WRITE_IN_PROGRESS) == 0) {
+    if (!state_[WRITE_IN_PROGRESS]) {
       LOG(DFATAL) << "Should not happen";
       RETURN_ON_ERROR(MaybeSendOutput());
     }
   }
 
-  if (state_ & READ_IN_PROGRESS) {
+  if (state_[READ_IN_PROGRESS]) {
     // This may happen as both write and read paths may request reading from upstream during
     // renegotiation. There is assymetry with write and reads, as writes are controlled by
     // our process, and every write by the Engine should follow with SSL_WANT_WRITE, while
@@ -370,14 +370,14 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 
     // Wait for the other read to complete.
     fb2::NoOpLock lock;
-    block_concurrent_cv_.wait(lock, [&] { return !(state_ & READ_IN_PROGRESS); });
+    block_concurrent_cv_.wait(lock, [&] { return !state_[READ_IN_PROGRESS]; });
     return error_code{};
   }
 
   auto mut_buf = engine_->PeekInputBuf();
-  state_ |= READ_IN_PROGRESS;
+  state_.set(READ_IN_PROGRESS);
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
-  state_ &= ~READ_IN_PROGRESS;
+  state_.reset(READ_IN_PROGRESS);
   block_concurrent_cv_.notify_one();
   if (!esz) {
     return esz.error();
@@ -407,7 +407,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   error_code ec;
   // we do not allow concurrent writes from multiple fibers.
-  state_ |= WRITE_IN_PROGRESS;
+  state_.set(WRITE_IN_PROGRESS);
   do {
     io::Result<size_t> write_result = next_sock_->WriteSome(buffer);
 
@@ -428,7 +428,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   DCHECK(engine_->OutputPending() == 0 || ec);
 
-  state_ &= ~WRITE_IN_PROGRESS;
+  state_.reset(WRITE_IN_PROGRESS);
   block_concurrent_cv_.notify_one();
 
   return ec;
@@ -626,7 +626,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
 }
 
 void TlsSocket::AsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
-  owner_->state_ &= ~READ_IN_PROGRESS;
+  owner_->state_.reset(READ_IN_PROGRESS);
   RunPending();
   if (!read_result) {
     // Erronous path. Apply the completion callback and exit.
@@ -648,14 +648,14 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   // Even if we early return below we still should not try to read. When we
   // wake up we will poll the SSL engine which will dictate the next action/step.
   should_read_ = false;
-  if (owner_->state_ & READ_IN_PROGRESS) {
+  if (owner_->state_[READ_IN_PROGRESS]) {
     auto* prev = std::exchange(owner_->blocked_async_req_, this);
     CHECK(prev == nullptr);
     return;
   }
 
   auto buffer = owner_->engine_->PeekInputBuf();
-  owner_->state_ |= READ_IN_PROGRESS;
+  owner_->state_.set(READ_IN_PROGRESS);
 
   auto& scratch = scratch_iovec_;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
@@ -721,11 +721,11 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
 
 void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
   if (!write_result) {
-    owner_->state_ &= ~WRITE_IN_PROGRESS;
+    owner_->state_.reset(WRITE_IN_PROGRESS);
 
     // broken_pipe - happens when the other side closes the connection. do not log this.
     if (write_result.error() != errc::broken_pipe) {
-      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << int(owner_->state_)
+      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << owner_->state_.to_ulong()
               << ", write_total:" << owner_->upstream_write_ << " "
               << " pending output: " << owner_->engine_->OutputPending()
               << " HandleUpstreamAsyncWrite failed " << write_result.error();
@@ -759,7 +759,7 @@ void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) 
                 << " bytes. Async short write detected";
   }
 
-  owner_->state_ &= ~WRITE_IN_PROGRESS;
+  owner_->state_.reset(WRITE_IN_PROGRESS);
   RunPending();
 
   // We are done with the write, check if we also need to read because we are
@@ -799,7 +799,7 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
 }
 
 void TlsSocket::AsyncReq::StartUpstreamWrite() {
-  if (owner_->state_ & WRITE_IN_PROGRESS) {
+  if (owner_->state_[WRITE_IN_PROGRESS]) {
     CHECK(owner_->blocked_async_req_ == nullptr);
     owner_->blocked_async_req_ = this;
     return;
@@ -807,11 +807,11 @@ void TlsSocket::AsyncReq::StartUpstreamWrite() {
 
   Engine::Buffer buffer = owner_->engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
-  DCHECK((owner_->state_ & WRITE_IN_PROGRESS) == 0);
+  DCHECK(!owner_->state_[WRITE_IN_PROGRESS]);
 
   DVLOG(2) << "StartUpstreamWrite " << buffer.size();
   // we do not allow concurrent writes from multiple fibers.
-  owner_->state_ |= WRITE_IN_PROGRESS;
+  owner_->state_.set(WRITE_IN_PROGRESS);
 
   auto& scratch = scratch_iovec_;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
@@ -826,7 +826,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
     return;
   }
 
-  if (owner_->state_ & WRITE_IN_PROGRESS) {
+  if (owner_->state_[WRITE_IN_PROGRESS]) {
     CHECK(owner_->blocked_async_req_ == nullptr);
     owner_->blocked_async_req_ = this;
     return;

@@ -7,6 +7,7 @@
 #include <openssl/ssl.h>
 
 #include <memory>
+#include <bitset>
 
 #include "util/fiber_socket_base.h"
 #include "util/tls/tls_engine.h"
@@ -145,13 +146,14 @@ class TlsSocket final : public FiberSocketBase {
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
 
-  enum {
-    WRITE_IN_PROGRESS = 1,
-    READ_IN_PROGRESS = 2,
-    SHUTDOWN_IN_PROGRESS = 4,
-    SHUTDOWN_DONE = 8,
+  enum StateFlag{
+    WRITE_IN_PROGRESS = 0,
+    READ_IN_PROGRESS = 1,
+    SHUTDOWN_IN_PROGRESS = 2,
+    SHUTDOWN_DONE = 3,
+    STATE_FLAGS_COUNT = 4
   };
-  uint8_t state_{0};
+  std::bitset<STATE_FLAGS_COUNT> state_{};
 
   std::function<void(const RecvNotification&)> recv_cb_;
   class AsyncReq {
