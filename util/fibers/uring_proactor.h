@@ -229,6 +229,7 @@ class UringProactor : public ProactorBase {
 
   int32_t next_free_ce_ = -1;
   uint32_t pending_cb_cnt_ = 0;
+  uint32_t pending_epoll_removals_ = 0;
   uint32_t next_free_index_ = 0;  // next available fd for register files.
   uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
