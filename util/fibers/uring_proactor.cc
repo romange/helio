@@ -565,7 +565,7 @@ void UringProactor::EpollDel(EpollIndex id) {
   uint64_t uid = entry->index;
   int fd = entry->fd;
 
-  // using io_uring_register_sync_cancel is unapplicable here because of the several reasons:
+  // using io_uring_register_sync_cancel is not applicable here because of several reasons:
   // 1. it can race with EpollAdd requests that has not been processed yet, which will result
   //    with missing cancellation.
   // 2. It may race with callbacks that are already being in the completion queue.
