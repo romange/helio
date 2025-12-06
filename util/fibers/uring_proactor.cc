@@ -580,7 +580,6 @@ void UringProactor::EpollDel(EpollIndex id) {
   IoResult res;
   pending_epoll_removals_++;
 
-
   do {
     FiberCall fc(this);
     fc->PrepPollRemove(uid);
