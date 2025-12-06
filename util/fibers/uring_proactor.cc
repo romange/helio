@@ -571,7 +571,7 @@ void UringProactor::EpollDel(EpollIndex id) {
   // 2. It may race with callbacks that are already being in the completion queue.
   //    Imagine for example the peer shuts down the socket and we have a pending POLLHUP
   //    notification. io_uring_register_sync_cancel won't cancel the notification that is already
-  //    been in the queue.
+  //    in the queue.
   // Both scenarios lead to data/race and crash as we delete the "entry" object at the end of
   // the call.
 
