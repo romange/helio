@@ -93,18 +93,6 @@ void Engine::ConsumeOutputBuf(unsigned sz) {
   CHECK_EQ(unsigned(res), sz);
 }
 
-unsigned Engine::WriteBuf(const Buffer& buf) {
-  DCHECK(!buf.empty());
-
-  char* cbuf = nullptr;
-  int res = BIO_nwrite(external_bio_, &cbuf, buf.size());
-  CHECK_GE(res, 0);
-  if (res > 0) {
-    memcpy(cbuf, buf.data(), res);
-  }
-  return res;
-}
-
 auto Engine::PeekInputBuf() const -> MutableBuffer {
   char* buf = nullptr;
 
