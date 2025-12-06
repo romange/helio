@@ -117,18 +117,24 @@ class FiberSocketBase : public io::Sink,
   //! Cancels a callback that was registered with RegisterOnErrorCb. Must be reentrant.
   virtual void CancelOnErrorCb() = 0;
 
+  using RecvCompletion = bool;
   struct RecvNotification {
     // For classic recv notifications, this contains RecvCompletion (false on close, true on data).
     // For iouring/bufring notifications, it contains either the positive error code,
     // or the received data buffer. In latter case, the callback must consume the data before
     // returning.
-    using RecvCompletion = bool;
+
     std::variant<RecvCompletion, std::error_code, io::MutableBytes> read_result;
   };
 
+  /// Callback invoked on socket receive events.
+  /// Any buffer in RecvNotification is only valid for the duration of the callback.
+  ///       The callback must consume the data synchronously; copy if you need to use it asynchronously.
   using OnRecvCb = std::function<void (const RecvNotification&)>;
   virtual void RegisterOnRecv(OnRecvCb cb) = 0;
   virtual void ResetOnRecvHook() = 0;
+
+  virtual void EnableRecvMultishot(uint16_t bufring_id) {}
 
   virtual bool IsUDS() const = 0;
 

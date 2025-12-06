@@ -6,6 +6,7 @@
 
 #include <openssl/ssl.h>
 
+#include <bitset>
 #include <memory>
 
 #include "util/fiber_socket_base.h"
@@ -88,7 +89,13 @@ class TlsSocket final : public FiberSocketBase {
   virtual void SetProactor(ProactorBase* p) override;
 
   virtual void RegisterOnRecv(OnRecvCb cb) final;
-  virtual void ResetOnRecvHook() final;
+  void ResetOnRecvHook() final {
+    next_sock_->ResetOnRecvHook();
+  }
+
+  void EnableRecvMultishot(uint16_t bufring_id) override {
+    next_sock_->EnableRecvMultishot(bufring_id);
+  }
 
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
@@ -131,24 +138,36 @@ class TlsSocket final : public FiberSocketBase {
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
+  error_code MaybeSendOutputAsync();
 
-  /// Read encrypted data from the network socket and feed it into the TLS engine.
-  error_code HandleUpstreamRead();
+  /// Read encrypted data from the network socket and feed it into the TLS engine's input buffer.
+  error_code ReadFromUpstreamSocket();
+  error_code ReadFromUpstreamSocketAsync();
 
-  error_code HandleUpstreamWrite();
+  /// Write all pending encrypted data from the TLS engine's output buffer to the network socket
+  error_code WriteToUpstreamSocket();
+  error_code WriteToUpstreamSocketAsync();
+
   error_code HandleOp(int op);
+  error_code HandleOpAsync(int op);
+
+  // Asynchronously receives and delivers decrypted data, handling TLS engine state.
+  void RecvAsync(const RecvNotification& rn, const OnRecvCb& cb);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
 
-  enum {
-    WRITE_IN_PROGRESS = 1,
-    READ_IN_PROGRESS = 2,
-    SHUTDOWN_IN_PROGRESS = 4,
-    SHUTDOWN_DONE = 8,
+  // If you use an enum with std::bitset in this class, the enum values are indices, not bitmask values.
+  // For example, state_[WRITE_IN_PROGRESS] checks the write-in-progress flag.
+  enum StateFlag {
+    WRITE_IN_PROGRESS = 0,
+    READ_IN_PROGRESS = 1,
+    SHUTDOWN_IN_PROGRESS = 2,
+    SHUTDOWN_DONE = 3,
+    STATE_FLAGS_COUNT = 4
   };
-  uint8_t state_{0};
+  std::bitset<STATE_FLAGS_COUNT> state_{};
 
   class AsyncReq {
    public:
@@ -161,7 +180,7 @@ class TlsSocket final : public FiberSocketBase {
     }
 
     void HandleOpAsync(int op_val);
-    void StartUpstreamWrite();
+    void WriteToUpstreamSocketAsync();
     void SetEngineWritten(size_t written) {
       engine_written_ = written;
     }

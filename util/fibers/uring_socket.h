@@ -57,6 +57,11 @@ class UringSocket : public LinuxSocketBase {
     return has_recv_data_;
   }
 
+  void EnableRecvMultishot(uint16_t bufring_id) override {
+    enable_multi_shot_ = 1;
+    bufring_id_ = bufring_id;
+  }
+
   void EnableRecvMultishot() {
     enable_multi_shot_ = 1;
   }
