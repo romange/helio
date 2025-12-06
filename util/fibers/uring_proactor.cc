@@ -554,7 +554,7 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   se.PrepPollAdd(entry->fd, event_mask);
   entry->index = se.sqe()->user_data;
   se.sqe()->len = IORING_POLL_ADD_MULTI;
- #ifdef DBG_EPOLL
+#ifdef DBG_EPOLL
   LOG(INFO) << "EpollAdd fd " << fd << ", entry: " << entry << ", entry->index: " << entry->index;
 #endif
   return reinterpret_cast<EpollIndex>(entry);
