@@ -84,11 +84,6 @@ class Engine {
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
   void ConsumeOutputBuf(unsigned sz);
 
-  //! Writes encrypted data into input ssl buffer.
-  //! Returns number of written bytes or the error.
-  //! TODO: should be replaced with PeekInputBuf, memcpy, CommitInput sequence.
-  unsigned WriteBuf(const Buffer& buf);
-
   // We usually use this function to write from the raw socket to SSL engine.
   // Returns direct reference to the input (write) buffer. This operation is not destructive.
   MutableBuffer PeekInputBuf() const;

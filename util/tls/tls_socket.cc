@@ -50,8 +50,10 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   CHECK(!engine_);
   engine_.reset(new Engine{context});
   if (!prefix.empty()) {
-    Engine::OpResult op_result = engine_->WriteBuf(prefix);
-    CHECK_EQ(unsigned(op_result), prefix.size());
+    auto input_buf = engine_->PeekInputBuf();
+    CHECK_GE(input_buf.size(), prefix.size());
+    std::memcpy(input_buf.data(), prefix.data(), prefix.size());
+    engine_->CommitInput(prefix.size());
   }
 }
 
