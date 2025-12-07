@@ -148,7 +148,7 @@ class TlsSocket final : public FiberSocketBase {
     SHUTDOWN_IN_PROGRESS = 4,
     SHUTDOWN_DONE = 8,
   };
-  uint8_t state_{};
+  uint8_t state_{0};
 
   class AsyncReq {
    public:

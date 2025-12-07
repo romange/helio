@@ -221,14 +221,15 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
       continue;
     }
 
-    if ((read_total > 0) && (op_val == Engine::NEED_READ_AND_MAYBE_WRITE)) {
-      // Flush pending protocol output without attempting another upstream read to avoid blocking
-      // the caller after we already have application data ready.
+    if (op_val == Engine::NEED_READ_AND_MAYBE_WRITE) {
       error_code flush_ec = MaybeSendOutput();
       if (flush_ec) {
         return make_unexpected(flush_ec);
       }
-      return read_total;
+      if (read_total > 0) {
+        break;
+      }
+      // else, continue the loop to handle more input
     }
 
     error_code ec = HandleOp(op_val);
