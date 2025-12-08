@@ -15,10 +15,15 @@ export CXX=g++
 install_boost() {
     mkdir -p /tmp/boost && pushd /tmp/boost
     if ! [ -d $BOOST ]; then
-      url="https://boostorg.jfrog.io/artifactory/main/release/${BVER}/source/$BOOST.tar.bz2"
+      url="https://archives.boost.io/release/${BVER}/source/$BOOST.tar.bz2"
       echo "Downloading from $url"
       if ! [ -e $BOOST.tar.bz2 ]; then wget -nv ${url} -O $BOOST.tar.bz2; fi
 
+      # Check if file is valid bzip2 archive before extracting
+      if ! file $BOOST.tar.bz2 | grep -q 'bzip2 compressed data'; then
+        echo "Error: Downloaded file is not a valid bzip2 archive. Possible download error."
+        exit 1
+      fi
       tar -xjf $BOOST.tar.bz2 && chown ${SUDO_USER}:${SUDO_USER} -R $BOOST.tar.bz2 $BOOST
     fi
 
