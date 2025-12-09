@@ -32,6 +32,7 @@ ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd tab
 
 using namespace std;
 
+// #define DBG_EPOLL 1
 namespace util {
 
 using detail::SafeErrorMessage;
@@ -103,6 +104,10 @@ UringProactor::UringProactor() : ProactorBase() {
 }
 
 UringProactor::~UringProactor() {
+  if (pending_epoll_removals_) {
+    LOG(DFATAL) << "Pending epoll removals: " << pending_epoll_removals_;
+  }
+
   CHECK(is_stopped_);
   if (thread_id_ != -1U) {
     if (buf_pool_.backing) {
@@ -530,12 +535,18 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   entry->fd = fd;
 
   auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+    #if DBG_EPOLL
+    LOG(INFO) << "Epoll CB " << entry << " res:" << res << " flags " << flags;
+    #endif
     if (res >= 0) {
-      DCHECK(flags & IORING_CQE_F_MORE);
+      CHECK(flags & IORING_CQE_F_MORE);
+      CHECK(entry->cb);
       entry->cb(res);
     } else {
       res = -res;
       LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
+      static_cast<UringProactor*>(ProactorBase::me())->pending_epoll_removals_--;
+      delete entry;
     }
   };
 
@@ -543,9 +554,9 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   se.PrepPollAdd(entry->fd, event_mask);
   entry->index = se.sqe()->user_data;
   se.sqe()->len = IORING_POLL_ADD_MULTI;
-
-  // flush SQEs. Important to avoid data-race with subsequent calls to EpollDel.
-  io_uring_submit(&ring_);
+#ifdef DBG_EPOLL
+  LOG(INFO) << "EpollAdd fd " << fd << ", entry: " << entry << ", entry->index: " << entry->index;
+#endif
   return reinterpret_cast<EpollIndex>(entry);
 }
 
@@ -554,27 +565,36 @@ void UringProactor::EpollDel(EpollIndex id) {
   uint64_t uid = entry->index;
   int fd = entry->fd;
 
-  if (sync_cancel_f_) {
-    io_uring_sync_cancel_reg reg_arg;
-    memset(&reg_arg, 0, sizeof(reg_arg));
-    reg_arg.timeout.tv_nsec = -1;
-    reg_arg.timeout.tv_sec = -1;
-    reg_arg.flags = 0;
-    reg_arg.addr = uid;
+  // using io_uring_register_sync_cancel is not applicable here because of several reasons:
+  // 1. it can race with EpollAdd requests that has not been processed yet, which will result
+  //    with missing cancellation.
+  // 2. It may race with callbacks that are already being in the completion queue.
+  //    Imagine for example the peer shuts down the socket and we have a pending POLLHUP
+  //    notification. io_uring_register_sync_cancel won't cancel the notification that is already
+  //    in the queue.
+  // Both scenarios lead to data race and crash as we delete the "entry" object at the end of
+  // the call.
 
-    int res = io_uring_register_sync_cancel(&ring_, &reg_arg);
+  // When using async POLL_REMOVE we **try** to guarantee serialized order.
+  // The assumption is that callback will always run after issuing PrepPollRemove.
+  IoResult res;
+  pending_epoll_removals_++;
 
-    LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << -res;
-  } else {
-    IoResult res;
-    do {
-      FiberCall fc(this);
-      fc->PrepPollRemove(uid);
-      res = fc.Get();
-    } while (res == -EALREADY);
-    LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << res;
-  }
-  delete entry;
+  do {
+    FiberCall fc(this);
+    fc->PrepPollRemove(uid);
+    // IOSQE_IO_DRAIN does not work with POLL_REMOVE for some reason - it deadlocks.
+
+#ifdef DBG_EPOLL
+    LOG(INFO) << "Before calling PrepPollRemove fd: " << fd;
+#endif
+    res = fc.Get();
+  } while (res == -EALREADY);
+  LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << res;
+
+#ifdef DBG_EPOLL
+  LOG(INFO) << "EpollDel fd: " << fd << " uid: " << entry->index << " entry: " << entry;
+#endif
 }
 
 void UringProactor::RegrowCentries() {
