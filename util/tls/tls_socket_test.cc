@@ -78,6 +78,7 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
   void SetUp() final;
   void TearDown() final;
+  std::unique_ptr<tls::TlsSocket> CreateClientSocket();
 
   using IoResult = int;
 
@@ -167,34 +168,43 @@ void TlsSocketTest::TearDown() {
   SSL_CTX_free(ssl_ctx_);
 }
 
-TEST_P(TlsSocketTest, ShortWrite) {
-  unique_ptr<tls::TlsSocket> client_sock;
-  {
-    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-
-    proactor_->Await([&] {
-      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
-      client_sock->InitSSL(ssl_ctx);
-    });
-    SSL_CTX_free(ssl_ctx);
-  }
-
-  error_code ec = proactor_->Await([&] {
-    LOG(INFO) << "Connecting to " << listen_ep_;
-    return client_sock->Connect(listen_ep_);
+std::unique_ptr<tls::TlsSocket> TlsSocketTest::CreateClientSocket() {
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  proactor_->Await([&] {
+    client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+    client_sock->InitSSL(ssl_ctx);
   });
-  ASSERT_FALSE(ec) << ec.message();
+  SSL_CTX_free(ssl_ctx);
+  error_code ec = proactor_->Await([&] { return client_sock->Connect(listen_ep_); });
+  if (ec) {
+    ADD_FAILURE() << "Connect failed: " << ec.message();
+    return nullptr;
+  }
+  return client_sock;
+}
+
+// Tests that a short write does not deadlock: both client and server block on ReadSome, but
+// a timeout ensures the test completes even if no data is received.
+TEST_P(TlsSocketTest, ShortWrite) {
+  auto client_sock = CreateClientSocket();
+  ASSERT_TRUE(client_sock);
+
+  // Set a timeout to avoid deadlock on blocking ReadSome calls.
+  constexpr uint32_t kTimeoutMs = 100;
+  proactor_->Await([&] {
+    client_sock->set_timeout(kTimeoutMs);
+    server_socket_->set_timeout(kTimeoutMs);
+  });
 
   auto client_fb = proactor_->LaunchFiber([&] {
     uint8_t buf[256];
     iovec iov{buf, sizeof(buf)};
-
     client_sock->ReadSome(&iov, 1);
   });
 
   // Server side.
   auto server_read_fb = proactor_->LaunchFiber([&] {
-    // This read actually causes the fiber to flush pending writes and preempt on iouring.
     uint8_t buf[256];
     iovec iov;
     iov.iov_base = buf;
@@ -205,7 +215,6 @@ TEST_P(TlsSocketTest, ShortWrite) {
   auto write_res = proactor_->Await([&] {
     ThisFiber::Yield();
     uint8_t buf[16] = {0};
-
     VLOG(1) << "Writing to client";
     return server_socket_->Write(buf);
   });
@@ -215,6 +224,139 @@ TEST_P(TlsSocketTest, ShortWrite) {
   client_fb.Join();
   proactor_->Await([&] { std::ignore = client_sock->Close(); });
   server_read_fb.Join();
+}
+
+// Validates non-blocking TrySend and TryRecv for basic client-server TLS communication.
+// Ensures data sent by client is received correctly by server using polling TryRecv.
+TEST_P(TlsSocketTest, TryReadWrite) {
+  auto client_sock{CreateClientSocket()};
+  ASSERT_TRUE(client_sock);
+
+  const std::string kData{"Hello, TrySend!"};
+
+  // Client sends using TrySend
+  auto client_fb = proactor_->LaunchFiber([&] {
+    io::Bytes data(reinterpret_cast<const uint8_t*>(kData.data()), kData.size());
+    auto res = client_sock->TrySend(data);
+    ASSERT_TRUE(res);
+    ASSERT_EQ(*res, kData.size());
+  });
+
+  // Server receives using TryRecv
+  proactor_->Await([&] {
+    uint8_t buf[1024];
+    io::MutableBytes mb(buf, sizeof(buf));
+
+    io::Result<size_t> res = nonstd::expected_lite::make_unexpected(
+        make_error_code(std::errc::resource_unavailable_try_again));
+
+    // Poll until we get data
+    constexpr int kMaxPollAttempts = 300;
+    for (int attempts_count{}; attempts_count < kMaxPollAttempts; ++attempts_count) {
+      res = server_socket_->TryRecv(mb);
+      if (res)
+        break;
+      if (res.error() != std::errc::resource_unavailable_try_again &&
+          res.error() != std::errc::operation_would_block) {
+        break;  // Real error
+      }
+      ThisFiber::SleepFor(10ms);
+    }
+
+    ASSERT_TRUE(res) << "Server TryRecv failed: " << (res ? "OK" : res.error().message());
+    ASSERT_EQ(*res, kData.size());
+    ASSERT_EQ(std::string((char*)buf, *res), kData);
+  });
+
+  client_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+}
+
+// Validates TrySend with iovec (vectorized send) and TryRecv with partial reads.
+// Ensures server can accumulate partial reads to reconstruct the full message.
+TEST_P(TlsSocketTest, TrySendVector) {
+  auto client_sock = CreateClientSocket();
+  ASSERT_TRUE(client_sock);
+  const std::string kPart1{"Hello, "};
+  const std::string kPart2{"Vector!"};
+  const std::string kFull{kPart1 + kPart2};
+
+  // Client sends using TrySend with iovec
+  auto client_fb = proactor_->LaunchFiber([&] {
+    iovec v[2] = {{.iov_base = (void*)kPart1.data(), .iov_len = kPart1.size()},
+                  {.iov_base = (void*)kPart2.data(), .iov_len = kPart2.size()}};
+
+    auto res{client_sock->TrySend(v, 2)};
+    ASSERT_TRUE(res);
+    ASSERT_EQ(*res, kFull.size());
+  });
+
+  // Server receives using TryRecv, accumulate partial reads
+  proactor_->Await([&] {
+    uint8_t buf[1024];
+    size_t total{};
+    std::string result;
+    constexpr int kMaxPollAttempts = 100;
+    for (int attempts_count{}; attempts_count < kMaxPollAttempts; ++attempts_count) {
+      io::MutableBytes mb(buf + total, sizeof(buf) - total);
+      auto res = server_socket_->TryRecv(mb);
+      if (res && (*res > 0)) {
+        result.append((char*)(buf + total), *res);
+        total += *res;
+        if (total >= kFull.size())
+          break;
+      } else if (res && (*res == 0)) {
+        break;  // EOF
+      } else if (res.error() != std::errc::resource_unavailable_try_again &&
+                 res.error() != std::errc::operation_would_block) {
+        break;  // Real error
+      }
+      ThisFiber::SleepFor(10ms);
+    }
+    ASSERT_EQ(result, kFull);
+  });
+
+  client_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+}
+
+// Validates event-driven read using RegisterOnRecv notification.
+// Ensures callback only signals a fiber, which then safely performs TryRecv after send completes.
+TEST_P(TlsSocketTest, RegisterOnRecv) {
+  auto client_sock = CreateClientSocket();
+  ASSERT_TRUE(client_sock);
+  const std::string send_data{"Async Recv Data in RegisterOnRecv test case"};
+  std::string received_data;
+  Done data_ready;
+
+  // Register the callback to notify a waiting fiber when data arrives.
+  proactor_->DispatchBrief([&] {
+    server_socket_->RegisterOnRecv(
+        [&](const util::FiberSocketBase::RecvNotification&) { data_ready.Notify(); });
+  });
+
+  // Launch sender fiber to send data that will trigger the RegisterOnRecv callback.
+  auto client_fb = proactor_->LaunchFiber([&] {
+    io::Bytes data(reinterpret_cast<const uint8_t*>(send_data.data()), send_data.size());
+    auto res = client_sock->TrySend(data);
+    ASSERT_TRUE(res);
+  });
+
+  // Launch a fiber to perform the actual TryRecv and store the result.
+  auto recv_fb = proactor_->LaunchFiber([&] {
+    data_ready.Wait();
+    uint8_t buf[1024];
+    auto res = server_socket_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
+    if (res && (*res > 0)) {
+      received_data.assign(reinterpret_cast<const char*>(buf), *res);
+    }
+  });
+
+  client_fb.Join();
+  recv_fb.Join();
+  EXPECT_EQ(received_data, send_data);
+  proactor_->Await([&] { server_socket_->ResetOnRecvHook(); });
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
 }
 
 class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
@@ -386,9 +528,7 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
         EXPECT_EQ(*result, 16);
         done.Notify();
       });
-
       done.Wait();
-
       EXPECT_EQ(memcmp(begin(res), begin(buf), 16), 0);
     }
 

@@ -87,8 +87,10 @@ class TlsSocket final : public FiberSocketBase {
 
   virtual void SetProactor(ProactorBase* p) override;
 
-  virtual void RegisterOnRecv(OnRecvCb cb) final;
-  virtual void ResetOnRecvHook() final;
+  virtual void RegisterOnRecv(OnRecvCb cb) override;
+  virtual void ResetOnRecvHook() override {
+    next_sock_->ResetOnRecvHook();
+  }
 
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
@@ -131,12 +133,23 @@ class TlsSocket final : public FiberSocketBase {
 
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
+  error_code MaybeSendOutputAsync();
 
-  /// Read encrypted data from the network socket and feed it into the TLS engine.
+  /// Read encrypted data from the network socket and feed it into the TLS engine's input buffer.
   error_code ReadFromUpstreamSocket();
+  error_code ReadFromUpstreamSocketAsync();
 
+  /// Write all pending encrypted data from the TLS engine's output buffer to the network socket
   error_code WriteToUpstreamSocket();
+  /// Attempts to write pending encrypted data from the TLS engine's output buffer to the network
+  /// socket. May perform a partial write. caller should check OutputPending() and retry if needed.
+  error_code WriteToUpstreamSocketAsync();
+
   error_code HandleOp(int op);
+  error_code HandleOpAsync(int op);
+
+  // Asynchronously receives and delivers decrypted data, handling TLS engine state.
+  void RecvAsync(const RecvNotification& rn, const OnRecvCb& cb);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
@@ -195,12 +208,9 @@ class TlsSocket final : public FiberSocketBase {
     // function extracts the common execution paths.
     void AsyncRoleBasedAction();
 
-    // Helper function to handle WRITE_IN_PROGRESS and READ_IN_PROGRESS without preemption.
-    // When an operation can't continue because there is already one in progress, it early returns
-    // and copies itself to blocked_async_req_. When the in progress operation completes,
-    // it resumes the one pending.
-    void RunPending();
-  };
+    friend class TlsSocket;
+
+  };  // class AsyncReq
 
   std::unique_ptr<AsyncReq> async_read_req_;
   std::unique_ptr<AsyncReq> async_write_req_;
@@ -209,7 +219,25 @@ class TlsSocket final : public FiberSocketBase {
   // preempt in function context, we simply subscribe the async request to the one in-flight and
   // once that completes it will also continue the one pending/blocked.
   AsyncReq* blocked_async_req_ = nullptr;
+
   fb2::CondVarAny block_concurrent_cv_;
+
+  // Resumes any async request (read or write) that was blocked due to an in-progress operation.
+  // Called when the current async operation completes.
+  void ResumeBlockedAsyncReq();
+
+  // State and helpers for managing a pending low-level async write (TrySend) to the underlying socket.
+  // These handle scheduling, progress, and completion of the socket write operation.
+  struct TrySendReq {
+    iovec iov;
+    bool active;
+    error_code ec{};
+  } try_send_req_{};
+
+  void StartPendingTrySend();
+  void ScheduleTrySendWrite();
+  void HandleTrySendWrite(io::Result<size_t> write_result);
+  void FinishPendingTrySend();
 };
 
 }  // namespace tls
