@@ -64,6 +64,12 @@ auto TlsSocket::Shutdown(int how) -> error_code {
     return {};
   }
 
+  if (try_send_req_.active) {
+    try_send_req_.active = false;
+    try_send_req_.ec = {};
+    state_ &= ~WRITE_IN_PROGRESS;
+    block_concurrent_cv_.notify_one();
+  }
   state_ |= SHUTDOWN_IN_PROGRESS;
   Engine::OpResult op_result = engine_->Shutdown();
 
@@ -623,9 +629,10 @@ void TlsSocket::RecvAsync(const RecvNotification& rn, const OnRecvCb& recv_cb) {
         auto ec = HandleOpAsync(read_result);
         if (ec) {
           // TODO: returning error also for errc::resource_unavailable_try_again.
-          // A future optimization could be to add a subscription mechanism to get notified from the TLS engine
-          // when more decrypted data is available, or from other fibers when READ/WRITE operations complete.
-          // As of now, we expect caller to handle (pre-optimization) errc::resource_unavailable_try_again as well.
+          // A future optimization could be to add a subscription mechanism to get notified from the
+          // TLS engine when more decrypted data is available, or from other fibers when READ/WRITE
+          // operations complete. As of now, we expect caller to handle (pre-optimization)
+          // errc::resource_unavailable_try_again as well.
           RecvNotification err_rn;
           err_rn.read_result = ec;
           recv_cb(err_rn);
@@ -1143,6 +1150,8 @@ void TlsSocket::ScheduleTrySendWrite() {
 }
 
 void TlsSocket::HandleTrySendWrite(io::Result<size_t> write_result) {
+  if (!try_send_req_.active)
+    return;
   if (!write_result) {
     try_send_req_.ec = write_result.error();
     DVSOCK(this, 2) << "TrySend write error: " << try_send_req_.ec.message();
