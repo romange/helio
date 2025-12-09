@@ -729,7 +729,9 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
-  static constexpr size_t kMaxIterations = 100;  // To prevent infinite loops in edge cases.
+  // TLS engines may require several consecutive Read/Write calls to make progress.
+  // Spinning a few times (e.g., 4) is safe and helps protocol convergence in fibers.
+  static constexpr size_t kMaxIterations = 4;  // To prevent infinite loops in edge cases.
   size_t total_read{}, max_iterations{kMaxIterations};
   unsigned cnt = 0;
   while (!buf.empty()) {
