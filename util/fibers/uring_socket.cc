@@ -190,7 +190,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   DCHECK(ProactorBase::me() == proactor);
 
   ssize_t res = 0;
-  VSOCK(2) << "WriteSome [" << fd << "] " << len << " iovecs";
+  VSOCK(2) << "WriteSome [" << fd << "] " << len;
 
   if (len == 1) {
     while (true) {

@@ -133,9 +133,9 @@ class TlsSocket final : public FiberSocketBase {
   error_code MaybeSendOutput();
 
   /// Read encrypted data from the network socket and feed it into the TLS engine.
-  error_code ReadFromUpstreamSocket();
+  error_code HandleUpstreamRead();
 
-  error_code WriteToUpstreamSocket();
+  error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
@@ -154,12 +154,14 @@ class TlsSocket final : public FiberSocketBase {
    public:
     enum Role : std::uint8_t { READER, WRITER };
 
-    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len, Role role)
-        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), role_(role) {
+    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len,
+             Role role)
+        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len),
+          role_(role) {
     }
 
     void HandleOpAsync(int op_val);
-    void WriteToUpstreamSocketAsync();
+    void StartUpstreamWrite();
     void SetEngineWritten(size_t written) {
       engine_written_ = written;
     }
