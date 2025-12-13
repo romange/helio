@@ -132,6 +132,9 @@ class TlsSocket final : public FiberSocketBase {
   // just with the engine. It's up to the caller to send the output buffer to the network.
   PushResult PushToEngine(const iovec* ptr, uint32_t len);
 
+  // TODO - explain and use as common
+  void AdvanceIovec(iovec*& iov, uint32_t& len, size_t bytes_to_advance);
+
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
 
