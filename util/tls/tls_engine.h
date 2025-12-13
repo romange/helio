@@ -13,6 +13,7 @@ namespace util {
 namespace tls {
 
 class Engine {
+  friend class TestDelegator;  // for testing only
  public:
   enum HandshakeType { CLIENT = 1, SERVER = 2 };
   enum OpCode {
@@ -48,64 +49,70 @@ class Engine {
   explicit Engine(SSL_CTX* context);
 
   // Destructor.
-  ~Engine();
+  virtual ~Engine();
 
   // Get the underlying implementation in the native type.
-  SSL* native_handle() {
+  virtual SSL* native_handle() {
     return ssl_;
   }
 
   //! Set the peer verification mode. mode is a mask of values specified at
   //! https://www.openssl.org/docs/man1.1.1/man3/SSL_set_verify.html
-  void set_verify_mode(int mode) {
+  virtual void set_verify_mode(int mode) {
     ::SSL_set_verify(ssl_, mode, ::SSL_get_verify_callback(ssl_));
   }
 
   // Perform an SSL handshake using either SSL_connect (client-side) or
   // SSL_accept (server-side).
   // Returns 1 if succeeded or negative opcodes to execute upon.
-  OpResult Handshake(HandshakeType type);
+  virtual OpResult Handshake(HandshakeType type);
 
   // Returns 1 if succeeded or negative opcodes to execute upon.
-  OpResult Shutdown();
+  virtual OpResult Shutdown();
 
   // Write decrypted bytes to the SSL session. Non-negative value - says how much was written.
-  OpResult Write(const Buffer& data);
+  virtual OpResult Write(const Buffer& data);
 
   // Read bytes from the SSL session (decrypted side).
-  OpResult Read(uint8_t* dest, size_t len);
+  virtual OpResult Read(uint8_t* dest, size_t len);
 
   //! Returns output buffer which is the read buffer of tls engine.
   //! This operation is not destructive. The buffer contains the encrypted data that
   //! should be written to the upstream socket.
-  Buffer PeekOutputBuf();
+  virtual Buffer PeekOutputBuf();
 
   //! Tells the engine that sz bytes were consumed from the output (read) buffer.
   //! sz should be not greater than the buffer size from the last PeekOutputBuf() call.
-  void ConsumeOutputBuf(unsigned sz);
+  virtual void ConsumeOutputBuf(unsigned sz);
 
   // We usually use this function to write from the raw socket to SSL engine.
   // Returns direct reference to the input (write) buffer. This operation is not destructive.
-  MutableBuffer PeekInputBuf() const;
+  virtual MutableBuffer PeekInputBuf() const;
 
   // Commits the input buffer. sz should be not greater
   // than the buffer size from PeekInputBuf() call
-  void CommitInput(unsigned sz);
+  virtual void CommitInput(unsigned sz);
 
   // Returns size of pending encrypted data that needs to be flushed out from SSL to I/O.
   // See https://www.openssl.org/docs/man1.0.2/man3/BIO_new_bio_pair.html
   // Specifically, warning that says: "An application must not rely on the error value of
   // SSL_operation() but must assure that the write buffer is always flushed first".
-  size_t OutputPending() const {
+  virtual size_t OutputPending() const {
     return BIO_ctrl(external_bio_, BIO_CTRL_PENDING, 0, NULL);
   }
 
   //! Returns number of pending (encrypted) bytes written to the engine but not yet processed by it.
   //! It's a bit confusing but when we write into external_bio_ it's like
   //! and input buffer to the engine.
-  size_t InputPending() const {
+  virtual size_t InputPending() const {
     return BIO_ctrl(external_bio_, BIO_CTRL_WPENDING, 0, NULL);
   }
+
+ protected:
+#ifdef DF_TESTING  // For testing purposes only
+  Engine() : ssl_(nullptr), external_bio_(nullptr) {
+  }
+#endif
 
  private:
   // Disallow copying and assignment.

@@ -15,6 +15,7 @@
 #include "util/fiber_socket_base.h"
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
+#include "util/tls/tls_test_infra.h"
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
@@ -78,6 +79,7 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
   void SetUp() final;
   void TearDown() final;
+  void CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_sock);
 
   using IoResult = int;
 
@@ -166,24 +168,22 @@ void TlsSocketTest::TearDown() {
 
   SSL_CTX_free(ssl_ctx_);
 }
+// Uses output parameter to allow assertions inside the function..
+void TlsSocketTest::CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_sock) {
+  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  proactor_->Await([&] {
+    client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+    client_sock->InitSSL(ssl_ctx);
+  });
+  SSL_CTX_free(ssl_ctx);
+  error_code ec = proactor_->Await([&] { return client_sock->Connect(listen_ep_); });
+  ASSERT_FALSE(ec) << "Connect failed: " << ec.message();
+  ASSERT_TRUE(client_sock) << "Client socket is null after connect";
+}
 
 TEST_P(TlsSocketTest, ShortWrite) {
-  unique_ptr<tls::TlsSocket> client_sock;
-  {
-    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-
-    proactor_->Await([&] {
-      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
-      client_sock->InitSSL(ssl_ctx);
-    });
-    SSL_CTX_free(ssl_ctx);
-  }
-
-  error_code ec = proactor_->Await([&] {
-    LOG(INFO) << "Connecting to " << listen_ep_;
-    return client_sock->Connect(listen_ep_);
-  });
-  ASSERT_FALSE(ec) << ec.message();
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  CreateClientSocket(client_sock);
 
   auto client_fb = proactor_->LaunchFiber([&] {
     uint8_t buf[256];
@@ -215,6 +215,104 @@ TEST_P(TlsSocketTest, ShortWrite) {
   client_fb.Join();
   proactor_->Await([&] { std::ignore = client_sock->Close(); });
   server_read_fb.Join();
+}
+
+// Validates TryRecv with partial reads after sending a vector.
+// Ensures server can accumulate partial reads to reconstruct the full message.
+TEST_P(TlsSocketTest, TryRecvVector) {
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  CreateClientSocket(client_sock);
+  const std::string kPart1{"Hello, "};
+  const std::string kPart2{"Vector!"};
+  const std::string kFull{kPart1 + kPart2};
+
+  // Client sends using TrySend with iovec
+  auto client_fb = proactor_->LaunchFiber([&] {
+    iovec v[2] = {{.iov_base = (void*)kPart1.data(), .iov_len = kPart1.size()},
+                  {.iov_base = (void*)kPart2.data(), .iov_len = kPart2.size()}};
+    auto ec = client_sock->Write(v, 2);
+    ASSERT_FALSE(ec) << ec.message();
+  });
+
+  // Server receives using TryRecv, accumulate partial reads
+  proactor_->Await([&] {
+    uint8_t buf[1024];
+    size_t total_bytes_received{};
+    std::string result;
+    constexpr int kMaxPollAttempts = 1000;
+    int attempts_count{};
+
+    for (attempts_count = 0; attempts_count < kMaxPollAttempts; ++attempts_count) {
+      io::MutableBytes current_buf(buf + total_bytes_received, sizeof(buf) - total_bytes_received);
+      auto res = server_socket_->TryRecv(current_buf);
+
+      if (res && (*res > 0)) {
+        result.append((char*)(buf + total_bytes_received), *res);
+        total_bytes_received += *res;
+
+        if (total_bytes_received >= kFull.size()) {
+          break;  // Data fully received
+        }
+      } else if (res && (*res == 0)) {
+        break;  // EOF
+      } else if (res.error() != std::errc::resource_unavailable_try_again &&
+                 res.error() != std::errc::operation_would_block) {
+        // Real error occurred (not EAGAIN/EWOULDBLOCK)
+        break;
+      }
+
+      // We must back off when receiving EAGAIN
+      ThisFiber::SleepFor(10ms);
+    }
+
+    // Explicitly assert that we didn't time out.
+    ASSERT_LT(attempts_count, kMaxPollAttempts)
+        << "Test timed out waiting for all data after " << attempts_count << " attempts.";
+    // Check the accumulated result against the expected value.
+    ASSERT_EQ(result, kFull);
+  });
+
+  client_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+}
+
+// Validates event-driven read using RegisterOnRecv notification.
+// Ensures callback only signals a fiber, which then safely performs TryRecv after send completes.
+TEST_P(TlsSocketTest, RegisterOnRecv) {
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  CreateClientSocket(client_sock);
+  const std::string send_data{"Async Recv Data in RegisterOnRecv test case"};
+  std::string received_data;
+  Done data_ready;
+
+  // Register the callback to notify a waiting fiber when data arrives.
+  proactor_->DispatchBrief([&] {
+    server_socket_->RegisterOnRecv(
+        [&](const util::FiberSocketBase::RecvNotification&) { data_ready.Notify(); });
+  });
+
+  // Launch sender fiber to send data that will trigger the RegisterOnRecv callback.
+  auto client_fb = proactor_->LaunchFiber([&] {
+    io::Bytes data(reinterpret_cast<const uint8_t*>(send_data.data()), send_data.size());
+    auto ec = client_sock->Write(data);
+    ASSERT_FALSE(ec) << ec.message();
+  });
+
+  // Launch a fiber to perform the actual TryRecv and store the result.
+  auto recv_fb = proactor_->LaunchFiber([&] {
+    data_ready.Wait();
+    uint8_t buf[1024];
+    auto res = server_socket_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
+    if (res && (*res > 0)) {
+      received_data.assign(reinterpret_cast<const char*>(buf), *res);
+    }
+  });
+
+  client_fb.Join();
+  recv_fb.Join();
+  EXPECT_EQ(received_data, send_data);
+  proactor_->Await([&] { server_socket_->ResetOnRecvHook(); });
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
 }
 
 class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
@@ -650,3 +748,395 @@ TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
 
 }  // namespace fb2
 }  // namespace util
+
+namespace util::tls {
+
+// Mock Fixture
+class MockTlsSocketTest : public testing::TestWithParam<std::string> {
+ protected:
+  void SetUp() override {
+    // Standard Proactor setup (Similar to TlsSocketTest but without Listen/Accept)
+#ifdef __linux__
+    bool use_uring = GetParam() == "uring";
+    if (use_uring) {
+      proactor_ = std::make_unique<fb2::UringProactor>();
+    } else {
+      proactor_ = std::make_unique<fb2::EpollProactor>();
+    }
+#else
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+#endif
+
+    proactor_thread_ = std::thread{[this] {
+      InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+
+    proactor_->Await([&] {
+      // Create a dummy underlying socket
+      auto* fd = proactor_->CreateSocket();
+      sock_ = std::make_unique<TlsSocket>(fd);
+
+      // Inject the Mock
+      // We use testing::NiceMock as the most permissive mock wrapper: it silently ignores all
+      // unexpected/uninteresting method calls made by TlsSocket (the "noise"). This allows us to
+      // selectively and strictly set EXPECT_CALLs only for the core interactions (Read, Write,
+      // Handshake) relevant to our unit test logic.
+      auto mock_ptr = std::make_unique<testing::NiceMock<MockEngine>>();
+      mock_engine_ = mock_ptr.get();
+      TestDelegator::SetEngine(sock_.get(), std::move(mock_ptr));
+    });
+  }
+  SSL* GetSsl() {
+    return mock_engine_->native_handle();
+  }
+  void TearDown() override {
+    proactor_->Await([&] {
+      if (sock_) {
+        std::ignore = sock_->Close();
+      }
+    });
+
+    proactor_->Stop();
+    if (proactor_thread_.joinable()) {
+      proactor_thread_.join();
+    }
+  }
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread proactor_thread_;
+
+  // The object under test
+  std::unique_ptr<TlsSocket> sock_;
+
+  // Pointer to the mock (owned by sock_)
+  MockEngine* mock_engine_{};
+};
+// -------------------------------------------------------------------------
+// TryRecvErrorTest Scenario Configuration
+//
+// This struct defines the inputs and expectations for a single unit test case
+// of TlsSocket::TryRecv. It models the interaction between three components:
+//   1. The TlsSocket's internal state (e.g., write conflict flags).
+//   2. The TLS Engine's requirements (e.g., NEED_WRITE, decrypted data).
+//   3. The Underlying Socket's behavior (e.g., EAGAIN, partial write, EOF).
+// -------------------------------------------------------------------------
+struct TryRecvScenario {
+  std::string test_name;
+
+  // --- Initial Conditions ---
+  uint32_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
+
+  // --- Engine Behavior ---
+  Engine::OpResult engine_read_ret;  // What engine_->Read() returns
+  size_t engine_output_pending{};    // What engine_->OutputPending() returns
+
+  // --- Underlying Socket Behavior (Optional) ---
+  // If set, EXPECT_CALL will be set on next_sock_->TrySend()
+  std::optional<io::Result<size_t>> sock_send_ret;
+
+  // If set, EXPECT_CALL will be set on next_sock_->TryRecv()
+  std::optional<io::Result<size_t>> sock_recv_ret;
+
+  // --- Expected Outcome ---
+  std::error_code expected_error;  // Expected error from TlsSocket::TryRecv
+  size_t expected_bytes{};         // Expected success bytes (usually 0 for errors)
+};
+
+// Pretty printer for GTest to show readable test names
+std::ostream& operator<<(std::ostream& os, const TryRecvScenario& p) {
+  return os << p.test_name;
+}
+
+INSTANTIATE_TEST_SUITE_P(MockEngines, MockTlsSocketTest,
+                         testing::Values("epoll"
+#ifdef __linux__
+                                         ,
+                                         "uring"
+#endif
+                                         ),
+                         [](const auto& info) { return std::string(info.param); });
+
+// basic mock Test to see MockTlsSocketTest is functional
+TEST_P(MockTlsSocketTest, BasicWrite) {
+  proactor_->Await([&] {
+    uint8_t buf[] = "hello";
+
+    // Expect (Register) the MockEngine to receive a Write call and return 5
+    // For those new to gmock, here we only expect, actual enforcement is done after the socket
+    // write.
+    EXPECT_CALL(*mock_engine_, Write(testing::_)).WillOnce(testing::Return(Engine::OpResult{5}));
+
+    auto res = sock_->Write(io::Bytes(buf, 5));
+    ASSERT_FALSE(res);  // assert no error
+  });
+}
+
+// Another basic mock to ensure strict ordering works as well for MockTlsSocketTest (using
+// InSequence)
+TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
+  proactor_->Await([&] {
+    testing::InSequence s;
+    uint8_t buf[] = "app data";
+
+    // Expectation 0: If VLOG(1) is on, Accept() calls native_handle().
+    //    We make sure it returns the valid internal SSL object we created.
+    EXPECT_CALL(*mock_engine_, native_handle()).WillRepeatedly(testing::Return(GetSsl()));
+
+    // Expectation 1: Handshake return success
+    EXPECT_CALL(*mock_engine_, Handshake(testing::_))
+        .WillOnce(testing::Return(Engine::OpResult{1}));  // Return success (no error code)
+
+    // Expectation 2: Write returns full buffer size
+    EXPECT_CALL(*mock_engine_, Write(testing::_))
+        .WillOnce(testing::Return(Engine::OpResult{sizeof(buf)}));
+
+    // Execution / Validation
+    ASSERT_TRUE(sock_->Accept());  // This calls engine_->Handshake(),
+    ASSERT_FALSE(sock_->Write(io::Bytes(buf, sizeof(buf))));
+  });
+}
+
+class TryRecvErrorTest : public testing::TestWithParam<TryRecvScenario> {
+ protected:
+  void SetUp() override {
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+    proactor_thread_ = std::thread{[this] {
+      fb2::InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+
+    proactor_->Await([&] {
+      // 1. Create Mock Underlying Socket
+      auto mock_sock = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+      mock_next_sock_ = mock_sock.get();
+
+      // 2. Create TlsSocket wrapping the mock
+      sock_ = std::make_unique<TlsSocket>(std::move(mock_sock));
+
+      // 3. Inject Mock Engine
+      auto mock_eng = std::make_unique<testing::NiceMock<MockEngine>>();
+      mock_engine_ = mock_eng.get();
+      TestDelegator::SetEngine(sock_.get(), std::move(mock_eng));
+    });
+  }
+
+  void TearDown() override {
+    proactor_->Await([&] {
+      // State check: ensure we didn't leak internal flags in error paths
+      // (Optional sanity check, though some errors might legitimately leave flags)
+    });
+
+    proactor_->Stop();
+    if (proactor_thread_.joinable()) {
+      proactor_thread_.join();
+    }
+  }
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread proactor_thread_;
+  std::unique_ptr<TlsSocket> sock_;
+  MockEngine* mock_engine_ = nullptr;
+  MockFiberSocket* mock_next_sock_ = nullptr;
+};
+
+// VerifyEdgeCases: Parameterized White-Box Test
+//
+// This test validates the robustness of TryRecv() by simulating various non-happy
+// path scenarios (defined in TryRecvScenario). It uses mocks to:
+// 1. Inject internal state (e.g., WRITE_IN_PROGRESS).
+// 2. Control the TLS Engine (e.g., force NEED_WRITE or NEED_READ).
+// 3. Control the underlying socket (e.g., simulate EAGAIN, partial writes, EOF).
+//
+// It ensures that TryRecv handles complex state transitions, race conditions,
+// and network errors correctly without crashing or deadlocking.
+TEST_P(TryRecvErrorTest, VerifyEdgeCases) {
+  const auto& p = GetParam();
+
+  proactor_->Await([&] {
+    // 1. Apply Initial State
+    if (p.initial_state != 0) {
+      TestDelegator::SetState(sock_.get(), p.initial_state);
+    }
+
+    // 2. Setup Engine Read Expectations
+    EXPECT_CALL(*mock_engine_, Read(testing::_, testing::_))
+        .WillRepeatedly(testing::Return(p.engine_read_ret));
+
+    EXPECT_CALL(*mock_engine_, OutputPending())
+        .WillRepeatedly(testing::Return(p.engine_output_pending));
+
+    // 3. Handle Engine Output (if needed)
+    std::vector<uint8_t> dummy_out_buf;
+    if (p.engine_output_pending > 0) {
+      // Ensure the buffer returned by Peek has the expected size.
+      // This prevents the infinite loop in TryRecv where it checks (bytes_sent <
+      // output_buf.size()).
+      dummy_out_buf.resize(p.engine_output_pending);
+
+      EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+          .WillRepeatedly(
+              testing::Return(Engine::Buffer(dummy_out_buf.data(), dummy_out_buf.size())));
+
+      if (p.sock_send_ret.has_value() && *p.sock_send_ret) {
+        // Only if send succeeds do we expect ConsumeOutputBuf
+        EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(testing::_)).WillRepeatedly(testing::Return());
+      }
+    }
+
+    // 4. Setup Socket Send Expectations
+    if (p.sock_send_ret.has_value()) {
+      EXPECT_CALL(*mock_next_sock_, TrySend(testing::_))
+          .WillRepeatedly(testing::Return(*p.sock_send_ret));
+    }
+
+    // 5. Setup Socket Recv Expectations
+    if (p.sock_recv_ret.has_value()) {
+      EXPECT_CALL(*mock_engine_, PeekInputBuf())
+          .WillRepeatedly(testing::Return(Engine::MutableBuffer{}));
+
+      EXPECT_CALL(*mock_next_sock_, TryRecv(testing::_))
+          .WillRepeatedly(testing::Return(*p.sock_recv_ret));
+
+      if (*p.sock_recv_ret && **p.sock_recv_ret > 0) {
+        EXPECT_CALL(*mock_engine_, CommitInput(**p.sock_recv_ret))
+            .WillRepeatedly(testing::Return());
+      }
+    }
+
+    // 6. Execution
+    uint8_t buf[128];
+    auto res = sock_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
+
+    // 7. Verification
+    if (p.expected_error) {
+      ASSERT_FALSE(res) << "Expected error " << p.expected_error.message() << " but got success";
+      EXPECT_EQ(res.error(), p.expected_error)
+          << "Expected " << p.expected_error.message() << ", got " << res.error().message();
+    } else {
+      ASSERT_TRUE(res) << "Expected success but got error: " << res.error().message();
+      EXPECT_EQ(*res, p.expected_bytes);
+    }
+
+    // Cleanup
+    TestDelegator::SetState(sock_.get(), 0);
+  });
+}
+
+// Instantiating the Scenarios for VerifyEdgeCases
+INSTANTIATE_TEST_SUITE_P(
+    AllErrorPaths, TryRecvErrorTest,
+    testing::Values(
+        // Case 0: Write Conflict
+        // Scenario: A write operation (e.g., handshake) is already in progress on another fiber.
+        // The Engine requests a read/write op, but we cannot proceed safely due to concurrency.
+        // Expected: Should back off immediately and return EAGAIN (resource_unavailable_try_again).
+        TryRecvScenario{
+            .test_name = "WriteConflict_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetWriteInProgress(),
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 1: Read Conflict
+        // Scenario: A read operation is already in progress (application error: concurrent reads).
+        // The code must detect this to prevent buffer corruption or race conditions.
+        // Expected: Should back off immediately and return EAGAIN.
+        TryRecvScenario{
+            .test_name = "ReadConflict_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetReadInProgress(),
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 2: Engine Needs Write -> Socket EAGAIN
+        // Scenario: The TLS Engine generated data (e.g. renegotiation) and requests a flush.
+        // We attempt to write to the underlying socket, but it returns EAGAIN (socket buffer full).
+        // Expected: We must propagate the EAGAIN to the caller so they can retry later.
+        TryRecvScenario{
+            .test_name = "EngineNeedWrite_SocketEagain",
+            .initial_state = 0,
+            .engine_read_ret = Engine::NEED_WRITE,
+            .engine_output_pending = 100,
+            .sock_send_ret = io::Result<size_t>(nonstd::make_unexpected(
+                std::make_error_code(std::errc::resource_unavailable_try_again))),
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 3: Engine Needs Write -> Socket Short Write
+        // Scenario: The TLS Engine has 100 bytes pending. The underlying socket only accepts 50.
+        // Since we haven't flushed the full TLS record, we cannot proceed to the read phase safely.
+        // Expected: Return EAGAIN to the caller to indicate the operation is incomplete.
+        TryRecvScenario{
+            .test_name = "EngineNeedWrite_ShortWrite",
+            .initial_state = 0,
+            .engine_read_ret = Engine::NEED_WRITE,
+            .engine_output_pending = 100,
+            .sock_send_ret = io::Result<size_t>(50),  // Wrote 50 out of 100
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 4: Engine Needs Read -> Socket EOF (Dirty Shutdown)
+        // Scenario: The TLS Engine needs more data to decrypt a record, but the underlying socket
+        // returns 0 (EOF). This means the TCP connection closed without sending a TLS
+        // 'close_notify'. Expected: This is a protocol error (Dirty EOF). Return
+        // 'connection_reset'.
+        TryRecvScenario{
+            .test_name = "UpstreamSocketEOF_DirtyShutdown",
+            .initial_state = 0,
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = io::Result<size_t>(0),  // Underlying socket closed
+            .expected_error = std::make_error_code(std::errc::connection_reset),
+        },
+
+        // Case 5: Engine Needs Read -> Socket Error
+        // Scenario: The TLS Engine requests a read, but the underlying socket returns a system
+        // error (e.g., RST packet received, network unreachable). Expected: Propagate the
+        // underlying system error (connection_reset) to the caller.
+        TryRecvScenario{
+            .test_name = "UpstreamSocketError_Propagates",
+            .initial_state = 0,
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = io::Result<size_t>(
+                nonstd::make_unexpected(std::make_error_code(std::errc::connection_reset))),
+            .expected_error = std::make_error_code(std::errc::connection_reset),
+        },
+
+        // Case 6: Abrupt Stream EOF from Engine
+        // Scenario: The TLS Engine itself detects a fatal error (e.g. bad MAC, protocol violation)
+        // or an abrupt closure and returns EOF_STREAM.
+        // Expected: Translate this internal fatal error into 'connection_reset'.
+        TryRecvScenario{
+            .test_name = "EngineEOFStream_ReturnsReset",
+            .initial_state = 0,
+            .engine_read_ret = Engine::EOF_STREAM,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::connection_reset),
+        },
+
+        // Case 7: Graceful Shutdown
+        // Scenario: The peer sent a proper TLS 'close_notify' alert. The Engine returns 0.
+        // Expected: This is a clean shutdown. Return success with 0 bytes read (EOF).
+        TryRecvScenario{
+            .test_name = "GracefulShutdown_ReturnsZero",
+            .initial_state = 0,
+            .engine_read_ret = 0,  // Clean EOF
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::error_code{},  // Success
+            .expected_bytes = 0,
+        }));
+}  // namespace util::tls
