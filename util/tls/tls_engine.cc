@@ -151,14 +151,11 @@ auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
     bytes_read_ += result;
   }
 
-#ifndef NDEBUG
   if (result < 0) {
     // Verify that we aren't hiding decrypted application data behind an error code.
     char dummy;
-    int peek_res = SSL_peek(ssl_, &dummy, 1);
-    DCHECK_LE(peek_res, 0) << "SSL_read returned error but SSL_peek says data is ready!";
+    DCHECK_LE(SSL_peek(ssl_, &dummy, 1), 0) << "SSL_read returned error but SSL_peek says data is ready!";
   }
-#endif
 
   RETURN_RESULT(result);
 }
