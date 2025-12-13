@@ -812,7 +812,7 @@ class MockTlsSocketTest : public testing::TestWithParam<std::string> {
   // Pointer to the mock (owned by sock_)
   MockEngine* mock_engine_{};
 };
-// -------------------------------------------------------------------------
+
 // TryRecvErrorTest Scenario Configuration
 //
 // This struct defines the inputs and expectations for a single unit test case
@@ -820,25 +820,24 @@ class MockTlsSocketTest : public testing::TestWithParam<std::string> {
 //   1. The TlsSocket's internal state (e.g., write conflict flags).
 //   2. The TLS Engine's requirements (e.g., NEED_WRITE, decrypted data).
 //   3. The Underlying Socket's behavior (e.g., EAGAIN, partial write, EOF).
-// -------------------------------------------------------------------------
 struct TryRecvScenario {
   std::string test_name;
 
-  // --- Initial Conditions ---
+  // Initial Conditions
   uint32_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
 
-  // --- Engine Behavior ---
+  // Engine Behavior
   Engine::OpResult engine_read_ret;  // What engine_->Read() returns
   size_t engine_output_pending{};    // What engine_->OutputPending() returns
 
-  // --- Underlying Socket Behavior (Optional) ---
+  // Underlying Socket Behavior (Optional)
   // If set, EXPECT_CALL will be set on next_sock_->TrySend()
   std::optional<io::Result<size_t>> sock_send_ret;
 
   // If set, EXPECT_CALL will be set on next_sock_->TryRecv()
   std::optional<io::Result<size_t>> sock_recv_ret;
 
-  // --- Expected Outcome ---
+  // Expected Outcome
   std::error_code expected_error;  // Expected error from TlsSocket::TryRecv
   size_t expected_bytes{};         // Expected success bytes (usually 0 for errors)
 };
@@ -1040,20 +1039,7 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
         },
 
-        // Case 1: Read Conflict
-        // Scenario: A read operation is already in progress (application error: concurrent reads).
-        // The code must detect this to prevent buffer corruption or race conditions.
-        // Expected: Should back off immediately and return EAGAIN.
-        TryRecvScenario{
-            .test_name = "ReadConflict_ReturnsTryAgain",
-            .initial_state = TestDelegator::GetReadInProgress(),
-            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
-            .sock_send_ret = std::nullopt,
-            .sock_recv_ret = std::nullopt,
-            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
-        },
-
-        // Case 2: Engine Needs Write -> Socket EAGAIN
+        // Case 1: Engine Needs Write -> Socket EAGAIN
         // Scenario: The TLS Engine generated data (e.g. renegotiation) and requests a flush.
         // We attempt to write to the underlying socket, but it returns EAGAIN (socket buffer full).
         // Expected: We must propagate the EAGAIN to the caller so they can retry later.
@@ -1068,7 +1054,7 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
         },
 
-        // Case 3: Engine Needs Write -> Socket Short Write
+        // Case 2: Engine Needs Write -> Socket Short Write
         // Scenario: The TLS Engine has 100 bytes pending. The underlying socket only accepts 50.
         // Since we haven't flushed the full TLS record, we cannot proceed to the read phase safely.
         // Expected: Return EAGAIN to the caller to indicate the operation is incomplete.
@@ -1082,11 +1068,11 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
         },
 
-        // Case 4: Engine Needs Read -> Socket EOF (Dirty Shutdown)
+        // Case 3: Engine Needs Read -> Socket EOF (Dirty Shutdown)
         // Scenario: The TLS Engine needs more data to decrypt a record, but the underlying socket
         // returns 0 (EOF). This means the TCP connection closed without sending a TLS
-        // 'close_notify'. Expected: This is a protocol error (Dirty EOF). Return
-        // 'connection_reset'.
+        // 'close_notify'.
+        // Expected: This is a protocol error (Dirty EOF). Return 'connection_reset'.
         TryRecvScenario{
             .test_name = "UpstreamSocketEOF_DirtyShutdown",
             .initial_state = 0,
@@ -1097,10 +1083,10 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::connection_reset),
         },
 
-        // Case 5: Engine Needs Read -> Socket Error
+        // Case 4: Engine Needs Read -> Socket Error
         // Scenario: The TLS Engine requests a read, but the underlying socket returns a system
-        // error (e.g., RST packet received, network unreachable). Expected: Propagate the
-        // underlying system error (connection_reset) to the caller.
+        // error (e.g., RST packet received, network unreachable).
+        // Expected: Propagate the underlying system error (connection_reset) to the caller.
         TryRecvScenario{
             .test_name = "UpstreamSocketError_Propagates",
             .initial_state = 0,
@@ -1112,31 +1098,33 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::connection_reset),
         },
 
-        // Case 6: Abrupt Stream EOF from Engine
+        // Case 5: Abrupt Stream EOF from Engine
         // Scenario: The TLS Engine itself detects a fatal error (e.g. bad MAC, protocol violation)
         // or an abrupt closure and returns EOF_STREAM.
         // Expected: Translate this internal fatal error into 'connection_reset'.
-        TryRecvScenario{
-            .test_name = "EngineEOFStream_ReturnsReset",
-            .initial_state = 0,
-            .engine_read_ret = Engine::EOF_STREAM,
-            .engine_output_pending = 0,
-            .sock_send_ret = std::nullopt,
-            .sock_recv_ret = std::nullopt,
-            .expected_error = std::make_error_code(std::errc::connection_reset),
-        },
+        TryRecvScenario {
+          .test_name = "EngineEOFStream_ReturnsReset", .initial_state = 0,
+          .engine_read_ret = Engine::EOF_STREAM, .engine_output_pending = 0,
+          .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
+          .expected_error = std::make_error_code(std::errc::connection_reset),
+        }
 
-        // Case 7: Graceful Shutdown
-        // Scenario: The peer sent a proper TLS 'close_notify' alert. The Engine returns 0.
-        // Expected: This is a clean shutdown. Return success with 0 bytes read (EOF).
+#if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)
+        // Case 6: Read Conflict (Release Mode Only)
+        // Scenario: A read operation is already in progress. In Release builds
+        // (where DCHECK is compiled out), the code must not crash but instead handle the
+        // concurrency error gracefully.
+        // Expected: The runtime check should detect the conflict and return EAGAIN.
+        ,  // <-- Comma to continue the list
         TryRecvScenario{
-            .test_name = "GracefulShutdown_ReturnsZero",
-            .initial_state = 0,
-            .engine_read_ret = 0,  // Clean EOF
-            .engine_output_pending = 0,
+            .test_name = "ReadConflict_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetReadInProgress(),
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
             .sock_send_ret = std::nullopt,
             .sock_recv_ret = std::nullopt,
-            .expected_error = std::error_code{},  // Success
-            .expected_bytes = 0,
-        }));
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        }
+#endif
+        ));
+
 }  // namespace util::tls

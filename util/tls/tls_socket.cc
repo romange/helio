@@ -476,22 +476,16 @@ void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
 }
 
 void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
-  if (std::holds_alternative<RecvNotification::RecvCompletion>(rn.read_result)) {
-    DVSOCK(1) << "OnRecv callback invoked (RecvCompletion): " << std::boolalpha
-                    << std::get<RecvNotification::RecvCompletion>(rn.read_result);
+  if ((std::holds_alternative<RecvNotification::RecvCompletion>(rn.read_result)) ||
+      (std::holds_alternative<std::error_code>(rn.read_result))) {
     recv_cb(rn);
     return;
   }
-  if (std::holds_alternative<std::error_code>(rn.read_result)) {
-    DVSOCK(1) << "OnRecv callback invoked (error_code)";
-    recv_cb(rn);
-    return;
-  }
-  if (auto *buf{std::get_if<io::MutableBytes>(&rn.read_result)}) {
+  if (auto* buf{std::get_if<io::MutableBytes>(&rn.read_result)}) {
     // Copy the arriving data to the TLS engine's input buffer, commit it, and invoke the receive
     // callback.
     auto input_buf{engine_->PeekInputBuf()};
-    DVSOCK(1) << "OnRecv callback invoked (MutableBytes), #bytes =" << buf->size();
+    DVSOCK(3) << "OnRecv callback invoked (MutableBytes), #bytes =" << buf->size();
 
     // Note about the next CHECK: We must ensure the arriving data (buf) fits entirely into
     // the TLS engine's currently available input buffer space (input_buf). This check
@@ -524,6 +518,7 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   size_t total_bytes_read{};
   bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
   bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
+  std::error_code returned_status{};  // init to no error
 
   while (!buf.empty()) {
     auto read_result = engine_->Read(buf.data(), buf.size());
@@ -549,40 +544,34 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         // Another fiber is handling TLS writes (handshake/renegotiation);
         // we cannot safely proceed without blocking this read fiber.
         // Return partial data if available, or signal retry (EAGAIN) to caller.
-        if (total_bytes_read > 0) {
-          break;
-        }
-        return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+        returned_status = make_error_code(errc::resource_unavailable_try_again);
+        break;
       }
       ///////////////////////////////////////////////////////////////
 
-      // 2. Handle Pending Output (write_in_progress is false)
+      // 2. Handle Pending Output from TLs engine to upstream socket (write_in_progress is false)
       // If the engine generated TLS data (handshake/alerts), flush it now.
       // Otherwise, skip to reading.
       size_t output_pending_bytes{engine_->OutputPending()};
-      if ((read_result == Engine::NEED_WRITE) && (output_pending_bytes == 0)) {  // sanity check
-        // Critical Error: Engine demands a write but provided no data.
-        // Falling through to read would likely result in a stall/deadlock.
-        LOG(DFATAL) << "SSL BUG: Engine returned NEED_WRITE but OutputPending is 0";
-        return make_unexpected(make_error_code(errc::protocol_error));
-      }
-
+      DCHECK((read_result != Engine::NEED_WRITE) || (output_pending_bytes > 0))
+          << "SSL BUG: Engine demands a write but provided no data.";
       if (output_pending_bytes > 0) {
         auto output_buf{engine_->PeekOutputBuf()};
         auto send_result{next_sock_->TrySend(output_buf)};
         if (!send_result) {
           // Write failed (EAGAIN or Error).
-          if (total_bytes_read > 0)
-            break;
-          return make_unexpected(send_result.error());
+
+          returned_status = send_result.error();
+          break;
         }
         engine_->ConsumeOutputBuf(*send_result);
 
         // If we couldn't send everything, we can't proceed safely.
         if ((*send_result) < output_buf.size()) {
-          if (total_bytes_read > 0)
-            break;
-          return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+          LOG(WARNING) << "TlsSocket::TrySend: partial next_sock_->TrySend: sent" << (*send_result)
+                       << " out of " << output_buf.size() << " bytes. breaking...";
+          break;
         }
 
         // If we handled a NEED_WRITE successfully, we loop again to see what engine wants next
@@ -593,13 +582,14 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       // 3. Check for read conflict:
       // A read conflict implies the application is polling TryRecv while concurrently
       // blocked on Recv, which is a usage error. We check this to prevent buffer corruption/crash.
+      DCHECK(!read_in_progress) << "Concurrent TryRecv and Recv detected - this is a usage error.";
       if (read_in_progress) {
-        if (total_bytes_read > 0)
-          break;
-        return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+        returned_status = make_error_code(errc::resource_unavailable_try_again);
+        break;
       }
       ///////////////////////////////////////////////////////////////
-      // 4. Handle Pending Reads
+      // 4. Handle Pending Reads From Upstream Socket
+      DCHECK(engine_->OutputPending() == 0) << "Pending output must be zero before reading input.";
       auto input_buf{engine_->PeekInputBuf()};
       auto recv_result{next_sock_->TryRecv(input_buf)};
       if (recv_result) {
@@ -612,44 +602,32 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         // The engine returned NEED_READ, but the socket is "dead".
         // This is a "Dirty EOF" (TCP closed without TLS close_notify).
         // We must return connection_reset to signal the dirty shutdown.
-        if (total_bytes_read > 0)
-          break;
-
-        // If we are here: total_bytes_read==0 (no decrypted data to return), and socket is "dead".
+        // If total_bytes_read==0 (no decrypted data to return), and socket is "dead".
         // We report this as a connection reset/abort because it wasn't a clean TLS shutdown.
-        return make_unexpected(make_error_code(errc::connection_reset));
+        returned_status = make_error_code(errc::connection_reset);
+        break;
       }
 
       // recv_result has an error (e.g. EAGAIN)
-      if (total_bytes_read > 0)
-        break;
-      return make_unexpected(recv_result.error());
-    } else if (read_result == Engine::EOF_STREAM) {  // case 3: Abrupt EOF
-      if (total_bytes_read > 0) {
-        break;
-      }
-      return make_unexpected(make_error_code(errc::connection_reset));
-    } else if (read_result == 0) {  // case 4: Graceful EOF
-      // The peer has signaled a graceful closure. We must stop immediately.
-      // The return value depends on whether we have already decrypted data in this call:
-      // a) If total_bytes_read == 0:
-      // We return 0 immediately. The caller interprets this 0-byte return as the definitive,
-      // graceful EOF signal NOW.
-      // b) If total_bytes_read > 0:
-      // We return the already-read data (total_bytes_read > 0). The caller is NOT notified of the
-      // EOF yet, as the application must first consume the last available data. The caller will
-      // (possibly) receive the definitive EOF signal (0 bytes returned) on the next subsequent call
-      // to TryRecv.
+      returned_status = recv_result.error();
+      break;
+    } else if (read_result == Engine::EOF_STREAM) {  // case 3: EOF_STREAM
+      returned_status = make_error_code(errc::connection_reset);
       break;
     } else {
       LOG(DFATAL) << "BUG: Unsupported read_result " << read_result;
       return make_unexpected(make_error_code(errc::operation_not_permitted));
     }
-  }
+  }  // while
+
   if (total_bytes_read > 0) {
-    DVSOCK(1) << "TryRecv returning " << total_bytes_read << " bytes";
+    DVSOCK(3) << "TryRecv returning " << total_bytes_read << " bytes";
+    return total_bytes_read;
   }
-  return total_bytes_read;
+  if (!returned_status) {
+    return 0;  // No error, Clean EOF case
+  }
+  return make_unexpected(returned_status);
 }
 
 bool TlsSocket::IsUDS() const {
@@ -733,7 +711,8 @@ void TlsSocket::AsyncReq::StartUpstreamRead() {
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
   scratch.iov_len = buffer.size();
 
-  owner_->next_sock_->AsyncReadSome(&scratch, 1, [this](auto res) { this->AsyncReadProgressCb(res); });
+  owner_->next_sock_->AsyncReadSome(&scratch, 1,
+                                    [this](auto res) { this->AsyncReadProgressCb(res); });
 }
 
 void TlsSocket::AsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
