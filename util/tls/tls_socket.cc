@@ -582,9 +582,8 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       // 3. Check for read conflict:
       // A read conflict implies the application is polling TryRecv while concurrently
       // blocked on Recv, which is a usage error. We check this to prevent buffer corruption/crash.
-      LOG(DFATAL) << "Concurrent TryRecv and Recv detected - this is a usage error.";
-      DCHECK(!read_in_progress) << "Concurrent TryRecv and Recv detected - this is a usage error.";
       if (read_in_progress) {
+        LOG(DFATAL) << "Concurrent TryRecv and Recv detected - this is a usage error.";
         returned_status = make_error_code(errc::resource_unavailable_try_again);
         break;
       }
