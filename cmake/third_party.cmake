@@ -165,10 +165,71 @@ function(add_third_party name)
   endif()
 endfunction()
 
+set(GTEST_VERSION 1.15.2)
+set(GTEST_RELEASE_URL "https://github.com/google/googletest/releases/download/v${GTEST_VERSION}/googletest-${GTEST_VERSION}.tar.gz")
+set(GTEST_ARCHIVE_URL "https://github.com/google/googletest/archive/v${GTEST_VERSION}.tar.gz")
+set(GTEST_TARBALL "${CMAKE_BINARY_DIR}/googletest-${GTEST_VERSION}.tar.gz")
+
+function(download_and_validate url file out_status)
+  file(DOWNLOAD "${url}" "${file}" STATUS st)
+  list(GET st 0 rc)
+  if(rc EQUAL 0)
+    file(SIZE "${file}" sz)
+    if(sz LESS 102400) # Check if file is < 100KB
+      set(st "1;File too small (${sz} bytes)") # set error and error message
+    endif()
+  endif()
+  set(${out_status} "${st}" PARENT_SCOPE)
+endfunction()
+
+if(NOT EXISTS "${GTEST_TARBALL}")
+  download_and_validate("${GTEST_RELEASE_URL}" "${GTEST_TARBALL}" st1)
+  list(GET st1 0 rc1)
+  if(NOT rc1 EQUAL 0)
+    file(REMOVE "${GTEST_TARBALL}")
+    message(STATUS "Primary download failed: ${st1}. Trying archive URL...")
+    download_and_validate("${GTEST_ARCHIVE_URL}" "${GTEST_TARBALL}" st2)
+    list(GET st2 0 rc2)
+    if(NOT rc2 EQUAL 0)
+      file(REMOVE "${GTEST_TARBALL}")
+      message(FATAL_ERROR "Failed to download googletest.\nRelease: ${st1}\nArchive: ${st2}")
+    endif()
+  endif()
+endif()
+
 FetchContent_Declare(
   gtest
-  URL https://github.com/google/googletest/archive/v1.15.2.tar.gz
+  URL "${GTEST_TARBALL}"
 )
+
+# # Download googletest from the release asset first, fallback to the archive mirror if the first fails
+# set(GTEST_VERSION 1.15.2)
+# set(GTEST_RELEASE_URL "https://github.com/google/googletest/releases/download/v${GTEST_VERSION}/googletest-${GTEST_VERSION}.tar.gz")
+# set(GTEST_ARCHIVE_URL "https://github.com/google/googletest/archive/v${GTEST_VERSION}.tar.gz")
+# set(GTEST_TARBALL "${CMAKE_BINARY_DIR}/googletest-${GTEST_VERSION}.tar.gz")
+
+# if(NOT EXISTS "${GTEST_TARBALL}")
+#   file(DOWNLOAD "${GTEST_RELEASE_URL}" "${GTEST_TARBALL}" STATUS gtest_status)
+#   list(GET gtest_status 0 gtest_status_code)
+#   if(NOT gtest_status_code EQUAL 0)
+#     file(REMOVE "${GTEST_TARBALL}") # Clean up potentially corrupt file from first attempt
+#     message(STATUS "Failed to download release asset, trying archive URL: ${GTEST_ARCHIVE_URL}")
+#     file(DOWNLOAD "${GTEST_ARCHIVE_URL}" "${GTEST_TARBALL}" STATUS gtest_status2)
+#     list(GET gtest_status2 0 gtest_status_code2)
+#     if(NOT gtest_status_code2 EQUAL 0)
+#       file(REMOVE "${GTEST_TARBALL}") # Clean up potentially corrupt file from second attempt so we retry next time
+#       string(JOIN " " gtest_status_str ${gtest_status})
+#       string(JOIN " " gtest_status2_str ${gtest_status2})
+#       message(FATAL_ERROR
+#         "Failed to download both googletest release asset and archive.\nRelease asset status: ${gtest_status_str}\nArchive status: ${gtest_status2_str}")
+#     endif()
+#   endif()
+# endif()
+
+# FetchContent_Declare(
+#   gtest
+#   URL "${GTEST_TARBALL}"
+# )
 
 FetchContent_GetProperties(gtest)
 if (NOT gtest_POPULATED)
