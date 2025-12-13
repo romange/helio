@@ -470,11 +470,44 @@ void TlsSocket::CancelOnErrorCb() {
 }
 
 void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
-  LOG(FATAL) << "Not implemented";
+  DCHECK(cb);
+  next_sock_->RegisterOnRecv(
+      [recv_cb = std::move(cb), this](const RecvNotification& rn) { OnRecv(rn, recv_cb); });
 }
 
-void TlsSocket::ResetOnRecvHook() {
-  LOG(FATAL) << "Not implemented";
+void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
+  if (std::holds_alternative<RecvNotification::RecvCompletion>(rn.read_result)) {
+    DVSOCK(1) << "OnRecv callback invoked (RecvCompletion): " << std::boolalpha
+                    << std::get<RecvNotification::RecvCompletion>(rn.read_result);
+    recv_cb(rn);
+    return;
+  }
+  if (std::holds_alternative<std::error_code>(rn.read_result)) {
+    DVSOCK(1) << "OnRecv callback invoked (error_code)";
+    recv_cb(rn);
+    return;
+  }
+  if (auto *buf{std::get_if<io::MutableBytes>(&rn.read_result)}) {
+    // Copy the arriving data to the TLS engine's input buffer, commit it, and invoke the receive
+    // callback.
+    auto input_buf{engine_->PeekInputBuf()};
+    DVSOCK(1) << "OnRecv callback invoked (MutableBytes), #bytes =" << buf->size();
+
+    // Note about the next CHECK: We must ensure the arriving data (buf) fits entirely into
+    // the TLS engine's currently available input buffer space (input_buf). This check
+    // enforces the engine's fundamental buffer invariant. This is currently safe because we
+    // use the 'Pull' I/O model (multishot/provided buffers are disabled), allowing TlsSocket
+    // to control the read size.
+    // If multishot/provided Buffers are enabled, the 'Push' I/O model will be active, and a
+    // complex overflow buffer implementation would be necessary to prevent buffer exhaustion
+    // and crash.
+    CHECK_GE(input_buf.size(), buf->size())
+        << "input_buf too small for memcpy: " << input_buf.size() << " < " << buf->size();
+    std::memcpy(input_buf.data(), buf->data(), buf->size());
+    engine_->CommitInput(buf->size());
+    recv_cb({RecvNotification::RecvCompletion{true}});
+  }
+  LOG(FATAL) << "Unhandled type in RecvNotification::read_result variant";
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
@@ -488,8 +521,135 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  size_t total_bytes_read{};
+  bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
+  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
+
+  while (!buf.empty()) {
+    auto read_result = engine_->Read(buf.data(), buf.size());
+    // Possible values in read_result:
+    // - >0: number of bytes read (application data bytes decrypted)
+    // - =0: Clean, graceful EOF (peer sent close_notify alert)
+    // - NEED_READ_AND_MAYBE_WRITE: TLS engine generated outbound data
+    // (handshake/renegotiation/alerts) - drain via writes first, then read peer response
+    // - NEED_WRITE: need to write to upstream socket
+    // - EOF_STREAM: connection closed abruptly by peer (no close_notify) / fatal TLS alert / system
+    // error / protocol violation
+    if (read_result > 0) {  // case 1:
+      buf.remove_prefix(read_result);
+      total_bytes_read += read_result;
+      continue;
+    } else if ((read_result == Engine::NEED_READ_AND_MAYBE_WRITE) ||
+               (read_result == Engine::NEED_WRITE)) {  // case 2: Handle NEED_READ/WRITE
+      ///////////////////////////////////////////////////////////////
+      // 1. Check for a write conflict:
+      // Write conflicts are expected: The TLS state machine (e.g., renegotiation) may trigger
+      // writes during a read operation.
+      if (write_in_progress) {
+        // Another fiber is handling TLS writes (handshake/renegotiation);
+        // we cannot safely proceed without blocking this read fiber.
+        // Return partial data if available, or signal retry (EAGAIN) to caller.
+        if (total_bytes_read > 0) {
+          break;
+        }
+        return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+      }
+      ///////////////////////////////////////////////////////////////
+
+      // 2. Handle Pending Output (write_in_progress is false)
+      // If the engine generated TLS data (handshake/alerts), flush it now.
+      // Otherwise, skip to reading.
+      size_t output_pending_bytes{engine_->OutputPending()};
+      if ((read_result == Engine::NEED_WRITE) && (output_pending_bytes == 0)) {  // sanity check
+        // Critical Error: Engine demands a write but provided no data.
+        // Falling through to read would likely result in a stall/deadlock.
+        LOG(DFATAL) << "SSL BUG: Engine returned NEED_WRITE but OutputPending is 0";
+        return make_unexpected(make_error_code(errc::protocol_error));
+      }
+
+      if (output_pending_bytes > 0) {
+        auto output_buf{engine_->PeekOutputBuf()};
+        auto send_result{next_sock_->TrySend(output_buf)};
+        if (!send_result) {
+          // Write failed (EAGAIN or Error).
+          if (total_bytes_read > 0)
+            break;
+          return make_unexpected(send_result.error());
+        }
+        engine_->ConsumeOutputBuf(*send_result);
+
+        // If we couldn't send everything, we can't proceed safely.
+        if ((*send_result) < output_buf.size()) {
+          if (total_bytes_read > 0)
+            break;
+          return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+        }
+
+        // If we handled a NEED_WRITE successfully, we loop again to see what engine wants next
+        if (read_result == Engine::NEED_WRITE)
+          continue;
+      }
+      ///////////////////////////////////////////////////////////////
+      // 3. Check for read conflict:
+      // A read conflict implies the application is polling TryRecv while concurrently
+      // blocked on Recv, which is a usage error. We check this to prevent buffer corruption/crash.
+      if (read_in_progress) {
+        if (total_bytes_read > 0)
+          break;
+        return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+      }
+      ///////////////////////////////////////////////////////////////
+      // 4. Handle Pending Reads
+      auto input_buf{engine_->PeekInputBuf()};
+      auto recv_result{next_sock_->TryRecv(input_buf)};
+      if (recv_result) {
+        if ((*recv_result) > 0) {
+          engine_->CommitInput(*recv_result);
+          // Loop back to call engine_->Read() again and decrypt these bytes.
+          continue;
+        }
+        // *recv_result == 0 (Upstream socket EOF)
+        // The engine returned NEED_READ, but the socket is "dead".
+        // This is a "Dirty EOF" (TCP closed without TLS close_notify).
+        // We must return connection_reset to signal the dirty shutdown.
+        if (total_bytes_read > 0)
+          break;
+
+        // If we are here: total_bytes_read==0 (no decrypted data to return), and socket is "dead".
+        // We report this as a connection reset/abort because it wasn't a clean TLS shutdown.
+        return make_unexpected(make_error_code(errc::connection_reset));
+      }
+
+      // recv_result has an error (e.g. EAGAIN)
+      if (total_bytes_read > 0)
+        break;
+      return make_unexpected(recv_result.error());
+    } else if (read_result == Engine::EOF_STREAM) {  // case 3: Abrupt EOF
+      if (total_bytes_read > 0) {
+        break;
+      }
+      return make_unexpected(make_error_code(errc::connection_reset));
+    } else if (read_result == 0) {  // case 4: Graceful EOF
+      // The peer has signaled a graceful closure. We must stop immediately.
+      // The return value depends on whether we have already decrypted data in this call:
+      // a) If total_bytes_read == 0:
+      // We return 0 immediately. The caller interprets this 0-byte return as the definitive,
+      // graceful EOF signal NOW.
+      // b) If total_bytes_read > 0:
+      // We return the already-read data (total_bytes_read > 0). The caller is NOT notified of the
+      // EOF yet, as the application must first consume the last available data. The caller will
+      // (possibly) receive the definitive EOF signal (0 bytes returned) on the next subsequent call
+      // to TryRecv.
+      break;
+    } else {
+      LOG(DFATAL) << "BUG: Unsupported read_result " << read_result;
+      return make_unexpected(make_error_code(errc::operation_not_permitted));
+    }
+  }
+  if (total_bytes_read > 0) {
+    DVSOCK(1) << "TryRecv returning " << total_bytes_read << " bytes";
+  }
+  return total_bytes_read;
 }
 
 bool TlsSocket::IsUDS() const {

@@ -9,8 +9,8 @@
 #include <memory>
 
 #include "util/fiber_socket_base.h"
-#include "util/tls/tls_engine.h"
 #include "util/fibers/synchronization.h"
+#include "util/tls/tls_engine.h"
 
 namespace util {
 namespace tls {
@@ -18,6 +18,7 @@ namespace tls {
 class Engine;
 
 class TlsSocket final : public FiberSocketBase {
+  friend class TestDelegator;  // for testing only
  public:
   using Buffer = Engine::Buffer;
   using FiberSocketBase::endpoint_type;
@@ -87,8 +88,10 @@ class TlsSocket final : public FiberSocketBase {
 
   virtual void SetProactor(ProactorBase* p) override;
 
-  virtual void RegisterOnRecv(OnRecvCb cb) final;
-  virtual void ResetOnRecvHook() final;
+  virtual void RegisterOnRecv(OnRecvCb cb) override;
+  virtual void ResetOnRecvHook() override {
+    next_sock_->ResetOnRecvHook();
+  }
 
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
@@ -138,6 +141,8 @@ class TlsSocket final : public FiberSocketBase {
   error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
 
+  void OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb);
+
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
@@ -154,10 +159,8 @@ class TlsSocket final : public FiberSocketBase {
    public:
     enum Role : std::uint8_t { READER, WRITER };
 
-    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len,
-             Role role)
-        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len),
-          role_(role) {
+    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len, Role role)
+        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), role_(role) {
     }
 
     void HandleOpAsync(int op_val);
