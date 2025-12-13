@@ -37,6 +37,9 @@ struct MemInfoData {
 
 struct SelfStat {
   uint64_t start_time_sec = 0;
+
+  // The  number  of major faults the process has made which have required
+  // loading a memory page from disk.
   uint64_t maj_flt = 0;
 };
 
