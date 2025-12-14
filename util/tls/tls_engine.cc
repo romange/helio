@@ -150,6 +150,13 @@ auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
   if (result > 0) {
     bytes_read_ += result;
   }
+
+  if (result < 0) {
+    // Verify that we aren't hiding decrypted application data behind an error code.
+    char dummy;
+    DCHECK_LE(SSL_peek(ssl_, &dummy, 1), 0) << "SSL_read returned error but SSL_peek says data is ready!";
+  }
+
   RETURN_RESULT(result);
 }
 
@@ -208,9 +215,9 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
   int ssl_error = SSL_get_error(ssl_, result);
   unsigned long queue_error = 0;
 
-#define ERROR_DETAILS(err, loc) \
-  ERR_GET_LIB(err) << ":" << ERR_GET_REASON(err) << ":" << err << " " << \
-  ERR_reason_error_string(err) << " " << loc
+#define ERROR_DETAILS(err, loc)                                       \
+  ERR_GET_LIB(err) << ":" << ERR_GET_REASON(err) << ":" << err << " " \
+                   << ERR_reason_error_string(err) << " " << loc
 
   switch (ssl_error) {
     case SSL_ERROR_ZERO_RETURN:  // graceful shutdown of TLS connection.
@@ -227,13 +234,15 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
       state_ |= FATAL_ERROR;
       queue_error = ERR_get_error();
       LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS(queue_error, location)
-        << " bytes_read: " << bytes_read_ << " bytes_written: " << bytes_written_;
+                              << " bytes_read: " << bytes_read_
+                              << " bytes_written: " << bytes_written_;
       break;
     }
     default:
       queue_error = ERR_get_error();
       state_ |= FATAL_ERROR;
-      LOG_EVERY_T(WARNING, 1) << "Unexpected SSL error " << ssl_error << " " << ERROR_DETAILS(queue_error, location);
+      LOG_EVERY_T(WARNING, 1) << "Unexpected SSL error " << ssl_error << " "
+                              << ERROR_DETAILS(queue_error, location);
       break;
   }
 
