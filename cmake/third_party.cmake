@@ -202,35 +202,6 @@ FetchContent_Declare(
   URL "${GTEST_TARBALL}"
 )
 
-# # Download googletest from the release asset first, fallback to the archive mirror if the first fails
-# set(GTEST_VERSION 1.15.2)
-# set(GTEST_RELEASE_URL "https://github.com/google/googletest/releases/download/v${GTEST_VERSION}/googletest-${GTEST_VERSION}.tar.gz")
-# set(GTEST_ARCHIVE_URL "https://github.com/google/googletest/archive/v${GTEST_VERSION}.tar.gz")
-# set(GTEST_TARBALL "${CMAKE_BINARY_DIR}/googletest-${GTEST_VERSION}.tar.gz")
-
-# if(NOT EXISTS "${GTEST_TARBALL}")
-#   file(DOWNLOAD "${GTEST_RELEASE_URL}" "${GTEST_TARBALL}" STATUS gtest_status)
-#   list(GET gtest_status 0 gtest_status_code)
-#   if(NOT gtest_status_code EQUAL 0)
-#     file(REMOVE "${GTEST_TARBALL}") # Clean up potentially corrupt file from first attempt
-#     message(STATUS "Failed to download release asset, trying archive URL: ${GTEST_ARCHIVE_URL}")
-#     file(DOWNLOAD "${GTEST_ARCHIVE_URL}" "${GTEST_TARBALL}" STATUS gtest_status2)
-#     list(GET gtest_status2 0 gtest_status_code2)
-#     if(NOT gtest_status_code2 EQUAL 0)
-#       file(REMOVE "${GTEST_TARBALL}") # Clean up potentially corrupt file from second attempt so we retry next time
-#       string(JOIN " " gtest_status_str ${gtest_status})
-#       string(JOIN " " gtest_status2_str ${gtest_status2})
-#       message(FATAL_ERROR
-#         "Failed to download both googletest release asset and archive.\nRelease asset status: ${gtest_status_str}\nArchive status: ${gtest_status2_str}")
-#     endif()
-#   endif()
-# endif()
-
-# FetchContent_Declare(
-#   gtest
-#   URL "${GTEST_TARBALL}"
-# )
-
 FetchContent_GetProperties(gtest)
 if (NOT gtest_POPULATED)
     FetchContent_Populate(gtest)
