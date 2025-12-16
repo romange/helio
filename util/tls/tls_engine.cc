@@ -154,7 +154,8 @@ auto Engine::Read(uint8_t* dest, size_t len) -> OpResult {
   if (result < 0) {
     // Verify that we aren't hiding decrypted application data behind an error code.
     char dummy;
-    DCHECK_LE(SSL_peek(ssl_, &dummy, 1), 0) << "SSL_read returned error but SSL_peek says data is ready!";
+    DCHECK_LE(SSL_peek(ssl_, &dummy, 1), 0)
+        << "SSL_read returned error but SSL_peek says data is ready!";
   }
 
   RETURN_RESULT(result);
@@ -230,12 +231,24 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
       queue_error = ERR_get_error();
       VLOG(1) << "SSL syscall error " << ERROR_DETAILS(queue_error, location);
       break;
+
     case SSL_ERROR_SSL: {
-      state_ |= FATAL_ERROR;
       queue_error = ERR_get_error();
-      LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS(queue_error, location)
-                              << " bytes_read: " << bytes_read_
-                              << " bytes_written: " << bytes_written_;
+      int reason = ERR_GET_REASON(queue_error);
+      switch (reason) {
+        case SSL_R_APPLICATION_DATA_AFTER_CLOSE_NOTIFY:
+          // The client sent data (trailing bytes) after the server already initiated the TLS
+          // shutdown. We treat this as a benign EOF/graceful shutdown.
+          VLOG(1) << "SSL application data after close_notify " << location;
+          break;
+        default: {
+          // All other protocol errors are warnings/fatal
+          state_ |= FATAL_ERROR;
+          LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS(queue_error, location)
+                                  << " bytes_read: " << bytes_read_
+                                  << " bytes_written: " << bytes_written_;
+        }
+      }
       break;
     }
     default:
