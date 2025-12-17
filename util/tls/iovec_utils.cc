@@ -3,6 +3,7 @@
 //
 
 #include "util/tls/iovec_utils.h"
+
 #include "base/logging.h"
 
 namespace util {
@@ -26,4 +27,14 @@ void AdvanceIovec(iovec** iov, uint32_t* len, size_t bytes_to_advance) {
   DCHECK_EQ(bytes_to_advance, 0u) << "AdvanceIovec logic error: unconsumed bytes remaining";
 }
 
-} // namespace util
+bool IsEmptyIovec(const iovec* iov, uint32_t len) {
+  DCHECK_NE(iov, nullptr);
+  for (size_t i{}; i < len; ++i) {
+    if (iov[i].iov_len != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace util
