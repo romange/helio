@@ -9,7 +9,6 @@
 #include <gmock/gmock.h>
 
 #include <algorithm>
-#include <charconv>
 #include <thread>
 
 #include "base/gtest.h"
@@ -18,6 +17,8 @@
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
 #include "util/tls/tls_test_infra.h"
+#include "util/tls/iovec_utils.h"
+#include "util/tls/tls_socket.h"
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
@@ -353,32 +354,32 @@ TEST_P(TrySendVectorTest, SendScatterGather) {
 
   // 2. Prepare Data
   static constexpr size_t kPayloadSize = 16384;
-  std::string kPayload(kPayloadSize, 'A');
+  std::string payload(kPayloadSize, 'A');
 
   // Calculate Chunk Size to force the exact number of iovec entries requested
   // Examples:
   // If target is 3:      16384 / 3     = ~5461 bytes per chunk
   // If target is 16384:  16384 / 16384 = 1 byte per chunk
-  size_t kChunkSize = (kPayload.size() + target_iovec_count - 1) / target_iovec_count;
-  if (kChunkSize == 0)
-    kChunkSize = 1;
+  size_t chunk_size = (payload.size() + target_iovec_count - 1) / target_iovec_count;
+  if (chunk_size == 0)
+    chunk_size = 1;
   std::vector<iovec> vecs;
-  vecs.reserve((kPayload.size() + kChunkSize - 1) / kChunkSize);
-  char* src = kPayload.data();
-  size_t remaining = kPayload.size();
+  vecs.reserve((payload.size() + chunk_size - 1) / chunk_size);
+  char* src = payload.data();
+  size_t remaining = payload.size();
   while (remaining > 0) {
-    size_t sz = std::min(kChunkSize, remaining);
+    size_t sz = std::min(chunk_size, remaining);
     vecs.push_back({.iov_base = const_cast<char*>(src), .iov_len = sz});
     src += sz;
     remaining -= sz;
   }
-  VLOG(1) << "Test using " << vecs.size() << " iovec entries to send " << kPayload.size()
+  VLOG(1) << "Test using " << vecs.size() << " iovec entries to send " << payload.size()
           << " bytes (target was " << target_iovec_count << ")";
 
   // 3. Client Fiber - Send Data (and Handle Partial Sends)
   auto client_fb = proactor_->LaunchFiber([&] {
     iovec* current_iov{vecs.data()};
-    size_t current_count{vecs.size()};
+    uint32_t current_count{static_cast<uint32_t>(vecs.size())};
     size_t total_sent{};
 
     while (current_count > 0) {
@@ -388,18 +389,7 @@ TEST_P(TrySendVectorTest, SendScatterGather) {
         size_t written{*res};
         ASSERT_GT(written, 0u);
         total_sent += written;
-
-        while ((written > 0) && (current_count > 0)) {
-          if (written >= current_iov->iov_len) {  // consumed all of current iov
-            written -= current_iov->iov_len;
-            current_iov++;
-            current_count--;
-          } else {  // partially consumed current iov
-            current_iov->iov_base = static_cast<char*>(current_iov->iov_base) + written;
-            current_iov->iov_len -= written;
-            written = 0;
-          }
-        }
+        AdvanceIovec(&current_iov, &current_count, written);
       } else if (res.error() == std::errc::resource_unavailable_try_again) {
         ThisFiber::SleepFor(1ms);
       } else {
@@ -407,19 +397,19 @@ TEST_P(TrySendVectorTest, SendScatterGather) {
         break;
       }
     }
-    ASSERT_EQ(total_sent, kPayload.size());
+    ASSERT_EQ(total_sent, payload.size());
   });
 
   // 4. Server Fiber - Receive Data
   proactor_->Await([&] {
     std::string received;
-    received.resize(kPayload.size());
+    received.resize(payload.size());
     auto res = server_socket_->ReadAtLeast(
-        io::MutableBytes(reinterpret_cast<uint8_t*>(received.data()), kPayload.size()),
-        kPayload.size());
+        io::MutableBytes(reinterpret_cast<uint8_t*>(received.data()), payload.size()),
+        payload.size());
     ASSERT_TRUE(res) << "Server Read failed: " << res.error().message();
-    ASSERT_EQ(*res, kPayload.size());
-    ASSERT_EQ(received, kPayload);
+    ASSERT_EQ(*res, payload.size());
+    ASSERT_EQ(received, payload);
   });
 
   client_fb.Join();

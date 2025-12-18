@@ -13,6 +13,8 @@ namespace util {
 
 // Advances the iovec array pointer and decrements the count by skipping 'bytes_to_advance'.
 // Modifies both the base pointer of the current iovec and the array cursor itself.
+// It is user responsibility to ensure that 'bytes_to_advance' does not exceed
+// the total bytes represented by the iovec array.
 void AdvanceIovec(iovec** iov, uint32_t* len, size_t bytes_to_advance);
 
 // Returns true if the iovec array is empty (len == 0) or if all entries
