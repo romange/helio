@@ -16,9 +16,9 @@
 #include "util/fiber_socket_base.h"
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
-#include "util/tls/tls_test_infra.h"
 #include "util/tls/iovec_utils.h"
 #include "util/tls/tls_socket.h"
+#include "util/tls/tls_test_infra.h"
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
@@ -315,6 +315,11 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   // Launch a fiber to perform the actual TryRecv and store the result.
   auto recv_fb = proactor_->LaunchFiber([&] {
     data_ready.Wait();
+
+    // FIX: Unregister the callback before invoking TryRecv
+    // to avoid "Concurrent TryRecv and Recv" usage error.
+    server_socket_->ResetOnRecvHook();
+
     uint8_t buf[1024];
     auto res = server_socket_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
     if (res && (*res > 0)) {
@@ -325,7 +330,6 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   client_fb.Join();
   recv_fb.Join();
   EXPECT_EQ(received_data, send_data);
-  proactor_->Await([&] { server_socket_->ResetOnRecvHook(); });
   proactor_->Await([&] { std::ignore = client_sock->Close(); });
 }
 
