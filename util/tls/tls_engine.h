@@ -17,19 +17,25 @@ class Engine {
  public:
   enum HandshakeType { CLIENT = 1, SERVER = 2 };
   enum OpCode {
-    EOF_STREAM = -1,
+    // Peer sent "close_notify" (SSL_ERROR_ZERO_RETURN).
+    // This is a clean, secure EOF.
+    EOF_GRACEFUL = -1,
+
+    // Peer disconnected (TCP FIN) without "close_notify", or protocol error.
+    // This is a dirty/truncation EOF.
+    EOF_ABRUPT = -2,
 
     // We use BIO buffers, therefore any SSL operation can end up writing to the internal BIO
     // and result in success, even though the data has not been flushed to the underlying socket.
     // See https://www.openssl.org/docs/man1.0.2/man3/BIO_new_bio_pair.html
-    // As a result, we must flush output buffer (if OutputPending() > 0)if  before we do any
+    // As a result, we must flush output buffer (if OutputPending() > 0) before we do any
     // Socket reads. We could flush after each SSL operation but that would result in fragmented
     // Socket writes which we want to avoid.
-    NEED_READ_AND_MAYBE_WRITE = -2,
+    NEED_READ_AND_MAYBE_WRITE = -3,
 
     // Happens when we write large chunks of data into the ssl engine,
     // and it needs to flush its buffers.
-    NEED_WRITE = -3,
+    NEED_WRITE = -4
   };
 
   using error_code = ::std::error_code;

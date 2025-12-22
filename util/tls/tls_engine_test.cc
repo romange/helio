@@ -176,9 +176,14 @@ static unsigned long RunPeer(SslStreamTest::Options opts, SslStreamTest::OpCb cb
       TransmitData(src, dest, &opts);
     }
 
-    if (op_result == Engine::EOF_STREAM) {
+    if (op_result == Engine::EOF_ABRUPT) {
       LOG(WARNING) << opts.name << " stream truncated";
       return 0;
+    }
+
+    if (op_result == Engine::EOF_GRACEFUL) {
+      VLOG(1) << opts.name << " clean shutdown (EOF_GRACEFUL)";
+      return 0; // Return 0 to indicate clean exit.
     }
 
     ThisFiber::Yield();
@@ -330,8 +335,9 @@ TEST_F(SslStreamTest, ReadShutdown) {
   server_fb.Join();
   client_fb.Join();
 
-  EXPECT_EQ(1, cl_err) << SSLError(cl_err);
-  EXPECT_EQ(1, srv_err);
+  // We expect clean shutdown.
+  EXPECT_EQ(0, cl_err) << SSLError(cl_err);
+  EXPECT_EQ(0, srv_err);
 
   shutdown_srv = SSL_get_shutdown(server_engine_->native_handle());
   shutdown_client = SSL_get_shutdown(client_engine_->native_handle());
