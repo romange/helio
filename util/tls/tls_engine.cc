@@ -123,9 +123,28 @@ auto Engine::Shutdown() -> OpResult {
 
   int result = SSL_shutdown(ssl_);
   // See https://www.openssl.org/docs/man1.1.1/man3/SSL_shutdown.html
-
+  // OpenSSL uses a two-step shutdown:
+  //  * The first SSL_shutdown() sends "close_notify" alert and usually returns 0.
+  //  * A subsequent SSL_shutdown() completes the bidirectional shutdown and may return 1.
+  //
+  // When result == 0 here we are only initiating the shutdown. We do not check OutputPending() yet,
+  // because we immediately call SSL_shutdown() again to drive the second phase and rely on that
+  // call (and its return value) to decide whether the final alert needs to be flushed.
   if (result == 0) {              // First step of Shutdown (close_notify) returns 0.
     result = SSL_shutdown(ssl_);  // Initiate the second step.
+  }
+
+  // If result == 1, the bidirectional TLS shutdown has completed: both peers have exchanged
+  // close_notify alerts and OpenSSL considers the session fully closed. At this point we
+  // only need to ensure that any final "close_notify" sitting in the outbound BIO is flushed.
+  // We return 0 (rather than 1) to signal a graceful shutdown to the caller.
+  if (result == 1) {
+    // Check if we have a final 'close notify' alert sitting in the
+    // outbound BIO that needs to be flushed to the peer.
+    if (OutputPending()) {
+      return NEED_WRITE;
+    }
+    return 0;
   }
 
   RETURN_RESULT(result);
@@ -222,7 +241,7 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
 
   switch (ssl_error) {
     case SSL_ERROR_ZERO_RETURN:  // graceful shutdown of TLS connection.
-      break;
+      return Engine::EOF_GRACEFUL;
     case SSL_ERROR_WANT_READ:
       return Engine::NEED_READ_AND_MAYBE_WRITE;
     case SSL_ERROR_WANT_WRITE:
@@ -259,7 +278,7 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
       break;
   }
 
-  return Engine::EOF_STREAM;
+  return Engine::EOF_ABRUPT;
 }
 
 }  // namespace tls

@@ -1100,13 +1100,27 @@ INSTANTIATE_TEST_SUITE_P(
 
         // Case 5: Abrupt Stream EOF from Engine
         // Scenario: The TLS Engine itself detects a fatal error (e.g. bad MAC, protocol violation)
-        // or an abrupt closure and returns EOF_STREAM.
+        // or an abrupt closure and returns EOF_ABRUPT.
         // Expected: Translate this internal fatal error into 'connection_reset'.
         TryRecvScenario {
           .test_name = "EngineEOFStream_ReturnsReset", .initial_state = 0,
-          .engine_read_ret = Engine::EOF_STREAM, .engine_output_pending = 0,
+          .engine_read_ret = Engine::EOF_ABRUPT, .engine_output_pending = 0,
           .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
           .expected_error = std::make_error_code(std::errc::connection_reset),
+        },
+
+        // Case 6: Graceful Stream EOF from Engine
+        // Scenario: The TLS Engine receives a "close_notify" alert.
+        // Expected: Return success with 0 bytes to indicate a clean EOF.
+        TryRecvScenario {
+          .test_name = "EngineEOFGraceful_ReturnsZero",
+          .initial_state = 0,
+          .engine_read_ret = Engine::EOF_GRACEFUL,
+          .engine_output_pending = 0,
+          .sock_send_ret = std::nullopt,
+          .sock_recv_ret = std::nullopt,
+          .expected_error = std::error_code{}, // Default generic error_code = Success (0)
+          .expected_bytes = 0 // Standard EOF return
         }
 
 #if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)

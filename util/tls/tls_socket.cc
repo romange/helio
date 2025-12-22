@@ -100,8 +100,10 @@ auto TlsSocket::Accept() -> AcceptResult {
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::SERVER);
 
-    if (op_result == Engine::EOF_STREAM) {
-      return make_unexpected(make_error_code(errc::connection_aborted));
+    if ((op_result == Engine::EOF_ABRUPT) || (op_result == Engine::EOF_GRACEFUL)) {
+      VLOG(1) << "EOF_ABRUPT/EOF_GRACEFUL received (Handshake Aborted) fd="
+              << next_sock_->native_handle();
+      return make_unexpected(make_error_code(errc::connection_reset));
     }
 
     // it is important to send output (protocol errors) before we return from this function.
@@ -138,13 +140,10 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
   DCHECK(engine_);
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::HandshakeType::CLIENT);
-    /*
-    Commenting this line causes a deadlock in AsyncReadNeedWrite.
-    if (op_result == 1) {
-      break;
-    }
-    */
-    if (op_result == Engine::EOF_STREAM) {
+
+    // Server hung up (EOF_ABRUPT) or explicitly rejected us (EOF_GRACEFUL)
+    // We tried to connect, but the other side closed the door.
+    if (op_result == Engine::EOF_ABRUPT || op_result == Engine::EOF_GRACEFUL) {
       return make_error_code(errc::connection_refused);
     }
 
@@ -228,10 +227,20 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
       // buffer is empty.
       return read_total;
     }
+    if (op_val == Engine::EOF_GRACEFUL) {
+      VLOG(1) << "EOF_GRACEFUL detected in RecvMsg loop";
+      return read_total;  // Return whatever data we have (0 if true EOF)
+    }
 
     error_code ec = HandleOp(op_val);
-    if (ec)
+    if (ec) {
+      // If we already have data, return it now.  The application will process it and call RecvMsg
+      // again, at which point we will hit the error again and return it then.
+      if (read_total > 0) {
+        return read_total;
+      }
       return make_unexpected(ec);
+    }
   }
   return read_total;
 }
@@ -252,6 +261,9 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   while (true) {
     PushResult push_res = PushToEngine(ptr, len);
     if (push_res.engine_opcode < 0) {
+      if (push_res.engine_opcode == Engine::EOF_GRACEFUL) {
+        return make_unexpected(make_error_code(std::errc::broken_pipe));
+      }
       auto ec = HandleOp(push_res.engine_opcode);
       if (ec) {
         VLOG(1) << "HandleOp failed " << ec.message();
@@ -440,9 +452,14 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
 error_code TlsSocket::HandleOp(int op_val) {
   switch (op_val) {
-    case Engine::EOF_STREAM:
-      VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
-      return make_error_code(errc::connection_aborted);
+    case Engine::EOF_ABRUPT:
+      VLOG(1) << "EOF_ABRUPT received " << next_sock_->native_handle();
+      return make_error_code(errc::connection_reset);
+    case Engine::EOF_GRACEFUL:
+      // Peer said goodbye cleanly.
+      // We are done. Return success to indicate EOF.
+      VLOG(1) << "EOF_GRACEFUL received " << next_sock_->native_handle();
+      return std::error_code{};
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
     case Engine::NEED_WRITE:
@@ -528,8 +545,10 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
     // - NEED_READ_AND_MAYBE_WRITE: TLS engine generated outbound data
     // (handshake/renegotiation/alerts) - drain via writes first, then read peer response
     // - NEED_WRITE: need to write to upstream socket
-    // - EOF_STREAM: connection closed abruptly by peer (no close_notify) / fatal TLS alert / system
-    // error / protocol violation
+    // - EOF_ABRUPT: connection closed abruptly by peer (no close_notify) / fatal TLS alert /
+    // system-level I/O erro
+    // - EOF_GRACEFUL: clean EOF
+    // - <0 and not one of the above: fatal TLS (error / protocol violation)
     if (read_result > 0) {  // case 1:
       buf.remove_prefix(read_result);
       total_bytes_read += read_result;
@@ -611,8 +630,15 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       // recv_result has an error (e.g. EAGAIN)
       returned_status = recv_result.error();
       break;
-    } else if (read_result == Engine::EOF_STREAM) {  // case 3: EOF_STREAM
+    } else if (read_result == Engine::EOF_ABRUPT) {  // case 3: Abrupt EOF
+      // The engine detected an abrupt/dirty EOF (no close_notify) from peer.
+      // We report this as a connection reset/abort because it wasn't a clean TLS shutdown.
       returned_status = make_error_code(errc::connection_reset);
+      break;
+    } else if (read_result == Engine::EOF_GRACEFUL) {  // case 4: Clean EOF
+      // Peer said goodbye cleanly.
+      // We are done. Return success (0) to indicate EOF.
+      returned_status = {};
       break;
     } else {
       LOG(DFATAL) << "BUG: Unsupported read_result " << read_result;
@@ -737,11 +763,15 @@ void TlsSocket::AsyncReq::HandleOpAsync(int op_val) {
     case Engine::NEED_WRITE:
       MaybeSendOutputAsync();
       break;
-    case Engine::EOF_STREAM:
-      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_aborted)));
+    case Engine::EOF_ABRUPT:
+      CompleteAsyncReq(make_unexpected(make_error_code(errc::connection_reset)));
+      break;
+    case Engine::EOF_GRACEFUL:
+      // Peer said goodbye cleanly.
+      // We are done. Return success (0) to indicate EOF.
+      CompleteAsyncReq(0);
       break;
     default:
-      // EOF_STREAM should be handled earlier
       LOG(DFATAL) << "Unsupported " << op_val;
   }
 }
@@ -757,9 +787,13 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
     return cb(op_val);
   }
 
-  if (op_val == Engine::EOF_STREAM) {
-    VLOG(1) << "EOF_STREAM received " << next_sock_->native_handle();
-    return cb(make_unexpected(make_error_code(errc::connection_aborted)));
+  if (op_val == Engine::EOF_ABRUPT) {
+    VLOG(1) << "EOF_ABRUPT received " << next_sock_->native_handle();
+    return cb(make_unexpected(make_error_code(errc::connection_reset)));
+  }
+  if (op_val == Engine::EOF_GRACEFUL) {
+    VLOG(1) << "EOF_GRACEFUL received " << next_sock_->native_handle();
+    return cb(0);  // return 0 to indicate EOF
   }
 
   // We could not read from the engine. Dispatch async op.
