@@ -457,8 +457,9 @@ error_code TlsSocket::HandleOp(int op_val) {
       return make_error_code(errc::connection_reset);
     case Engine::EOF_GRACEFUL:
       // Peer said goodbye cleanly.
-      // We are done. Return success to indicate EOF.
-      VLOG(1) << "EOF_GRACEFUL received " << next_sock_->native_handle();
+      // However, EOF_GRACEFUL should be handled by the callers (Accept/Connect/Recv/Write)
+      // explicitly before calling HandleOp.
+      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd=" << next_sock_->native_handle();
       return std::error_code{};
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
