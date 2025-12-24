@@ -1,0 +1,31 @@
+diff --git a/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h b/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
+index d38c77f4dc0..d6f844f3aaa 100644
+--- a/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
++++ b/src/aws-cpp-sdk-core/include/aws/core/http/HttpClient.h
+@@ -56,21 +56,21 @@ namespace Aws
+             /**
+              * Stops all requests in progress and prevents any others from initiating.
+              */
+-            void DisableRequestProcessing();
++            virtual void DisableRequestProcessing();
+             /**
+              * Enables/ReEnables request processing.
+              */
+-            void EnableRequestProcessing();
++            virtual void EnableRequestProcessing();
+             /**
+              * Returns true if request processing is enabled.
+              */
+-            bool IsRequestProcessingEnabled() const;
++            virtual bool IsRequestProcessingEnabled() const;
+             /**
+              * Sleeps current thread for sleepTime.
+              */
+-            void RetryRequestSleep(std::chrono::milliseconds sleepTime);
++            virtual void RetryRequestSleep(std::chrono::milliseconds sleepTime);
+ 
+-            bool ContinueRequest(const Aws::Http::HttpRequest&) const;
++            virtual bool ContinueRequest(const Aws::Http::HttpRequest&) const;
+ 
+             explicit operator bool() const
+             {

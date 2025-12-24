@@ -20,6 +20,9 @@ class Logger : public Aws::Utils::Logging::LogSystemInterface {
                  const Aws::OStringStream& message_stream) override;
 
   void Flush() override;
+
+  void vaLog(Aws::Utils::Logging::LogLevel logLevel, const char* tag, const char* formatStr,
+             va_list args) final;
 };
 
 }  // namespace aws

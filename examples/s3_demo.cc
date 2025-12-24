@@ -27,7 +27,10 @@ ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   Aws::S3::S3ClientConfiguration s3_conf{};
-  s3_conf.payloadSigningPolicy = Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::ForceNever;
+  s3_conf.checksumConfig.responseChecksumValidation =
+      Aws::Client::ResponseChecksumValidation::WHEN_REQUIRED;
+
+  s3_conf.payloadSigningPolicy = Aws::Client::AWSAuthV4Signer::PayloadSigningPolicy::Never;
   std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider =
       std::make_shared<util::aws::CredentialsProviderChain>();
   std::shared_ptr<Aws::S3::S3EndpointProviderBase> endpoint_provider =
@@ -111,7 +114,7 @@ void Upload(const std::string& bucket, const std::string& key, size_t upload_siz
   for (size_t i = 0; i != chunks; i++) {
     std::error_code ec = file->Write(io::Bytes(buf.data(), buf.size()));
     if (ec) {
-      LOG(ERROR) << "failed to write to s3: " << file.error();
+      LOG(ERROR) << "failed to write to s3: " << ec.message();
       return;
     }
   }

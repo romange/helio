@@ -11,7 +11,7 @@ cmake_policy (SET CMP0079 NEW)
 if (POLICY CMP0169)
   cmake_policy (SET CMP0169 OLD) # silence deprecation warning about FetchContent_Populate
 endif()
-  
+
 set(THIRD_PARTY_DIR "${CMAKE_CURRENT_BINARY_DIR}/third_party")
 
 SET_DIRECTORY_PROPERTIES(PROPERTIES EP_PREFIX ${THIRD_PARTY_DIR})
@@ -409,15 +409,16 @@ add_third_party(
 )
 
 if (WITH_AWS)
-  set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00.patch)
+  set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-1.11.717.patch)
 
   add_third_party(
     aws
     GIT_REPOSITORY https://github.com/aws/aws-sdk-cpp.git
-    GIT_TAG 3e51fa016655eeb6b6610bdf8fe7cf33ebbf3e00
+    GIT_TAG 1.11.717
     GIT_SHALLOW TRUE
+    GIT_CONFIG      submodule.recurse=1 submodule.fetchJobs=10
     PATCH_COMMAND "${AWS_PATCH_COMMAND}"
-    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF  -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF  -DENABLE_CURL_LOGGING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DAWS_SDK_WARNINGS_ARE_ERRORS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
   )
 endif()
@@ -444,7 +445,7 @@ add_third_party(
   zstd
   URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.zst
   SOURCE_SUBDIR "build/cmake"
-  
+
   # for debug pass : "CFLAGS=-fPIC -O0 -ggdb"
   CMAKE_PASS_FLAGS "-DZSTD_BUILD_SHARED=OFF -DZSTD_BUILD_PROGRAMS=OFF -DZSTD_BUILD_TESTS=OFF"
 )
