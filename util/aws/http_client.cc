@@ -76,10 +76,12 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   CHECK(proactor) << "aws: http client: must run in a proactor thread";
 
   auto uri = request->GetUri();
-  std::string uri_str = uri.GetURLEncodedPath();
-  uri_str += uri.GetQueryString();  // should be prefixed with '?' and url encoded.
+  std::string full_path = uri.GetURLEncodedPath();
+  std::string query = uri.GetQueryString();
+  CHECK(query.empty() || query[0] == '?'); // should be prefixed with '?' and url encoded.
+  full_path += query;
   h2::request<h2::string_body> boost_req{BoostMethod(request->GetMethod()),
-                                         uri_str, kHttpVersion1_1};
+                                         full_path, kHttpVersion1_1};
   for (const auto& h : request->GetHeaders()) {
     boost_req.set(h.first, h.second);
   }
