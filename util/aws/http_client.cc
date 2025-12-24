@@ -75,11 +75,18 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   ProactorBase* proactor = ProactorBase::me();
   CHECK(proactor) << "aws: http client: must run in a proactor thread";
 
+  auto uri = request->GetUri();
+  std::string full_path = uri.GetURLEncodedPath();
+  std::string query = uri.GetQueryString();
+  CHECK(query.empty() || query[0] == '?'); // should be prefixed with '?' and url encoded.
+  full_path += query;
   h2::request<h2::string_body> boost_req{BoostMethod(request->GetMethod()),
-                                         request->GetUri().GetURIString(), kHttpVersion1_1};
+                                         full_path, kHttpVersion1_1};
   for (const auto& h : request->GetHeaders()) {
     boost_req.set(h.first, h.second);
   }
+
+  VLOG(2) << "aws: http client: sending request:\n" << boost_req;
 
   // If the body is a known type with an underlying buffer we can access
   // directly without copying, we don't include a body in the boost request but
@@ -185,6 +192,8 @@ std::shared_ptr<Aws::Http::HttpResponse> HttpClient::MakeRequest(
   for (const auto& h : boost_resp.base()) {
     response->AddHeader(std::string(h.name_string()), std::string(h.value()));
   }
+  VLOG(2) << "aws: http client: received response:\n" << boost_resp;
+
   // Copy the response. This can be improved in the future.
   response->GetResponseBody().write(boost_resp.body().data(), boost_resp.body().size());
 
