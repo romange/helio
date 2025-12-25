@@ -26,7 +26,6 @@
 extern "C" void __assert_fail(const char* assertion, const char* file, unsigned int line,
                               const char* function) {
   LOG(FATAL) << "[" << file << ":" << line << "]: " << "assert(" << assertion << ") failed!";
-  abort();
 }
 #endif
 #endif
