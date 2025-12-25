@@ -66,9 +66,9 @@ gdb --batch -ex r --args ./fibers_test --logtostderr
 ```
 
 ### Test Files
-Tests are defined using `cxx_test()` macro in CMakeLists.txt files with format:
+Tests are defined using `helio_cxx_test()` macro in CMakeLists.txt files with format:
 ```cmake
-cxx_test(test_name library_deps LABELS CI)
+helio_cxx_test(test_name library_deps LABELS CI)
 ```
 
 ## Code Style & Formatting
@@ -92,7 +92,7 @@ Run formatting: `clang-format -i <file>`
 - Abseil libraries use `absl::` prefix
 - Boost libraries use `Boost::` prefix
 - Tests are linked with `gtest_main_ext` which includes gmock and base library
-- Use `cxx_link()` for linking targets, `cxx_test()` for test targets
+- Use `cxx_link()` for linking targets, `helio_cxx_test()` for test targets
 - The `USE_FB2` define is enabled by default for fibers support
 - Logging uses glog library (`LOG(INFO)`, `VLOG()`, `CHECK()`)
 
@@ -113,7 +113,7 @@ Key CI steps:
 
 ### New test
 ```cmake
-cxx_test(my_test library_deps LABELS CI)
+helio_cxx_test(my_test library_deps LABELS CI)
 ```
 
 ### New executable

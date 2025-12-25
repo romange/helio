@@ -6,17 +6,23 @@ set(PROJECT_CONTACT romange@gmail.com)
 project(${PACKAGE_NAME} C CXX)
 enable_testing()
 
-get_directory_property(PARENT_PROJ_NAME PARENT_DIRECTORY)
+# ------------------------------------------------------------------------------
+# Project Options
+# ------------------------------------------------------------------------------
 
-Message(STATUS "PROJECT_BINARY_DIR ${PROJECT_BINARY_DIR} GENERATOR ${CMAKE_GENERATOR}")
-Message(STATUS "PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR} CMAKE_SOURCE_DIR ${CMAKE_SOURCE_DIR}")
+# Helio Feature options
+option(HELIO_USE_SANITIZER "Use ASan and USan sanitizers" OFF)
+option(BUILD_DOCS          "Generate documentation" ON)
+option(BUILD_SHARED_LIBS   "Build shared libraries" OFF)
 
+# Platform-specific defaults
+set(WITH_UNWIND_DEFAULT ON)
 if (APPLE)
-  option (WITH_UNWIND "Enable libunwind support" OFF)
-else()
-  option (WITH_UNWIND "Enable libunwind support" ON)
+  set(WITH_UNWIND_DEFAULT OFF)
 endif()
+option(WITH_UNWIND "Enable libunwind support" ${WITH_UNWIND_DEFAULT})
 
+# Linker Configuration (Mold)
 set(MOLD_DEFAULT_STATE OFF)
 if(NOT DEFINED CACHE{USE_MOLD})
   find_program(MOLD_EXECUTABLE mold QUIET)
@@ -24,54 +30,35 @@ if(NOT DEFINED CACHE{USE_MOLD})
     set(MOLD_DEFAULT_STATE ON)
   endif()
 endif()
+option(USE_MOLD "whether to use mold linker" ${MOLD_DEFAULT_STATE})
 
-option (HELIO_USE_SANITIZER "Use asan and usan sanitizers" OFF)
-option (BUILD_DOCS "Generate documentation " ON)
-option (BUILD_SHARED_LIBS "Build shared libraries" OFF)
-option (USE_MOLD "whether to use mold linker" ${MOLD_DEFAULT_STATE})
-set    (HELIO_MIMALLOC_OPTS "" CACHE STRING "additional mimalloc compile options")
-set    (HELIO_MIMALLOC_LIBNAME "libmimalloc.a" CACHE STRING "name of mimalloc library")
+# ------------------------------------------------------------------------------
+# Project Metadata & setup
+# ------------------------------------------------------------------------------
 
-include(CheckCXXCompilerFlag)
+message(STATUS "PROJECT_BINARY_DIR ${PROJECT_BINARY_DIR} GENERATOR ${CMAKE_GENERATOR}")
+message(STATUS "PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR} CMAKE_SOURCE_DIR ${CMAKE_SOURCE_DIR}")
 
-# Can not use CHECK_CXX_COMPILER_FLAG due to linker problems.
-set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
-check_cxx_source_compiles("int main() { return 0; }" SUPPORT_ASAN)
+# Load and set internal compiler logic (Flags, Sanitizers, Architecture)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+include(internal)    # Standards and flags first
+include(third_party) # Dependencies second
 
-set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
-check_cxx_source_compiles("int main() { return 0; }" SUPPORT_USAN)
-set(CMAKE_REQUIRED_FLAGS "")
+# --- [ Legacy Compatibility Wrapper ] ---
+# GTest defines a function named 'cxx_test', which hides our internal logic.
+# We define this wrapper AFTER including third_party to intentionally shadow
+# GTest's version and redirect calls back to our 'helio_cxx_test'.
+#
+# TODO: Remove this wrapper once all subdirectories (and Dragonfly) are
+# migrated to use 'helio_cxx_test' directly.
+function(cxx_test)
+  message(AUTHOR_WARNING "cxx_test() is deprecated, use helio_cxx_test() instead.")
+  helio_cxx_test(${ARGV})
+endfunction()
 
-
-if (PARENT_PROJ_NAME)
-  Message(STATUS "PARENT_PROJ_NAME ${PARENT_PROJ_NAME}")
-else()
-  # Define our own project
-  set(CMAKE_CXX_STANDARD 17)
-  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-
-  if (HELIO_USE_SANITIZER AND SUPPORT_ASAN)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address")
-  endif()
-
-  if (HELIO_USE_SANITIZER AND SUPPORT_USAN)
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
-    if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-      set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} --start-no-unused-arguments --rtlib=compiler-rt --end-no-unused-arguments")
-    endif()
-  endif()
-
-  if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-      set(CMAKE_CXX_FLAGS "-Wthread-safety ${CMAKE_CXX_FLAGS}")
-  endif()
-
-  include(third_party)
-  include(internal)
-endif()
-
-
-add_definitions(-DUSE_FB2)
-
+# ------------------------------------------------------------------------------
+# Subdirectories
+# ------------------------------------------------------------------------------
 add_subdirectory(base)
 add_subdirectory(io)
 add_subdirectory(examples)
