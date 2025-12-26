@@ -187,10 +187,13 @@ bool ParseHumanReadableBytes(std::string_view str, int64_t* num_bytes) {
       return false;
   }
 
-  // Now validate that nothing remains after the unit
+  // Now validate that nothing remains after the unit.
+  // Accepts: K, KB, KiB (and similar for M, G, T, P, E).
   const char* suffix = end;
   if (*suffix != '\0') {
     ++suffix;
+    if (*suffix == 'i')
+      ++suffix;  // allow optional "i" (for KiB, MiB, GiB, etc.)
     if (*suffix == 'B' || *suffix == 'b')
       ++suffix;  // allow optional "B" or "b"
     if (*suffix != '\0')
