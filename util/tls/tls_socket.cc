@@ -3,8 +3,8 @@
 //
 
 #include "util/tls/tls_socket.h"
-#include "util/tls/iovec_utils.h"
 
+#include <absl/container/inlined_vector.h>
 #include <openssl/err.h>
 
 #include <algorithm>
@@ -12,6 +12,7 @@
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
 #include "util/fibers/proactor_base.h"
+#include "util/tls/iovec_utils.h"
 #include "util/tls/tls_engine.h"
 
 #define VSOCK(verbosity)                                                      \
@@ -531,19 +532,11 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  if (len == 0)
-    return 0;  // nothing to send
-  bool has_data{false};
-  for (size_t i{}; i < len; ++i) {
-    if (v[i].iov_len > 0) {
-      has_data = true;
-      break;
-    }
+  if (IsEmptyIovec(v, len)) {
+    DCHECK(false) << "TrySend with empty iovec";
+    return 0;  // nothing to send (POSIX allows zero-length writes)
   }
-  if (!has_data)
-    return 0;  // nothing to send
-  bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
-  if (write_in_progress) {
+  if ((state_ & WRITE_IN_PROGRESS) != 0) {
     // Another fiber is currently writing, we cannot safely proceed
     DVSOCK(3) << "TrySend blocked: WRITE_IN_PROGRESS detected";
     return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
@@ -551,22 +544,14 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
   size_t total_bytes_sent{};
   std::error_code returned_status{};
-  constexpr size_t kStackIovecs = 16;
-  iovec stack_vec[kStackIovecs];
-  std::vector<iovec> heap_vec;  // Fallback container if the user sends a huge iovec array
-  iovec* curr_iov;
-  if (len <= kStackIovecs) {  // iovec array fits on stack
-    curr_iov = stack_vec;
-  } else {  // need to allocate on heap
-    heap_vec.resize(len);
-    curr_iov = heap_vec.data();
-  }
   // We make a local mutable copy of the iovec descriptors because AdvanceIovec
   // modifies them (adjusting base pointers and lengths) to track partial writes.
   // The input array 'v' is const and belongs to the caller, so we cannot modify it.
-  std::memcpy(curr_iov, v, len * sizeof(iovec));
-  iovec* iov_cursor = curr_iov;
+  static constexpr size_t kMaxStackIovecs = 16;
   uint32_t curr_iovec_len{len};
+  absl::InlinedVector<iovec, kMaxStackIovecs> curr_iov(curr_iovec_len);
+  iovec* iov_cursor = curr_iov.data();
+  std::memcpy(iov_cursor, v, curr_iovec_len * sizeof(iovec));
 
   while ((curr_iovec_len > 0) || (engine_->OutputPending() > 0)) {
     // 1. Flush into the upstream socket any pending output from the engine output buffer before

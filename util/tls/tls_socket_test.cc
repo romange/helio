@@ -4,13 +4,14 @@
 
 #include "util/tls/tls_socket.h"
 
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
 
 #include <algorithm>
 #include <charconv>
 #include <thread>
 
-#include "absl/strings/str_cat.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
@@ -344,9 +345,9 @@ TEST_P(TrySendVectorTest, SendScatterGather) {
       << "Invalid test parameter '" << param << "'. Expected format 'engine:count'";
   size_t target_iovec_count{};
   auto count_str{param.substr(sep_pos + 1)};
-  auto [ptr, ec] = std::from_chars(count_str.data(), count_str.data() + count_str.size(), target_iovec_count);
-  ASSERT_EQ(ec, std::errc{}) << "Failed to parse iovec count from '" << count_str << "'";
-  ASSERT_GT(target_iovec_count, 0u) << "Iovec count must be greater than zero";
+  CHECK(absl::SimpleAtoi(count_str, &target_iovec_count))
+      << "Failed to parse iovec count from '" << count_str << "'";
+  CHECK_GT(target_iovec_count, 0u) << "Iovec count must be greater than zero";
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
 
@@ -1407,7 +1408,8 @@ TEST_P(TrySendErrorTest, VerifyEdgeCases) {
     uint8_t user_data[] = "payload";
     iovec v = {user_data, sizeof(user_data)};
     // Unless the mock is configured to return true for IsOpen(), it will return false by default.
-    EXPECT_FALSE(sock_->IsOpen()) << "Mock socket is expected to be closed unless IsOpen() is explicitly mocked to return true";
+    EXPECT_FALSE(sock_->IsOpen()) << "Mock socket is expected to be closed unless IsOpen() is "
+                                     "explicitly mocked to return true";
     auto res = sock_->TrySend(&v, 1);
 
     // Verification
