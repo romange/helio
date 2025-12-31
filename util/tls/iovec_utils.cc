@@ -24,7 +24,8 @@ void AdvanceIovec(iovec** iov, uint32_t* len, size_t bytes_to_advance) {
       break;
     }
   }
-  DCHECK_EQ(bytes_to_advance, 0u) << "AdvanceIovec logic error: unconsumed bytes remaining";
+  CHECK_EQ(bytes_to_advance, 0u) << "AdvanceIovec logic error: unconsumed bytes remaining or "
+                                    "bytes_to_advance is larger than total iovec size";
 }
 
 bool IsEmptyIovec(const iovec* iov, uint32_t len) {
@@ -41,7 +42,9 @@ size_t GetIovecTotalBytes(const iovec* iov, uint32_t len) {
   DCHECK_NE(iov, nullptr);
   size_t total_bytes{};
   for (size_t i{}; i < len; ++i) {
+    size_t prev = total_bytes;
     total_bytes += iov[i].iov_len;
+    CHECK(total_bytes >= prev) << "Overflow detected in GetIovecTotalBytes";
   }
   return total_bytes;
 }
