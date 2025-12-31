@@ -1523,4 +1523,160 @@ INSTANTIATE_TEST_SUITE_P(
                         .engine_write_ret = Engine::EOF_STREAM,
                         .sock_recv_ret = std::nullopt,
                         .expected_error = std::make_error_code(std::errc::connection_aborted)}));
+
+class TrySendAsyncFlushTest : public testing::TestWithParam<std::string> {
+ protected:
+  void SetUp() override {
+    // Initialize Proactor based on test parameter
+#ifdef __linux__
+    if (GetParam() == "uring") {
+      proactor_ = std::make_unique<fb2::UringProactor>();
+    } else {
+      proactor_ = std::make_unique<fb2::EpollProactor>();
+    }
+#else
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+#endif
+
+    proactor_thread_ = std::thread{[this] {
+      fb2::InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+
+    proactor_->Await([&] {
+      // Create and capture the Mock Underlying Socket
+      auto mock_sock = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+      mock_next_sock_ = mock_sock.get();
+
+      // Create TlsSocket wrapping the mock
+      tls_sock_ = std::make_unique<TlsSocket>(std::move(mock_sock));
+
+      // Create and capture the Mock Engine
+      auto mock_eng = std::make_unique<testing::NiceMock<MockEngine>>();
+      mock_engine_ = mock_eng.get();
+
+      // Inject the engine
+      TestDelegator::SetEngine(tls_sock_.get(), std::move(mock_eng));
+    });
+  }
+
+  void TearDown() override {
+    proactor_->Await([&] {
+      if (tls_sock_) {
+        // Ensure we don't leave flags set
+        TestDelegator::SetState(tls_sock_.get(), 0);
+        std::ignore = tls_sock_->Close();
+      }
+    });
+    proactor_->Stop();
+    if (proactor_thread_.joinable()) {
+      proactor_thread_.join();
+    }
+  }
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread proactor_thread_;
+  std::unique_ptr<TlsSocket> tls_sock_;
+
+  // Pointers to mocks (owned by tls_sock_)
+  MockEngine* mock_engine_ = nullptr;
+  MockFiberSocket* mock_next_sock_ = nullptr;
+};
+
+INSTANTIATE_TEST_SUITE_P(MockEngines, TrySendAsyncFlushTest,
+                         testing::Values("epoll"
+#ifdef __linux__
+                                         ,
+                                         "uring"
+#endif
+                                         ),
+                         [](const auto& info) { return std::string(info.param); });
+
+// TrySendAsyncFlushTest: Verifies the "Fire and Hold" mechanism.
+// Ensures that if TrySend returns success (all user data consumed) but the TLS engine
+// still has pending output (because the sync flush was partial), the socket
+// automatically offloads the remaining flush to the background (asynchronous) path.
+TEST_P(TrySendAsyncFlushTest, OffloadsStrandedDataToAsync) {
+  proactor_->Await([&] {
+    // 1. Ensure socket logic thinks it's open (avoids early exit)
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+
+    // 2. Prepare User Data
+    std::string user_data{"payload_data"};
+    iovec v{user_data.data(), user_data.size()};
+
+    // 3. MOCK EXPECTATIONS
+    {
+      testing::InSequence s;
+
+      // A. Initial Loop Checks (Before Write)
+      // The code might check OutputPending multiple times before writing.
+      EXPECT_CALL(*mock_engine_, OutputPending())
+          .Times(testing::AnyNumber())
+          .WillRepeatedly(testing::Return(0));
+
+      // B. The Write Action (The "Barrier" that advances state) - return: wrote all user data
+      EXPECT_CALL(*mock_engine_, Write(testing::_))
+          .WillOnce(testing::Return(Engine::OpResult{static_cast<int>(user_data.size())}));
+
+      // C. Post-Write Checks (Loop Header)
+      // Code checks pending again. Must see 100 to attempt flush.
+      EXPECT_CALL(*mock_engine_, OutputPending())
+          .Times(testing::AtLeast(1))
+          .WillRepeatedly(testing::Return(100));
+
+      // D. Sync Flush (Partial)
+      static uint8_t cipher_buf[100];
+      EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+          .WillOnce(testing::Return(Engine::Buffer(cipher_buf, 100)));
+
+      // Upstream socket only accepts 50 bytes
+      EXPECT_CALL(*mock_next_sock_, TrySend(testing::_))
+          .WillOnce(testing::Return(io::Result<size_t>(50)));
+
+      // Engine consumes 50
+      EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(50));
+
+      // E. Offload Trigger Check
+      // Loop breaks. Code checks if pending > 0 to decide on offload to an async write.
+      EXPECT_CALL(*mock_engine_, OutputPending()).WillOnce(testing::Return(50));
+
+      // F. Async Preparation
+      // Code Peeks buffer *before* calling AsyncWriteSome
+      EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+          .WillOnce(testing::Return(Engine::Buffer(cipher_buf + 50, 50)));
+
+      // G. The Async Dispatch
+      EXPECT_CALL(*mock_next_sock_, AsyncWriteSome(testing::_, 1, testing::_))
+          .WillOnce(testing::Invoke([&](const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+            EXPECT_EQ(v->iov_len, 50);
+            // Trigger callback immediately
+            cb(50);
+          }));
+
+      // ASYNC CALLBACK ---
+
+      // H. Callback: Consume
+      EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(50));
+
+      // I. Callback: Peek (Cleanup check)
+      EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+          .WillOnce(testing::Return(Engine::Buffer(nullptr, 0)));
+
+      // J. Callback: Final OutputPending check (must return 0)
+      EXPECT_CALL(*mock_engine_, OutputPending())
+          .Times(testing::AnyNumber())
+          .WillRepeatedly(testing::Return(0));
+    }
+
+    // 4. EXECUTION
+    auto res = tls_sock_->TrySend(&v, 1);
+
+    // 5. VERIFICATION
+    ASSERT_TRUE(res);
+    EXPECT_EQ(*res, user_data.size());
+    EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(mock_engine_));
+  });
+}
+
 }  // namespace util::tls

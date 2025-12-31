@@ -37,4 +37,13 @@ bool IsEmptyIovec(const iovec* iov, uint32_t len) {
   return true;
 }
 
+size_t GetIovecTotalBytes(const iovec* iov, uint32_t len) {
+  DCHECK_NE(iov, nullptr);
+  size_t total_bytes{};
+  for (size_t i{}; i < len; ++i) {
+    total_bytes += iov[i].iov_len;
+  }
+  return total_bytes;
+}
+
 }  // namespace util

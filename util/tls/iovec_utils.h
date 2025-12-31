@@ -11,17 +11,16 @@
 
 namespace util {
 
-/**
- * @brief Advances the iovec iterator by the specified number of bytes.
- * @param[in,out] iov Pointer to the array pointer (will be incremented).
- * @param[in,out] len Pointer to the array count (will be decremented).
- * @param bytes_to_advance Number of bytes to skip.
- */
+// Advances the iovec array pointer and decrements the count by skipping 'bytes_to_advance'.
+// Modifies both the base pointer of the current iovec and the array cursor itself.
 void AdvanceIovec(iovec** iov, uint32_t* len, size_t bytes_to_advance);
 
-// Returns true if all entries in the iovec array have zero length or if the iovec length is zero.
-// @param iov Pointer to the iovec array.
-// @param len Number of entries in the iovec array.
+// Returns true if the iovec array is empty (len == 0) or if all entries
+// within the array have a length of zero. Useful for early-exit validation.
 bool IsEmptyIovec(const iovec* iov, uint32_t len);
+
+// Calculates the sum of all iov_len fields in the array.
+// Note: This returns the total byte count and does not check for overflow.
+size_t GetIovecTotalBytes(const iovec* iov, uint32_t len);
 
 }  // namespace util

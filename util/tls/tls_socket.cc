@@ -532,7 +532,8 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  if (IsEmptyIovec(v, len)) {
+  size_t iovec_total_bytes = GetIovecTotalBytes(v, len);
+  if (iovec_total_bytes == 0) {
     LOG(DFATAL) << "TrySend with empty iovec";
     return 0;  // nothing to send (POSIX allows zero-length writes)
   }
@@ -649,8 +650,28 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
       break;
     }  // push_result.engine_opcode < 0
   }    // while
+
   if (total_bytes_sent > 0) {
     DVSOCK(3) << "TrySend returning " << total_bytes_sent << " bytes";
+
+    // The user interprets a full write as completion and may not call the socket again.
+    // To prevent stranding pending TLS output (causing deadlocks), we must flush
+    // it asynchronously in the background.
+    size_t engine_output_pending = engine_->OutputPending();
+    if ((total_bytes_sent == iovec_total_bytes) && (engine_output_pending > 0)) {
+      DVSOCK(3) << "TrySend success but OutputPending=" << engine_output_pending
+                << ". Offloading TLS engine's flush to background.";
+
+      // Create a "Detached" AsyncReq with nullptr vec (no user data). We only want to flush the
+      // engine's output buffer in the background.
+      auto dummy_cb = [](io::Result<size_t>) {};
+      auto req =
+          std::make_unique<AsyncReq>(this, std::move(dummy_cb), nullptr, 0, AsyncReq::WRITER);
+      DCHECK(!async_write_req_);
+      async_write_req_ = std::move(req);
+      async_write_req_->StartUpstreamWrite();
+    }
+
     return total_bytes_sent;
   }
   if (!returned_status) {
@@ -993,6 +1014,15 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
   }
 
   DCHECK(role_ == WRITER);
+
+  // Check if this is a "flush-only" request (from TrySend, for example)
+  if (vec_ == nullptr) {
+    // We have flushed the pending buffer (AsyncWriteProgressCb ensures this before calling us),
+    // and we have no new data to push. We are finished.
+    CompleteAsyncReq(0);
+    return;
+  }
+
   // We wrote some therefore we can complete
   if (engine_written_ > 0) {
     CompleteAsyncReq(engine_written_);
