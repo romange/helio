@@ -316,8 +316,9 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   auto recv_fb = proactor_->LaunchFiber([&] {
     data_ready.Wait();
 
-    // FIX: Unregister the callback before invoking TryRecv
-    // to avoid "Concurrent TryRecv and Recv" usage error.
+    // Unregister the callback before invoking TryRecv.
+    // The underlying socket cannot handle manual 'TryRecv' calls while
+    // a 'RegisterOnRecv' hook is active (Push vs Pull mode conflict).
     server_socket_->ResetOnRecvHook();
 
     uint8_t buf[1024];
