@@ -3,6 +3,7 @@
 //
 
 #include "util/tls/tls_socket.h"
+#include "util/tls/iovec_utils.h"
 
 #include <openssl/err.h>
 
@@ -529,25 +530,6 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
   return TrySend(vec, 1);
 }
 
-void TlsSocket::AdvanceIovec(iovec*& iov, uint32_t& len, size_t bytes_to_advance) {
-  DCHECK_NE(iov, nullptr);
-  DCHECK_GT(len, 0u);
-
-  while ((len > 0) && (bytes_to_advance > 0)) {
-    if (bytes_to_advance >= iov->iov_len) {  // case 1: remove the entry
-      bytes_to_advance -= iov->iov_len;
-      ++iov;
-      --len;
-    } else {  // case 2: adjust the current entry's start and length
-      iov->iov_base = static_cast<char*>(iov->iov_base) + bytes_to_advance;
-      iov->iov_len -= bytes_to_advance;
-      bytes_to_advance = 0;
-      break;
-    }
-  }
-  DCHECK_EQ(bytes_to_advance, 0u) << "AdvanceIovec logic error: unconsumed bytes remaining";
-}
-
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   if (len == 0)
     return 0;  // nothing to send
@@ -638,7 +620,7 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
     if (push_result.written > 0) {
       // Advance the iovec array position by the number of bytes written (push_result.written) into
       // the engine
-      AdvanceIovec(iov_cursor, curr_iovec_len, push_result.written);
+      AdvanceIovec(&iov_cursor, &curr_iovec_len, push_result.written);
       total_bytes_sent += push_result.written;
     }
 
