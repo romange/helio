@@ -533,7 +533,7 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   if (IsEmptyIovec(v, len)) {
-    DCHECK(false) << "TrySend with empty iovec";
+    LOG(DFATAL) << "TrySend with empty iovec";
     return 0;  // nothing to send (POSIX allows zero-length writes)
   }
   if ((state_ & WRITE_IN_PROGRESS) != 0) {
