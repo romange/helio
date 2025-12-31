@@ -7,6 +7,7 @@
 #include <gmock/gmock.h>
 
 #include <algorithm>
+#include <charconv>
 #include <thread>
 
 #include "absl/strings/str_cat.h"
@@ -105,7 +106,9 @@ INSTANTIATE_TEST_SUITE_P(Engines, TlsSocketTest,
 
 void TlsSocketTest::SetUp() {
 #if __linux__
-  bool use_uring = GetParam() == "uring";
+  // Look for "uring" substring to decide which proactor to use. This allows having uring with
+  // suffixes ("uring:16384")
+  bool use_uring = GetParam().find("uring") != string_view::npos;
   ProactorBase* proactor = nullptr;
   if (use_uring)
     proactor = new UringProactor;
@@ -294,8 +297,17 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   // Launch sender fiber to send data that will trigger the RegisterOnRecv callback.
   auto client_fb = proactor_->LaunchFiber([&] {
     io::Bytes data(reinterpret_cast<const uint8_t*>(send_data.data()), send_data.size());
-    auto ec = client_sock->Write(data);
-    ASSERT_FALSE(ec) << ec.message();
+    while (!data.empty()) {
+      auto res = client_sock->TrySend(data);
+      if (res) {
+        data.remove_prefix(*res);
+      } else if (res.error() == std::errc::resource_unavailable_try_again) {
+        ThisFiber::SleepFor(1ms);
+      } else {
+        ASSERT_FALSE(res.error()) << res.error().message();
+        break;
+      }
+    }
   });
 
   // Launch a fiber to perform the actual TryRecv and store the result.
@@ -314,6 +326,118 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   proactor_->Await([&] { server_socket_->ResetOnRecvHook(); });
   proactor_->Await([&] { std::ignore = client_sock->Close(); });
 }
+
+// We define a type alias to create a new Test Suite name.
+// This allows us to instantiate it with different parameters (iovec counts)
+// without affecting the main TlsSocketTest suite.
+using TrySendVectorTest = TlsSocketTest;
+
+// Validates TrySend with a scatter-gather (iovec) vector of arbitrary size.
+// Ensures the client can send both small and large payload split into multiple iovec entries,
+// and the server can correctly reconstruct the full message. This test covers
+// edge cases such as partial sends, chunking, and large iovec counts (including 1-byte chunks).
+TEST_P(TrySendVectorTest, SendScatterGather) {
+  // 1. Parse Parameters: "engine:count" (e.g., "epoll:3")
+  string_view param{GetParam()};
+  size_t sep_pos{param.find(':')};
+  ASSERT_NE(sep_pos, string_view::npos)
+      << "Invalid test parameter '" << param << "'. Expected format 'engine:count'";
+  size_t target_iovec_count{};
+  auto count_str{param.substr(sep_pos + 1)};
+  auto [ptr, ec] = std::from_chars(count_str.data(), count_str.data() + count_str.size(), target_iovec_count);
+  ASSERT_EQ(ec, std::errc{}) << "Failed to parse iovec count from '" << count_str << "'";
+  ASSERT_GT(target_iovec_count, 0u) << "Iovec count must be greater than zero";
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  CreateClientSocket(client_sock);
+
+  // 2. Prepare Data
+  static constexpr size_t kPayloadSize = 16384;
+  std::string kPayload(kPayloadSize, 'A');
+
+  // Calculate Chunk Size to force the exact number of iovec entries requested
+  // Examples:
+  // If target is 3:      16384 / 3     = ~5461 bytes per chunk
+  // If target is 16384:  16384 / 16384 = 1 byte per chunk
+  size_t kChunkSize = (kPayload.size() + target_iovec_count - 1) / target_iovec_count;
+  if (kChunkSize == 0)
+    kChunkSize = 1;
+  std::vector<iovec> vecs;
+  vecs.reserve((kPayload.size() + kChunkSize - 1) / kChunkSize);
+  char* src = kPayload.data();
+  size_t remaining = kPayload.size();
+  while (remaining > 0) {
+    size_t sz = std::min(kChunkSize, remaining);
+    vecs.push_back({.iov_base = const_cast<char*>(src), .iov_len = sz});
+    src += sz;
+    remaining -= sz;
+  }
+  VLOG(1) << "Test using " << vecs.size() << " iovec entries to send " << kPayload.size()
+          << " bytes (target was " << target_iovec_count << ")";
+
+  // 3. Client Fiber - Send Data (and Handle Partial Sends)
+  auto client_fb = proactor_->LaunchFiber([&] {
+    iovec* current_iov{vecs.data()};
+    size_t current_count{vecs.size()};
+    size_t total_sent{};
+
+    while (current_count > 0) {
+      auto res{client_sock->TrySend(current_iov, current_count)};
+
+      if (res) {
+        size_t written{*res};
+        ASSERT_GT(written, 0u);
+        total_sent += written;
+
+        while ((written > 0) && (current_count > 0)) {
+          if (written >= current_iov->iov_len) {  // consumed all of current iov
+            written -= current_iov->iov_len;
+            current_iov++;
+            current_count--;
+          } else {  // partially consumed current iov
+            current_iov->iov_base = static_cast<char*>(current_iov->iov_base) + written;
+            current_iov->iov_len -= written;
+            written = 0;
+          }
+        }
+      } else if (res.error() == std::errc::resource_unavailable_try_again) {
+        ThisFiber::SleepFor(1ms);
+      } else {
+        ASSERT_FALSE(res.error()) << "TrySend failed: " << res.error().message();
+        break;
+      }
+    }
+    ASSERT_EQ(total_sent, kPayload.size());
+  });
+
+  // 4. Server Fiber - Receive Data
+  proactor_->Await([&] {
+    std::string received;
+    received.resize(kPayload.size());
+    auto res = server_socket_->ReadAtLeast(
+        io::MutableBytes(reinterpret_cast<uint8_t*>(received.data()), kPayload.size()),
+        kPayload.size());
+    ASSERT_TRUE(res) << "Server Read failed: " << res.error().message();
+    ASSERT_EQ(*res, kPayload.size());
+    ASSERT_EQ(received, kPayload);
+  });
+
+  client_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+}
+
+INSTANTIATE_TEST_SUITE_P(ScatterGather, TrySendVectorTest,
+                         testing::Values("epoll:3", "epoll:16384"
+#ifdef __linux__
+                                         ,
+                                         "uring:3", "uring:16384"
+#endif
+                                         ),
+                         [](const testing::TestParamInfo<std::string_view>& info) {
+                           std::string s(
+                               info.param);  // Explicitly convert view to string for modification
+                           std::replace(s.begin(), s.end(), ':', '_');
+                           return s;
+                         });
 
 class AsyncTlsSocketTest : public testing::TestWithParam<string_view> {
  protected:
@@ -939,7 +1063,7 @@ class TryRecvErrorTest : public testing::TestWithParam<TryRecvScenario> {
   MockFiberSocket* mock_next_sock_ = nullptr;
 };
 
-// VerifyEdgeCases: Parameterized White-Box Test
+// TryRecvErrorTest_VerifyEdgeCases: Parameterized White-Box Test
 //
 // This test validates the robustness of TryRecv() by simulating various non-happy
 // path scenarios (defined in TryRecvScenario). It uses mocks to:
@@ -1140,5 +1264,261 @@ INSTANTIATE_TEST_SUITE_P(
         }
 #endif
         ));
+struct TrySendScenario {
+  std::string test_name;
 
+  // Initial Conditions
+  uint32_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
+
+  // Phase 1: Pre-existing Pending Output (Flush Check engine output to upstream socket)
+  // If > 0, TrySend will attempt to flush this before processing user data.
+  size_t initial_output_pending = 0;
+
+  // Outcome of next_sock_->TrySend(pending_data) during Phase 1
+  std::optional<io::Result<size_t>> sock_flush_ret;
+
+  // Phase 2: Engine behavior when processing User Data
+  // This simulates the result of engine_->Write() called via PushToEngine.
+  // Note: To simulate success, use a positive number (bytes consumed).
+  Engine::OpResult engine_write_ret = 0;
+
+  // Phase 3: Handling NEED_READ (if engine_write_ret == NEED_READ_AND_MAYBE_WRITE)
+  // Outcome of next_sock_->TryRecv()
+  std::optional<io::Result<size_t>> sock_recv_ret;
+
+  // Expectations
+  std::error_code expected_error;  // If set, we expect make_unexpected(error)
+  size_t expected_return = 0;      // If no error, we expect this many bytes returned
+};
+
+// Pretty printer
+std::ostream& operator<<(std::ostream& os, const TrySendScenario& p) {
+  return os << p.test_name;
+}
+
+// TrySendErrorTest: Parameterized White-Box Test for TlsSocket::TrySend
+class TrySendErrorTest : public testing::TestWithParam<TrySendScenario> {
+ protected:
+  void SetUp() override {
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+    proactor_thread_ = std::thread{[this] {
+      fb2::InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+
+    proactor_->Await([&] {
+      auto mock_sock = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+      mock_next_sock_ = mock_sock.get();
+      sock_ = std::make_unique<TlsSocket>(std::move(mock_sock));
+
+      auto mock_eng = std::make_unique<testing::NiceMock<MockEngine>>();
+      mock_engine_ = mock_eng.get();
+      TestDelegator::SetEngine(sock_.get(), std::move(mock_eng));
+    });
+  }
+
+  void TearDown() override {
+    proactor_->Await([&] {
+      // Ensure we clean up any state flags we forced
+      TestDelegator::SetState(sock_.get(), 0);
+    });
+    proactor_->Stop();
+    if (proactor_thread_.joinable())
+      proactor_thread_.join();
+  }
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread proactor_thread_;
+  std::unique_ptr<TlsSocket> sock_;
+  MockEngine* mock_engine_{nullptr};
+  MockFiberSocket* mock_next_sock_{nullptr};
+};
+
+// TrySendErrorTest_VerifyEdgeCases: Parameterized White-Box Test for TrySend
+//
+// This test validates the robustness of TrySend() by simulating various failure paths
+// and complex state transitions defined in TrySendScenario. It orchestrates the mocks to:
+// 1. Flush Pending Output: Simulates blocked sockets (EAGAIN) or partial writes.
+// 2. Encrypt User Data: Simulates engine behavior (success, NEED_READ, EOF).
+// 3. Handle Renegotiation: Simulates successful or failed side-channel reads.
+//
+// It ensures that TrySend correctly handles concurrency guards (WRITE_IN_PROGRESS),
+// propagates errors up the stack, and maintains internal invariants without crashing.
+TEST_P(TrySendErrorTest, VerifyEdgeCases) {
+  const auto& p = GetParam();
+
+  proactor_->Await([&] {
+    // 1. Inject State
+    if (p.initial_state != 0) {
+      TestDelegator::SetState(sock_.get(), p.initial_state);
+    }
+
+    // 2. Setup Phase 1: Flush Pending Output
+    EXPECT_CALL(*mock_engine_, OutputPending())
+        .WillRepeatedly(testing::Return(p.initial_output_pending));
+
+    if (p.initial_output_pending > 0) {
+      // Return a dummy buffer for the flush
+      static uint8_t pending_bytes[128];
+      EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+          .WillRepeatedly(testing::Return(Engine::Buffer(pending_bytes, p.initial_output_pending)));
+
+      if (p.sock_flush_ret.has_value()) {
+        EXPECT_CALL(*mock_next_sock_, TrySend(testing::_))
+            .WillOnce(testing::Return(*p.sock_flush_ret));
+
+        // If flush succeeded (even partially), ConsumeOutputBuf should be called
+        if (*p.sock_flush_ret && (**p.sock_flush_ret > 0)) {
+          EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(**p.sock_flush_ret)).Times(1);
+        }
+      }
+    }
+
+    // 3. Setup Phase 2: Engine Write
+    // We expect a Write unless:
+    // A) We are blocked immediately by WRITE_IN_PROGRESS
+    // B) Phase 1 (Flush) failed/blocked
+    bool write_blocked_at_start{(p.initial_state & TestDelegator::GetWriteInProgress()) != 0};  // A
+    bool flush_blocks{(p.initial_output_pending > 0) &&                                         // B
+                      (!p.sock_flush_ret.has_value() || !(*p.sock_flush_ret) ||
+                       ((**p.sock_flush_ret) < p.initial_output_pending))};
+    if (!write_blocked_at_start && !flush_blocks) {
+      EXPECT_CALL(*mock_engine_, Write(testing::_))
+          .WillRepeatedly(testing::Return(p.engine_write_ret));
+    }
+
+    // 4. Setup Phase 3: NEED_READ Handling
+    if (p.engine_write_ret == Engine::NEED_READ_AND_MAYBE_WRITE) {
+      if (p.sock_recv_ret.has_value()) {
+        // We must return a non-empty buffer to satisfy the DCHECK in TrySend.
+        static uint8_t dummy_in_buf[1024];
+        EXPECT_CALL(*mock_engine_, PeekInputBuf())
+            .WillRepeatedly(
+                testing::Return(Engine::MutableBuffer(dummy_in_buf, sizeof(dummy_in_buf))));
+        EXPECT_CALL(*mock_next_sock_, TryRecv(testing::_))
+            .WillOnce(testing::Return(*p.sock_recv_ret));
+        if (*p.sock_recv_ret && (**p.sock_recv_ret > 0)) {
+          EXPECT_CALL(*mock_engine_, CommitInput(**p.sock_recv_ret)).Times(1);
+        }
+      }
+    }
+
+    // Execution
+    uint8_t user_data[] = "payload";
+    iovec v = {user_data, sizeof(user_data)};
+    // Unless the mock is configured to return true for IsOpen(), it will return false by default.
+    EXPECT_FALSE(sock_->IsOpen()) << "Mock socket is expected to be closed unless IsOpen() is explicitly mocked to return true";
+    auto res = sock_->TrySend(&v, 1);
+
+    // Verification
+    if (p.expected_error) {
+      ASSERT_FALSE(res) << "Expected error " << p.expected_error.message() << ", but got success "
+                        << *res;
+      EXPECT_EQ(res.error(), p.expected_error);
+    } else {
+      ASSERT_TRUE(res) << "Expected success, got error " << res.error().message();
+      EXPECT_EQ(*res, p.expected_return);
+    }
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllErrorPaths, TrySendErrorTest,
+    testing::Values(
+        // There are 4 test groups - each subdivided into cases as follows:
+
+        // Group A: Concurrency Guards
+        // Case 0: Write Conflict
+        // Another fiber is currently writing (WRITE_IN_PROGRESS). We cannot safely
+        // enter the write loop. Expect immediate EAGAIN.
+        TrySendScenario{
+            .test_name = "WriteConflict_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetWriteInProgress(),
+            .initial_output_pending = 0,
+            .sock_flush_ret = std::nullopt,
+            .engine_write_ret = 0,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Group B: Phase 1 - Flush Blockage (Stuck Ciphertext)
+        // Case 1: Flush Returns EAGAIN
+        // The engine has pending output from a previous operation. We try to flush it
+        // to the socket, but the socket is full (EAGAIN). We cannot accept new data yet.
+        TrySendScenario{
+            .test_name = "FlushPending_SocketEagain",
+            .initial_state = 0,
+            .initial_output_pending = 100,
+            .sock_flush_ret = io::Result<size_t>(nonstd::make_unexpected(
+                std::make_error_code(std::errc::resource_unavailable_try_again))),
+            .engine_write_ret = 0,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 2: Flush Returns Partial Write
+        // We tried to flush 100 bytes of pending output, but the socket only took 50.
+        // Since the engine buffer is not empty, we cannot accept new user data.
+        TrySendScenario{
+            .test_name = "FlushPending_SocketPartial_ReturnsTryAgain",
+            .initial_state = 0,
+            .initial_output_pending = 100,
+            .sock_flush_ret = io::Result<size_t>(50),
+            .engine_write_ret = 0,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Group C: Phase 2 - Engine Needs Read (Renegotiation)
+        // Case 3: Renegotiation - Socket EAGAIN
+        // The engine requests a read (NEED_READ) to proceed with encryption (e.g., renegotiation).
+        // We try to read from the socket, but it returns EAGAIN. Propagate EAGAIN to caller.
+        TrySendScenario{
+            .test_name = "EngineNeedRead_SocketEagain",
+            .initial_state = 0,
+            .initial_output_pending = 0,
+            .sock_flush_ret = std::nullopt,
+            .engine_write_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_recv_ret = io::Result<size_t>(nonstd::make_unexpected(
+                std::make_error_code(std::errc::resource_unavailable_try_again))),
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Case 4: Renegotiation - Socket EOF (Dirty Shutdown)
+        // The engine requests a read, but the socket returns EOF (0 bytes).
+        // This indicates the peer closed the TCP connection without a proper TLS shutdown.
+        TrySendScenario{
+            .test_name = "EngineNeedRead_SocketEOF_ReturnsReset",
+            .initial_state = 0,
+            .initial_output_pending = 0,
+            .sock_flush_ret = std::nullopt,
+            .engine_write_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_recv_ret = io::Result<size_t>(0),
+            .expected_error = std::make_error_code(std::errc::connection_reset),
+        },
+
+        // Case 5: Renegotiation - Read Conflict
+        // The engine requests a read, but another fiber is currently holding the read lock
+        // (READ_IN_PROGRESS). We must back off to avoid colliding with the active reader.
+        TrySendScenario{
+            .test_name = "EngineNeedRead_ReadConflict_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetReadInProgress(),
+            .initial_output_pending = 0,
+            .sock_flush_ret = std::nullopt,
+            .engine_write_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
+        // Group D: Fatal Errors
+        // Case 6: Fatal Protocol Error
+        // The engine reports a fatal error (EOF_STREAM) during encryption.
+        // Convert this to a connection_aborted error.
+        TrySendScenario{.test_name = "EngineEOFStream_ReturnsAborted",
+                        .initial_state = 0,
+                        .initial_output_pending = 0,
+                        .sock_flush_ret = std::nullopt,
+                        .engine_write_ret = Engine::EOF_STREAM,
+                        .sock_recv_ret = std::nullopt,
+                        .expected_error = std::make_error_code(std::errc::connection_aborted)}));
 }  // namespace util::tls

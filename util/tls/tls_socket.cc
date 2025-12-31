@@ -523,13 +523,173 @@ void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  iovec vec[1];
+  vec[0].iov_base = const_cast<uint8_t*>(buf.data());
+  vec[0].iov_len = buf.size();
+  return TrySend(vec, 1);
+}
+
+void TlsSocket::AdvanceIovec(iovec*& iov, uint32_t& len, size_t bytes_to_advance) {
+  DCHECK_NE(iov, nullptr);
+  DCHECK_GT(len, 0u);
+
+  while ((len > 0) && (bytes_to_advance > 0)) {
+    if (bytes_to_advance >= iov->iov_len) {  // case 1: remove the entry
+      bytes_to_advance -= iov->iov_len;
+      ++iov;
+      --len;
+    } else {  // case 2: adjust the current entry's start and length
+      iov->iov_base = static_cast<char*>(iov->iov_base) + bytes_to_advance;
+      iov->iov_len -= bytes_to_advance;
+      bytes_to_advance = 0;
+      break;
+    }
+  }
+  DCHECK_EQ(bytes_to_advance, 0u) << "AdvanceIovec logic error: unconsumed bytes remaining";
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  if (len == 0)
+    return 0;  // nothing to send
+  bool has_data{false};
+  for (size_t i{}; i < len; ++i) {
+    if (v[i].iov_len > 0) {
+      has_data = true;
+      break;
+    }
+  }
+  if (!has_data)
+    return 0;  // nothing to send
+  bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
+  if (write_in_progress) {
+    // Another fiber is currently writing, we cannot safely proceed
+    DVSOCK(3) << "TrySend blocked: WRITE_IN_PROGRESS detected";
+    return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+  }
+  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
+  size_t total_bytes_sent{};
+  std::error_code returned_status{};
+  constexpr size_t kStackIovecs = 16;
+  iovec stack_vec[kStackIovecs];
+  std::vector<iovec> heap_vec;  // Fallback container if the user sends a huge iovec array
+  iovec* curr_iov;
+  if (len <= kStackIovecs) {  // iovec array fits on stack
+    curr_iov = stack_vec;
+  } else {  // need to allocate on heap
+    heap_vec.resize(len);
+    curr_iov = heap_vec.data();
+  }
+  // We make a local mutable copy of the iovec descriptors because AdvanceIovec
+  // modifies them (adjusting base pointers and lengths) to track partial writes.
+  // The input array 'v' is const and belongs to the caller, so we cannot modify it.
+  std::memcpy(curr_iov, v, len * sizeof(iovec));
+  iovec* iov_cursor = curr_iov;
+  uint32_t curr_iovec_len{len};
+
+  while ((curr_iovec_len > 0) || (engine_->OutputPending() > 0)) {
+    // 1. Flush into the upstream socket any pending output from the engine output buffer before
+    // pushing more data to the engine from the user. These might be bytes from previous call.
+    if (engine_->OutputPending() > 0) {
+      auto output_buf{engine_->PeekOutputBuf()};
+      DCHECK(!output_buf.empty());
+      auto send_result{next_sock_->TrySend(output_buf)};
+      if (send_result) {
+        CHECK_LE(*send_result, output_buf.size());
+        engine_->ConsumeOutputBuf(*send_result);
+        DVSOCK(3) << "Flushed " << *send_result << " bytes to upstream";
+        if ((*send_result) < output_buf.size()) {  // case 1.A: partial write
+          // upstream socket is full - try again later
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+          break;
+        }
+        // case 1.B: full write - fall through to the next step
+      } else {  // case 1.C: write failed (EAGAIN or other Error).
+        returned_status = send_result.error();
+        DLOG_IF(WARNING, (returned_status != errc::resource_unavailable_try_again))
+            << "Upstream write error in TrySend: " << returned_status.message();
+        break;
+      }
+    }
+
+    // 2. Skip empty iovec entries (handling 0-length inputs gracefully)
+    while (curr_iovec_len > 0 && iov_cursor->iov_len == 0) {
+      ++iov_cursor;
+      --curr_iovec_len;
+    }
+    // Check if we are done (either processed all, or all remaining were empty)
+    if (curr_iovec_len == 0) {
+      break;
+    }
+
+    // 3. Push data from user buffer into the engine
+    DCHECK_EQ(engine_->OutputPending(), 0u);
+    DCHECK_GT(iov_cursor->iov_len, 0u);
+    PushResult push_result{PushToEngine(iov_cursor, curr_iovec_len)};
+    // PushToEngine Result Semantics:
+    // 1. written > 0:   Bytes successfully consumed from the user buffer. This happens even if an
+    // error/requirement (opcode < 0) immediately follows.
+    // 2. opcode < 0:    Engine requires action (NEED_READ/WRITE) or failed (EOF).
+    // If written > 0 AND opcode < 0, it means a partial write occurred before the stop.
+    // 3. opcode == 0:   Success. All bytes in this chunk were consumed. In this case, we expect
+    // curr_iovec_len to be zero after AdvanceIovec(..).
+    // NOTE: We must handle 'written' first. Even if an error or state change (opcode < 0)
+    // forces us to stop, the bytes successfully processed so far are valid and must be
+    // reported to the caller.
+    if (push_result.written > 0) {
+      // Advance the iovec array position by the number of bytes written (push_result.written) into
+      // the engine
+      AdvanceIovec(iov_cursor, curr_iovec_len, push_result.written);
+      total_bytes_sent += push_result.written;
+    }
+
+    if (push_result.engine_opcode < 0) {
+      if (push_result.engine_opcode == Engine::NEED_WRITE) {
+        // The engine has pending output to flush - loop back to flush it
+        continue;
+      }
+      if (push_result.engine_opcode == Engine::NEED_READ_AND_MAYBE_WRITE) {
+        // We MUST read to satisfy the engine.
+        if (read_in_progress) {
+          DVSOCK(3) << "Read conflict detected in TrySend (usage error)";
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+          break;
+        }
+        auto input_buf{engine_->PeekInputBuf()};
+        DCHECK(!input_buf.empty()) << "Engine demanded read but has no input space";
+        auto recv_res{next_sock_->TryRecv(input_buf)};
+        if (recv_res) {
+          if (*recv_res > 0) {
+            engine_->CommitInput(*recv_res);
+            DVSOCK(3) << "Satisfied NEED_READ with " << *recv_res << " bytes";
+            continue;  // Success! Retry the write loop.
+          } else {
+            // TCP FIN received without TLS close_notify (dirty shutdown)
+            DVSOCK(1) << "Upstream EOF during handshake/renegotiation";
+            returned_status = make_error_code(errc::connection_reset);
+            break;
+          }
+        } else {
+          returned_status = recv_res.error();  // Read blocked (EAGAIN) or socket error
+          break;
+        }
+      }
+      if (push_result.engine_opcode == Engine::EOF_STREAM) {
+        returned_status = make_error_code(errc::connection_aborted);
+        break;
+      }
+      LOG(FATAL) << "Unexpected engine opcode: " << push_result.engine_opcode;
+      returned_status = make_error_code(errc::operation_not_permitted);
+      break;
+    }  // push_result.engine_opcode < 0
+  }    // while
+  if (total_bytes_sent > 0) {
+    DVSOCK(3) << "TrySend returning " << total_bytes_sent << " bytes";
+    return total_bytes_sent;
+  }
+  if (!returned_status) {
+    return 0;  // No error, Clean EOF case
+  }
+  return make_unexpected(returned_status);
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
