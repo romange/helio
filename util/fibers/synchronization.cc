@@ -143,6 +143,11 @@ void EmbeddedBlockingCounter::Cancel() {
   ec_.notifyAll();
 }
 
+bool EmbeddedBlockingCounter::IsZero() const {
+  uint64_t v = 0;
+  return WaitCondition(&v)();
+}
+
 uint64_t EmbeddedBlockingCounter::DEBUG_Count() const {
   return count_.load(memory_order_relaxed);
 }
