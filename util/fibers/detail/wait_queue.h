@@ -5,6 +5,8 @@
 #pragma once
 
 #include <boost/intrusive/list.hpp>
+#include <functional>
+#include <variant>
 
 namespace util {
 namespace fb2 {
@@ -19,9 +21,13 @@ class Waiter {
   }
 
  public:
+  using Callback = std::function<void()>;
+  explicit Waiter(Callback&& cb) : cntx_{std::move(cb)} {
+  }
+
   // For some boost versions/distributions, the default move c'tor does not work well,
   // so we implement it explicitly.
-  Waiter(Waiter&& o) : cntx_(o.cntx_) {
+  Waiter(Waiter&& o) : cntx_{std::move(o.cntx_)} {
     // it does not work well for slist because its reference is used by slist members
     // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
@@ -29,21 +35,21 @@ class Waiter {
   }
 
   // safe_link is used in assertions via IsLinked() method.
-  using ListHookType = boost::intrusive::list_member_hook<
-      boost::intrusive::link_mode<boost::intrusive::safe_link>>;
-
-  FiberInterface* cntx() const {
-    return cntx_;
-  }
+  using ListHookType =
+      boost::intrusive::list_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
   bool IsLinked() const {
     return wait_hook.is_linked();
   }
 
+  decltype(auto) Take() {
+    return std::move(cntx_);
+  }
+
   ListHookType wait_hook;
 
  private:
-  FiberInterface* cntx_;
+  std::variant<FiberInterface*, Callback> cntx_;
 };
 
 // All WaitQueue are not thread safe and must be run under a lock.
@@ -62,7 +68,7 @@ class WaitQueue {
   }
 
   bool NotifyOne(FiberInterface* active);
-  void NotifyAll(FiberInterface* active);
+  bool NotifyAll(FiberInterface* active);
 
  private:
   using WaitList = boost::intrusive::list<
@@ -70,6 +76,7 @@ class WaitQueue {
       boost::intrusive::constant_time_size<false>>;
 
   void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
+  void NotifyImpl(const Waiter::Callback&, FiberInterface* active);
 
   WaitList wait_list_;
 };

@@ -26,33 +26,26 @@ bool WaitQueue::NotifyOne(FiberInterface* active) {
   Waiter* waiter = &wait_list_.front();
   DCHECK(waiter) << wait_list_.empty();
 
-  FiberInterface* cntx = waiter->cntx();
-  DCHECK(cntx);
-
+  auto value = waiter->Take();
   wait_list_.pop_front();
-  NotifyImpl(waiter->cntx(), active);
 
+  std::visit([this, active](const auto& v) { NotifyImpl(v, active); }, value);
   return true;
 }
 
-void WaitQueue::NotifyAll(FiberInterface* active) {
-  while (!wait_list_.empty()) {
-    Waiter* waiter = &wait_list_.front();
-    DCHECK(waiter) << wait_list_.empty();
-
-    FiberInterface* cntx = waiter->cntx();
-    DCHECK(cntx);
-
-    wait_list_.pop_front();
-
-    DVLOG(2) << "Scheduling " << cntx->name() << " from " << active->name();
-
-    active->ActivateOther(cntx);
-  }
+bool WaitQueue::NotifyAll(FiberInterface* active) {
+  bool notified = false;
+  while (NotifyOne(active))
+    notified = true;
+  return notified;
 }
 
 void WaitQueue::NotifyImpl(FiberInterface* suspended, FiberInterface* active) {
   active->ActivateOther(suspended);
+}
+
+void WaitQueue::NotifyImpl(const Waiter::Callback& cb, FiberInterface* active) {
+  cb();
 }
 
 }  // namespace detail
