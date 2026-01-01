@@ -641,10 +641,18 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
           break;
         }
       }
-      if (push_result.engine_opcode == Engine::EOF_STREAM) {
+      if (push_result.engine_opcode == Engine::EOF_ABRUPT) {
+        // The TCP connection "vanished" or a protocol violation occurred. This is a "hard" failure.
         returned_status = make_error_code(errc::connection_aborted);
         break;
       }
+      if (push_result.engine_opcode == Engine::EOF_GRACEFUL) {
+        // We are trying to write, but the peer has closed the connection.
+        // Return "broken pipe" to signal this is a fatal write error.
+        returned_status = make_error_code(errc::broken_pipe);
+        break;
+      }
+
       LOG(FATAL) << "Unexpected engine opcode: " << push_result.engine_opcode;
       returned_status = make_error_code(errc::operation_not_permitted);
       break;
