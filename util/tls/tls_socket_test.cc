@@ -1049,6 +1049,7 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
     ASSERT_NE(sess, nullptr);
     SSL_SESSION_set_cipher(sess, valid_cipher);
     SSL_set_session(test_ssl, sess);
+    SSL_SESSION_free(sess);
 
     //  Define Expectations
     EXPECT_CALL(*mock_engine_, native_handle()).WillRepeatedly(testing::Return(test_ssl));
