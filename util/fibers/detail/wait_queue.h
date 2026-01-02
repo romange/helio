@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <absl/functional/function_ref.h>
+
 #include <boost/intrusive/list.hpp>
 #include <functional>
 #include <variant>
@@ -14,15 +16,17 @@ namespace detail {
 
 class FiberInterface;
 
+// Even subscription object for either fiber wakeups or generic events
 class Waiter {
   friend class FiberInterface;
-
   explicit Waiter(FiberInterface* cntx) : cntx_(cntx) {
   }
 
  public:
-  using Callback = std::function<void()>;
-  explicit Waiter(Callback&& cb) : cntx_{std::move(cb)} {
+  using Callback = absl::FunctionRef<void()>;
+
+  // Create from reference to functor. Functor must outlive waiter
+  explicit Waiter(const Callback& cb) : cntx_{cb} {
   }
 
   // For some boost versions/distributions, the default move c'tor does not work well,
@@ -42,18 +46,19 @@ class Waiter {
     return wait_hook.is_linked();
   }
 
-  decltype(auto) Take() {
-    return std::move(cntx_);
-  }
+  void Notify(FiberInterface* active) const;
 
   ListHookType wait_hook;
 
  private:
+  void NotifyImpl(FiberInterface*, FiberInterface* active) const;
+  void NotifyImpl(const Callback&, FiberInterface* active) const;
+
   std::variant<FiberInterface*, Callback> cntx_;
 };
 
-// All WaitQueue are not thread safe and must be run under a lock.
-
+// Intrusive list of non-owned waiter objects.
+// Not thread safe, must be protected with lock.
 class WaitQueue {
  public:
   bool empty() const {
@@ -74,9 +79,6 @@ class WaitQueue {
   using WaitList = boost::intrusive::list<
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,
       boost::intrusive::constant_time_size<false>>;
-
-  void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
-  void NotifyImpl(const Waiter::Callback&, FiberInterface* active);
 
   WaitList wait_list_;
 };

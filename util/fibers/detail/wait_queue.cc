@@ -13,6 +13,18 @@ namespace detail {
 
 [[maybe_unused]] constexpr size_t WakeOtherkSizeOfWaitQ = sizeof(WaitQueue);
 
+void Waiter::Notify(FiberInterface* active) const {
+  visit([this, active](const auto& v) { NotifyImpl(v, active); }, cntx_);
+}
+
+void Waiter::NotifyImpl(FiberInterface* suspended, FiberInterface* active) const {
+  active->ActivateOther(suspended);
+}
+
+void Waiter::NotifyImpl(const Waiter::Callback& cb, FiberInterface* active) const {
+  cb();
+}
+
 void WaitQueue::Link(Waiter* waiter) {
   DCHECK(waiter);
   wait_list_.push_back(*waiter);
@@ -25,11 +37,9 @@ bool WaitQueue::NotifyOne(FiberInterface* active) {
 
   Waiter* waiter = &wait_list_.front();
   DCHECK(waiter) << wait_list_.empty();
-
-  auto value = waiter->Take();
   wait_list_.pop_front();
 
-  std::visit([this, active](const auto& v) { NotifyImpl(v, active); }, value);
+  waiter->Notify(active);  // lifetime might end after this call
   return true;
 }
 
@@ -38,14 +48,6 @@ bool WaitQueue::NotifyAll(FiberInterface* active) {
   while (NotifyOne(active))
     notified = true;
   return notified;
-}
-
-void WaitQueue::NotifyImpl(FiberInterface* suspended, FiberInterface* active) {
-  active->ActivateOther(suspended);
-}
-
-void WaitQueue::NotifyImpl(const Waiter::Callback& cb, FiberInterface* active) {
-  cb();
 }
 
 }  // namespace detail

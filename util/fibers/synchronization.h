@@ -12,7 +12,6 @@
 
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
-#include "base/logging.h"
 
 namespace util {
 namespace fb2 {
@@ -30,6 +29,7 @@ class EventCount {
 
   using cv_status = std::cv_status;
 
+  // Stores epoch and decrements waiter count when dropped
   class Key {
     friend class EventCount;
     EventCount* me_;
@@ -402,23 +402,9 @@ class EmbeddedBlockingCounter {
   // Cancel blocking counter, unblock wait. Release semantics.
   void Cancel();
 
-  // Return true if zero or cancelled
-  bool IsZero() const;
-
-  // Call functor when counter reaches zero
-  std::optional<EventCount::Key> Subscribe(detail::Waiter* w) {
-    while (true) {
-      auto key = ec_.prepareWait();
-      if (IsZero()) {
-        ec_.finishWait();
-        std::get<1>(w->Take())();
-        return {};
-      }
-      if(ec_.subscribe(key.epoch(), w))
-        return key;
-    }
-    return {};
-  }
+  // Notify waiter when count reaches zero (including immedaitely if already zero).
+  // Drop key after waiter was notified.
+  std::optional<EventCount::Key> Subscribe(detail::Waiter* w);
 
   uint64_t DEBUG_Count() const;
 
@@ -484,7 +470,6 @@ class ABSL_LOCKABLE SharedMutex {
 inline bool EventCount::NotifyInternal(
     bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
-  VLOG(0) << "waiter mask " << (prev & kWaiterMask);
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
     std::unique_lock lk(lock_);
