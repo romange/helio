@@ -416,30 +416,45 @@ TEST_F(FiberTest, Future) {
   fb.Join();
 }
 
+// Test Subscribe() method of blocking counter to run a generic callback
+// instead of waking up a fiber when the counter reaches zero
 TEST_F(FiberTest, TestCounterSubscribe) {
   atomic_bool done = false;
   EventCount done_ec{};
-  detail::Waiter w{[&done, &done_ec] {
-    VLOG(0) << "Waiter called";
+  auto unblock_done = [&done, &done_ec] {
     done.store(true, memory_order_relaxed);
     done_ec.notify();
-  }};
+  };
 
-  BlockingCounter counter{5};
-  auto wait_key = counter->Subscribe(&w);
-  VLOG(0) << "Started " << counter->DEBUG_Count() << " " << wait_key.has_value();
+  // Actionalbe waiter that unblocks the `done` ec above
+  detail::Waiter waiter{unblock_done};
 
+  // Subscribe to counter, it should trigger the action
+  BlockingCounter counter{10};
+  auto key1 = counter->Subscribe(&waiter);
+
+  // Start decrement workers
   vector<thread> threads;
-  for (size_t i = 0; i < 5; i++) {
-    threads.emplace_back([counter]() mutable { 
-      counter->Dec(); 
-      VLOG(0) << "Now count is " << counter->DEBUG_Count();
-    });
-  }
+  for (size_t i = 0; i < 10; i++)
+    threads.emplace_back([counter]() mutable { counter->Dec(); });
 
+  // Wait for event to fire
   done_ec.await([&done] { return done.load(memory_order_relaxed); });
   for (auto& th : threads)
     th.join();
+
+  // Now check empty resolves immediately
+  done.store(false, memory_order_relaxed);
+  auto key2 = counter->Subscribe(&waiter);
+  EXPECT_FALSE(key2);
+  EXPECT_EQ(done.load(memory_order_relaxed), true);
+
+  // Check cancellation resolves
+  done.store(false, memory_order_relaxed);
+  counter->Start(3);
+  auto key3 = counter->Subscribe(&waiter);
+  counter->Cancel();
+  EXPECT_EQ(done.load(memory_order_relaxed), true);
 }
 
 #ifdef __linux__
