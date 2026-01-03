@@ -16,7 +16,7 @@ namespace detail {
 
 class FiberInterface;
 
-// Even subscription object for either fiber wakeups or generic events
+// Event subscription object for either fiber wakeups or generic events
 class Waiter {
   friend class FiberInterface;
   explicit Waiter(FiberInterface* cntx) : cntx_(cntx) {

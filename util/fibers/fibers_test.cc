@@ -6,7 +6,7 @@
 
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
-#include <util/fibers/detail/wait_queue.h>
+#include "util/fibers/detail/wait_queue.h"
 
 #include <atomic>
 #include <boost/intrusive/slist.hpp>
@@ -426,7 +426,7 @@ TEST_F(FiberTest, TestCounterSubscribe) {
     done_ec.notify();
   };
 
-  // Actionalbe waiter that unblocks the `done` ec above
+  // Actionable waiter that unblocks the `done` ec above
   detail::Waiter waiter{unblock_done};
 
   // Subscribe to counter, it should trigger the action
