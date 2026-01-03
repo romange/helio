@@ -169,13 +169,6 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     register_fds_.resize(absl::GetFlag(FLAGS_uring_direct_table_len), -1);
   }
 
-  if (absl::GetFlag(FLAGS_uring_disable_iowait)) {
-#ifndef IORING_SETUP_NO_IOWAIT
-#define IORING_SETUP_NO_IOWAIT (1U << 31)
-#endif
-    params.flags |= IORING_SETUP_NO_IOWAIT;
-  }
-
   if (kver.kernel >= 6 && kver.major >= 1) {
     sync_cancel_f_ = 1;
 
@@ -227,6 +220,11 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   if (kver.kernel >= 6) {
     int res = io_uring_register_ring_fd(&ring_);
     LOG_IF(WARNING, res < 0) << "io_uring_register_ring_fd failed: " << -res;
+
+    if (absl::GetFlag(FLAGS_uring_disable_iowait)) {
+      res = io_uring_set_iowait(&ring_, false);
+      LOG_IF(WARNING, res < 0) << "Failed to disable iowait: " << -res;
+    }
   }
 
   if (!register_fds_.empty()) {
