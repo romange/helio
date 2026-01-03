@@ -143,6 +143,20 @@ void EmbeddedBlockingCounter::Cancel() {
   ec_.notifyAll();
 }
 
+std::optional<EventCount::Key> EmbeddedBlockingCounter::Subscribe(detail::Waiter* w) {
+  uint64_t v = 0;
+  while (true) {
+    auto key = ec_.prepareWait();
+    if (WaitCondition(&v)()) {
+      w->Notify(detail::FiberActive());
+      return {};
+    }
+    if (ec_.subscribe(key.epoch(), w))
+      return key;
+  }
+  return {};
+}
+
 uint64_t EmbeddedBlockingCounter::DEBUG_Count() const {
   return count_.load(memory_order_relaxed);
 }
