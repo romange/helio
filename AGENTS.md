@@ -24,12 +24,16 @@
 
 ## 🛠️ Build & Test Cheatsheet
 
+> [!NOTE]
+> Prefer building in `build-dbg` unless specified otherwise.
+> Refrain from running `./blaze.sh` (configure) if the build directory already exists and is valid.
+
 | Task | Command |
 | :--- | :--- |
 | **Configure (Release)** | `./blaze.sh -release` |
 | **Configure (Debug)** | `./blaze.sh` |
-| **Build Target** | `cd build-opt && ninja -j4 <target_name>` |
-| **Build All** | `cd build-opt && ninja -j4 base/all io/all util/all` |
+| **Build Target** | `cd build-dbg && ninja -j4 <target_name>` |
+| **Build All** | `cd build-dbg && ninja -j4 base/all io/all util/all` |
 | **Run Tests (CI)** | `GLOG_logtostderr=1 ctest -V -L CI` |
 | **Run Specific Test** | `./fiber_test --logtostderr` (in build dir) |
 | **Format Code** | `clang-format -i <file>` |

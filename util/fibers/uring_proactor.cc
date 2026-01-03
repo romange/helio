@@ -25,6 +25,7 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
+ABSL_FLAG(bool, uring_disable_iowait, false, "If true, disables iowait cpu accounting");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
@@ -166,6 +167,13 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
 
     // FLAGS_uring_direct_table_len is a failswitch to disable direct fds.
     register_fds_.resize(absl::GetFlag(FLAGS_uring_direct_table_len), -1);
+  }
+
+  if (absl::GetFlag(FLAGS_uring_disable_iowait)) {
+#ifndef IORING_SETUP_NO_IOWAIT
+#define IORING_SETUP_NO_IOWAIT (1U << 31)
+#endif
+    params.flags |= IORING_SETUP_NO_IOWAIT;
   }
 
   if (kver.kernel >= 6 && kver.major >= 1) {
@@ -535,9 +543,9 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   entry->fd = fd;
 
   auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
-    #if DBG_EPOLL
+#if DBG_EPOLL
     LOG(INFO) << "Epoll CB " << entry << " res:" << res << " flags " << flags;
-    #endif
+#endif
     if (res >= 0) {
       CHECK(flags & IORING_CQE_F_MORE);
       CHECK(entry->cb);
