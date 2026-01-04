@@ -250,6 +250,9 @@ if(NOT abseil_cpp_POPULATED)
   # and then restore it if we use it ourselves.
   set(CMAKE_CXX_FLAGS_RELEASE_OLD ${CMAKE_CXX_FLAGS_RELEASE})
   set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+  # Treat Abseil source directory as a System Include Directory, to suppress warnings generated on strict builds when
+  # abseil headers are included in our own code.
+  include_directories(SYSTEM ${abseil_cpp_SOURCE_DIR})
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
