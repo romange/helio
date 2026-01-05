@@ -431,7 +431,7 @@ TEST_F(FiberTest, TestCounterSubscribe) {
 
   // Subscribe to counter, it should trigger the action
   BlockingCounter counter{10};
-  auto key1 = counter->Subscribe(&waiter);
+  auto key1 = counter->OnCompletion(&waiter);
 
   // Start decrement workers
   vector<thread> threads;
@@ -445,14 +445,14 @@ TEST_F(FiberTest, TestCounterSubscribe) {
 
   // Now check empty resolves immediately
   done.store(false, memory_order_relaxed);
-  auto key2 = counter->Subscribe(&waiter);
+  auto key2 = counter->OnCompletion(&waiter);
   EXPECT_FALSE(key2);
   EXPECT_EQ(done.load(memory_order_relaxed), true);
 
   // Check cancellation resolves
   done.store(false, memory_order_relaxed);
   counter->Start(3);
-  auto key3 = counter->Subscribe(&waiter);
+  auto key3 = counter->OnCompletion(&waiter);
   counter->Cancel();
   EXPECT_EQ(done.load(memory_order_relaxed), true);
 }

@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include "util/fibers/detail/wait_queue.h"
-
 #include <atomic>
 #include <condition_variable>  // for cv_status
 #include <optional>
@@ -404,7 +402,10 @@ class EmbeddedBlockingCounter {
 
   // Notify waiter when count reaches zero (including immediately if already zero).
   // Caller must hold the returned key while waiting and drop it after the waiter was notified.
-  std::optional<EventCount::Key> Subscribe(detail::Waiter* w);
+  std::optional<EventCount::Key> OnCompletion(detail::Waiter* w);
+
+  // Return true if count is zero or cancelled
+  bool IsCompleted() const;
 
   uint64_t DEBUG_Count() const;
 

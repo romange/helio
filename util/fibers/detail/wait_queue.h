@@ -35,7 +35,7 @@ class Waiter {
     // it does not work well for slist because its reference is used by slist members
     // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
-    o.cntx_ = nullptr;
+    o.cntx_ = static_cast<FiberInterface*>(nullptr);
   }
 
   // safe_link is used in assertions via IsLinked() method.
@@ -72,7 +72,10 @@ class WaitQueue {
     wait_list_.erase(it);
   }
 
+  // Return true if a waiter exitsted and was notified
   bool NotifyOne(FiberInterface* active);
+
+  // Return true if any waiter was notified
   bool NotifyAll(FiberInterface* active);
 
  private:
