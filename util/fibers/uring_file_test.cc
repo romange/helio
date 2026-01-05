@@ -165,5 +165,46 @@ TEST_F(UringFileTest, FSync) {
   });
 }
 
+TEST_F(UringFileTest, FAllocate) {
+  string path = base::GetTestTempPath("1.log");
+  proactor_->Await([this, path] {
+    auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    ASSERT_TRUE(res);
+    LinuxFile* wf = (*res).get();
+
+    struct statx stat;
+    auto ec = StatX(path.c_str(), &stat, wf->fd());
+    ASSERT_FALSE(ec);
+    // File size remained zero even if we allocated block size
+    ASSERT_EQ(stat.stx_size, 0);
+    const off_t fsize = 128 * 1024 * 1024; // 128 MB
+
+    {
+      util::fb2::FiberCall fc(proactor_.get());
+      fc->PrepFallocate(wf->fd(), FALLOC_FL_KEEP_SIZE, 0, fsize);
+      FiberCall::IoResult io_res = fc.Get();
+      ASSERT_EQ(io_res, 0);
+    }
+
+    ec = StatX(path.c_str(), &stat, wf->fd());
+    ASSERT_FALSE(ec);
+    ASSERT_EQ(stat.stx_size, 0);
+    ASSERT_NE(stat.stx_blocks, 0);
+
+    const int mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
+    util::fb2::FiberCall fc(proactor_.get());
+    fc->PrepFallocate(wf->fd(), mode, 0, fsize);
+    FiberCall::IoResult io_res = fc.Get();
+    ASSERT_EQ(io_res, 0);
+
+    ec = StatX(path.c_str(), &stat, wf->fd());
+    ASSERT_FALSE(ec);
+    ASSERT_EQ(stat.stx_size, 0);
+    ASSERT_EQ(stat.stx_blocks, 0);
+
+    ASSERT_FALSE(wf->Close());
+  });
+}
+
 }  // namespace fb2
 }  // namespace util
