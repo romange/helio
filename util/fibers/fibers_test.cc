@@ -6,7 +6,9 @@
 
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
+#include "util/fibers/detail/wait_queue.h"
 
+#include <atomic>
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
 #include <mutex>
@@ -16,8 +18,8 @@
 #include "base/logging.h"
 #include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/epoll_proactor.h"
-#include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/fiber_file.h"
+#include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/future.h"
 #include "util/fibers/synchronization.h"
 
@@ -414,6 +416,47 @@ TEST_F(FiberTest, Future) {
   fb.Join();
 }
 
+// Test Subscribe() method of blocking counter to run a generic callback
+// instead of waking up a fiber when the counter reaches zero
+TEST_F(FiberTest, TestCounterSubscribe) {
+  atomic_bool done = false;
+  EventCount done_ec{};
+  auto unblock_done = [&done, &done_ec] {
+    done.store(true, memory_order_relaxed);
+    done_ec.notify();
+  };
+
+  // Actionable waiter that unblocks the `done` ec above
+  detail::Waiter waiter{unblock_done};
+
+  // Subscribe to counter, it should trigger the action
+  BlockingCounter counter{10};
+  auto key1 = counter->OnCompletion(&waiter);
+
+  // Start decrement workers
+  vector<thread> threads;
+  for (size_t i = 0; i < 10; i++)
+    threads.emplace_back([counter]() mutable { counter->Dec(); });
+
+  // Wait for event to fire
+  done_ec.await([&done] { return done.load(memory_order_relaxed); });
+  for (auto& th : threads)
+    th.join();
+
+  // Now check empty resolves immediately
+  done.store(false, memory_order_relaxed);
+  auto key2 = counter->OnCompletion(&waiter);
+  EXPECT_FALSE(key2);
+  EXPECT_EQ(done.load(memory_order_relaxed), true);
+
+  // Check cancellation resolves
+  done.store(false, memory_order_relaxed);
+  counter->Start(3);
+  auto key3 = counter->OnCompletion(&waiter);
+  counter->Cancel();
+  EXPECT_EQ(done.load(memory_order_relaxed), true);
+}
+
 #ifdef __linux__
 
 TEST_F(FiberTest, AsyncEvent) {
@@ -536,7 +579,7 @@ TEST_F(FiberTest, WaitFor) {
 TEST_F(FiberTest, StackSize) {
   Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{8000}, "fb1", [] {
 
-#ifndef ABSL_HAVE_ADDRESS_SANITIZER // with asan log blows up the stack
+#ifndef ABSL_HAVE_ADDRESS_SANITIZER  // with asan log blows up the stack
     LOG(INFO) << "fb1 started";
 #endif
 
@@ -817,7 +860,6 @@ TEST_P(ProactorTest, LeakOnFiber) {
   });
 }
 
-
 TEST_P(ProactorTest, NotifyRemote) {
   EventCount ec;
   Done done;
@@ -1042,7 +1084,7 @@ TEST_P(ProactorTest, Mixed) {
     fb.Join();
 }
 
-TEST_P(ProactorTest,  FiberFile) {
+TEST_P(ProactorTest, FiberFile) {
   string path = base::GetTestTempPath("fiber_write.bin");
   FiberQueueThreadPool tp(1);
 
