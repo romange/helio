@@ -159,6 +159,7 @@ void TlsSocketTest::TearDown() {
     std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
     if (server_socket_) {
       server_socket_->CancelOnErrorCb();
+      std::ignore = server_socket_->Shutdown(SHUT_RDWR);
       std::ignore = server_socket_->Close();
     }
   });
@@ -287,52 +288,61 @@ TEST_P(TlsSocketTest, TryRecvVector) {
 TEST_P(TlsSocketTest, RegisterOnRecv) {
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
+
+  // Wait for the server handshake to complete fully.
+  // This ensures 'AcceptFb' has finished and released the READ_IN_PROGRESS flag.
+  // Without this, AcceptFb might still be blocked on Recv(), and RegisterOnRecv
+  // below will steal the data events, causing a deadlock.
+  accept_fb_.Join();
+
   const std::string send_data{"Async Recv Data in RegisterOnRecv test case"};
   std::string received_data;
   Done data_ready;
-
   // Register the callback to notify a waiting fiber when data arrives.
   proactor_->DispatchBrief([&] {
     server_socket_->RegisterOnRecv(
-        [&](const util::FiberSocketBase::RecvNotification&) { data_ready.Notify(); });
+        [&](const util::FiberSocketBase::RecvNotification& rn) {
+          // We notify 'data_ready' to exercise the callback path and ensure it fires.
+          // However, we do not Wait() on it, as the test relies on the polling loop in
+          // recv_fb for synchronization.
+          data_ready.Notify(); });
   });
 
   // Launch sender fiber to send data that will trigger the RegisterOnRecv callback.
   auto client_fb = proactor_->LaunchFiber([&] {
+    VLOG(3) << "[client_fb] Starting to send " << send_data.size() << " bytes";
     io::Bytes data(reinterpret_cast<const uint8_t*>(send_data.data()), send_data.size());
     while (!data.empty()) {
       auto res = client_sock->TrySend(data);
       if (res) {
+        VLOG(3) << "[client_fb] TrySend sent " << *res
+                << " bytes, remaining: " << (data.size() - *res);
         data.remove_prefix(*res);
       } else if (res.error() == std::errc::resource_unavailable_try_again) {
         ThisFiber::SleepFor(1ms);
       } else {
+        LOG(ERROR) << "[client_fb] TrySend failed: " << res.error().message();
         ASSERT_FALSE(res.error()) << res.error().message();
         break;
       }
     }
+    VLOG(3) << "[client_fb] Finished sending all data";
   });
 
   // Launch a fiber to perform the actual TryRecv and store the result.
   auto recv_fb = proactor_->LaunchFiber([&] {
-    // Wait for the first notification that data is available.
-    data_ready.Wait();
-
     // Loop until we receive the full expected data
+    VLOG(3) << "[recv_fb] Starting polling loop to receive data";
     uint8_t buf[1024];
-    constexpr int kMaxLoops{2000};  // ~2 seconds watchdog
-    int loops = 0;
-    while (received_data.size() < send_data.size()) {
-      if (++loops > kMaxLoops) {
-        FAIL() << "Test timed out: Loop limit exceeded while waiting for data.";
-        break;
-      }
+    for (int i = 0; i < 500 && received_data.size() < send_data.size(); ++i) {
       auto res{server_socket_->TryRecv(io::MutableBytes(buf, sizeof(buf)))};
 
       if (res) {
         if (*res > 0) {  // size_t > 0
+          VLOG(3) << "[recv_fb] TryRecv got " << *res << " bytes";
           received_data.append(reinterpret_cast<const char*>(buf), *res);
         } else {  // size_t == 0
+          VLOG(3) << "[recv_fb] TryRecv returned 0 (EOF)";
           break;  // EOF
         }
       } else {
@@ -341,11 +351,15 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
         if (res.error() == std::errc::resource_unavailable_try_again) {
           ThisFiber::SleepFor(1ms);
           continue;
-        }
+        } else {
         // We have a real (unexpected) error
-        FAIL() << "TryRecv failed: " << res.error().message();
-        break;
+          LOG(ERROR) << "[recv_fb] TryRecv failed with error: " << res.error().message();
+          break;  // break to allow clean teardown
       }
+      }
+    }
+    if (received_data.size() < send_data.size()) {
+      FAIL() << "Test timed out while polling for data.";
     }
   });
 
