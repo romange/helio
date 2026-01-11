@@ -513,6 +513,8 @@ size_t Driver::Run(base::Histogram* dest) {
 
   std::ignore = socket_->Shutdown(SHUT_RDWR);
   dest->Merge(hist);
+  std::ignore = socket_->Close();
+  socket_.reset();
 
   return i;
 }
@@ -630,7 +632,10 @@ int main(int argc, char* argv[]) {
     auto start = absl::GetCurrentTimeNanos();
     atomic_uint64_t num_reqs{0};
 
-    pp->AwaitFiberOnAll([&](auto* p) { num_reqs.fetch_add(client->Run(), memory_order_relaxed); });
+    pp->AwaitFiberOnAll([&](auto* p) {
+      num_reqs.fetch_add(client->Run(), memory_order_relaxed);
+      client.reset();
+    });
 
     auto dur = absl::GetCurrentTimeNanos() - start;
     size_t dur_ms = std::max<size_t>(1, dur / 1000000);
