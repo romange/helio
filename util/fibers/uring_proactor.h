@@ -107,8 +107,8 @@ class UringProactor : public ProactorBase {
   void ConfigureSubmitWakeup(bool) {
   }
 
+  // Deprecated: not needed.
   void ConfigureMsgRing(bool enable) {
-    msgring_enabled_f_ = uint8_t(enable);
   }
 
   // Deprecated: not needed.
@@ -134,8 +134,8 @@ class UringProactor : public ProactorBase {
   // Registers a buffer ring with specified buffer group_id.
   // Returns 0 on success, errno on failure.
   int RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize);
-  uint8_t* GetBufRingPtr(uint16_t group_id, uint16_t bufid);
-  uint16_t GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const;
+  uint8_t* BufRingGetBufPtr(uint16_t group_id, uint16_t bufid);
+  uint16_t BufRingGetIdByPos(uint16_t group_id, uint16_t buf_pos) const;
 
   // Advances the recv completion position (used for synchronizing bundles).
   // Returns the pointer to bufid.
@@ -195,7 +195,7 @@ class UringProactor : public ProactorBase {
   uint8_t poll_first_ : 1;
   uint8_t buf_ring_f_ : 1;
   uint8_t bundle_f_ : 1;
-  uint8_t msgring_enabled_f_ : 1;
+  uint8_t incremental_buf_ring_f_ : 1;
   uint8_t sync_cancel_f_ : 1;
   uint8_t : 2;
 
