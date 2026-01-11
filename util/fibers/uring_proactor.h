@@ -134,16 +134,18 @@ class UringProactor : public ProactorBase {
   // Registers a buffer ring with specified buffer group_id.
   // Returns 0 on success, errno on failure.
   int RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsigned esize);
-  uint8_t* BufRingGetBufPtr(uint16_t group_id, uint16_t bufid);
-  uint16_t BufRingGetIdByPos(uint16_t group_id, uint16_t buf_pos) const;
 
-  // Advances the recv completion position (used for synchronizing bundles).
-  // Returns the pointer to bufid.
-  uint8_t* AdvanceRecvCompletion(uint16_t group_id, uint16_t bufid);
+  static uint16_t BufRingIdFromFlags(uint32_t flags) {
+    return static_cast<uint16_t>(flags >> IORING_CQE_BUFFER_SHIFT);
+  }
 
-  // Replenishes a single buffer. Once it's replenished, it becomes available
-  // for reuse by the kernel.
-  void ReplenishBuffer(uint16_t group_id, uint16_t bid);
+  // Returns (ptr, segment_len) based on the received len and bufid.
+  // Supports bundles and incremental buffers.
+  std::pair<uint8_t*, uint32_t> BufRingGetBufPtr(uint16_t group_id, uint16_t bufid, uint32_t len);
+
+  // Tracks the recv completion position. Required to synchronizing bundles or incremental buffers.
+  // Returns the next bufid to use in case of bundles.
+  uint16_t BufRingTrackRecvCompletion(uint16_t group_id, unsigned size, uint16_t bufid, bool incremental);
 
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
