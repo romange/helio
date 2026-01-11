@@ -4,6 +4,7 @@
 
 #include "util/tls/tls_socket.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/container/inlined_vector.h>
 #include <openssl/err.h>
 
@@ -59,6 +60,14 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   }
 }
 
+void TlsSocket::WaitForPendingIO() {
+  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) {
+    fb2::NoOpLock lk;
+    block_concurrent_cv_.wait(
+        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) == 0; });
+  }
+}
+
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
   if (state_ & (SHUTDOWN_DONE | SHUTDOWN_IN_PROGRESS)) {
@@ -81,16 +90,18 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   }
 
   // In any case we should also shutdown the underlying TCP socket without relying on the
-  // the peer. It could be that when we are in the middle of MaybeSendOutput, and
-  // the other fiber calls Close() on this socket. In this case next_sock_ will be closed
-  // by the time we reach this line, so we omit calling Shutdown().
-  // It's not the best behavior, but it's also not disastrous either, because
+  // the peer. This unblocks any sync operations (like Recv) that are waiting for data. It could be
+  // that when we are in the middle of MaybeSendOutput, and the other fiber calls Close() on this
+  // socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
+  // calling Shutdown(). It's not the best behavior, but it's also not disastrous either, because
   // such interaction happens only during the server shutdown.
   error_code res;
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(how);
   }
-  state_ |= SHUTDOWN_DONE;
+  WaitForPendingIO();
+
+  state_ &= SHUTDOWN_DONE;
   state_ &= ~SHUTDOWN_IN_PROGRESS;
 
   return res;
@@ -179,13 +190,29 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
-  return next_sock_->Close();
+
+  // Close the underlying socket. This unblocks any sync operations.
+  auto res = next_sock_->Close();
+
+  WaitForPendingIO();
+
+  return res;
 }
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
   DCHECK_GT(size_t(msg.msg_iovlen), 0u);
   DLOG_IF(INFO, flags) << "Flags argument is not supported " << flags;
+
+  // A user-level Recv() call is mutually exclusive with other Recv() or TryRecv() calls.
+  // We set a flag to detect this usage error.
+  if (state_ & USER_RECV_IN_PROGRESS) {
+    LOG(DFATAL)
+        << "Usage Error: Concurrent Recv/RecvMsg call detected while another is in progress.";
+    return make_unexpected(make_error_code(errc::operation_in_progress));
+  }
+  state_ |= USER_RECV_IN_PROGRESS;
+  auto guard{absl::MakeCleanup([this] { state_ &= ~USER_RECV_IN_PROGRESS; })};
 
   auto* io = msg.msg_iov;
   size_t io_len = msg.msg_iovlen;
@@ -394,9 +421,12 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 
   auto mut_buf = engine_->PeekInputBuf();
   state_ |= READ_IN_PROGRESS;
+  auto guard = absl::MakeCleanup([this] {
+    state_ &= ~READ_IN_PROGRESS;
+    block_concurrent_cv_.notify_one();
+  });
+
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
-  state_ &= ~READ_IN_PROGRESS;
-  block_concurrent_cv_.notify_one();
   if (!esz) {
     return esz.error();
   }
@@ -461,7 +491,8 @@ error_code TlsSocket::HandleOp(int op_val) {
       // Peer said goodbye cleanly.
       // However, EOF_GRACEFUL should be handled by the callers (Accept/Connect/Recv/Write)
       // explicitly before calling HandleOp.
-      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd=" << next_sock_->native_handle();
+      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd="
+                  << next_sock_->native_handle();
       return std::error_code{};
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
@@ -691,8 +722,14 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   size_t total_bytes_read{};
   bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
-  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
   std::error_code returned_status{};  // init to no error
+
+  // A user-level TryRecv() call is mutually exclusive with a blocking Recv().
+  // We check for the flag set by Recv/RecvMsg to detect this usage error.
+  if (state_ & USER_RECV_IN_PROGRESS) {
+    LOG(DFATAL) << "Usage Error: A blocking Recv/RecvMsg is already in progress on this socket.";
+    return make_unexpected(make_error_code(errc::operation_in_progress));
+  }
 
   while (!buf.empty()) {
     auto read_result = engine_->Read(buf.data(), buf.size());
@@ -724,7 +761,6 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         break;
       }
       ///////////////////////////////////////////////////////////////
-
       // 2. Handle Pending Output from TLs engine to upstream socket (write_in_progress is false)
       // If the engine generated TLS data (handshake/alerts), flush it now.
       // Otherwise, skip to reading.
@@ -755,11 +791,13 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
           continue;
       }
       ///////////////////////////////////////////////////////////////
-      // 3. Check for read conflict:
-      // A read conflict implies the application is polling TryRecv while concurrently
-      // blocked on Recv, which is a usage error. We check this to prevent buffer corruption/crash.
-      if (read_in_progress) {
-        LOG(DFATAL) << "Concurrent TryRecv and Recv detected - this is a usage error.";
+
+      ///////////////////////////////////////////////////////////////
+      // 3. Handle Pending Reads From Upstream Socket
+      // An internal read (blocking) might be in progress from another fiber (e.g. during a
+      // write). This is not a user error, but a temporary resource contention.
+      if ((state_ & READ_IN_PROGRESS) != 0) {
+        DVSOCK(3) << "TryRecv conflict with internal read in progress, returning EAGAIN";
         returned_status = make_error_code(errc::resource_unavailable_try_again);
         break;
       }

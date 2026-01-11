@@ -132,6 +132,10 @@ class TlsSocket final : public FiberSocketBase {
   // just with the engine. It's up to the caller to send the output buffer to the network.
   PushResult PushToEngine(const iovec* ptr, uint32_t len);
 
+  // Wait for any in-progress read/write operations to complete.
+  // They will return with errors now that the socket is shut down.
+  void WaitForPendingIO();
+
   /// Feed encrypted data from the TLS engine into the network socket.
   error_code MaybeSendOutput();
 
@@ -149,9 +153,10 @@ class TlsSocket final : public FiberSocketBase {
 
   enum {
     WRITE_IN_PROGRESS = 1,
-    READ_IN_PROGRESS = 2,
-    SHUTDOWN_IN_PROGRESS = 4,
-    SHUTDOWN_DONE = 8,
+    READ_IN_PROGRESS = 1 << 1,
+    SHUTDOWN_IN_PROGRESS = 1 << 2,
+    SHUTDOWN_DONE = 1 << 3,
+    USER_RECV_IN_PROGRESS = 1 << 4,
   };
   uint8_t state_{0};
 
