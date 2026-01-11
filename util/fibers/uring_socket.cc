@@ -471,6 +471,13 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
           // a) to reregister the recv using provided bufring_id.
           // b) to fallback to epoll registration.
           // For now we go with a).
+          optional<uint16_t> new_bufid =
+              up->BufRingNoBuffersNotification(bufring_id, false /*not severe*/);
+          if (new_bufid) {
+            bufring_id_ = *new_bufid;
+          } else {
+            enable_multi_shot_ = false;
+          }
           this->RegisterOnRecv(std::move(cb));  // re-register for next notifications.
         }
       } else {
@@ -479,11 +486,16 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
         DCHECK_EQ(0u, flags & IORING_CQE_F_MORE);
 
         if (res == ENOBUFS) {
-          // TODO: we should reregister the recv here, there is no need to for the
-          // app to know about it. There are two options:
-          // a) to fallback to epoll or
-          // b) to reissue recv with buffer select.
-          LOG(FATAL) << "TBD";
+          optional<uint16_t> new_bufid =
+              up->BufRingNoBuffersNotification(bufring_id, true /*severe*/);
+          if (new_bufid) {
+            bufring_id_ = *new_bufid;
+          } else {
+            enable_multi_shot_ = false;
+          }
+          // Should we call cb(RecvNotification{true}); here as we have some data pending?
+          this->RegisterOnRecv(std::move(cb));  // re-register for next notifications.
+          return;
         }
 
         // When we get an error, the multishot stops automatically.

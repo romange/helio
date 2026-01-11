@@ -559,6 +559,14 @@ int UringProactor::BufRingAvailable(unsigned group_id) const {
   return res;
 }
 
+std::optional<uint16_t> UringProactor::BufRingNoBuffersNotification(uint16_t group_id,
+                                                                    bool severe) {
+  // TODO:
+  // 1. implement app level hooks that customize behavior on no-buffers flow.
+  // 2. Add statistics collection to allow debugging such situations in production.
+  return group_id;
+}
+
 int UringProactor::CancelRequests(int fd, unsigned flags) {
   io_uring_sync_cancel_reg reg_arg;
   memset(&reg_arg, 0, sizeof(reg_arg));

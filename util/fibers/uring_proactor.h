@@ -159,6 +159,13 @@ class UringProactor : public ProactorBase {
   // Available since kernel 6.8.
   int BufRingAvailable(unsigned group_id) const;
 
+  // Notifies the Proactor that kernel is out of buffers for the given bufring id.
+  // If severe is true, it means that kernel could not allocate any buffers at all.
+  // If severe is false, it means that only some of the requested buffers could not be allocated.
+  // Returns updated bufid to use for multishot receive, or nullopt if we should fallback to epoll
+  // notifications.
+  std::optional<uint16_t> BufRingNoBuffersNotification(uint16_t group_id, bool severe);
+
   // Returns 0 on success, or -errno on failure.
   // See io_uring_prep_cancel(3) for flags.
   int CancelRequests(int fd, unsigned flags);
