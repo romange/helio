@@ -434,6 +434,14 @@ void UringSocket::CancelOnErrorCb() {
   }
 }
 
+#if 0
+TODO:
+./echo_server --logtostderr --multishot --proactor_threads=1 --size=100
+
+run several times:
+./echo_server --connect  localhost --p 32   --size=100 -n 50 -c 1 --proactor_threads=2
+#endif
+
 void UringSocket::RegisterOnRecv(OnRecvCb cb) {
   DCHECK(IsOpen());
   CHECK_EQ(recv_poll_id_, 0u);
@@ -450,16 +458,21 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
       if (flags & IORING_CQE_F_BUFFER) {
         CHECK_GT(res, 0);
 
-        DCHECK(flags & IORING_CQE_F_MORE);
+        uint16_t bufid = UringProactor::BufRingIdFromFlags(flags);
+        bool incremental = (flags & IORING_CQE_F_BUF_MORE) != 0;
+        DVLOG(2) << "Received " << bufid << " " << res << " " << incremental;
 
-        // holds only for non-bundle spec.
-        DCHECK_LE(res, up->BufRingEntrySize(bufring_id));
-        uint16_t bid = flags >> IORING_CQE_BUFFER_SHIFT;
-        DVLOG(2) << "Multishot recv got buffer " << bid << " of size " << res;
-
-        uint8_t* buf_ptr = up->AdvanceRecvCompletion(bufring_id, bid);
-        cb(RecvNotification{io::MutableBytes(buf_ptr, static_cast<size_t>(res))});
-        up->ReplenishBuffer(bufring_id, bid);
+        while (res > 0) {
+          auto [buf_ptr, segment_len] = up->BufRingGetBufPtr(bufring_id, bufid, res);
+          DVLOG(2) << "Notifying " << bufid << " " << res << " " << segment_len;
+          cb(RecvNotification{io::MutableBytes(buf_ptr, segment_len)});
+          bufid = up->BufRingTrackRecvCompletion(bufring_id, segment_len, bufid, incremental);
+          res -= segment_len;
+          incremental = true;  // after the first segment in a bundle we are always incremental.
+          if ((flags & IORING_CQE_F_MORE) == 0) {
+            this->RegisterOnRecv(std::move(cb));  // re-register for next notifications.
+          }
+        }
       } else {
         CHECK_LE(res, 0);
         res = -res;
@@ -494,7 +507,7 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
     uint16_t prio_flags = (IORING_RECV_MULTISHOT | IORING_RECVSEND_POLL_FIRST);
 
     // disable as we do not support bundles yet.
-    if (false && proactor->HasBundleSupport()) {
+    if (proactor->HasBundleSupport()) {
       prio_flags |= IORING_RECVSEND_BUNDLE;
     }
     sqe.ioprio |= prio_flags;
