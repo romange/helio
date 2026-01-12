@@ -167,7 +167,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     register_fds_.resize(absl::GetFlag(FLAGS_uring_direct_table_len), -1);
   }
 
-  if (kver.kernel >= 6 && kver.major >= 1) {
+  if (kver.kernel > 6 || (kver.kernel == 6 && kver.major >= 1)) {
     sync_cancel_f_ = 1;
 
     // This has a positive effect on CPU usage, latency and throughput.
@@ -176,7 +176,7 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   }
 
   // Officially it's from 6.12 but we take a margin here, just in case.
-  if (kver.kernel >= 6 && kver.major >= 14) {
+  if (kver.kernel > 6 || (kver.kernel == 6 && kver.major >= 14)) {
     incremental_buf_ring_f_ = 1;
   }
 

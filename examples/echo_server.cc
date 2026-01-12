@@ -12,12 +12,10 @@
 
 #include <absl/strings/escaping.h>
 #include <absl/strings/str_cat.h>
-
 #include <boost/asio/read.hpp>
 
 #include "base/histogram.h"
 #include "base/init.h"
-
 #include "util/accept_server.h"
 #include "util/asio_stream_adapter.h"
 #include "util/fibers/dns_resolve.h"
@@ -75,8 +73,7 @@ thread_local int tl_conn_id = 0;
 
 class EchoConnection : public Connection {
  public:
-  EchoConnection() {
-    id_ = tl_conn_id++;
+  EchoConnection() : id_(tl_conn_id++) {
   }
 
  private:
@@ -84,7 +81,9 @@ class EchoConnection : public Connection {
     bool is_raw = false;
     size_t cur_sendmsg_len = 0;
     vector<iovec> vec;
-    vector<vector<char>> kept_blobs;  // must be vector<char> to be on heap.
+
+    // We need it to be only on heap to maintain pointer stability. Hence we use vector<char>.
+    vector<vector<char>> kept_blobs;
     string blob;
   };
 
@@ -252,13 +251,13 @@ bool EchoConnection::ProcessSingleBuffer(SendMsgState* state) {
       return false;
   }
 
-  if (len) {  // consume the whole buffer and can not send yet.
-    auto src = state->blob.substr(buf_offset);
-    state->kept_blobs.push_back({src.begin(), src.end()});
+  if (len) {  // enqueue the buffer part that we can not send yet.
+    state->kept_blobs.emplace_back(state->blob.begin() + buf_offset, state->blob.end());
     auto& kept = state->kept_blobs.back();
-    DVLOG(3) << "[" << id_ << "] stashing " << absl::CEscape(src);
-    DCHECK(kept.size() == len);
-    state->vec.push_back({kept.data(), kept.size()});
+    DCHECK_EQ(kept.size(), len);
+    DVLOG(3) << "[" << id_ << "] stashing " << absl::CEscape(string{kept.data(), len});
+
+    state->vec.push_back({kept.data(), len});
     state->cur_sendmsg_len += len;
     return true;
   }
@@ -274,8 +273,9 @@ void EchoConnection::Send(bool is_raw, const vector<iovec>& vec) {
 
     // Verify that the responses look exactly like requests:
     // first part is at most 8 bytes of the id, and then a stripe of 'x' characters
-    uint8_t seq_buf[8] = {0};
-    unsigned seq_needed = 8;
+    constexpr size_t kSeqIdSize = sizeof(uint64_t);
+    uint8_t seq_buf[kSeqIdSize] = {0};
+    unsigned seq_needed = kSeqIdSize;
 
     for (size_t i = 1; i < vec.size(); ++i) {
       iovec v = vec[i];
@@ -286,13 +286,13 @@ void EchoConnection::Send(bool is_raw, const vector<iovec>& vec) {
           continue;
         }
         memcpy(seq_buf + 8 - seq_needed, v.iov_base, seq_needed);
-        v.iov_base = ((uint8_t*)v.iov_base) + seq_needed;
+        v.iov_base = static_cast<char*>(v.iov_base) + seq_needed;
         v.iov_len -= seq_needed;
         seq_needed = 0;
         uint64_t seq_id = absl::little_endian::Load64(seq_buf);
         CHECK_EQ(replies_, seq_id);
       }
-      const char* chr = (const char*)v.iov_base;
+      const char* chr = static_cast<const char*>(v.iov_base);
       for (unsigned j = 0; j < v.iov_len; ++j) {
         CHECK_EQ(chr[j], 'x');
       }
