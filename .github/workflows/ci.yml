@@ -33,7 +33,7 @@ jobs:
             container: alpine-dev:latest
             compiler: {cxx: clang++, c: clang}
           - name: ubuntu20-gcc-coverage
-            container: ubuntu-dev:20
+            container: ubuntu-dev:20-gcc14
             compiler: {cxx: g++, c: gcc}
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
           - name: fedora30-gcc
@@ -143,13 +143,13 @@ jobs:
           $GITHUB_WORKSPACE/build/accept_server_test
 
     - name: Coverage
-      if: matrix.config.container == 'ubuntu-dev:20'
+      if: matrix.config.container == 'ubuntu-dev:20-gcc14'
       run: |
           lcov -c -d $GITHUB_WORKSPACE/build -o coverage.info
           lcov --remove coverage.info -o coverage.info '/usr/*' '*/_deps/*' '*/third_party/*'
 
     - name: Upload coverage to Codecov
-      if: matrix.config.container == 'ubuntu-dev:20'
+      if: matrix.config.container == 'ubuntu-dev:20-gcc14'
       uses: codecov/codecov-action@v4
       with:
          files: ./coverage.info

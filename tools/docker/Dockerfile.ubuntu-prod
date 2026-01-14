@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-from ghcr.io/romange/ubuntu-dev:20 as builder
+from ghcr.io/romange/ubuntu-dev:20-gcc14 as builder
 
 # Serves as environment variable during the build
 # QEMU_CPU tunes how qemu emulator runs.
