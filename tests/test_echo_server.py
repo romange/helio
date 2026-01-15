@@ -205,3 +205,21 @@ def test_echo_server_custom_size(echo_server):
     if echo_server.size is not None:
         client_flags = ["--size", str(echo_server.size)]
     echo_server.assert_client_ok(client_args=client_flags)
+
+
+@pytest.mark.server_args(["--multishot", "--size", "50"])
+def test_echo_server_multishot_size_50(echo_server):
+    client_flags = []
+    if echo_server.size is not None:
+        client_flags = ["--size", str(echo_server.size)]
+    echo_server.assert_client_ok(client_args=client_flags)
+
+
+@pytest.mark.server_args(["--multishot", "--size", "50", "--p", "32", "--bufring_size", 
+                          "512"])
+def test_echo_server_multishot_pipeline(echo_server):
+    client_flags = []
+    if echo_server.size is not None:
+        client_flags = ["--size", str(echo_server.size)]
+    for _ in range(10):
+        echo_server.assert_client_ok(client_args=client_flags)
