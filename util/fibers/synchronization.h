@@ -39,7 +39,7 @@ class EventCount {
     Key(const Key&) = delete;
 
    public:
-    Key(Key&& o) : me_{o.me_}, epoch_{o.epoch_} {
+    Key(Key&& o) noexcept : me_{o.me_}, epoch_{o.epoch_} {
       o.me_ = nullptr;
     };
 
@@ -50,6 +50,23 @@ class EventCount {
 
     uint32_t epoch() const {
       return epoch_;
+    }
+  };
+
+  // Automatically unlinks waiter when dropped
+  class SubKey : public Key {
+    friend class EventCount;
+    detail::Waiter* waiter;
+
+    SubKey(Key&& key, detail::Waiter* w) : Key{std::move(key)}, waiter{w} {
+    }
+
+   public:
+    SubKey(SubKey&& other) noexcept = default;
+
+    ~SubKey() {
+      if (me_ != nullptr)
+        me_->unsubscribe(waiter);
     }
   };
 
@@ -71,6 +88,11 @@ class EventCount {
   template <typename Condition>
   cv_status await_until(Condition condition, const std::chrono::steady_clock::time_point& tp);
 
+  // If condition() is false, subscribe with waiter to updates.
+  // Waiter call does NOT guarantee truthiness of condition and just delivers notify() action.
+  template <typename Conditon>
+  std::optional<SubKey> check_or_subscribe(Conditon condition, detail::Waiter* w);
+
   // Advanced API, most use-cases will requie await function.
   Key prepareWait() noexcept {
     uint64_t prev = val_.fetch_add(kAddWaiter, std::memory_order_acq_rel);
@@ -80,9 +102,11 @@ class EventCount {
   void finishWait() noexcept;
 
   bool wait(uint32_t epoch) noexcept;
-  bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
   cv_status wait_until(uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept;
 
+  bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
+  void unsubscribe(detail::Waiter* w) noexcept;
+  
  private:
   friend class Key;
 
@@ -402,7 +426,7 @@ class EmbeddedBlockingCounter {
 
   // Notify waiter when count reaches zero (including immediately if already zero).
   // Caller must hold the returned key while waiting and drop it after the waiter was notified.
-  std::optional<EventCount::Key> OnCompletion(detail::Waiter* w);
+  std::optional<EventCount::SubKey> OnCompletion(detail::Waiter* w);
 
   // Return true if count is zero or cancelled
   bool IsCompleted() const;
@@ -500,10 +524,14 @@ inline bool EventCount::subscribe(uint32_t epoch, detail::Waiter* w) noexcept {
   std::unique_lock lk(lock_);
   if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
     wait_queue_.Link(w);
-    lk.unlock();
     return true;
   }
   return false;
+}
+
+inline void EventCount::unsubscribe(detail::Waiter* w) noexcept {
+  std::unique_lock lk(lock_);
+  wait_queue_.Unlink(w);
 }
 
 inline void EventCount::finishWait() noexcept {
@@ -535,6 +563,27 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   }
 
   return preempt;
+}
+
+template <typename Conditon>
+std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Conditon condition,
+                                                                 detail::Waiter* w) {
+  if (condition()) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return {};
+  }
+
+  while (true) {
+    auto key = prepareWait();
+    if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      break;
+    }
+
+    if (subscribe(key.epoch(), w))
+      return SubKey{std::move(key), w};
+  }
+  return {};
 }
 
 template <typename Condition>
