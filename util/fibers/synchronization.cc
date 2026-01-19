@@ -153,7 +153,7 @@ bool EmbeddedBlockingCounter::IsCompleted() const {
   bool result = WaitCondition(&v)();
   if (result)
     std::atomic_thread_fence(std::memory_order_acquire);
-  return true;
+  return result;
 }
 
 uint64_t EmbeddedBlockingCounter::DEBUG_Count() const {

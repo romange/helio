@@ -90,8 +90,8 @@ class EventCount {
 
   // If condition() is false, subscribe with waiter to updates.
   // Waiter call does NOT guarantee truthiness of condition and just delivers notify() action.
-  template <typename Conditon>
-  std::optional<SubKey> check_or_subscribe(Conditon condition, detail::Waiter* w);
+  template <typename Condition>
+  std::optional<SubKey> check_or_subscribe(Condition condition, detail::Waiter* w);
 
   // Advanced API, most use-cases will requie await function.
   Key prepareWait() noexcept {
@@ -565,8 +565,8 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   return preempt;
 }
 
-template <typename Conditon>
-std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Conditon condition,
+template <typename Condition>
+std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Condition condition,
                                                                  detail::Waiter* w) {
   if (condition()) {
     std::atomic_thread_fence(std::memory_order_acquire);
