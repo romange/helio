@@ -531,7 +531,8 @@ inline bool EventCount::subscribe(uint32_t epoch, detail::Waiter* w) noexcept {
 
 inline void EventCount::unsubscribe(detail::Waiter* w) noexcept {
   std::unique_lock lk(lock_);
-  wait_queue_.Unlink(w);
+  if (w->IsLinked())
+    wait_queue_.Unlink(w);
 }
 
 inline void EventCount::finishWait() noexcept {

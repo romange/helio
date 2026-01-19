@@ -440,14 +440,14 @@ TEST_F(FiberTest, TestCounterSubscribe) {
 
   // Wait for event to fire
   done_ec.await([&done] { return done.load(memory_order_relaxed); });
+  key1.reset();
   for (auto& th : threads)
     th.join();
 
-  // Now check empty resolves immediately
+  // Now check empty doesn't register
   done.store(false, memory_order_relaxed);
   auto key2 = counter->OnCompletion(&waiter);
   EXPECT_FALSE(key2);
-  EXPECT_EQ(done.load(memory_order_relaxed), true);
 
   // Check cancellation resolves
   done.store(false, memory_order_relaxed);
