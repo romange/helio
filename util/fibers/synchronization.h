@@ -425,8 +425,8 @@ class EmbeddedBlockingCounter {
   // Cancel blocking counter, unblock wait. Release semantics.
   void Cancel();
 
-  // Notify waiter when count reaches zero (including immediately if already zero).
-  // Caller must hold the returned key while waiting and drop it after the waiter was notified.
+  // Notify waiter when completed. Return null if already completed (no registration happens).
+  // Caller must hold the returned key to keep registered and drop it to re-use the waiter.
   std::optional<EventCount::SubKey> OnCompletion(detail::Waiter* w);
 
   // Return true if count is zero or cancelled. Has acquire semantics to be used in if checks
