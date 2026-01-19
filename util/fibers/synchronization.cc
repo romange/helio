@@ -151,7 +151,7 @@ std::optional<EventCount::SubKey> EmbeddedBlockingCounter::OnCompletion(detail::
 bool EmbeddedBlockingCounter::IsCompleted() const {
   uint64_t v = 0;
   bool result = WaitCondition(&v)();
-  if (result)
+  if (result)  // acquire semantics for "if completed, then action"
     std::atomic_thread_fence(std::memory_order_acquire);
   return result;
 }

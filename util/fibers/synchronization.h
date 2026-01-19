@@ -90,6 +90,7 @@ class EventCount {
 
   // If condition() is false, subscribe with waiter to updates.
   // Waiter call does NOT guarantee truthiness of condition and just delivers notify() action.
+  // Returns special SubKey that should be dropped before the waiter can be re-used.
   template <typename Condition>
   std::optional<SubKey> check_or_subscribe(Condition condition, detail::Waiter* w);
 
@@ -106,7 +107,7 @@ class EventCount {
 
   bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
   void unsubscribe(detail::Waiter* w) noexcept;
-  
+
  private:
   friend class Key;
 
@@ -428,7 +429,7 @@ class EmbeddedBlockingCounter {
   // Caller must hold the returned key while waiting and drop it after the waiter was notified.
   std::optional<EventCount::SubKey> OnCompletion(detail::Waiter* w);
 
-  // Return true if count is zero or cancelled
+  // Return true if count is zero or cancelled. Has acquire semantics to be used in if checks
   bool IsCompleted() const;
 
   uint64_t DEBUG_Count() const;
