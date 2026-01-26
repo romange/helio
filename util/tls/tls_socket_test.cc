@@ -300,12 +300,12 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
   Done data_ready;
   // Register the callback to notify a waiting fiber when data arrives.
   proactor_->DispatchBrief([&] {
-    server_socket_->RegisterOnRecv(
-        [&](const util::FiberSocketBase::RecvNotification& rn) {
-          // We notify 'data_ready' to exercise the callback path and ensure it fires.
-          // However, we do not Wait() on it, as the test relies on the polling loop in
-          // recv_fb for synchronization.
-          data_ready.Notify(); });
+    server_socket_->RegisterOnRecv([&](const util::FiberSocketBase::RecvNotification& rn) {
+      // We notify 'data_ready' to exercise the callback path and ensure it fires.
+      // However, we do not Wait() on it, as the test relies on the polling loop in
+      // recv_fb for synchronization.
+      data_ready.Notify();
+    });
   });
 
   // Launch sender fiber to send data that will trigger the RegisterOnRecv callback.
@@ -352,10 +352,10 @@ TEST_P(TlsSocketTest, RegisterOnRecv) {
           ThisFiber::SleepFor(1ms);
           continue;
         } else {
-        // We have a real (unexpected) error
+          // We have a real (unexpected) error
           LOG(ERROR) << "[recv_fb] TryRecv failed with error: " << res.error().message();
           break;  // break to allow clean teardown
-      }
+        }
       }
     }
     if (received_data.size() < send_data.size()) {
@@ -1740,6 +1740,126 @@ TEST_P(TrySendAsyncFlushTest, OffloadsStrandedDataToAsync) {
     ASSERT_TRUE(res);
     EXPECT_EQ(*res, user_data.size());
     EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(mock_engine_));
+  });
+}
+
+/**
+ * Fixture for testing TlsSocket lifecycle and race conditions during shutdown.
+ * It uses a MockFiberSocket to allow intercepting and blocking low-level
+ * socket operations (like Shutdown or Close), enabling deterministic
+ * reproduction of concurrency bugs.
+ */
+class TlsSocketShutdownTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+    proactor_thread_ = std::thread{[this] {
+      fb2::InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+
+    proactor_->Await([&] {
+      // Create Mock Underlying Socket + wrap it with TlsSocket
+      auto mock_sock{std::make_unique<testing::NiceMock<MockFiberSocket>>()};
+      mock_next_sock_ = mock_sock.get();
+      sock_ = std::make_unique<TlsSocket>(std::move(mock_sock));
+
+      // Inject Mock Engine
+      auto mock_eng{std::make_unique<testing::NiceMock<MockEngine>>()};
+      mock_engine_ = mock_eng.get();
+      TestDelegator::SetEngine(sock_.get(), std::move(mock_eng));
+    });
+  }
+
+  void TearDown() override {
+    proactor_->Await([&] {
+      if (sock_) {
+        // Clear flags to avoid destructor asserts if test failed mid-way
+        TestDelegator::SetState(sock_.get(), 0);
+      }
+    });
+    proactor_->Stop();
+    if (proactor_thread_.joinable())
+      proactor_thread_.join();
+  }
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread proactor_thread_;
+  std::unique_ptr<TlsSocket> sock_;
+  MockEngine* mock_engine_ = nullptr;
+  MockFiberSocket* mock_next_sock_ = nullptr;
+};
+
+/**
+ * Reproduces a race condition where a socket is destroyed while a concurrent
+ * shutdown is still in progress. The test blocks the shutdown fiber and
+ * verifies that Close() correctly waits for it to finish before allowing
+ * the socket to be deleted, preventing a destructor assertion failure.
+ * In short; to pass the test, one has to wait for Shutdown to finish
+ * before destroying the TlsSocket.
+ */
+TEST_F(TlsSocketShutdownTest, ShutdownRaceCrash) {
+  proactor_->Await([&] {
+    util::fb2::Done shutdown_entered;     // Signals when Shutdown() is entered
+    util::fb2::Done can_finish_shutdown;  // Controls when Shutdown() is allowed to finish
+
+    // -- Mock expectations --
+
+    // 1. IsOpen() must always return true so that TlsSocket attempts to call Shutdown on the
+    // underlying socket.
+    //    (If IsOpen() returns false, Shutdown is skipped and the test does not exercise the race.)
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+
+    // 2. Mock Shutdown() on the underlying socket:
+    //    - When called, it notifies that Shutdown has started (shutdown_entered.Notify()).
+    //    - Then it blocks until can_finish_shutdown is signaled (simulating a long-running
+    //    shutdown).
+    //    - Only after Close() is called (see below) will Shutdown() return.
+    //    This models a real-world scenario where shutdown is slow (e.g., waiting for TLS
+    //    close_notify).
+    EXPECT_CALL(*mock_next_sock_, Shutdown(testing::_))
+        .WillOnce(testing::Invoke([&](int) -> std::error_code {
+          shutdown_entered.Notify();   // Signal: Shutdown() is now in progress
+          can_finish_shutdown.Wait();  // Block until Close() is called
+          return std::error_code{};    // Simulate successful shutdown
+        }));
+
+    // 3. Mock Close() on the underlying socket:
+    //    - When called, it signals can_finish_shutdown, unblocking the Shutdown fiber.
+    //    - This simulates the "killer" fiber interrupting the shutdown and triggering cleanup.
+    EXPECT_CALL(*mock_next_sock_, Close()).WillOnce(testing::Invoke([&]() -> std::error_code {
+      can_finish_shutdown.Notify();  // Allow Shutdown() to complete
+      return std::error_code{};
+    }));
+
+    // 4. The TLS engine's Shutdown and OutputPending are not the focus here, but must be stubbed
+    //    to avoid unexpected calls or side effects. We allow any number of calls, always returning
+    //    success/0.
+    EXPECT_CALL(*mock_engine_, Shutdown()).WillRepeatedly(testing::Return(Engine::OpResult{0}));
+    EXPECT_CALL(*mock_engine_, OutputPending()).WillRepeatedly(testing::Return(0));
+
+    // --- Test execution ---
+
+    // Launch the "killer" fiber: this will call Shutdown (which blocks),
+    // and we keep a handle so we can join it later.
+    auto shutdown_fiber = proactor_->LaunchFiber([&] { sock_->Shutdown(SHUT_RDWR); });
+
+    // Wait until the shutdown fiber is inside Shutdown() (i.e., blocked in the mock)
+    shutdown_entered.Wait();
+
+    // Now, in the main test fiber, call Close().
+    // This should unblock the shutdown fiber (via the mock),
+    // and, crucially, must not return until Shutdown is fully finished.
+    // This is the core expectation: Close() must synchronize with Shutdown.
+    sock_->Close();
+
+    // Only after Close() returns is it safe to destroy the TlsSocket.
+    // If Close() does not wait for Shutdown, the destructor may run while Shutdown is still active,
+    // leading to use-after-free or assertion failures. This is what the test is designed to catch.
+    sock_.reset();
+
+    // Join the shutdown fiber to ensure all work is done before test exit.
+    shutdown_fiber.Join();
   });
 }
 

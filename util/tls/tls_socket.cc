@@ -60,14 +60,6 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   }
 }
 
-void TlsSocket::WaitForPendingIO() {
-  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) {
-    fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(
-        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) == 0; });
-  }
-}
-
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
   if (state_ & (SHUTDOWN_DONE | SHUTDOWN_IN_PROGRESS)) {
@@ -99,11 +91,16 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(how);
   }
-  WaitForPendingIO();
+  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) {
+    fb2::NoOpLock lk;
+    block_concurrent_cv_.wait(
+        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) == 0; });
+  }
 
-  state_ &= SHUTDOWN_DONE;
+  state_ |= SHUTDOWN_DONE;
   state_ &= ~SHUTDOWN_IN_PROGRESS;
 
+  block_concurrent_cv_.notify_all();
   return res;
 }
 
@@ -194,7 +191,11 @@ auto TlsSocket::Close() -> error_code {
   // Close the underlying socket. This unblocks any sync operations.
   auto res = next_sock_->Close();
 
-  WaitForPendingIO();
+  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
+    fb2::NoOpLock lk;
+    block_concurrent_cv_.wait(
+        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0; });
+  }
 
   return res;
 }
