@@ -250,6 +250,9 @@ if(NOT abseil_cpp_POPULATED)
   # and then restore it if we use it ourselves.
   set(CMAKE_CXX_FLAGS_RELEASE_OLD ${CMAKE_CXX_FLAGS_RELEASE})
   set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+  # Treat Abseil source directory as a System Include Directory, to suppress warnings generated on strict builds when
+  # abseil headers are included in our own code.
+  include_directories(SYSTEM ${abseil_cpp_SOURCE_DIR})
   add_subdirectory(${abseil_cpp_SOURCE_DIR} ${abseil_cpp_BINARY_DIR})
   set(CMAKE_CXX_FLAGS_RELEASE ${CMAKE_CXX_FLAGS_RELEASE_OLD})
 endif()
@@ -359,34 +362,6 @@ if (WITH_GPERF)
 else()
   add_library(TRDP::gperf INTERFACE IMPORTED)
 endif()
-
-set(MIMALLOC_INCLUDE_DIR ${THIRD_PARTY_LIB_DIR}/mimalloc/include)
-
-# asan interferes with mimalloc. See https://github.com/microsoft/mimalloc/issues/317
-
-set (MIMALLOC_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/mimalloc/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/mimalloc-v2.1.6.patch)
-
-add_third_party(mimalloc
-   #GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-   #GIT_TAG 0f6d8293c74796fa913e4b5eb4361f1e4734f7c6
-   URL https://github.com/microsoft/mimalloc/archive/refs/tags/v2.1.6.tar.gz
-   PATCH_COMMAND "${MIMALLOC_PATCH_COMMAND}"
-   # -DCMAKE_BUILD_TYPE=Release
-   # Add -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS=-O0 to debug
-   CMAKE_PASS_FLAGS "-DCMAKE_BUILD_TYPE=Release -DMI_BUILD_SHARED=OFF -DMI_BUILD_TESTS=OFF \
-                    -DMI_INSTALL_TOPLEVEL=ON -DMI_OVERRIDE=OFF -DMI_NO_PADDING=ON \ -DCMAKE_C_FLAGS=-g ${HELIO_MIMALLOC_OPTS}"
-
-  BUILD_COMMAND make -j4 mimalloc-static
-  INSTALL_COMMAND make install
-  COMMAND cp -r <SOURCE_DIR>/include/mimalloc ${MIMALLOC_INCLUDE_DIR}/
-  LIB ${HELIO_MIMALLOC_LIBNAME}
-)
-
-add_third_party(jemalloc
-  URL https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2
-  PATCH_COMMAND ./autogen.sh
-  CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=${THIRD_PARTY_LIB_DIR}/jemalloc --with-jemalloc-prefix=je_ --disable-libdl
-)
 
 
 add_third_party(

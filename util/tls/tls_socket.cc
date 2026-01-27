@@ -4,6 +4,8 @@
 
 #include "util/tls/tls_socket.h"
 
+#include <absl/cleanup/cleanup.h>
+#include <absl/container/inlined_vector.h>
 #include <openssl/err.h>
 
 #include <algorithm>
@@ -11,6 +13,7 @@
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
 #include "util/fibers/proactor_base.h"
+#include "util/tls/iovec_utils.h"
 #include "util/tls/tls_engine.h"
 
 #define VSOCK(verbosity)                                                      \
@@ -79,18 +82,25 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   }
 
   // In any case we should also shutdown the underlying TCP socket without relying on the
-  // the peer. It could be that when we are in the middle of MaybeSendOutput, and
-  // the other fiber calls Close() on this socket. In this case next_sock_ will be closed
-  // by the time we reach this line, so we omit calling Shutdown().
-  // It's not the best behavior, but it's also not disastrous either, because
+  // the peer. This unblocks any sync operations (like Recv) that are waiting for data. It could be
+  // that when we are in the middle of MaybeSendOutput, and the other fiber calls Close() on this
+  // socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
+  // calling Shutdown(). It's not the best behavior, but it's also not disastrous either, because
   // such interaction happens only during the server shutdown.
   error_code res;
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(how);
   }
+  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) {
+    fb2::NoOpLock lk;
+    block_concurrent_cv_.wait(
+        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) == 0; });
+  }
+
   state_ |= SHUTDOWN_DONE;
   state_ &= ~SHUTDOWN_IN_PROGRESS;
 
+  block_concurrent_cv_.notify_all();
   return res;
 }
 
@@ -177,13 +187,33 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
 
 auto TlsSocket::Close() -> error_code {
   DCHECK(engine_);
-  return next_sock_->Close();
+
+  // Close the underlying socket. This unblocks any sync operations.
+  auto res = next_sock_->Close();
+
+  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
+    fb2::NoOpLock lk;
+    block_concurrent_cv_.wait(
+        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0; });
+  }
+
+  return res;
 }
 
 io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
   DCHECK(engine_);
   DCHECK_GT(size_t(msg.msg_iovlen), 0u);
   DLOG_IF(INFO, flags) << "Flags argument is not supported " << flags;
+
+  // A user-level Recv() call is mutually exclusive with other Recv() or TryRecv() calls.
+  // We set a flag to detect this usage error.
+  if (state_ & USER_RECV_IN_PROGRESS) {
+    LOG(DFATAL)
+        << "Usage Error: Concurrent Recv/RecvMsg call detected while another is in progress.";
+    return make_unexpected(make_error_code(errc::operation_in_progress));
+  }
+  state_ |= USER_RECV_IN_PROGRESS;
+  auto guard{absl::MakeCleanup([this] { state_ &= ~USER_RECV_IN_PROGRESS; })};
 
   auto* io = msg.msg_iov;
   size_t io_len = msg.msg_iovlen;
@@ -392,9 +422,12 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 
   auto mut_buf = engine_->PeekInputBuf();
   state_ |= READ_IN_PROGRESS;
+  auto guard = absl::MakeCleanup([this] {
+    state_ &= ~READ_IN_PROGRESS;
+    block_concurrent_cv_.notify_one();
+  });
+
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
-  state_ &= ~READ_IN_PROGRESS;
-  block_concurrent_cv_.notify_one();
   if (!esz) {
     return esz.error();
   }
@@ -459,7 +492,8 @@ error_code TlsSocket::HandleOp(int op_val) {
       // Peer said goodbye cleanly.
       // However, EOF_GRACEFUL should be handled by the callers (Accept/Connect/Recv/Write)
       // explicitly before calling HandleOp.
-      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd=" << next_sock_->native_handle();
+      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd="
+                  << next_sock_->native_handle();
       return std::error_code{};
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
@@ -523,20 +557,180 @@ void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  iovec vec[1];
+  vec[0].iov_base = const_cast<uint8_t*>(buf.data());
+  vec[0].iov_len = buf.size();
+  return TrySend(vec, 1);
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
-  LOG(DFATAL) << "Not implemented";
-  return 0;
+  size_t iovec_total_bytes = GetIovecTotalBytes(v, len);
+  if (iovec_total_bytes == 0) {
+    LOG(DFATAL) << "TrySend with empty iovec";
+    return 0;  // nothing to send (POSIX allows zero-length writes)
+  }
+  if ((state_ & WRITE_IN_PROGRESS) != 0) {
+    // Another fiber is currently writing, we cannot safely proceed
+    DVSOCK(3) << "TrySend blocked: WRITE_IN_PROGRESS detected";
+    return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
+  }
+  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
+  size_t total_bytes_sent{};
+  std::error_code returned_status{};
+  // We make a local mutable copy of the iovec descriptors because AdvanceIovec
+  // modifies them (adjusting base pointers and lengths) to track partial writes.
+  // The input array 'v' is const and belongs to the caller, so we cannot modify it.
+  static constexpr size_t kMaxStackIovecs = 16;
+  uint32_t curr_iovec_len{len};
+  absl::InlinedVector<iovec, kMaxStackIovecs> curr_iov(curr_iovec_len);
+  iovec* iov_cursor = curr_iov.data();
+  std::memcpy(iov_cursor, v, curr_iovec_len * sizeof(iovec));
+
+  while ((curr_iovec_len > 0) || (engine_->OutputPending() > 0)) {
+    // 1. Flush into the upstream socket any pending output from the engine output buffer before
+    // pushing more data to the engine from the user. These might be bytes from previous call.
+    if (engine_->OutputPending() > 0) {
+      auto output_buf{engine_->PeekOutputBuf()};
+      DCHECK(!output_buf.empty());
+      auto send_result{next_sock_->TrySend(output_buf)};
+      if (send_result) {
+        CHECK_LE(*send_result, output_buf.size());
+        engine_->ConsumeOutputBuf(*send_result);
+        DVSOCK(3) << "Flushed " << *send_result << " bytes to upstream";
+        if ((*send_result) < output_buf.size()) {  // case 1.A: partial write
+          // upstream socket is full - try again later
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+          break;
+        }
+        // case 1.B: full write - fall through to the next step
+      } else {  // case 1.C: write failed (EAGAIN or other Error).
+        returned_status = send_result.error();
+        DLOG_IF(WARNING, (returned_status != errc::resource_unavailable_try_again))
+            << "Upstream write error in TrySend: " << returned_status.message();
+        break;
+      }
+    }
+
+    // 2. Skip empty iovec entries (handling 0-length inputs gracefully)
+    while (curr_iovec_len > 0 && iov_cursor->iov_len == 0) {
+      ++iov_cursor;
+      --curr_iovec_len;
+    }
+    // Check if we are done (either processed all, or all remaining were empty)
+    if (curr_iovec_len == 0) {
+      break;
+    }
+
+    // 3. Push data from user buffer into the engine
+    DCHECK_EQ(engine_->OutputPending(), 0u);
+    DCHECK_GT(iov_cursor->iov_len, 0u);
+    PushResult push_result{PushToEngine(iov_cursor, curr_iovec_len)};
+    // PushToEngine Result Semantics:
+    // 1. written > 0:   Bytes successfully consumed from the user buffer. This happens even if an
+    // error/requirement (opcode < 0) immediately follows.
+    // 2. opcode < 0:    Engine requires action (NEED_READ/WRITE) or failed (EOF).
+    // If written > 0 AND opcode < 0, it means a partial write occurred before the stop.
+    // 3. opcode == 0:   Success. All bytes in this chunk were consumed. In this case, we expect
+    // curr_iovec_len to be zero after AdvanceIovec(..).
+    // NOTE: We must handle 'written' first. Even if an error or state change (opcode < 0)
+    // forces us to stop, the bytes successfully processed so far are valid and must be
+    // reported to the caller.
+    if (push_result.written > 0) {
+      // Advance the iovec array position by the number of bytes written (push_result.written) into
+      // the engine
+      AdvanceIovec(&iov_cursor, &curr_iovec_len, push_result.written);
+      total_bytes_sent += push_result.written;
+    }
+
+    if (push_result.engine_opcode < 0) {
+      if (push_result.engine_opcode == Engine::NEED_WRITE) {
+        // The engine has pending output to flush - loop back to flush it
+        continue;
+      }
+      if (push_result.engine_opcode == Engine::NEED_READ_AND_MAYBE_WRITE) {
+        // We MUST read to satisfy the engine.
+        if (read_in_progress) {
+          DVSOCK(3) << "Read conflict detected in TrySend (usage error)";
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+          break;
+        }
+        auto input_buf{engine_->PeekInputBuf()};
+        DCHECK(!input_buf.empty()) << "Engine demanded read but has no input space";
+        auto recv_res{next_sock_->TryRecv(input_buf)};
+        if (recv_res) {
+          if (*recv_res > 0) {
+            engine_->CommitInput(*recv_res);
+            DVSOCK(3) << "Satisfied NEED_READ with " << *recv_res << " bytes";
+            continue;  // Success! Retry the write loop.
+          } else {
+            // TCP FIN received without TLS close_notify (dirty shutdown)
+            DVSOCK(1) << "Upstream EOF during handshake/renegotiation";
+            returned_status = make_error_code(errc::connection_reset);
+            break;
+          }
+        } else {
+          returned_status = recv_res.error();  // Read blocked (EAGAIN) or socket error
+          break;
+        }
+      }
+      if (push_result.engine_opcode == Engine::EOF_ABRUPT) {
+        // The TCP connection "vanished" or a protocol violation occurred. This is a "hard" failure.
+        returned_status = make_error_code(errc::connection_aborted);
+        break;
+      }
+      if (push_result.engine_opcode == Engine::EOF_GRACEFUL) {
+        // We are trying to write, but the peer has closed the connection.
+        // Return "broken pipe" to signal this is a fatal write error.
+        returned_status = make_error_code(errc::broken_pipe);
+        break;
+      }
+
+      LOG(FATAL) << "Unexpected engine opcode: " << push_result.engine_opcode;
+      returned_status = make_error_code(errc::operation_not_permitted);
+      break;
+    }  // push_result.engine_opcode < 0
+  }    // while
+
+  if (total_bytes_sent > 0) {
+    DVSOCK(3) << "TrySend returning " << total_bytes_sent << " bytes";
+
+    // The user interprets a full write as completion and may not call the socket again.
+    // To prevent stranding pending TLS output (causing deadlocks), we must flush
+    // it asynchronously in the background.
+    size_t engine_output_pending = engine_->OutputPending();
+    if ((total_bytes_sent == iovec_total_bytes) && (engine_output_pending > 0)) {
+      DVSOCK(3) << "TrySend success but OutputPending=" << engine_output_pending
+                << ". Offloading TLS engine's flush to background.";
+
+      // Create a "Detached" AsyncReq with nullptr vec (no user data). We only want to flush the
+      // engine's output buffer in the background.
+      auto dummy_cb = [](io::Result<size_t>) {};
+      auto req =
+          std::make_unique<AsyncReq>(this, std::move(dummy_cb), nullptr, 0, AsyncReq::WRITER);
+      DCHECK(!async_write_req_);
+      async_write_req_ = std::move(req);
+      async_write_req_->StartUpstreamWrite();
+    }
+
+    return total_bytes_sent;
+  }
+  if (!returned_status) {
+    return 0;  // No error, Clean EOF case
+  }
+  return make_unexpected(returned_status);
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
   size_t total_bytes_read{};
   bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
-  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
   std::error_code returned_status{};  // init to no error
+
+  // A user-level TryRecv() call is mutually exclusive with a blocking Recv().
+  // We check for the flag set by Recv/RecvMsg to detect this usage error.
+  if (state_ & USER_RECV_IN_PROGRESS) {
+    LOG(DFATAL) << "Usage Error: A blocking Recv/RecvMsg is already in progress on this socket.";
+    return make_unexpected(make_error_code(errc::operation_in_progress));
+  }
 
   while (!buf.empty()) {
     auto read_result = engine_->Read(buf.data(), buf.size());
@@ -568,7 +762,6 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         break;
       }
       ///////////////////////////////////////////////////////////////
-
       // 2. Handle Pending Output from TLs engine to upstream socket (write_in_progress is false)
       // If the engine generated TLS data (handshake/alerts), flush it now.
       // Otherwise, skip to reading.
@@ -599,11 +792,13 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
           continue;
       }
       ///////////////////////////////////////////////////////////////
-      // 3. Check for read conflict:
-      // A read conflict implies the application is polling TryRecv while concurrently
-      // blocked on Recv, which is a usage error. We check this to prevent buffer corruption/crash.
-      if (read_in_progress) {
-        LOG(DFATAL) << "Concurrent TryRecv and Recv detected - this is a usage error.";
+
+      ///////////////////////////////////////////////////////////////
+      // 3. Handle Pending Reads From Upstream Socket
+      // An internal read (blocking) might be in progress from another fiber (e.g. during a
+      // write). This is not a user error, but a temporary resource contention.
+      if ((state_ & READ_IN_PROGRESS) != 0) {
+        DVSOCK(3) << "TryRecv conflict with internal read in progress, returning EAGAIN";
         returned_status = make_error_code(errc::resource_unavailable_try_again);
         break;
       }
@@ -866,6 +1061,15 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
   }
 
   DCHECK(role_ == WRITER);
+
+  // Check if this is a "flush-only" request (from TrySend, for example)
+  if (vec_ == nullptr) {
+    // We have flushed the pending buffer (AsyncWriteProgressCb ensures this before calling us),
+    // and we have no new data to push. We are finished.
+    CompleteAsyncReq(0);
+    return;
+  }
+
   // We wrote some therefore we can complete
   if (engine_written_ > 0) {
     CompleteAsyncReq(engine_written_);

@@ -4,7 +4,11 @@
 
 #pragma once
 
+#include <absl/functional/function_ref.h>
+
 #include <boost/intrusive/list.hpp>
+#include <functional>
+#include <variant>
 
 namespace util {
 namespace fb2 {
@@ -12,42 +16,49 @@ namespace detail {
 
 class FiberInterface;
 
+// Event subscription object for either fiber wakeups or generic events
 class Waiter {
   friend class FiberInterface;
-
   explicit Waiter(FiberInterface* cntx) : cntx_(cntx) {
   }
 
  public:
+  using Callback = absl::FunctionRef<void()>;
+
+  // Create from reference to functor. Functor must outlive waiter
+  explicit Waiter(const Callback& cb) : cntx_{cb} {
+  }
+
   // For some boost versions/distributions, the default move c'tor does not work well,
   // so we implement it explicitly.
-  Waiter(Waiter&& o) : cntx_(o.cntx_) {
+  Waiter(Waiter&& o) : cntx_{std::move(o.cntx_)} {
     // it does not work well for slist because its reference is used by slist members
     // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
-    o.cntx_ = nullptr;
+    o.cntx_ = static_cast<FiberInterface*>(nullptr);
   }
 
   // safe_link is used in assertions via IsLinked() method.
-  using ListHookType = boost::intrusive::list_member_hook<
-      boost::intrusive::link_mode<boost::intrusive::safe_link>>;
-
-  FiberInterface* cntx() const {
-    return cntx_;
-  }
+  using ListHookType =
+      boost::intrusive::list_member_hook<boost::intrusive::link_mode<boost::intrusive::safe_link>>;
 
   bool IsLinked() const {
     return wait_hook.is_linked();
   }
 
+  void Notify(FiberInterface* active) const;
+
   ListHookType wait_hook;
 
  private:
-  FiberInterface* cntx_;
+  void NotifyImpl(FiberInterface*, FiberInterface* active) const;
+  void NotifyImpl(const Callback&, FiberInterface* active) const;
+
+  std::variant<FiberInterface*, Callback> cntx_;
 };
 
-// All WaitQueue are not thread safe and must be run under a lock.
-
+// Intrusive list of non-owned waiter objects.
+// Not thread safe, must be protected with lock.
 class WaitQueue {
  public:
   bool empty() const {
@@ -61,15 +72,16 @@ class WaitQueue {
     wait_list_.erase(it);
   }
 
+  // Return true if a waiter exitsted and was notified
   bool NotifyOne(FiberInterface* active);
-  void NotifyAll(FiberInterface* active);
+
+  // Return true if any waiter was notified
+  bool NotifyAll(FiberInterface* active);
 
  private:
   using WaitList = boost::intrusive::list<
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,
       boost::intrusive::constant_time_size<false>>;
-
-  void NotifyImpl(FiberInterface* suspended, FiberInterface* active);
 
   WaitList wait_list_;
 };

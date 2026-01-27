@@ -46,18 +46,18 @@ jobs:
             container: ubuntu-dev:24
             compiler: {cxx: clang++, c: clang}
             cmake_flags: "-DHELIO_USE_SANITIZER=ON"
-        
+
         exclude:
           - os: { arch: arm64 }
             config: { container: "alpine-dev:latest" }
-          
+
     timeout-minutes: 50
     runs-on: ${{matrix.os.image}}
     container:
       image: ghcr.io/romange/${{ matrix.config.container }}
-      
+
       # Seems that docker by default prohibits running iouring syscalls
-      options: --security-opt seccomp=unconfined  
+      options: --security-opt seccomp=unconfined
     steps:
     - uses: actions/checkout@v4
 
@@ -65,20 +65,17 @@ jobs:
       uses: actions/cache@v4
       with:
         path: |
-          ${{github.workspace}}/build/third_party
-          ${{github.workspace}}/build/_deps
+          $GITHUB_WORKSPACE/build/third_party
+          $GITHUB_WORKSPACE/build/_deps
         key: ${{ runner.os }}-${{ matrix.os.arch }}-${{ matrix.config.compiler.cxx }}-deps-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.os.arch }}-${{ matrix.config.compiler.cxx }}-deps-
           ${{ runner.os }}-${{ matrix.os.arch }}-deps-
 
-    - name: Cache ccache
-      uses: actions/cache@v4
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
       with:
-        path: ~/.ccache
-        key: ${{ runner.os }}-${{ matrix.os.arch }}-${{ matrix.config.compiler.cxx }}-ccache-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.os.arch }}-${{ matrix.config.compiler.cxx }}-ccache-
+          key: ${{ runner.os }}-${{ matrix.os.arch }}-${{ matrix.config.compiler.cxx }}-ccache
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
@@ -88,7 +85,7 @@ jobs:
           ulimit -a
 
           cat /proc/cpuinfo
-          cmake -B ${{github.workspace}}/build \
+          cmake -B build \
             -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
             -GNinja \
             -DCMAKE_C_COMPILER="${{matrix.config.compiler.c}}" \
@@ -99,14 +96,16 @@ jobs:
 
     - name: Build
       run: |
-          cd ${{github.workspace}}/build
+          cd build
 
-          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server https_client_cli s3_demo
-
+          ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
+            https_client_cli s3_demo
+          ls -la
+          
     - name: Test
       timeout-minutes: 2
       run: |
-          cd ${{github.workspace}}/build
+          cd build
 
           # Create a rule that automatically prints stacktrace upon segfault
           cat > ./init.gdb <<EOF
@@ -118,20 +117,35 @@ jobs:
 
           gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
           GLOG_logtostderr=1 ctest -V -L CI
+
+    - name: Python tests (echo_server)
+      if: contains(matrix.config.name, 'ubuntu') || contains(matrix.config.name, 'alpine')
+      run: |
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip install pytest
+          pwd  # /__w/helio/helio
+          cat <<EOF > asan_suppressions.txt
+          leak:ares_malloc_zero
+          leak:ares_getaddrinfo
+          leak:ares_append_addrinfo_node
+          EOF
+          
+          export LSAN_OPTIONS=suppressions=$(pwd)/asan_suppressions.txt
+          cd tests
+          python3 -m pytest -q -s
     - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: binaries
         path: |
-          ${{github.workspace}}/build/fibers_test
-          ${{github.workspace}}/build/fiber_socket_test
-          ${{github.workspace}}/build/accept_server_test
+          $GITHUB_WORKSPACE/build/fibers_test
+          $GITHUB_WORKSPACE/build/fiber_socket_test
+          $GITHUB_WORKSPACE/build/accept_server_test
 
     - name: Coverage
       if: matrix.config.container == 'ubuntu-dev:20'
       run: |
-          lcov -c -d ${{github.workspace}}/build -o coverage.info
+          lcov -c -d $GITHUB_WORKSPACE/build -o coverage.info
           lcov --remove coverage.info -o coverage.info '/usr/*' '*/_deps/*' '*/third_party/*'
 
     - name: Upload coverage to Codecov

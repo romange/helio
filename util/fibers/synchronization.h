@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <condition_variable>  // for cv_status
+#include <optional>
 
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
@@ -26,6 +27,7 @@ class EventCount {
 
   using cv_status = std::cv_status;
 
+  // Stores epoch and decrements waiter count when dropped
   class Key {
     friend class EventCount;
     EventCount* me_;
@@ -37,10 +39,13 @@ class EventCount {
     Key(const Key&) = delete;
 
    public:
-    Key(Key&&) noexcept = default;
+    Key(Key&& o) noexcept : me_{o.me_}, epoch_{o.epoch_} {
+      o.me_ = nullptr;
+    };
 
     ~Key() {
-      me_->val_.fetch_sub(kAddWaiter, std::memory_order_relaxed);
+      if (me_ != nullptr)
+        me_->val_.fetch_sub(kAddWaiter, std::memory_order_relaxed);
     }
 
     uint32_t epoch() const {
@@ -48,10 +53,32 @@ class EventCount {
     }
   };
 
-  // Return true if a notification was made, false if no notification was issued.
-  bool notify() noexcept;
+  // Automatically unlinks waiter when dropped
+  class SubKey : public Key {
+    friend class EventCount;
+    detail::Waiter* waiter;
 
-  bool notifyAll() noexcept;
+    SubKey(Key&& key, detail::Waiter* w) : Key{std::move(key)}, waiter{w} {
+    }
+
+   public:
+    SubKey(SubKey&& other) noexcept = default;
+
+    ~SubKey() {
+      if (me_ != nullptr)
+        me_->unsubscribe(waiter);
+    }
+  };
+
+  // Notify one waiter, return if any was notified
+  bool notify() noexcept {
+    return NotifyInternal(&detail::WaitQueue::NotifyOne);
+  }
+
+  // Notify all waiters, return if any were notified
+  bool notifyAll() noexcept {
+    return NotifyInternal(&detail::WaitQueue::NotifyAll);
+  }
 
   /**
    * Wait for condition() to become true.  Will clean up appropriately if
@@ -61,16 +88,25 @@ class EventCount {
   template <typename Condition>
   cv_status await_until(Condition condition, const std::chrono::steady_clock::time_point& tp);
 
+  // If condition() is false, subscribe with waiter to updates.
+  // Waiter call does NOT guarantee truthiness of condition and just delivers notify() action.
+  // Returns special SubKey that should be dropped before the waiter can be re-used.
+  template <typename Condition>
+  std::optional<SubKey> check_or_subscribe(Condition condition, detail::Waiter* w);
+
   // Advanced API, most use-cases will requie await function.
   Key prepareWait() noexcept {
     uint64_t prev = val_.fetch_add(kAddWaiter, std::memory_order_acq_rel);
     return Key(this, prev >> kEpochShift);
   }
 
-  // return true if was suspended.
-  bool wait(uint32_t epoch) noexcept;
+  void finishWait() noexcept;
 
+  bool wait(uint32_t epoch) noexcept;
   cv_status wait_until(uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept;
+
+  bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
+  void unsubscribe(detail::Waiter* w) noexcept;
 
  private:
   friend class Key;
@@ -80,15 +116,14 @@ class EventCount {
   EventCount& operator=(const EventCount&) = delete;
   EventCount& operator=(EventCount&&) = delete;
 
-  // This requires 64-bit
-  static_assert(sizeof(uint32_t) == 4);
-  static_assert(sizeof(uint64_t) == 8);
+  // Run notify function on wait queue if any waiter is active
+  bool NotifyInternal(bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept;
 
   // val_ stores the epoch in the most significant 32 bits and the
   // waiter count in the least significant 32 bits.
   std::atomic_uint64_t val_;
 
-  base::SpinLock lock_;
+  base::SpinLock lock_;  // protects wait_queue
   detail::WaitQueue wait_queue_;
 
   static constexpr uint64_t kAddWaiter = 1ULL;
@@ -155,13 +190,15 @@ class CondVarAny {
   CondVarAny(CondVarAny const&) = delete;
   CondVarAny& operator=(CondVarAny const&) = delete;
 
-  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called under the mutex
+  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called
+  // under the mutex
   void notify_one() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyOne(detail::FiberActive());
   }
 
-  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called under the mutex
+  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called
+  // under the mutex
   void notify_all() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyAll(detail::FiberActive());
@@ -209,12 +246,14 @@ class CondVar {
   CondVar(CondVar const&) = delete;
   CondVar& operator=(CondVar const&) = delete;
 
-  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called under the mutex
+  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called
+  // under the mutex
   void notify_one() noexcept {
     cnd_.notify_one();
   }
 
-  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called under the mutex
+  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called
+  // under the mutex
   void notify_all() noexcept {
     cnd_.notify_all();
   }
@@ -351,7 +390,7 @@ class EmbeddedBlockingCounter {
   const uint64_t kCancelFlag = (1ULL << 63);
 
   // Re-usable functor for wait condition, stores result in provided pointer
-  auto WaitCondition(uint64_t* cnt) {
+  auto WaitCondition(uint64_t* cnt) const {
     return [this, cnt]() -> bool {
       *cnt = count_.load(std::memory_order_relaxed);  // EventCount provides acquire
       return *cnt == 0 || (*cnt & kCancelFlag);
@@ -385,6 +424,13 @@ class EmbeddedBlockingCounter {
 
   // Cancel blocking counter, unblock wait. Release semantics.
   void Cancel();
+
+  // Notify waiter when completed. Return null if already completed (no registration happens).
+  // Caller must hold the returned key to keep registered and drop it to re-use the waiter.
+  std::optional<EventCount::SubKey> OnCompletion(detail::Waiter* w);
+
+  // Return true if count is zero or cancelled. Has acquire semantics to be used in if checks
+  bool IsCompleted() const;
 
   uint64_t DEBUG_Count() const;
 
@@ -447,35 +493,16 @@ class ABSL_LOCKABLE SharedMutex {
   std::atomic_uint32_t state_{0};
 };
 
-inline bool EventCount::notify() noexcept {
+inline bool EventCount::NotifyInternal(
+    bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept {
   uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
-
   if (prev & kWaiterMask) {
     detail::FiberInterface* active = detail::FiberActive();
-
     std::unique_lock lk(lock_);
-
-    return wait_queue_.NotifyOne(active);
+    return (wait_queue_.*f)(active);
   }
-
   return false;
 }
-
-inline bool EventCount::notifyAll() noexcept {
-  uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
-
-  if (prev & kWaiterMask) {
-    detail::FiberInterface* active = detail::FiberActive();
-
-    std::unique_lock lk(lock_);
-
-    wait_queue_.NotifyAll(active);
-
-    return true;
-  }
-
-  return false;
-};
 
 // Atomically checks for epoch and waits on cond_var.
 inline bool EventCount::wait(uint32_t epoch) noexcept {
@@ -488,15 +515,34 @@ inline bool EventCount::wait(uint32_t epoch) noexcept {
     lk.unlock();
     active->Suspend();
 
-    // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
-    // This is necessary because we want to avoid the case where continue to wait for
-    // another eventcount/condition_variable and have two notify functions waking up the same
-    // fiber at the same time.
-    lock_.lock();
-    lock_.unlock();
+    finishWait();
     return true;
   }
   return false;
+}
+
+inline bool EventCount::subscribe(uint32_t epoch, detail::Waiter* w) noexcept {
+  std::unique_lock lk(lock_);
+  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+    wait_queue_.Link(w);
+    return true;
+  }
+  return false;
+}
+
+inline void EventCount::unsubscribe(detail::Waiter* w) noexcept {
+  std::unique_lock lk(lock_);
+  if (w->IsLinked())
+    wait_queue_.Unlink(w);
+}
+
+inline void EventCount::finishWait() noexcept {
+  // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
+  // This is necessary because we want to avoid the case where continue to wait for
+  // another eventcount/condition_variable and have two notify functions waking up the same
+  // fiber at the same time.
+  lock_.lock();
+  lock_.unlock();
 }
 
 // Returns true if had to preempt, false if no preemption happenned.
@@ -519,6 +565,27 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   }
 
   return preempt;
+}
+
+template <typename Condition>
+std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Condition condition,
+                                                                 detail::Waiter* w) {
+  if (condition()) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return {};
+  }
+
+  while (true) {
+    auto key = prepareWait();
+    if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      break;
+    }
+
+    if (subscribe(key.epoch(), w))
+      return SubKey{std::move(key), w};
+  }
+  return {};
 }
 
 template <typename Condition>

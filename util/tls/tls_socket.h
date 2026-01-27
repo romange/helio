@@ -149,9 +149,10 @@ class TlsSocket final : public FiberSocketBase {
 
   enum {
     WRITE_IN_PROGRESS = 1,
-    READ_IN_PROGRESS = 2,
-    SHUTDOWN_IN_PROGRESS = 4,
-    SHUTDOWN_DONE = 8,
+    READ_IN_PROGRESS = 1 << 1,
+    SHUTDOWN_IN_PROGRESS = 1 << 2,
+    SHUTDOWN_DONE = 1 << 3,
+    USER_RECV_IN_PROGRESS = 1 << 4,
   };
   uint8_t state_{0};
 

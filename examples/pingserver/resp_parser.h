@@ -1,11 +1,13 @@
 // Copyright 2019, Beeri 15.  All rights reserved.
 // Author: Roman Gershman (romange@gmail.com)
 //
+
+#pragma once
+
 #include <absl/container/inlined_vector.h>
 #include <absl/types/span.h>
 
-#include <array>
-#include <string_view>
+#include <cstdint>
 #include <vector>
 
 namespace redis {
@@ -22,8 +24,7 @@ class RespParser {
   };
   using Buffer = absl::Span<uint8_t>;
 
-  explicit RespParser() {
-  }
+  explicit RespParser() = default;
 
   // It's a zero-copy parser. A user should not invalidate str if the parser returns COMMAND_READY
   // as long as he continues accessing RespExpr. However, if parser returns MORE_INPUT a user may

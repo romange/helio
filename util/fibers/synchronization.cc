@@ -143,6 +143,19 @@ void EmbeddedBlockingCounter::Cancel() {
   ec_.notifyAll();
 }
 
+std::optional<EventCount::SubKey> EmbeddedBlockingCounter::OnCompletion(detail::Waiter* w) {
+  uint64_t v = 0;
+  return ec_.check_or_subscribe(WaitCondition(&v), w);
+}
+
+bool EmbeddedBlockingCounter::IsCompleted() const {
+  uint64_t v = 0;
+  bool result = WaitCondition(&v)();
+  if (result)  // acquire semantics for "if completed, then action"
+    std::atomic_thread_fence(std::memory_order_acquire);
+  return result;
+}
+
 uint64_t EmbeddedBlockingCounter::DEBUG_Count() const {
   return count_.load(memory_order_relaxed);
 }

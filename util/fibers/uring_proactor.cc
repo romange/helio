@@ -70,18 +70,18 @@ struct UringProactor::BufRingGroup {
   io_uring_buf_ring* ring = nullptr;
   uint8_t* storage = nullptr;
 
-  // Insertion order map of a cardinality of nentries. bufring_next[x] points to the next
-  // bid element after x.
   uint32_t entry_size = 0;
 
-  // Tracks the head of the ring. Updated upon each multishot completion. Relevant only
-  // for bundles. In case we decide to enable bundled for non-multishot configurations
-  // we must change the proactor code to support cached_head in this case.
+  // tracks the offset for incremental buffers.
+  // See https://lore.gnuweeb.org/io-uring/20240824154555.110170-1-axboe@kernel.dk/
+  uint32_t incr_offset = 0;
+
+  // Tracks the head of the ring. Updated upon each multishot completion.
+  // Relevant only for bundles.
   uint16_t cached_head = 0;
 
   uint8_t nentries_exp = 0;  // 2^nentries_exp is the number of entries.
-  uint16_t reserved1 = 0;
-  uint32_t reserved2 = 0;
+  uint16_t reserved = 0;
 
   void AddToRing(uint16_t bid, uint16_t mask, uint16_t offset);
 
@@ -89,16 +89,40 @@ struct UringProactor::BufRingGroup {
     return 1U << nentries_exp;
   }
 
-  uint8_t* GetBufPtr(uint16_t bid) const {
-    DCHECK_LT(bid, size());
-
-    return storage + bid * entry_size;
+  const struct io_uring_buf& current_buf() const {
+    return ring->bufs[cached_head & io_uring_buf_ring_mask(size())];
   }
+
+  void AdvanceHead() {
+    AddToRing(current_buf().bid, io_uring_buf_ring_mask(size()), 0);
+    io_uring_buf_ring_advance(ring, 1);
+    ++cached_head;
+    incr_offset = 0;
+  }
+
+  // len is a positive result passed from the callback.
+  pair<uint8_t*, uint32_t> GetBufPtr(uint16_t bid, uint32_t len);
 };
 
 void UringProactor::BufRingGroup::AddToRing(uint16_t bid, uint16_t mask, uint16_t offset) {
   uint8_t* cur_buf = storage + bid * entry_size;
   io_uring_buf_ring_add(ring, cur_buf, entry_size, bid, mask, offset);
+}
+
+pair<uint8_t*, uint32_t> UringProactor::BufRingGroup::GetBufPtr(uint16_t bid, uint32_t len) {
+  DCHECK_LT(bid, size());
+
+  DCHECK_EQ(bid, current_buf().bid);
+
+  auto* start = storage + bid * entry_size + incr_offset;
+
+  // Kernel sends us total len received that can overlap over multiple buffers and might need
+  // alignment due to incr_offset. We adjust len and return the slice
+  if (len + incr_offset > entry_size) {
+    len = entry_size - incr_offset;
+  }
+  DCHECK(start + len <= storage + entry_size * size());
+  return {start, len};
 }
 
 UringProactor::UringProactor() : ProactorBase() {
@@ -121,7 +145,6 @@ UringProactor::~UringProactor() {
       if (group.ring != nullptr) {
         io_uring_free_buf_ring(&ring_, group.ring, group.size(), i);
         delete[] group.storage;
-        // delete[] group.multishot_arr;
       }
     }
 
@@ -150,11 +173,11 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   memset(&params, 0, sizeof(params));
 
   msgring_supported_f_ = 0;
-  msgring_enabled_f_ = 1;
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
   sync_cancel_f_ = 0;
+  incremental_buf_ring_f_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -169,12 +192,17 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     register_fds_.resize(absl::GetFlag(FLAGS_uring_direct_table_len), -1);
   }
 
-  if (kver.kernel >= 6 && kver.major >= 1) {
+  if (kver.kernel > 6 || (kver.kernel == 6 && kver.major >= 1)) {
     sync_cancel_f_ = 1;
 
     // This has a positive effect on CPU usage, latency and throughput.
     params.flags |=
         (IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SINGLE_ISSUER);
+  }
+
+  // Officially it's from 6.12 but we take a margin here, just in case.
+  if (kver.kernel > 6 || (kver.kernel == 6 && kver.major >= 14)) {
+    incremental_buf_ring_f_ = 1;
   }
 
   // it seems that SQPOLL requires registering each fd, including sockets fds.
@@ -208,11 +236,9 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   CHECK_EQ(req_feats, params.features & req_feats)
       << "required feature feature is not present in the kernel";
 
-#ifdef IORING_FEAT_RECVSEND_BUNDLE
   if (params.features & IORING_FEAT_RECVSEND_BUNDLE) {
     bundle_f_ = 1;
   }
-#endif
 
   // io_uring_register_ring_fd "succeeds" on oracle linux 5.15 even though it should not
   // as this feature is available only from 5.18. The problem is that later during shutdown
@@ -445,16 +471,24 @@ int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsi
     bufring_groups_.resize(group_id + 1);
   }
 
+  static_assert(sizeof(BufRingGroup) == 32);
   auto& buf_group = bufring_groups_[group_id];
   CHECK(buf_group.ring == nullptr);
 
   int err = 0;
 
-  buf_group.ring = io_uring_setup_buf_ring(&ring_, nentries, group_id, 0, &err);
+  int br_flags = 0;
+  if (incremental_buf_ring_f_) {
+    br_flags |= IOU_PBUF_RING_INC;
+  }
+  buf_group.ring = io_uring_setup_buf_ring(&ring_, nentries, group_id, br_flags, &err);
 
   if (buf_group.ring == nullptr) {
     return -err;  // err is negative.
   }
+
+  err = io_uring_buf_ring_available(&ring_, buf_group.ring, group_id);
+  DCHECK_EQ(0, err);
 
   unsigned mask = io_uring_buf_ring_mask(nentries);
   buf_group.storage = new uint8_t[size_t(nentries) * esize];
@@ -467,45 +501,52 @@ int UringProactor::RegisterBufferRing(uint16_t group_id, uint16_t nentries, unsi
   for (unsigned i = 0; i < nentries; ++i) {
     buf_group.AddToRing(i, mask, i);
   }
-  // bufring_next[nentries - 1] has random value and it's fine, because we will never read it
-  // unless another buffer was consumed and returned to the ring and the link was created.
 
   // return the ownership to the ring.
   io_uring_buf_ring_advance(buf_group.ring, nentries);
+  err = io_uring_buf_ring_available(&ring_, buf_group.ring, group_id);
+  DCHECK_EQ(nentries, err);
 
   return 0;
 }
 
-uint8_t* UringProactor::GetBufRingPtr(uint16_t group_id, uint16_t bufid) {
-  DCHECK_LT(group_id, bufring_groups_.size());
-  const auto& buf_group = bufring_groups_[group_id];
-
-  return buf_group.GetBufPtr(bufid);
-}
-
-uint8_t* UringProactor::AdvanceRecvCompletion(uint16_t group_id, uint16_t bufid) {
+pair<uint8_t*, uint32_t> UringProactor::BufRingGetBufPtr(uint16_t group_id, uint16_t bufid,
+                                                         uint32_t len) {
   DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
 
-  buf_group.cached_head++;
-  auto* res = buf_group.GetBufPtr(bufid);
-
-  return res;
+  // It might happen that kernel decides to advance the ring position and it sends us the next
+  // buffer id. Sync our state accordingly.
+  if (buf_group.current_buf().bid != bufid) {
+    buf_group.AdvanceHead();
+    DCHECK_EQ(buf_group.current_buf().bid, bufid);
+  }
+  return buf_group.GetBufPtr(bufid, len);
 }
 
-uint16_t UringProactor::GetBufIdByPos(uint16_t group_id, uint16_t buf_pos) const {
+uint16_t UringProactor::BufRingTrackRecvCompletion(uint16_t group_id, unsigned size, uint16_t bufid,
+                                                   bool incremental) {
+  DCHECK_LT(group_id, bufring_groups_.size());
   auto& buf_group = bufring_groups_[group_id];
-  return buf_group.ring->bufs[buf_pos & io_uring_buf_ring_mask(buf_group.size())].bid;
-}
 
-void UringProactor::ReplenishBuffer(uint16_t group_id, uint16_t bid) {
-  auto& buf_group = bufring_groups_[group_id];
-  unsigned mask = io_uring_buf_ring_mask(buf_group.size());
+  DCHECK_EQ(bufid, buf_group.current_buf().bid);
 
-  DCHECK_LT(bid, buf_group.size());
-  buf_group.AddToRing(bid, mask, 0);
-
-  io_uring_buf_ring_advance(buf_group.ring, 1);
+  // The rules for incremental buffers are somewhat confusing with bundles.
+  // Without bundles, it's simple - as we receive IORING_CQE_F_BUF_MORE in flags,
+  // which is passed as "incremental" here. But with bundles, we do not get that flag
+  // for some reason and it's just assumed that the last segment in the bundle
+  // is incremental if its size less than the buffer size.
+  if (incremental_buf_ring_f_ && incremental &&
+      buf_group.incr_offset + size < buf_group.entry_size) {
+    // incremental buffer - we need to update the offset.
+    buf_group.incr_offset += size;
+    DVLOG(1) << "Still using " << bufid << " with offset " << buf_group.incr_offset;
+  } else {
+    DVLOG(1) << "Advancing buf ring head from " << buf_group.cached_head;
+    buf_group.AdvanceHead();
+    bufid = buf_group.current_buf().bid;  // next buffer id.
+  }
+  return bufid;
 }
 
 int UringProactor::BufRingEntrySize(unsigned group_id) const {
@@ -989,6 +1030,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   VPRO(1) << "centries size: " << centries_.size();
   centries_.clear();
   DCHECK_EQ(0u, direct_fds_cnt_);
+
+  // Verify that all the buffers in in buffer groups are available to the kernel.
+  for (size_t i = 0; i < bufring_groups_.size(); ++i) {
+    const auto& group = bufring_groups_[i];
+    if (group.ring == nullptr)
+      continue;
+    int res = io_uring_buf_ring_available(&ring_, group.ring, i);
+    DCHECK_EQ(res, group.size());
+  }
 }
 
 const static uint64_t wake_val = 1;
@@ -1004,7 +1054,7 @@ void UringProactor::WakeRing() {
   last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
 #endif
 
-  if (caller && caller->msgring_supported_f_ && caller->msgring_enabled_f_) {
+  if (caller && caller->msgring_supported_f_) {
     SubmitEntry se = caller->GetSubmitEntry(nullptr, kMsgRingSubmitTag);
     se.PrepMsgRing(ring_.ring_fd, 0, 0);
   } else {
