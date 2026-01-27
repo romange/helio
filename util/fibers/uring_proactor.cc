@@ -25,6 +25,7 @@
 // We must ensure that there is no leakage of socket descriptors with enable_direct_fd enabled.
 // See AcceptServerTest.Shutdown to trigger direct fd resize.
 ABSL_FLAG(uint32_t, uring_direct_table_len, 0, "If positive create direct fd table of this length");
+ABSL_FLAG(bool, uring_disable_iowait, false, "If true, disables iowait cpu accounting");
 
 #define VPRO(verbosity) VLOG(verbosity) << "PRO[" << GetPoolIndex() << "] "
 
@@ -245,6 +246,11 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   if (kver.kernel >= 6) {
     int res = io_uring_register_ring_fd(&ring_);
     LOG_IF(WARNING, res < 0) << "io_uring_register_ring_fd failed: " << -res;
+
+    if (absl::GetFlag(FLAGS_uring_disable_iowait)) {
+      res = io_uring_set_iowait(&ring_, false);
+      LOG_IF(WARNING, res < 0) << "Failed to disable iowait: " << -res;
+    }
   }
 
   if (!register_fds_.empty()) {
