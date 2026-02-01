@@ -198,7 +198,7 @@ FiberInterface::FiberInterface(Type type, FiberPriority prio, uint32_t cnt, stri
   if (len) {
     memcpy(name_, nm.data(), len);
   }
-  SetRunQueueStart();
+  ready_tsc_ = cpu_tsc_ = base::CycleClock::Now();
 }
 
 FiberInterface::~FiberInterface() {
@@ -345,7 +345,6 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked()) {
-      other->SetRunQueueStart();
       scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
     }
   } else {
@@ -471,10 +470,10 @@ FiberInterface* FiberInterface::SwitchSetup() {
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
   // We ignore such cases (and they are very rare).
-  if (tsc > cpu_tsc_) {
+  if (tsc > ready_tsc_) {
     ++tl.epoch;
     DCHECK_GE(tsc, to_suspend->cpu_tsc_);
-    uint64_t runqueue_delay = tsc - cpu_tsc_;
+    uint64_t runqueue_delay = tsc - ready_tsc_;
     fb_initializer.runqueue_delay_cycles += runqueue_delay;
 
     // to_suspend points to the fiber that is active and is going to be suspended.
@@ -520,7 +519,9 @@ void PrintAllFiberStackTraces() {
 }
 
 void ResetFiberRunSeq() {
-  FbInitializer().fiber_run_seq = 0;
+  auto& fb = FbInitializer();
+  fb.fiber_run_seq = 0;
+  fb.active->SetCpuStart();  // reset start time for dispatch fiber once I/O wait finishes.
 }
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {

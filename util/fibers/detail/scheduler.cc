@@ -269,6 +269,7 @@ void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
 
   unsigned q_idx = GetQueueIndex(fibi->prio_);
 
+  fibi->SetReadyStart();
   if (to_front) {
     ready_queue_[q_idx].push_front(*fibi);
   } else {
@@ -438,7 +439,6 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
     // i.e. when fi is already active. In that case we should not add it to the ready queue.
     if (fi != active && !fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
-      fi->SetRunQueueStart();
       AddReady(fi, fi->prio_ == FiberPriority::HIGH /* to_front */);
     }
   }
@@ -462,7 +462,7 @@ unsigned Scheduler::ProcessSleep() {
 
     DCHECK(!fi.list_hook.is_linked());
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
-    fi.SetRunQueueStart();
+    fi.SetReadyStart();
     ready_queue_[GetQueueIndex(fi.prio_)].push_back(fi);
     FIBER_TRACE(&fi, TRACE_SLEEP_WAKE);
     ++result;
