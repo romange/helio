@@ -249,10 +249,16 @@ class FiberInterface {
 
   uint64_t GetRunningTimeCycles() const;
 
-  void SetRunQueueStart() {
-    cpu_tsc_ = base::CycleClock::Now();
+  void SetReadyStart() {
+    ready_tsc_ = base::CycleClock::Now();
   }
 
+  // Sets the start of the CPU time measurement for active fiber.
+  // Used externally for dispatch fiber only when it is activated after being blocked on
+  // I/O wait.
+  void SetCpuStart() {
+    cpu_tsc_ = base::CycleClock::Now();
+  }
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -294,8 +300,10 @@ class FiberInterface {
   // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;
 
-  // A timestamp counter when this fiber became ready,active or got suspended (in cycles).
+  // A timestamp counter when this fiber became active or suspended (in cycles).
   uint64_t cpu_tsc_ = 0;
+  uint64_t ready_tsc_ = 0;
+
   char name_[24];
   FiberPriority prio_;
   uint32_t stack_size_ = 0;
