@@ -40,6 +40,10 @@ template <typename T> struct Future {
     block->waker.notify();
   }
 
+  bool IsResolved() const {
+    return block->has_value.load(std::memory_order_relaxed);
+  }
+
  private:
   struct Block {
     T value{};  // replace with aligned_storage or optional if T is not default-constructible
