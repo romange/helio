@@ -1048,7 +1048,8 @@ void UringProactor::WakeRing() {
 
   UringProactor* caller = static_cast<UringProactor*>(ProactorBase::me());
 
-  DCHECK(caller != this);
+  // Caller can be equal to "this" in case of a signal handler running in the same thread
+  // as the proactor. It does not matter for correctnes though.
 
 #ifdef CHECK_WAKE_LATENCY
   last_wake_ts_.store(absl::GetCurrentTimeNanos(), memory_order_relaxed);
