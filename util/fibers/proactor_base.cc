@@ -207,7 +207,10 @@ bool ProactorBase::RunOnIdleTasks() {
       break;
     }
   } while (curr_ts < start + 10000);  // 10usec for the run.
-
+  uint64_t duration = curr_ts - start;
+  if (duration >= 500'000) {  // 500us for the run.
+    LOG_EVERY_T(WARNING, 1) << "OnIdle tasks are taking too long: " << duration / 1000 << " us";
+  }
   return should_spin;
 }
 
