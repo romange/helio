@@ -341,7 +341,6 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked()) {
-      other->SetRunQueueStart();
       scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
     }
   } else {
@@ -497,6 +496,10 @@ void PrintAllFiberStackTraces() {
 
 void ResetFiberRunSeq() {
   FbInitializer().fiber_run_seq = 0;
+
+  // We reset the CPU timestamp for the dispatch (active) fiber because the fiber was awoken
+  // from I/O blocking.
+  FbInitializer().active->SetRunQueueStart();
 }
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
