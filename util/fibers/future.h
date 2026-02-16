@@ -20,13 +20,13 @@ template <typename T> struct Future {
 
   T Get() {
     block->waker.await(
-        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); });
+        [this] { return block->has_value.exchange(false, std::memory_order_acquire); });
     return std::move(block->value);
   }
 
   std::optional<T> GetFor(std::chrono::steady_clock::duration dur) {
     std::cv_status st =block->waker.await_until(
-        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); },
+        [this] { return block->has_value.exchange(false, std::memory_order_acquire); },
         std::chrono::steady_clock::now() + dur);
     if (st == std::cv_status::timeout) {
       return std::nullopt;
@@ -36,12 +36,12 @@ template <typename T> struct Future {
 
   void Resolve(T result) {
     block->value = std::move(result);
-    block->has_value.store(true, std::memory_order_relaxed);
+    block->has_value.store(true, std::memory_order_release);
     block->waker.notify();
   }
 
   bool IsResolved() const {
-    return block->has_value.load(std::memory_order_relaxed);
+    return block->has_value.load(std::memory_order_acquire);
   }
 
  private:
