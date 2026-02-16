@@ -20,13 +20,13 @@ template <typename T> struct Future {
 
   T Get() {
     block->waker.await(
-        [this] { return block->has_value.exchange(false, std::memory_order_acquire); });
+        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); });
     return std::move(block->value);
   }
 
   std::optional<T> GetFor(std::chrono::steady_clock::duration dur) {
     std::cv_status st =block->waker.await_until(
-        [this] { return block->has_value.exchange(false, std::memory_order_acquire); },
+        [this] { return block->has_value.exchange(false, std::memory_order_relaxed); },
         std::chrono::steady_clock::now() + dur);
     if (st == std::cv_status::timeout) {
       return std::nullopt;
