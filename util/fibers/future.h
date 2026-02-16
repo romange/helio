@@ -36,8 +36,12 @@ template <typename T> struct Future {
 
   void Resolve(T result) {
     block->value = std::move(result);
-    block->has_value.store(true, std::memory_order_relaxed);
+    block->has_value.store(true, std::memory_order_release);
     block->waker.notify();
+  }
+
+  bool IsResolved() const {
+    return block->has_value.load(std::memory_order_acquire);
   }
 
  private:
