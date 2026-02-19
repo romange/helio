@@ -21,6 +21,7 @@ TEST_F(HistogramTest, Basic) {
     hist_.Add(10);
   }
   EXPECT_EQ(10, hist_.Average());
+  EXPECT_EQ(1000, hist_.Sum());
 }
 
 TEST_F(HistogramTest, Grow) {
