@@ -200,11 +200,14 @@ void Histogram::Clear() {
   buckets_.clear();
 }
 
-void Histogram::Add(double value, uint32 count) {
+void Histogram::Add(double value, uint64_t count) {
   auto it = upper_bound(kBucketLimit, kBucketLimit + kNumBuckets - 1, value);
   size_t b = it - kBucketLimit;
   if (buckets_.size() <= b) {
-    buckets_.resize(absl::bit_ceil(b + 1));
+    buckets_.resize(b + 1);
+    if (buckets_.capacity() > kNumBuckets) {
+      buckets_.shrink_to_fit();
+    }
   }
 
   buckets_[b] += count;
@@ -236,18 +239,54 @@ void Histogram::Merge(const Histogram& other) {
 }
 
 double Histogram::Percentile(double p) const {
-  ulong threshold = num_ * (p / 100.0);
-  ulong sum = 0;
-  for (unsigned b = 0; b < buckets_.size(); b++) {
+  return PercentilesImpl(std::array<double, 1>{p})[0];
+}
+
+template <size_t N>
+std::array<double, N> Histogram::PercentilesImpl(const std::array<double, N>& percentiles) const {
+  std::array<double, N> result;
+
+  if (num_ == 0) {
+    result.fill(0.0);
+    return result;
+  }
+
+  // Percentiles must be sorted in ascending order
+  size_t next_idx = 0;
+  uint64_t sum = 0;
+
+  for (unsigned b = 0; b < buckets_.size() && next_idx < N; b++) {
     sum += buckets_[b];
-    if (sum >= threshold) {
-      // Scale linearly within this bucket
-      ulong left_sum = sum - buckets_[b];
-      return InterpolateVal(b, threshold - left_sum);
+
+    // Process all percentiles whose threshold falls in the accumulated sum
+    while (next_idx < N) {
+      uint64_t threshold = num_ * (percentiles[next_idx] / 100.0);
+
+      if (sum >= threshold) {
+        uint64_t left_sum = sum - buckets_[b];
+        result[next_idx] = InterpolateVal(b, threshold - left_sum);
+        ++next_idx;
+      } else {
+        break;
+      }
     }
   }
-  return max_;
+
+  // Handle any remaining percentiles (should all map to max_)
+  while (next_idx < N) {
+    result[next_idx] = max_;
+    ++next_idx;
+  }
+
+  return result;
 }
+
+// Explicit template instantiations for common cases to reduce code bloat
+template std::array<double, 1> Histogram::PercentilesImpl(const std::array<double, 1>&) const;
+template std::array<double, 2> Histogram::PercentilesImpl(const std::array<double, 2>&) const;
+template std::array<double, 3> Histogram::PercentilesImpl(const std::array<double, 3>&) const;
+template std::array<double, 4> Histogram::PercentilesImpl(const std::array<double, 4>&) const;
+template std::array<double, 5> Histogram::PercentilesImpl(const std::array<double, 5>&) const;
 
 double Histogram::Average() const {
   if (num_ == 0)
@@ -262,60 +301,10 @@ double Histogram::StdDev() const {
   return sqrt(variance);
 }
 
-#if 0
-double Histogram::TruncatedMean(double trim_low_percentile, double trim_high_percentile) const {
-  ulong threshold_low = num_ * (trim_low_percentile / 100.0);
-  ulong threshold_high = num_ * (trim_high_percentile / 100.0);
-  if (threshold_low + threshold_high >= num_)
-    return 0;
-  ulong cnt = num_ - threshold_low - threshold_high;
-
-  ulong progress_count = 0;
-  double trimmed_sum = 0;
-  for (int b = 0; b < kNumBuckets; b++) {
-    progress_count += buckets_[b];
-    if (progress_count >= threshold_low) {
-      ulong position = threshold_low - (progress_count - buckets_[b]);
-      double val = SumFirstK(b, position);
-      trimmed_sum += val;
-      break;
-    } else {
-      trimmed_sum += buckets_[b] * BucketAverage(b);
-    }
-  }
-  progress_count = 0;
-  for (int b2 = kNumBuckets - 1; b2 >= 0; --b2) {
-    progress_count += buckets_[b2];
-    trimmed_sum += buckets_[b2] * BucketAverage(b2);
-    if (progress_count >= threshold_high) {
-      ulong position = progress_count - threshold_high;
-      double val = SumFirstK(b2, position);
-      trimmed_sum -= val;
-      break;
-    }
-  }
-  if (trimmed_sum > sum_) {
-    trimmed_sum = sum_;
-  }
-  double res_sum = sum_ - trimmed_sum;
-
-  return res_sum / cnt;
-}
-
-double Histogram::SumFirstK(unsigned bucket, ulong position) const {
-  // Value of item j is : a + (b-a)*j/(n+1).
-  // Sum of first k numbers is: k*a + (b-a)*k*(k+1)/(2*(n+1))
-  auto limits = BucketLimits(bucket);
-  double val = limits.first + ((limits.second - limits.first) * (position + 1)) /
-                               (2*(buckets_[bucket] + 1));
-  return val*position;
-}
-#endif
-
 string Histogram::ToString() const {
   string r;
   char buf[300];
-  snprintf(buf, sizeof(buf), "Count: %" PRIu32 " Average: %.4f  StdDev: %.2f\n", num_, Average(),
+  snprintf(buf, sizeof(buf), "Count: %" PRIu64 " Average: %.4f  StdDev: %.2f\n", num_, Average(),
            StdDev());
   r.append(buf);
   snprintf(buf, sizeof(buf), "Min: %.4f  Median: %.4f  Max: %.4f\n", (num_ == 0 ? 0.0 : min_),
@@ -336,7 +325,7 @@ string Histogram::ToString() const {
     } else {
       snprintf(to_buf, sizeof(to_buf), "%7.0f", kBucketLimit[b]);
     }
-    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %" PRIu32 " %7.3f%% %7.3f%% ",
+    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %" PRIu64 " %7.3f%% %7.3f%% ",
              from,                // left
              to_buf,              // right
              buckets_[b],         // count
@@ -352,7 +341,7 @@ string Histogram::ToString() const {
   return r;
 }
 
-double Histogram::InterpolateVal(unsigned bucket, ulong position) const {
+double Histogram::InterpolateVal(unsigned bucket, uint64_t position) const {
   auto limits = BucketLimits(bucket);
 
   // We divide by n+1 according to
