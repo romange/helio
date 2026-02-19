@@ -48,12 +48,18 @@ class Histogram {
   // Usage: auto [p50, p90, p99] = hist.Percentiles(50, 90, 99);
   template <typename... Args>
   std::array<double, sizeof...(Args)> Percentiles(Args... percentiles) const {
-    static_assert((std::is_convertible_v<Args, double> && ...), "All arguments must be convertible to double");
-    return PercentilesImpl(std::array<double, sizeof...(Args)>{static_cast<double>(percentiles)...});
+    static_assert((std::is_convertible_v<Args, double> && ...),
+                  "All arguments must be convertible to double");
+    return PercentilesImpl(
+        std::array<double, sizeof...(Args)>{static_cast<double>(percentiles)...});
   }
 
   double Average() const;
   double StdDev() const;
+
+  double Sum() const {
+    return sum_;
+  }
   double max() const {
     return max_;
   }
