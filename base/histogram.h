@@ -57,7 +57,7 @@ class Histogram {
   double Average() const;
   double StdDev() const;
 
-  double Sum() const {
+  double sum() const {
     return sum_;
   }
   double max() const {
