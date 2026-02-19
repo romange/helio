@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "base/bits.h"
+#include "base/logging.h"
 
 namespace base {
 
@@ -245,6 +246,10 @@ double Histogram::Percentile(double p) const {
 template <size_t N>
 std::array<double, N> Histogram::PercentilesImpl(const std::array<double, N>& percentiles) const {
   std::array<double, N> result;
+
+  for (size_t i = 1; i < percentiles.size(); ++i) {
+    DCHECK_GE(percentiles[i], percentiles[i-1]) << "Percentiles must be in ascending order.";
+  }
 
   if (num_ == 0) {
     result.fill(0.0);
