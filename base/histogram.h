@@ -5,6 +5,7 @@
 #ifndef _BASE_HISTOGRAM_H_
 #define _BASE_HISTOGRAM_H_
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -24,15 +25,13 @@ class Histogram {
   Histogram& operator=(Histogram&&) = default;
 
   void Clear();
-  void Add(double value) {
-    Add(value, 1);
-  }
-  void Add(double value, uint32 count);
+
+  void Add(double value, uint64_t count = 1);
   void Merge(const Histogram& other);
 
   std::string ToString() const;
 
-  unsigned long count() const {
+  uint64_t count() const {
     return num_;
   }
 
@@ -42,28 +41,36 @@ class Histogram {
 
   // p in [0, 100].
   double Percentile(double p) const;
+
+  // Compute multiple percentiles in a single pass. More efficient than calling
+  // Percentile() multiple times.
+  // IMPORTANT: Percentiles must be provided in ascending order (e.g., 50, 90, 99).
+  // Usage: auto [p50, p90, p99] = hist.Percentiles(50, 90, 99);
+  template <typename... Args>
+  std::array<double, sizeof...(Args)> Percentiles(Args... percentiles) const {
+    static_assert((std::is_convertible_v<Args, double> && ...), "All arguments must be convertible to double");
+    return PercentilesImpl(std::array<double, sizeof...(Args)>{static_cast<double>(percentiles)...});
+  }
+
   double Average() const;
   double StdDev() const;
   double max() const {
     return max_;
   }
+
   double min() const {
     return min_;
   }
 
-  // trim_low_percentile, trim_high_percentile in [0, 100].
-  // Returns truncated mean according to http://en.wikipedia.org/wiki/Truncated_mean
-  // Do not use it - it's broken! See the failing test.
-  // double TruncatedMean(double trim_low_percentile, double trim_high_percentile) const;
-
  private:
-  typedef unsigned long ulong;
+  // Implementation for Percentiles() - computes multiple percentiles in one pass.
+  template <size_t N>
+  std::array<double, N> PercentilesImpl(const std::array<double, N>& percentiles) const;
 
   // returns the interpolated value based on its position inside the bucket and
   // the number of items in the bucket. position should be valid
   // (i.e. in range [1, buckets_[bucket]])
-  double InterpolateVal(unsigned bucket, ulong position) const;
-  double SumFirstK(unsigned bucket, ulong position) const;
+  double InterpolateVal(unsigned bucket, uint64_t position) const;
 
   static std::pair<double, double> BucketLimits(unsigned bucket);
   static double BucketAverage(unsigned b);
@@ -72,12 +79,12 @@ class Histogram {
   double max_;
   double sum_;
   double sum_squares_;
-  uint32 num_;
+  uint64_t num_;
 
   enum { kNumBuckets = 154 };
   static const double kBucketLimit[kNumBuckets];
 
-  std::vector<uint32> buckets_;
+  std::vector<uint64_t> buckets_;
 };
 
 }  // namespace base

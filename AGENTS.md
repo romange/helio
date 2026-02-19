@@ -51,3 +51,11 @@
 1.  **Read:** Check `README.md` for project context.
 2.  **Implement:** Adhere strictly to Fiber Safety rules. Use smart pointers (`std::unique_ptr`) and RAII (`absl::Cleanup`).
 3.  **Verify:** Always run related tests and `ctest -L CI`.
+
+## 📝 Git Commit Guidelines
+
+*   **Commit Title:** Maximum 70 characters. Use format: `Component: brief description`
+    *   Examples: `Histogram: migrate to uint64_t and add batch percentiles`
+    *   Avoid generic titles like "Fix bug" or "Update code"
+*   **Commit Body:** Provide detailed bullet points explaining what and why
+*   **Test Results:** Mention that tests pass if applicable
