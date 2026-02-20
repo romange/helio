@@ -55,7 +55,11 @@ class Histogram {
   }
 
   double Average() const;
-  double StdDev() const;
+
+  // Halve all bucket counts, num, and sum to implement a simple exponential
+  // decay. Call periodically to give more weight to recent observations.
+  // min/max are left unchanged as they track the observed range, not weights.
+  void Decay();
 
   double sum() const {
     return sum_;
@@ -84,7 +88,6 @@ class Histogram {
   double min_;
   double max_;
   double sum_;
-  double sum_squares_;
   uint64_t num_;
 
   enum { kNumBuckets = 154 };

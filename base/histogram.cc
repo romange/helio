@@ -197,7 +197,6 @@ void Histogram::Clear() {
   max_ = 0;
   num_ = 0;
   sum_ = 0;
-  sum_squares_ = 0;
   buckets_.clear();
 }
 
@@ -218,7 +217,6 @@ void Histogram::Add(double value, uint64_t count) {
     max_ = value;
   num_ += count;
   sum_ += value * count;
-  sum_squares_ += (value * value) * count;
 }
 
 void Histogram::Merge(const Histogram& other) {
@@ -228,7 +226,6 @@ void Histogram::Merge(const Histogram& other) {
     max_ = other.max_;
   num_ += other.num_;
   sum_ += other.sum_;
-  sum_squares_ += other.sum_squares_;
 
   if (other.buckets_.size() > buckets_.size()) {
     buckets_.resize(other.buckets_.size());
@@ -248,7 +245,7 @@ std::array<double, N> Histogram::PercentilesImpl(const std::array<double, N>& pe
   std::array<double, N> result;
 
   for (size_t i = 1; i < percentiles.size(); ++i) {
-    DCHECK_GE(percentiles[i], percentiles[i-1]) << "Percentiles must be in ascending order.";
+    DCHECK_GE(percentiles[i], percentiles[i - 1]) << "Percentiles must be in ascending order.";
   }
 
   if (num_ == 0) {
@@ -299,18 +296,20 @@ double Histogram::Average() const {
   return sum_ / num_;
 }
 
-double Histogram::StdDev() const {
-  if (num_ == 0)
-    return 0;
-  double variance = (sum_squares_ * num_ - sum_ * sum_) / (num_ * num_);
-  return sqrt(variance);
+void Histogram::Decay() {
+  uint64_t new_num = 0;
+  for (auto& b : buckets_) {
+    b >>= 1;
+    new_num += b;
+  }
+  num_ = new_num;
+  sum_ *= 0.5;
 }
 
 string Histogram::ToString() const {
   string r;
   char buf[300];
-  snprintf(buf, sizeof(buf), "Count: %" PRIu64 " Average: %.4f  StdDev: %.2f\n", num_, Average(),
-           StdDev());
+  snprintf(buf, sizeof(buf), "Count: %" PRIu64 " Average: %.4f\n", num_, Average());
   r.append(buf);
   snprintf(buf, sizeof(buf), "Min: %.4f  Median: %.4f  Max: %.4f\n", (num_ == 0 ? 0.0 : min_),
            Median(), max_);
