@@ -69,6 +69,16 @@ TEST_F(HistogramTest, Decay) {
 
   // Percentiles should still be computable after decay.
   EXPECT_NEAR(10.0, hist_.Percentile(50), 1.0);
+
+  // Verify the invariant num_ == sum(buckets_) holds after decay when
+  // individual bucket counts are odd (integer rounding edge case).
+  Histogram h2;
+  h2.Add(1);    // bucket A, count 1
+  h2.Add(100);  // bucket B, count 1
+  EXPECT_EQ(2u, h2.count());
+  h2.Decay();
+  // Both bucket counts go to 0 via >>= 1; num_ must follow, not be 1.
+  EXPECT_EQ(0u, h2.count());
 }
 
 }  // namespace base

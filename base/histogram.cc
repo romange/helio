@@ -297,9 +297,12 @@ double Histogram::Average() const {
 }
 
 void Histogram::Decay() {
-  for (auto& b : buckets_)
+  uint64_t new_num = 0;
+  for (auto& b : buckets_) {
     b >>= 1;
-  num_ >>= 1;
+    new_num += b;
+  }
+  num_ = new_num;
   sum_ *= 0.5;
 }
 
