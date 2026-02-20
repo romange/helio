@@ -56,4 +56,19 @@ TEST_F(HistogramTest, MultiplePercentiles) {
   EXPECT_NEAR(p99_b, p99, 0.01);
 }
 
+TEST_F(HistogramTest, Decay) {
+  for (int i = 0; i < 100; ++i) {
+    hist_.Add(10);
+  }
+  EXPECT_EQ(100u, hist_.count());
+  EXPECT_EQ(1000.0, hist_.sum());
+
+  hist_.Decay();
+  EXPECT_EQ(50u, hist_.count());
+  EXPECT_EQ(500.0, hist_.sum());
+
+  // Percentiles should still be computable after decay.
+  EXPECT_NEAR(10.0, hist_.Percentile(50), 1.0);
+}
+
 }  // namespace base
