@@ -60,6 +60,22 @@ endif()
 
 find_package(Threads REQUIRED)
 
+option(TRDP_BUILD_USE_ALL_CORES "If ON, use all CPU cores for third-party builds" OFF)
+set(TRDP_BUILD_JOBS "4" CACHE STRING "Number of jobs for third-party builds when TRDP_BUILD_USE_ALL_CORES is off")
+
+if(TRDP_BUILD_USE_ALL_CORES)
+  include(ProcessorCount)
+  ProcessorCount(NPROC)
+  if(NOT NPROC)
+    set(NPROC 4)
+  endif()
+else()
+  set(NPROC ${TRDP_BUILD_JOBS})
+  if(NOT NPROC)
+    set(NPROC 4)
+  endif()
+endif()
+
 function(add_third_party name)
   set(options SHARED)
   set(oneValueArgs CMAKE_PASS_FLAGS)
@@ -75,7 +91,7 @@ function(add_third_party name)
   endif()
 
   if (NOT parsed_BUILD_COMMAND)
-    set(parsed_BUILD_COMMAND make -j4)
+    set(parsed_BUILD_COMMAND make -j${NPROC})
   endif()
 
   set(_DIR ${THIRD_PARTY_DIR}/${name})
