@@ -24,8 +24,16 @@ template <typename T> struct Future {
     return std::move(block->value);
   }
 
+  // Safe for multiple consumers to wait on and read the resolved value.
+  // WARNING: Do not mix GetRef() with Get() on the same Future instance,
+  // as Get() destructively moves the value.
+  const T& GetRef() const {
+    block->waker.await([this] { return block->has_value.load(std::memory_order_acquire); });
+    return block->value;
+  }
+
   std::optional<T> GetFor(std::chrono::steady_clock::duration dur) {
-    std::cv_status st =block->waker.await_until(
+    std::cv_status st = block->waker.await_until(
         [this] { return block->has_value.exchange(false, std::memory_order_relaxed); },
         std::chrono::steady_clock::now() + dur);
     if (st == std::cv_status::timeout) {
