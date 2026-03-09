@@ -7,8 +7,10 @@
 #include <absl/cleanup/cleanup.h>
 #include <absl/container/inlined_vector.h>
 #include <openssl/err.h>
+#include <sys/socket.h>
 
 #include <algorithm>
+#include <cerrno>
 
 #include "base/logging.h"
 #include "util/fibers/fibers.h"
@@ -107,22 +109,75 @@ auto TlsSocket::Shutdown(int how) -> error_code {
 auto TlsSocket::Accept() -> AcceptResult {
   DCHECK(engine_);
 
+  // - Assumption/Invariant: The caller has already read/validated the 2-byte TLS magic header
+  //   (0x16 0x03) from the socket and fed those bytes into the OpenSSL engine.
+  //   At this point, the kernel receive buffer (and therefore the MSG_PEEK below) is positioned
+  //   at the next byte in the record, i.e. beyond the 2-byte header.
+  // - If a bad-behaved client sends exactly those 2 bytes and then stalls, Engine::Handshake()
+  //   would block this fiber waiting for the rest of the ClientHello, causing fiber exhaustion
+  //   under a connection storm.
+  // - A non-blocking PEEK with up to 500µs of micro-yielding confirms that further payload bytes
+  //   (beyond the header already consumed by the caller) are readable before handing control to
+  //   OpenSSL.
+  //
+  // Notes:
+  // 1. A well-behaved client will experience no delays here since the peek will find the data
+  // and continue immediately, making the performance impact negligible.
+  // 2. This filter is designed for callers that perform an initial protocol detection (e.g.,
+  // peeking for 0x16 0x03) before invoking Accept(). It assumes the 2-byte TLS header is already
+  // processed, and we are yielding to wait for the remainder of the ClientHello to arrive
+  int fd = next_sock_->native_handle();
+  if (fd >= 0) {
+    uint8_t peek_byte;
+    ssize_t peek_res;
+
+    // Try up to 6 times (1 fast-path attempt + 5 retries).
+    // Max total wait: 500µs.
+    static constexpr int kPeekMaxRetries = 5;
+    static const std::chrono::microseconds kRetryDelay(100);
+    for (int i = 0; i < kPeekMaxRetries + 1; ++i) {
+      // Fast non-blocking peek of 1 byte. The loop safely retries if interrupted by an OS signal
+      // (EINTR).
+      do {
+        peek_res = ::recv(fd, &peek_byte, 1, MSG_PEEK | MSG_DONTWAIT);
+      } while ((peek_res < 0) && (errno == EINTR));
+
+      // If we got data (>= 0) or a hard error that isn't EAGAIN/EWOULDBLOCK, break out immediately.
+      if (peek_res >= 0 || ((errno != EAGAIN) && (errno != EWOULDBLOCK))) {
+        break;
+      }
+
+      // If it's EAGAIN/EWOULDBLOCK and we haven't exhausted our retries, yield the fiber.
+      if (i < kPeekMaxRetries) {
+        ThisFiber::SleepFor(kRetryDelay);
+      }
+    }
+
+    // If we exhausted the loop and it's STILL EAGAIN/EWOULDBLOCK the client is stalling (Half-TLS
+    // zombie).
+    if ((peek_res < 0) && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      return make_unexpected(make_error_code(errc::connection_reset));
+    }
+
+    // Connection closed or reset before sending any data.
+    if (peek_res == 0 || ((peek_res < 0) && (errno == ECONNRESET))) {
+      return make_unexpected(make_error_code(errc::connection_reset));
+    }
+  }
+
   while (true) {
     Engine::OpResult op_result = engine_->Handshake(Engine::SERVER);
-
     if ((op_result == Engine::EOF_ABRUPT) || (op_result == Engine::EOF_GRACEFUL)) {
       VLOG(1) << "EOF_ABRUPT/EOF_GRACEFUL received (Handshake Aborted) fd="
               << next_sock_->native_handle();
       return make_unexpected(make_error_code(errc::connection_reset));
     }
 
-    // it is important to send output (protocol errors) before we return from this function.
     error_code ec = MaybeSendOutput();
     if (ec) {
       VSOCK(1) << "MaybeSendOutput failed " << ec;
       return make_unexpected(ec);
     }
-
     if (op_result == 1) {  // Success.
       if (VLOG_IS_ON(1)) {
         const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
@@ -193,8 +248,9 @@ auto TlsSocket::Close() -> error_code {
 
   if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
     fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(
-        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0; });
+    block_concurrent_cv_.wait(lk, [this] {
+      return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0;
+    });
   }
 
   return res;
