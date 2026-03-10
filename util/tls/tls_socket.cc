@@ -110,7 +110,7 @@ std::error_code TlsSocket::CheckNewClientLiveness(int fd) {
   if (fd < 0)
     return {};
 
-  uint8_t peek_byte;
+  std::byte peek_byte;
   ssize_t peek_res;
 
   // Try up to 6 times (1 fast-path attempt + 5 retries).
