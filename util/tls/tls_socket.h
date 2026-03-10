@@ -138,6 +138,8 @@ class TlsSocket final : public FiberSocketBase {
   /// Read encrypted data from the network socket and feed it into the TLS engine.
   error_code HandleUpstreamRead();
 
+  error_code CheckNewClientLiveness(int fd);
+
   error_code HandleUpstreamWrite();
   error_code HandleOp(int op);
 

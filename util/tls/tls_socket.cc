@@ -106,6 +106,49 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   return res;
 }
 
+std::error_code TlsSocket::CheckNewClientLiveness(int fd) {
+  if (fd < 0)
+    return {};
+
+  uint8_t peek_byte;
+  ssize_t peek_res;
+
+  // Try up to 6 times (1 fast-path attempt + 5 retries).
+  // Max total wait: 500µs.
+  static constexpr int kPeekMaxRetries = 5;
+  static const std::chrono::microseconds kRetryDelay(100);
+  for (int i = 0; i < kPeekMaxRetries + 1; ++i) {
+    // Fast non-blocking peek of 1 byte. The loop safely retries if interrupted by an OS signal
+    // (EINTR).
+    do {
+      peek_res = ::recv(fd, &peek_byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    } while ((peek_res < 0) && (errno == EINTR));
+
+    // If we got data (>= 0) or a hard error that isn't EAGAIN/EWOULDBLOCK, break out immediately.
+    if (peek_res >= 0 || ((errno != EAGAIN) && (errno != EWOULDBLOCK))) {
+      break;
+    }
+
+    // If it's EAGAIN/EWOULDBLOCK and we haven't exhausted our retries, yield the fiber.
+    if (i < kPeekMaxRetries) {
+      ThisFiber::SleepFor(kRetryDelay);
+    }
+  }
+
+  // If we exhausted the loop and it's STILL EAGAIN/EWOULDBLOCK the client is stalling (Half-TLS
+  // zombie).
+  if ((peek_res < 0) && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+    return make_error_code(errc::connection_reset);
+  }
+
+  // Connection closed or reset before sending any data.
+  if (peek_res == 0 || ((peek_res < 0) && (errno == ECONNRESET))) {
+    return make_error_code(errc::connection_reset);
+  }
+
+  return {};  // Success
+}
+
 auto TlsSocket::Accept() -> AcceptResult {
   DCHECK(engine_);
 
@@ -121,43 +164,9 @@ auto TlsSocket::Accept() -> AcceptResult {
   // 2. If the caller performs an initial protocol detection (e.g., consuming the 2-byte TLS
   // magic header before invoking Accept()), this peek safely validates that the remainder of
   // the ClientHello has arrived in the kernel buffer.
-  int fd = next_sock_->native_handle();
-  if (fd >= 0) {
-    uint8_t peek_byte;
-    ssize_t peek_res;
-
-    // Try up to 6 times (1 fast-path attempt + 5 retries).
-    // Max total wait: 500µs.
-    static constexpr int kPeekMaxRetries = 5;
-    static const std::chrono::microseconds kRetryDelay(100);
-    for (int i = 0; i < kPeekMaxRetries + 1; ++i) {
-      // Fast non-blocking peek of 1 byte. The loop safely retries if interrupted by an OS signal
-      // (EINTR).
-      do {
-        peek_res = ::recv(fd, &peek_byte, 1, MSG_PEEK | MSG_DONTWAIT);
-      } while ((peek_res < 0) && (errno == EINTR));
-
-      // If we got data (>= 0) or a hard error that isn't EAGAIN/EWOULDBLOCK, break out immediately.
-      if (peek_res >= 0 || ((errno != EAGAIN) && (errno != EWOULDBLOCK))) {
-        break;
-      }
-
-      // If it's EAGAIN/EWOULDBLOCK and we haven't exhausted our retries, yield the fiber.
-      if (i < kPeekMaxRetries) {
-        ThisFiber::SleepFor(kRetryDelay);
-      }
-    }
-
-    // If we exhausted the loop and it's STILL EAGAIN/EWOULDBLOCK the client is stalling (Half-TLS
-    // zombie).
-    if ((peek_res < 0) && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-      return make_unexpected(make_error_code(errc::connection_reset));
-    }
-
-    // Connection closed or reset before sending any data.
-    if (peek_res == 0 || ((peek_res < 0) && (errno == ECONNRESET))) {
-      return make_unexpected(make_error_code(errc::connection_reset));
-    }
+  std::error_code ec = CheckNewClientLiveness(next_sock_->native_handle());
+  if (ec) {
+    return make_unexpected(ec);
   }
 
   while (true) {
