@@ -1085,6 +1085,37 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
   });
 }
 
+// Verifies the MSG_PEEK pre-filter drops stalling clients (Half-TLS zombies).
+TEST_P(MockTlsSocketTest, ZombieStallPrevention) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, fds));
+
+  proactor_->Await([&] {
+    // Create a local mock socket and inject the real read-end FD when calling native_handle in
+    // production code.
+    auto mock_sock = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+    EXPECT_CALL(*mock_sock, native_handle()).WillRepeatedly(testing::Return(fds[0]));
+
+    TlsSocket local_sock(std::move(mock_sock));
+
+    // Inject a MockEngine so it doesn't need real SSL certificates
+    auto mock_eng = std::make_unique<testing::NiceMock<MockEngine>>();
+    TestDelegator::SetEngine(&local_sock, std::move(mock_eng));
+
+    // We deliberately write NOTHING to fds[1] (the client side). Attempt to Accept.
+    // The pre-filter will peek the empty fds[0], get EAGAIN, yield up to 500µs, and abort before
+    // ever calling OpenSSL.
+    auto result = local_sock.Accept();
+
+    // Verification
+    ASSERT_FALSE(result.has_value()) << "Accept should have failed due to stall";
+    EXPECT_EQ(result.error(), std::make_error_code(std::errc::connection_reset));
+  });
+
+  close(fds[0]);
+  close(fds[1]);
+}
+
 class TryRecvErrorTest : public testing::TestWithParam<TryRecvScenario> {
  protected:
   void SetUp() override {

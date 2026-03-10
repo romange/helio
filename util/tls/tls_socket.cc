@@ -109,23 +109,18 @@ auto TlsSocket::Shutdown(int how) -> error_code {
 auto TlsSocket::Accept() -> AcceptResult {
   DCHECK(engine_);
 
-  // - Assumption/Invariant: The caller has already read/validated the 2-byte TLS magic header
-  //   (0x16 0x03) from the socket and fed those bytes into the OpenSSL engine.
-  //   At this point, the kernel receive buffer (and therefore the MSG_PEEK below) is positioned
-  //   at the next byte in the record, i.e. beyond the 2-byte header.
-  // - If a bad-behaved client sends exactly those 2 bytes and then stalls, Engine::Handshake()
-  //   would block this fiber waiting for the rest of the ClientHello, causing fiber exhaustion
-  //   under a connection storm.
+  // - If a bad-behaved client sends only the initial TLS record bytes and then stalls,
+  //   Engine::Handshake() would block this fiber waiting for the rest of the ClientHello,
+  //   causing fiber exhaustion under a connection storm.
   // - A non-blocking PEEK with up to 500µs of micro-yielding confirms that further payload bytes
-  //   (beyond the header already consumed by the caller) are readable before handing control to
-  //   OpenSSL.
+  //   are readable before handing control to OpenSSL.
   //
   // Notes:
   // 1. A well-behaved client will experience no delays here since the peek will find the data
   // and continue immediately, making the performance impact negligible.
-  // 2. This filter is designed for callers that perform an initial protocol detection (e.g.,
-  // peeking for 0x16 0x03) before invoking Accept(). It assumes the 2-byte TLS header is already
-  // processed, and we are yielding to wait for the remainder of the ClientHello to arrive
+  // 2. If the caller performs an initial protocol detection (e.g., consuming the 2-byte TLS
+  // magic header before invoking Accept()), this peek safely validates that the remainder of
+  // the ClientHello has arrived in the kernel buffer.
   int fd = next_sock_->native_handle();
   if (fd >= 0) {
     uint8_t peek_byte;
