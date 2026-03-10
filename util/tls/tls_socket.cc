@@ -177,7 +177,7 @@ auto TlsSocket::Accept() -> AcceptResult {
       return make_unexpected(make_error_code(errc::connection_reset));
     }
 
-    error_code ec = MaybeSendOutput();
+    ec = MaybeSendOutput();
     if (ec) {
       VSOCK(1) << "MaybeSendOutput failed " << ec;
       return make_unexpected(ec);
