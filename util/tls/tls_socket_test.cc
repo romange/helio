@@ -1088,7 +1088,7 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
 // Verifies the MSG_PEEK pre-filter drops stalling clients (Half-TLS zombies).
 TEST_P(MockTlsSocketTest, ZombieStallPrevention) {
   int fds[2];
-  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, fds));
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
 
   proactor_->Await([&] {
     // Create a local mock socket and inject the real read-end FD when calling native_handle in
