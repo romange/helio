@@ -193,8 +193,9 @@ auto TlsSocket::Close() -> error_code {
 
   if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
     fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(
-        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0; });
+    block_concurrent_cv_.wait(lk, [this] {
+      return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0;
+    });
   }
 
   return res;
