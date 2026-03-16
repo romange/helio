@@ -580,15 +580,27 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   EpollEntry* entry = new EpollEntry();
   entry->cb = std::move(cb);
   entry->fd = fd;
+  entry->event_mask = event_mask;
 
-  auto uring_cb = [entry](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+  RearmEpoll(entry);
+#ifdef DBG_EPOLL
+  LOG(INFO) << "EpollAdd fd " << fd << ", entry: " << entry << ", entry->index: " << entry->index;
+#endif
+  return reinterpret_cast<EpollIndex>(entry);
+}
+
+void UringProactor::RearmEpoll(EpollEntry* entry) {
+  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
 #if DBG_EPOLL
     LOG(INFO) << "Epoll CB " << entry << " res:" << res << " flags " << flags;
 #endif
     if (res >= 0) {
-      CHECK(flags & IORING_CQE_F_MORE);
       CHECK(entry->cb);
       entry->cb(res);
+      if ((flags & IORING_CQE_F_MORE) == 0) {
+        // Kernel stopped multishot poll. Re-register.
+        RearmEpoll(entry);
+      }
     } else {
       res = -res;
       LOG_IF(ERROR, res != ECANCELED) << "EpollAdd: unexpected error " << res;
@@ -598,13 +610,9 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
   };
 
   SubmitEntry se = GetSubmitEntry(std::move(uring_cb), epoll_add_id_++);
-  se.PrepPollAdd(entry->fd, event_mask);
+  se.PrepPollAdd(entry->fd, entry->event_mask);
   entry->index = se.sqe()->user_data;
   se.sqe()->len = IORING_POLL_ADD_MULTI;
-#ifdef DBG_EPOLL
-  LOG(INFO) << "EpollAdd fd " << fd << ", entry: " << entry << ", entry->index: " << entry->index;
-#endif
-  return reinterpret_cast<EpollIndex>(entry);
 }
 
 void UringProactor::EpollDel(EpollIndex id) {
