@@ -171,7 +171,7 @@ function(add_third_party name)
   endif()
 endfunction()
 
-set(GTEST_VERSION 1.15.2)
+set(GTEST_VERSION 1.17.0)
 set(GTEST_RELEASE_URL "https://github.com/google/googletest/releases/download/v${GTEST_VERSION}/googletest-${GTEST_VERSION}.tar.gz")
 set(GTEST_ARCHIVE_URL "https://github.com/google/googletest/archive/v${GTEST_VERSION}.tar.gz")
 set(GTEST_TARBALL "${CMAKE_BINARY_DIR}/googletest-${GTEST_VERSION}.tar.gz")
@@ -216,7 +216,7 @@ endif ()
 
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.9.1.tar.gz
+  URL https://github.com/google/benchmark/archive/v1.9.5.tar.gz
 )
 
 FetchContent_GetProperties(benchmark)
@@ -336,7 +336,7 @@ if (WITH_GPERF)
 
   add_third_party(
     gperf
-    URL https://github.com/gperftools/gperftools/archive/gperftools-2.16.tar.gz
+    URL https://github.com/gperftools/gperftools/archive/gperftools-2.18.1.tar.gz
 
     # GIT_SHALLOW TRUE
     # Remove building the unneeded programs (they fail on macos)
