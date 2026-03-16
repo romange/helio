@@ -4,6 +4,7 @@ import socket
 import subprocess
 import threading
 import time
+import os
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,12 @@ def _pick_free_port() -> int:
         return s.getsockname()[1]
 
 def _find_echo_binary() -> Path | None:
+    env_dir = os.environ.get("HELIO_BIN_DIR")
+    if env_dir:
+        cand = Path(env_dir) / "echo_server"
+        if cand.exists():
+            return cand
+
     root = Path(__file__).resolve().parent.parent
     logging.info("Looking for echo_server binary under %s", root)
     candidates = [
@@ -168,6 +175,7 @@ def echo_server(request):
     if not binary:
         pytest.skip("echo_server binary is missing; expected under build*/echo_server")
 
+    logger.info("Using echo_server binary at %s", binary)
     server_args = []
     marker = request.node.get_closest_marker("server_args")
     if marker:

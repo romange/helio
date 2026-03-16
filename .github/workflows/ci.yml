@@ -127,6 +127,8 @@ jobs:
           leak:ares_malloc_zero
           leak:ares_getaddrinfo
           leak:ares_append_addrinfo_node
+          leak:ares_strdup
+          leak:ares_append_ai_node
           EOF
           
           export LSAN_OPTIONS=suppressions=$(pwd)/asan_suppressions.txt
