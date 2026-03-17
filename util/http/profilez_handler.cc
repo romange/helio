@@ -106,7 +106,7 @@ static void HandleCpuProfile(bool enable, StringResponse* response) {
 #endif
 }
 
-StringResponse ProfilezHandler(const QueryArgs& args) {
+__attribute__((noinline)) StringResponse ProfilezHandler(const QueryArgs& args) {
   bool enable = false;
   bool heap = false;
   for (const auto& k_v : args) {

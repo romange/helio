@@ -41,7 +41,7 @@ string StatusLine(const string& name, const string& val) {
 
 }  // namespace
 
-StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefix) {
+__attribute__((noinline)) StringResponse BuildStatusPage(const QueryArgs& args, string_view resource_prefix) {
   StringResponse response(h2::status::ok, 11);
 
   bool output_json = false;
