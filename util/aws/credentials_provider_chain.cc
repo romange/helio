@@ -3,6 +3,7 @@
 
 #include "util/aws/credentials_provider_chain.h"
 
+#include <aws/core/auth/GeneralHTTPCredentialsProvider.h>
 #include <aws/core/auth/STSCredentialsProvider.h>
 #include <aws/core/platform/Environment.h>
 
@@ -19,6 +20,25 @@ CredentialsProviderChain::CredentialsProviderChain() {
                      std::make_shared<Aws::Auth::ProfileConfigFileAWSCredentialsProvider>()));
   providers_.push_back(std::make_pair(
       "web-identity", std::make_shared<Aws::Auth::STSAssumeRoleWebIdentityCredentialsProvider>()));
+
+  // GeneralHTTPCredentialsProvider handles both ECS and EKS Pod Identity credentials
+  // via AWS_CONTAINER_CREDENTIALS_RELATIVE_URI or AWS_CONTAINER_CREDENTIALS_FULL_URI
+  const auto relative_uri = Aws::Environment::GetEnv(
+      Aws::Auth::GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_RELATIVE_URI);
+  const auto absolute_uri = Aws::Environment::GetEnv(
+      Aws::Auth::GeneralHTTPCredentialsProvider::AWS_CONTAINER_CREDENTIALS_FULL_URI);
+
+  if (!relative_uri.empty() || !absolute_uri.empty()) {
+    const auto token = Aws::Environment::GetEnv(
+        Aws::Auth::GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN);
+    const auto token_path = Aws::Environment::GetEnv(
+        Aws::Auth::GeneralHTTPCredentialsProvider::AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE);
+
+    providers_.push_back(std::make_pair(
+        "container-credentials",
+        std::make_shared<Aws::Auth::GeneralHTTPCredentialsProvider>(
+            relative_uri.c_str(), absolute_uri.c_str(), token.c_str(), token_path.c_str())));
+  }
 
   const auto ec2_metadata_disabled = Aws::Environment::GetEnv("AWS_EC2_METADATA_DISABLED");
   if (Aws::Utils::StringUtils::ToLower(ec2_metadata_disabled.c_str()) != "true") {
