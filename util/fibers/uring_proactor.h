@@ -172,9 +172,12 @@ class UringProactor : public ProactorBase {
   struct EpollEntry {
     EpollCB cb;
     int fd = -1;
+    uint32_t event_mask = 0;
 
     int64_t index = -1;
   };
+
+  void RearmEpoll(EpollEntry* entry);
 
   void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
   void ReapCompletions(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
