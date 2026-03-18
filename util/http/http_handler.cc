@@ -31,7 +31,8 @@ inline std::string_view ToStd(::boost::string_view s) {
   return std::string_view(s.data(), s.size());
 }
 
-::boost::system::error_code LoadFileResponse(std::string_view fname, FileResponse* resp) {
+__attribute__((noinline)) ::boost::system::error_code LoadFileResponse(std::string_view fname,
+                                                                       FileResponse* resp) {
   FileResponse::body_type::value_type body;
   boost::system::error_code ec;
 
@@ -73,7 +74,7 @@ void HandleVModule(std::string_view str) {
   }
 }
 
-h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
+__attribute__((noinline)) h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
   h2::response<h2::string_body> response(h2::status::ok, 11);
 
   std::string_view flag_name;
@@ -119,7 +120,16 @@ h2::response<h2::string_body> ParseFlagz(const QueryArgs& args) {
   return response;
 }
 
-void FilezHandler(const QueryArgs& args, HttpContext* send) {
+// Break inlining to make sure the stack usage does not grow in the callers.
+__attribute__((noinline)) void SendStringResp(StringResponse resp, HttpContext* send) {
+  send->Invoke(std::move(resp));
+}
+
+__attribute__((noinline)) void SendFileResp(FileResponse fresp, HttpContext* send) {
+  send->Invoke(std::move(fresp));
+}
+
+__attribute__((noinline)) void FilezHandler(const QueryArgs& args, HttpContext* send) {
   std::string_view file_name;
   for (const auto& k_v : args) {
     if (k_v.first == "file") {
@@ -130,12 +140,11 @@ void FilezHandler(const QueryArgs& args, HttpContext* send) {
   fs::path canonical_file_name = fs::weakly_canonical(file_name);
   auto relative = fs::relative(canonical_file_name, kProfilesFolder);
   if (relative.empty() || (kProfilesFolder / relative) != canonical_file_name) {
-    return send->Invoke(MakeStringResponse(h2::status::unauthorized));
+    return SendStringResp(MakeStringResponse(h2::status::unauthorized), send);
   }
 
   if (file_name.empty()) {
-    http::StringResponse resp = MakeStringResponse(h2::status::unauthorized);
-    return send->Invoke(std::move(resp));
+    return SendStringResp(MakeStringResponse(h2::status::unauthorized), send);
   }
 
   FileResponse fresp;
@@ -148,10 +157,10 @@ void FilezHandler(const QueryArgs& args, HttpContext* send) {
       res.body() = "The resource '" + fname + "' was not found.";
     else
       res.body() = "Error '" + ec.message() + "'.";
-    return send->Invoke(std::move(res));
+    return SendStringResp(std::move(res), send);
   }
 
-  return send->Invoke(std::move(fresp));
+  return SendFileResp(std::move(fresp), send);
 }
 
 /*# HELP go_gc_duration_seconds A summary of the pause duration of garbage collection cycles.
@@ -204,7 +213,7 @@ void AppendObservation(const metrics::ObservationDescriptor& od, absl::Span<cons
   }
 };
 
-void MetricsHandler(const QueryArgs& args, HttpContext* send) {
+__attribute__((noinline)) void MetricsHandler(const QueryArgs&, HttpContext* send) {
   StringResponse res = MakeStringResponse();
   SetMime(kTextMime, &res);
   metrics::Iterate(
@@ -213,6 +222,24 @@ void MetricsHandler(const QueryArgs& args, HttpContext* send) {
 }
 
 using ParserType = ::boost::beast::http::parser<true, HttpConnection::RequestType::body_type>;
+
+__attribute__((noinline)) bool ReadHttpRequest(AsioStreamAdapter<>& asa,
+                                               ::boost::beast::flat_buffer& buffer,
+                                               ::boost::system::error_code* ec,
+                                               HttpConnection::RequestType* req) {
+  ParserType parser;
+
+  // h2::read sets parser.eager=true and reads until parser is done or error.
+  h2::read(asa, buffer, parser, *ec);
+  if (*ec)
+    return false;
+  if (!parser.is_done()) {
+    LOG(DFATAL) << "Incomplete http parsing";
+    return false;
+  }
+  *req = parser.release();
+  return true;
+}
 
 }  // namespace
 
@@ -344,22 +371,9 @@ void HttpConnection::HandleRequests() {
   HttpContext cntx(asa);
   cntx.set_user_data(user_data_);
 
-  while (true) {
-    ParserType parser;
-
-    // h2::read sets parser.eager=true
-    // This function reads from the socket until parser reaches done state or error is encountered.
-    h2::read(asa, req_buffer_, parser, ec);
-    if (ec) {
-      break;
-    }
-
-    if (!parser.is_done()) {
-      LOG(DFATAL) << "Incomplete http parsing";
-      break;
-    }
-    request = parser.release();
-
+  // ReadHttpRequest is noinline to keep parse_fields's large stack frame (~4640B)
+  // out of HandleRequests.
+  while (ReadHttpRequest(asa, req_buffer_, &ec, &request)) {
     VLOG(1) << "Full Url: " << request.target();
     HandleSingleRequest(std::move(request), &cntx);
   }
@@ -405,7 +419,8 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
   return false;
 }
 
-void HttpConnection::HandleSingleRequest(RequestType&& req, HttpContext* cntx) {
+__attribute__((noinline)) void HttpConnection::HandleSingleRequest(RequestType&& req,
+                                                                   HttpContext* cntx) {
   CHECK(owner_);
 
   std::string target{ToStd(req.target())};

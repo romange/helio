@@ -13,9 +13,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  BUILD_TYPE: Debug
 jobs:
   build:
     name: ${{ matrix.config.name }} on (${{ matrix.os.arch }})
@@ -32,19 +29,24 @@ jobs:
           - name: alpine-clang
             container: alpine-dev:latest
             compiler: {cxx: clang++, c: clang}
-          - name: ubuntu20-gcc-coverage
-            container: ubuntu-dev:20
+            build_type: Debug
+          - name: gcc-coverage
+            container: ubuntu-dev:24
             compiler: {cxx: g++, c: gcc}
+            build_type: Debug
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
           - name: fedora30-gcc
             container: fedora:30
             compiler: {cxx: g++, c: gcc}
+            build_type: Debug
           - name: ubuntu24-gcc
             container: ubuntu-dev:24
             compiler: {cxx: g++, c: gcc}
+            build_type: Debug
           - name: ubuntu24-clang-asan
             container: ubuntu-dev:24
             compiler: {cxx: clang++, c: clang}
+            build_type: Debug
             cmake_flags: "-DHELIO_USE_SANITIZER=ON"
 
         exclude:
@@ -86,7 +88,7 @@ jobs:
 
           cat /proc/cpuinfo
           cmake -B build \
-            -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} \
+            -DCMAKE_BUILD_TYPE=${{matrix.config.build_type}} \
             -GNinja \
             -DCMAKE_C_COMPILER="${{matrix.config.compiler.c}}" \
             -DCMAKE_CXX_COMPILER="${{matrix.config.compiler.cxx}}" \
@@ -145,13 +147,13 @@ jobs:
           $GITHUB_WORKSPACE/build/accept_server_test
 
     - name: Coverage
-      if: matrix.config.container == 'ubuntu-dev:20'
+      if: matrix.name == 'gcc-coverage'
       run: |
           lcov -c -d $GITHUB_WORKSPACE/build -o coverage.info
           lcov --remove coverage.info -o coverage.info '/usr/*' '*/_deps/*' '*/third_party/*'
 
     - name: Upload coverage to Codecov
-      if: matrix.config.container == 'ubuntu-dev:20'
+      if: matrix.name == 'gcc-coverage'
       uses: codecov/codecov-action@v4
       with:
          files: ./coverage.info
