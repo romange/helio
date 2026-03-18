@@ -146,6 +146,10 @@ if (USE_MOLD)
   add_link_options("-B${MOLD_PATH}")
 endif()
 
+if(HELIO_INSTRUMENT_STACK)
+  add_compile_options(-finstrument-functions)
+endif()
+
 if (NOT MARCH_OPT)
   # ARM64 (Linux/Server)
   if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
