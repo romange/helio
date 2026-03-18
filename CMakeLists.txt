@@ -19,6 +19,7 @@ endif()
 
 # Helio Feature options
 option(HELIO_USE_SANITIZER  "Use ASan and USan sanitizers" OFF)
+option(HELIO_INSTRUMENT_STACK "Enable stack usage instrumentation" OFF)
 option(BUILD_DOCS           "Generate documentation" ON)
 option(BUILD_SHARED_LIBS    "Build shared libraries" OFF)
 # During migration: Enable the next lines only if helio is top level and not a submodule

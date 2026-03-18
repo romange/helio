@@ -3,9 +3,14 @@
 //
 #include "util/fibers/detail/fiber_interface.h"
 
+#include <absl/debugging/stacktrace.h>
+#include <absl/debugging/symbolize.h>
 #include <absl/time/clock.h>
 
-#include <mutex>  // for g_scheduler_lock
+#include <algorithm>
+#include <cstring>
+#include <mutex>
+#include <queue>
 
 #include "base/cycle_clock.h"
 #include "base/flags.h"
@@ -94,12 +99,73 @@ class MainFiberImpl final : public FiberInterface {
   }
 };
 
-mutex g_scheduler_lock;
-
-TL_FiberInitializer* g_fiber_thread_list = nullptr;
 uint64_t g_tsc_cycles_per_ms = 0, g_ts_cycles_warn_threshold = -1;
+std::once_flag g_tsc_init_flag;
 
 }  // namespace
+
+#if HELIO_INSTRUMENT_STACK
+
+// Compile-time constant: number of worst-case stack traces to retain per thread.
+constexpr size_t kMaxStackTraces = 10;
+
+struct StackLimitRecord {
+  size_t min_margin;
+  void* frames[32];
+  int num_frames;
+  std::array<char, 64> fiber_name;
+};
+
+// Per-thread storage for top-K minimum stack margin records.
+static __thread queue<StackLimitRecord>* tl_stack_traces = nullptr;
+
+// The current margin threshold for recording stack traces.
+// Initialized to the maximum value and goes down when new records are added.
+static __thread size_t tl_smallest_margin = SIZE_MAX;
+
+__attribute__((no_instrument_function)) static void PrintTopStackTraces() {
+  if (!tl_stack_traces || tl_stack_traces->empty())
+    return;
+
+  static std::mutex print_mutex;
+
+  // to prevent interleaving of stack traces from different threads in the output.
+  lock_guard lock(print_mutex);
+
+  fprintf(stderr, "\n--- Top %zu Max Stack Usages in thread ---\n", tl_stack_traces->size());
+  std::array<char, 1024> symbol_buf;
+  size_t min_margin = SIZE_MAX;
+  unsigned index = 1;
+  while (!tl_stack_traces->empty()) {
+    const auto& rec = tl_stack_traces->front();
+
+    if (rec.min_margin < min_margin) {
+      min_margin = rec.min_margin;
+    }
+
+    fprintf(stderr, "[%u] Fiber: %s, Min Margin: %zu bytes\n", index++, rec.fiber_name.data(),
+           rec.min_margin);
+    for (int j = 0; j < rec.num_frames; ++j) {
+      const char* symbol = "(unknown)";
+      if (absl::Symbolize(rec.frames[j], symbol_buf.data(), symbol_buf.size())) {
+        symbol = symbol_buf.data();
+      }
+      fprintf(stderr, "  %s\n", symbol);
+    }
+
+    tl_stack_traces->pop();
+  }
+  fprintf(stderr, "--------------------------------\n\n");
+  delete tl_stack_traces;
+  tl_stack_traces = nullptr;
+  tl_smallest_margin = SIZE_MAX;
+  if (min_margin < absl::GetFlag(FLAGS_fiber_safety_margin)) {
+    LOG(FATAL) << "Fiber stack margin dropped to " << min_margin
+               << " bytes, which is below the safety threshold.";
+  }
+}
+
+#endif  // HELIO_INSTRUMENT_STACK
 
 PMR_NS::memory_resource* default_stack_resource = nullptr;
 size_t default_stack_size = 64 * 1024;
@@ -130,7 +196,7 @@ struct TL_FiberInitializer {
 
   TL_FiberInitializer(const TL_FiberInitializer&) = delete;
 
-  TL_FiberInitializer() noexcept;
+  TL_FiberInitializer() noexcept __attribute__((no_instrument_function));
 
   ~TL_FiberInitializer();
 };
@@ -138,26 +204,26 @@ struct TL_FiberInitializer {
 TL_FiberInitializer::TL_FiberInitializer() noexcept : sched(nullptr) {
   DVLOG(1) << "Initializing FiberLib";
 
+  std::call_once(g_tsc_init_flag, [] {
+    uint64_t freq = CycleClock::Frequency();
+    if (freq > 0) {
+      uint64_t tsc_per_ms = freq / 1000;
+      uint32_t warn_ms = absl::GetFlag(FLAGS_fiber_run_warning_threshold_ms);
+      if (warn_ms)
+        g_ts_cycles_warn_threshold = tsc_per_ms * warn_ms;
+      VLOG(1) << "TSC Frequency : " << tsc_per_ms << "/ms";
+      g_tsc_cycles_per_ms = tsc_per_ms;
+    }
+  });
+
   // main fiber context of this thread.
   // We use it as a stub
   FiberInterface* main_ctx = new MainFiberImpl{};
-  active = main_ctx;
   sched = new Scheduler(main_ctx);
-
-  unique_lock lk(g_scheduler_lock);
-
-  next = g_fiber_thread_list;
-  g_fiber_thread_list = this;
-  if (g_tsc_cycles_per_ms == 0) {
-    g_tsc_cycles_per_ms = CycleClock::Frequency() / 1000;
-    uint32_t warn_ms = absl::GetFlag(FLAGS_fiber_run_warning_threshold_ms);
-    if (warn_ms)
-      g_ts_cycles_warn_threshold = g_tsc_cycles_per_ms * warn_ms;
-    VLOG(1) << "TSC Frequency : " << g_tsc_cycles_per_ms << "/ms";
-  }
+  active = main_ctx;
 }
 
-TL_FiberInitializer::~TL_FiberInitializer() {
+__attribute__((no_instrument_function)) TL_FiberInitializer::~TL_FiberInitializer() {
   FiberInterface* main_cntx = sched->main_context();
 
   // If main_cntx != active it means we are exiting via unexpected route (exit, abort, etc).
@@ -167,16 +233,12 @@ TL_FiberInitializer::~TL_FiberInitializer() {
     delete sched;
     delete main_cntx;
   }
-
-  unique_lock lk(g_scheduler_lock);
-  TL_FiberInitializer** p = &g_fiber_thread_list;
-  while (*p != this) {
-    p = &(*p)->next;
-  }
-  *p = next;
+#ifdef HELIO_INSTRUMENT_STACK
+  PrintTopStackTraces();
+#endif
 }
 
-TL_FiberInitializer& FbInitializer() noexcept {
+__attribute__((no_instrument_function)) TL_FiberInitializer& FbInitializer() noexcept {
   // initialized the first time control passes; per thread
   thread_local static TL_FiberInitializer fb_initializer;
   return fb_initializer;
@@ -254,6 +316,10 @@ size_t FiberInterface::GetStackMargin(const void* stack_address) const {
 }
 
 void FiberInterface::CheckStackMargin() {
+#if HELIO_INSTRUMENT_STACK
+  return;
+#endif
+
   uint32_t check_margin = absl::GetFlag(FLAGS_fiber_safety_margin);
   if (check_margin == 0)
     return;
@@ -265,10 +331,6 @@ void FiberInterface::CheckStackMargin() {
   uint32_t margin = ptr - stack_bottom_;
 
   CHECK_GE(margin, check_margin) << "Low stack margin for " << name_;
-
-  // Log if margins are within the the orange zone.
-  LOG_IF(INFO, margin < check_margin * 1.5)
-      << "Stack margin for " << name_ << ": " << margin << " bytes";
 }
 
 uint64_t FiberInterface::GetRunningTimeCycles() const {
@@ -384,7 +446,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 #if ABSL_HAVE_ADDRESS_SANITIZER
     __sanitizer_finish_switch_fiber(fake_stack_save, nullptr, nullptr);
 #else
-   (void)fake_stack_save;
+    (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
@@ -400,7 +462,8 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
 #endif
 
   // pass pointer to the context that resumes `this`
-  std::move(entry_).resume_with([prev, fn = std::move(fn), fake_stack_save](ctx::fiber_context&& c) {
+  std::move(entry_).resume_with([prev, fn = std::move(fn),
+                                 fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_ && c);
 #if ABSL_HAVE_ADDRESS_SANITIZER
     __sanitizer_finish_switch_fiber(fake_stack_save, nullptr, nullptr);
@@ -485,8 +548,8 @@ FiberInterface* FiberInterface::SwitchSetup() {
       unsigned run_usec = (run_cycles * 1000) / g_tsc_cycles_per_ms;
       fb_initializer.long_runtime_usec += run_usec;
       if (run_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() != MAIN) {
-        LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for "
-                     << run_usec << " us";
+        LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for " << run_usec
+                                << " us";
       }
     }
   }
@@ -571,8 +634,7 @@ vector<string> GetPastFiberNames() noexcept {
   auto& init = detail::FbInitializer();
 
   size_t end = init.fiber_run_seq % init.past_fiber_names.size();
-  return {init.past_fiber_names.begin(),
-          init.past_fiber_names.begin() + end};
+  return {init.past_fiber_names.begin(), init.past_fiber_names.begin() + end};
 #else
   return {};
 #endif
@@ -596,3 +658,68 @@ void PrintFiberStackTracesInThread() {
 
 }  // namespace fb2
 }  // namespace util
+
+#if HELIO_INSTRUMENT_STACK
+extern "C" {
+
+__attribute__((no_instrument_function)) void __cyg_profile_func_enter(void* this_fn,
+                                                                      void* call_site) {
+  using namespace util::fb2::detail;
+
+  static __thread bool tl_in_instrumentation = false;
+
+  if (tl_in_instrumentation || g_tsc_cycles_per_ms == 0)
+    return;
+
+  tl_in_instrumentation = true;
+
+  auto* active = FiberActive();
+
+  if (active->stack_bottom()) {
+    void* sp = __builtin_frame_address(0);
+    size_t margin = active->GetStackMargin(sp);
+
+    if (margin < tl_smallest_margin) {
+      tl_smallest_margin = margin;
+
+      if (!tl_stack_traces)
+        tl_stack_traces = new std::queue<StackLimitRecord>();
+      tl_stack_traces->emplace();
+      StackLimitRecord& record = tl_stack_traces->back();
+
+      record.min_margin = margin;
+      strncpy(record.fiber_name.data(), active->name(), record.fiber_name.size() - 1);
+      record.fiber_name[record.fiber_name.size() - 1] = '\0';
+      record.num_frames =
+          absl::GetStackTrace(record.frames, sizeof(record.frames) / sizeof(void*), 1);
+
+
+      // If the record is smaller than the safety margin, log the stack trace immediately.
+      if (margin < absl::GetFlag(FLAGS_fiber_safety_margin)) {
+        LOG(ERROR) << "Fiber " << active->name() << " stack margin is critically low: " << margin
+                   << " bytes";
+        for (int j = 0; j < record.num_frames; ++j) {
+          const char* symbol = "(unknown)";
+          std::unique_ptr<char[]> buf(new char[1024]);
+          if (absl::Symbolize(record.frames[j], buf.get(), 1024)) {
+            symbol = buf.get();
+          }
+          LOG(ERROR) << "  " << record.frames[j] << " " << symbol;
+        }
+      }
+
+      // Remove the record with the largest margin if the queue is full.
+      if (tl_stack_traces->size() > kMaxStackTraces) {
+        tl_stack_traces->pop();
+      }
+    }
+  }
+  tl_in_instrumentation = false;
+}
+
+__attribute__((no_instrument_function)) void __cyg_profile_func_exit(void* this_fn,
+                                                                     void* call_site) {
+}
+
+}  // extern "C"
+#endif  // HELIO_INSTRUMENT_STACK
