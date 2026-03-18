@@ -127,7 +127,12 @@ __attribute__((no_instrument_function)) static void PrintTopStackTraces() {
   if (!tl_stack_traces || tl_stack_traces->empty())
     return;
 
-  printf("\n--- Top %zu Max Stack Usages in thread ---\n", tl_stack_traces->size());
+  static std::mutex print_mutex;
+
+  // to prevent interleaving of stack traces from different threads in the output.
+  lock_guard lock(print_mutex);
+
+  fprintf(stderr, "\n--- Top %zu Max Stack Usages in thread ---\n", tl_stack_traces->size());
   std::array<char, 1024> symbol_buf;
   size_t min_margin = SIZE_MAX;
   unsigned index = 1;
@@ -138,19 +143,19 @@ __attribute__((no_instrument_function)) static void PrintTopStackTraces() {
       min_margin = rec.min_margin;
     }
 
-    printf("[%u] Fiber: %s, Min Margin: %zu bytes\n", index++, rec.fiber_name.data(),
+    fprintf(stderr, "[%u] Fiber: %s, Min Margin: %zu bytes\n", index++, rec.fiber_name.data(),
            rec.min_margin);
     for (int j = 0; j < rec.num_frames; ++j) {
       const char* symbol = "(unknown)";
       if (absl::Symbolize(rec.frames[j], symbol_buf.data(), symbol_buf.size())) {
         symbol = symbol_buf.data();
       }
-      printf("  %s\n", symbol);
+      fprintf(stderr, "  %s\n", symbol);
     }
 
     tl_stack_traces->pop();
   }
-  printf("--------------------------------\n\n");
+  fprintf(stderr, "--------------------------------\n\n");
   delete tl_stack_traces;
   tl_stack_traces = nullptr;
   tl_smallest_margin = SIZE_MAX;
