@@ -14,9 +14,9 @@
 #include "base/logging.h"
 #include "io/file.h"
 #include "io/file_util.h"
-#include "io/line_reader.h"
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
+#include "util/cloud/utils.h"
 
 using namespace std;
 namespace h2 = boost::beast::http;
@@ -61,23 +61,13 @@ std::error_code LoadGCPConfig(string gcloudRootDir, string* account_id, string* 
     return config.error();
   }
 
-  io::BytesSource bs(*config);
-  io::LineReader reader(&bs, DO_NOT_TAKE_OWNERSHIP, 11);
-  string scratch;
-  string_view line;
-  while (reader.Next(&line, &scratch)) {
-    vector<string_view> vals = absl::StrSplit(line, "=");
-    if (vals.size() != 2)
-      continue;
-    for (auto& v : vals) {
-      v = absl::StripAsciiWhitespace(v);
+  ParseIniSection(*config, "", [&](string_view key, string_view val) {
+    if (key == "account") {
+      *account_id = string(val);
+    } else if (key == "project") {
+      *project_id = string(val);
     }
-    if (vals[0] == "account") {
-      *account_id = string(vals[1]);
-    } else if (vals[0] == "project") {
-      *project_id = string(vals[1]);
-    }
-  }
+  });
 
   return {};
 }

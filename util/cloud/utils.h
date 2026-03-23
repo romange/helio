@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <string_view>
+
+#include <absl/functional/function_ref.h>
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/parser.hpp>
@@ -192,5 +195,11 @@ class RobustSender {
   http::ClientPool* pool_;
   CredentialsProvider* provider_;
 };
+
+// Parses INI-format content, calling cb(key, value) for each key=value pair in the
+// named section. Pass empty section to match keys across all sections (flat mode).
+// Skips blank lines and lines starting with # or ;.
+void ParseIniSection(std::string_view content, std::string_view section,
+                     absl::FunctionRef<void(std::string_view, std::string_view)> cb);
 
 }  // namespace util::cloud

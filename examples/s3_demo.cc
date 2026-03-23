@@ -1,20 +1,35 @@
 // Copyright 2023, Roman Gershman.  All rights reserved.
 // See LICENSE for licensing terms.
 
+#ifdef WITH_AWS
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/model/ListObjectsV2Request.h>
 #include <aws/s3/model/PutObjectRequest.h>
+#endif
 
 #include "base/flags.h"
 #include "base/init.h"
 #include "base/logging.h"
+#ifdef WITH_AWS
 #include "util/aws/aws.h"
 #include "util/aws/credentials_provider_chain.h"
 #include "util/aws/s3_endpoint_provider.h"
 #include "util/aws/s3_read_file.h"
 #include "util/aws/s3_write_file.h"
+#endif
+#include "util/cloud/aws/aws_creds_provider.h"
+#include "util/cloud/aws/s3_storage.h"
 #include "util/fibers/pool.h"
+#include "util/http/http_client.h"
+
+// Returns nullptr (plain HTTP) when AWS_S3_ENDPOINT is an http:// URL, otherwise a TLS context.
+SSL_CTX* MakeS3SslCtx() {
+  const char* ep = getenv("AWS_S3_ENDPOINT");
+  if (ep && strncmp(ep, "http://", 7) == 0)
+    return nullptr;
+  return util::http::TlsClient::CreateSslContext();
+}
 
 ABSL_FLAG(std::string, cmd, "list-buckets", "Command to run");
 ABSL_FLAG(std::string, bucket, "", "S3 bucket name");
@@ -24,7 +39,10 @@ ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
 ABSL_FLAG(size_t, chunk_size, 1024, "File chunk size");
 ABSL_FLAG(bool, https, false, "Whether to use HTTPS");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
+ABSL_FLAG(unsigned, connect_ms, 2000, "AWS connection timeout in milliseconds");
+ABSL_FLAG(unsigned, list_max_results, 1000, "Max keys per List page");
 
+#ifdef WITH_AWS
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
   Aws::S3::S3ClientConfiguration s3_conf{};
   s3_conf.checksumConfig.responseChecksumValidation =
@@ -38,55 +56,57 @@ std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
                                                       absl::GetFlag(FLAGS_https));
   return std::make_shared<Aws::S3::S3Client>(credentials_provider, endpoint_provider, s3_conf);
 }
+#endif  // WITH_AWS
 
 void ListBuckets() {
-  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
-  Aws::S3::Model::ListBucketsOutcome outcome = s3->ListBuckets();
-  if (outcome.IsSuccess()) {
-    std::cout << "buckets:" << std::endl;
-    for (const Aws::S3::Model::Bucket& bucket : outcome.GetResult().GetBuckets()) {
-      std::cout << "* " << bucket.GetName() << std::endl;
-    }
-  } else {
-    LOG(ERROR) << "failed to list buckets: " << outcome.GetError().GetExceptionName();
+  util::cloud::aws::AwsCredsProvider creds_provider;
+  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
+  if (ec) {
+    LOG(ERROR) << "failed to init credentials: " << ec.message();
+    return;
+  }
+
+  SSL_CTX* ssl_ctx = MakeS3SslCtx();
+  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
+                                      util::fb2::ProactorBase::me());
+  ec = storage.ListBuckets([](std::string_view name) {
+    std::cout << "* " << name << std::endl;
+  });
+  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
+
+  if (ec) {
+    LOG(ERROR) << "failed to list buckets: " << ec.message();
   }
 }
 
 void ListObjects(const std::string& bucket) {
-  if (bucket == "") {
+  if (bucket.empty()) {
     LOG(ERROR) << "missing bucket name";
     return;
   }
 
-  std::shared_ptr<Aws::S3::S3Client> s3 = OpenS3Client();
+  util::cloud::aws::AwsCredsProvider creds_provider;
+  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
+  if (ec) {
+    LOG(ERROR) << "failed to init credentials: " << ec.message();
+    return;
+  }
 
-  std::string continuation_token;
-  std::vector<std::string> keys;
-  do {
-    Aws::S3::Model::ListObjectsV2Request request;
-    request.SetBucket(bucket);
-    if (continuation_token != "") {
-      request.SetContinuationToken(continuation_token);
-    }
+  SSL_CTX* ssl_ctx = MakeS3SslCtx();
+  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
+                                      util::fb2::ProactorBase::me());
+  ec = storage.List(bucket, /*prefix=*/"", /*recursive=*/true, absl::GetFlag(FLAGS_list_max_results),
+                    [](const util::cloud::aws::S3Storage::ListItem& item) {
+                      std::cout << "* " << item.key << std::endl;
+                    });
+  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
 
-    Aws::S3::Model::ListObjectsV2Outcome outcome = s3->ListObjectsV2(request);
-    if (outcome.IsSuccess()) {
-      continuation_token = outcome.GetResult().GetNextContinuationToken();
-      for (const auto& object : outcome.GetResult().GetContents()) {
-        keys.push_back(object.GetKey());
-      }
-    } else {
-      LOG(ERROR) << "failed to list objects: " << outcome.GetError().GetExceptionName();
-      return;
-    }
-  } while (continuation_token != "");
-
-  std::cout << "objects in " << bucket << ":" << std::endl;
-  for (const std::string& key : keys) {
-    std::cout << "* " << key << std::endl;
+  if (ec) {
+    LOG(ERROR) << "failed to list objects: " << ec.message();
   }
 }
 
+#ifdef WITH_AWS
 void Upload(const std::string& bucket, const std::string& key, size_t upload_size,
             size_t chunk_size) {
   if (bucket == "") {
@@ -156,6 +176,7 @@ void Download(const std::string& bucket, const std::string& key) {
     read_n += *n;
   }
 }
+#endif  // WITH_AWS
 
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
@@ -175,24 +196,27 @@ int main(int argc, char* argv[]) {
   pp->Run();
 
   pp->GetNextProactor()->Await([&] {
-    util::aws::Init();
     std::string cmd = absl::GetFlag(FLAGS_cmd);
-    LOG(INFO) << "s3v2_demo; cmd=" << cmd;
+    LOG(INFO) << "s3_demo; cmd=" << cmd;
 
     if (cmd == "list-buckets") {
       ListBuckets();
     } else if (cmd == "list-objects") {
       ListObjects(absl::GetFlag(FLAGS_bucket));
-    } else if (cmd == "upload") {
-      Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
-             absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
-    } else if (cmd == "download") {
-      Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
+#ifdef WITH_AWS
+    } else if (cmd == "upload" || cmd == "download") {
+      util::aws::Init();
+      if (cmd == "upload") {
+        Upload(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key),
+               absl::GetFlag(FLAGS_upload_size), absl::GetFlag(FLAGS_chunk_size));
+      } else {
+        Download(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
+      }
+      util::aws::Shutdown();
+#endif  // WITH_AWS
     } else {
       LOG(ERROR) << "unknown command: " << cmd;
     }
-
-    util::aws::Shutdown();
   });
 
   pp->Stop();
