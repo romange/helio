@@ -31,13 +31,67 @@ def s3_demo() -> Path:
     return binary
 
 
-def _run(binary: Path, *args: str) -> subprocess.CompletedProcess:
+def _run(binary: Path, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [str(binary), "--logtostderr", *args],
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
+
+
+@pytest.fixture(scope="module")
+def minio() -> dict:
+    endpoint = os.environ.get("MINIO_ENDPOINT")
+    if not endpoint:
+        pytest.skip("MINIO_ENDPOINT not set")
+    binary = _find_s3_demo()
+    if not binary:
+        pytest.skip("s3_demo binary not found")
+    return {
+        "binary": binary,
+        "env": {
+            **os.environ,
+            "AWS_ACCESS_KEY_ID": os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+            "AWS_SECRET_ACCESS_KEY": os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "AWS_S3_ENDPOINT": endpoint,
+        },
+        "bucket": os.environ.get("MINIO_BUCKET", "ci-test-bucket"),
+    }
+
+
+def test_put_get_object_minio(minio):
+    key = "helio-ci-test/put_get_object.bin"
+    upload_size = 10 * 1024 * 1024  # 10 MB: one full 8 MB part + 2 MB remainder
+
+    result = _run(
+        minio["binary"],
+        "--cmd=put-object",
+        f"--bucket={minio['bucket']}",
+        f"--key={key}",
+        f"--upload_size={upload_size}",
+        env=minio["env"],
+    )
+    assert result.returncode == 0, f"put-object failed:\n{result.stderr}"
+    assert f"put-object done; bytes={upload_size}" in result.stderr, result.stderr
+
+    result = _run(
+        minio["binary"], "--cmd=list-objects", f"--bucket={minio['bucket']}", env=minio["env"]
+    )
+    assert result.returncode == 0, f"list-objects failed:\n{result.stderr}"
+    assert key in result.stdout, f"{key!r} not found in listing:\n{result.stdout}"
+
+    result = _run(
+        minio["binary"],
+        "--cmd=get-object",
+        f"--bucket={minio['bucket']}",
+        f"--key={key}",
+        env=minio["env"],
+    )
+    assert result.returncode == 0, f"get-object failed:\n{result.stderr}"
+    assert f"get-object done; bytes={upload_size}" in result.stderr, result.stderr
 
 
 def test_put_get_object(s3_demo):
