@@ -216,6 +216,46 @@ void Download(const std::string& bucket, const std::string& key) {
 }
 #endif  // WITH_AWS
 
+void PutObject(const std::string& bucket, const std::string& key) {
+  if (bucket.empty() || key.empty()) {
+    LOG(ERROR) << "missing bucket or key";
+    return;
+  }
+
+  util::cloud::aws::AwsCredsProvider creds_provider;
+  SSL_CTX* ssl_ctx;
+  if (!InitAws(&creds_provider, &ssl_ctx)) return;
+  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
+
+  util::cloud::aws::WriteFileOptions opts{&creds_provider, ssl_ctx};
+  auto res = util::cloud::aws::OpenWriteFile(bucket, key, opts);
+  if (!res) {
+    LOG(ERROR) << "failed to open s3 write file: " << res.error().message();
+    return;
+  }
+
+  std::unique_ptr<io::WriteFile> file(*res);
+  size_t total = absl::GetFlag(FLAGS_upload_size);
+  std::vector<uint8_t> buf(absl::GetFlag(FLAGS_chunk_size), 0xab);
+
+  size_t written = 0;
+  while (written < total) {
+    size_t chunk = std::min(buf.size(), total - written);
+    iovec iov{buf.data(), chunk};
+    auto n = file->WriteSome(&iov, 1);
+    if (!n) {
+      LOG(ERROR) << "put-object write error: " << n.error().message();
+      return;
+    }
+    written += *n;
+  }
+  if (auto ec = file->Close(); ec) {
+    LOG(ERROR) << "put-object close error: " << ec.message();
+    return;
+  }
+  LOG(INFO) << "put-object done; bytes=" << written;
+}
+
 int main(int argc, char* argv[]) {
   MainInitGuard guard(&argc, &argv);
 
@@ -243,6 +283,8 @@ int main(int argc, char* argv[]) {
       ListObjects(absl::GetFlag(FLAGS_bucket));
     } else if (cmd == "get-object") {
       GetObject(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
+    } else if (cmd == "put-object") {
+      PutObject(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
 #ifdef WITH_AWS
     } else if (cmd == "upload" || cmd == "download") {
       util::aws::Init();

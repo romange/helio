@@ -47,8 +47,13 @@ struct ReadFileOptions {
   SSL_CTX* ssl_cntx = nullptr;
 };
 
+using WriteFileOptions = ReadFileOptions;
+
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,
                                            const ReadFileOptions& opts);
+
+io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::string& key,
+                                         const WriteFileOptions& opts);
 
 }  // namespace cloud::aws
 }  // namespace util

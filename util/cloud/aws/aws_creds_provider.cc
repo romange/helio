@@ -553,15 +553,19 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   string datetime = absl::FormatTime("%Y%m%dT%H%M%SZ", now, utc);
   string date = absl::FormatTime("%Y%m%d", now, utc);
 
+  // Use caller-supplied payload hash if already set (e.g. "UNSIGNED-PAYLOAD" for writes);
+  // otherwise default to SHA256("") for unsigned GET requests.
+  const auto& headers = req->GetHeaders();
+  auto hash_it = headers.find("x-amz-content-sha256");
+  string payload_hash = (hash_it != headers.end())
+                            ? string(detail::FromBoostSV(hash_it->value()))
+                            : string(kEmptyBodyHash);
+
   req->SetHeader("x-amz-date", datetime);
-  req->SetHeader("x-amz-content-sha256", string(kEmptyBodyHash));
+  req->SetHeader("x-amz-content-sha256", payload_hash);
   if (!creds.session_token.empty()) {
     req->SetHeader("x-amz-security-token", creds.session_token);
   }
-
-  // Collect headers to sign: host, x-amz-date, x-amz-content-sha256, and any x-amz-* headers.
-  // Keys must be lowercase; values must be trimmed.
-  const auto& headers = req->GetHeaders();
   vector<pair<string, string>> signed_hdrs;
 
   for (const auto& field : headers) {
@@ -600,7 +604,7 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
       canonical_qs, "\n",
       canonical_headers, "\n",  // canonical_headers already ends with \n; this adds blank line
       signed_headers_str, "\n",
-      kEmptyBodyHash);
+      payload_hash);
 
   // Credential scope and string to sign.
   string credential_scope = absl::StrCat(date, "/", region_, "/s3/aws4_request");
