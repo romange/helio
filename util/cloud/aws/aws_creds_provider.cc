@@ -273,7 +273,29 @@ error_code AwsCredsProvider::Init(unsigned connect_ms) {
     } else if (const char* r = getenv("AWS_REGION")) {
       region_ = r;
     } else {
-      region_ = "us-east-1";
+      // Try ~/.aws/config — uses [default] or [profile name] sections.
+      const char* config_file_env = getenv("AWS_CONFIG_FILE");
+      string config_path;
+      if (config_file_env) {
+        config_path = config_file_env;
+      } else {
+        const char* home = getenv("HOME");
+        config_path = home ? absl::StrCat(home, "/.aws/config") : "/.aws/config";
+      }
+      if (auto contents = io::ReadFileToString(config_path)) {
+        const char* profile_env = getenv("AWS_PROFILE");
+        string profile = profile_env ? profile_env : "default";
+        // Config file uses [default] for default profile, [profile name] for others.
+        string section = (profile == "default") ? "default" : absl::StrCat("profile ", profile);
+        ParseIniSection(*contents, section, [&](string_view key, string_view val) {
+          if (key == "region" && region_.empty()) {
+            region_ = string(val);
+          }
+        });
+      }
+      if (region_.empty()) {
+        region_ = "us-east-1";
+      }
     }
   }
 

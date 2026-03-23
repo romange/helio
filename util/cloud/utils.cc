@@ -216,6 +216,11 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
       return make_error_code(errc::no_such_file_or_directory);
     }
 
+    if (h2::to_status_class(msg.result()) == h2::status_class::redirection) {
+      LOG(WARNING) << "Redirect " << msg.result_int() << ": " << msg.body();
+      return make_error_code(errc::connection_refused);
+    }
+
     ec = make_error_code(errc::bad_message);
     LOG(DFATAL) << "Unexpected response " << msg << "\n" << msg.body() << "\n";
   }

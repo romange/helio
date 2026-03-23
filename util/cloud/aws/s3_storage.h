@@ -8,6 +8,7 @@
 #include <string_view>
 #include <system_error>
 
+#include "io/file.h"
 #include "util/cloud/aws/aws_creds_provider.h"
 #include "util/cloud/utils.h"
 #include "util/http/https_client_pool.h"
@@ -40,6 +41,14 @@ class S3Storage {
   SSL_CTX* ssl_cntx_;
   std::unique_ptr<http::ClientPool> pool_;
 };
+
+struct ReadFileOptions {
+  AwsCredsProvider* creds_provider = nullptr;
+  SSL_CTX* ssl_cntx = nullptr;
+};
+
+io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,
+                                           const ReadFileOptions& opts);
 
 }  // namespace cloud::aws
 }  // namespace util
