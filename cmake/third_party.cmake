@@ -392,6 +392,21 @@ add_third_party(
 
 if (WITH_AWS)
   set (AWS_PATCH_COMMAND patch -p1 -d ${THIRD_PARTY_DIR}/aws/ -i ${CMAKE_CURRENT_LIST_DIR}/../patches/aws-sdk-cpp-1.11.717.patch)
+  set(AWS_CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF  -DENABLE_CURL_LOGGING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DAWS_SDK_WARNINGS_ARE_ERRORS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5")
+
+  if (OPENSSL_CRYPTO_LIBRARY AND OPENSSL_INCLUDE_DIR)
+    string(APPEND AWS_CMAKE_PASS_FLAGS " -Dcrypto_LIBRARY=${OPENSSL_CRYPTO_LIBRARY} -Dcrypto_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}")
+    string(APPEND AWS_CMAKE_PASS_FLAGS " -DOPENSSL_CRYPTO_LIBRARY=${OPENSSL_CRYPTO_LIBRARY} -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}")
+    if (OPENSSL_SSL_LIBRARY)
+      string(APPEND AWS_CMAKE_PASS_FLAGS " -DOPENSSL_SSL_LIBRARY=${OPENSSL_SSL_LIBRARY}")
+    endif()
+  elseif (EXISTS "/usr/local/ssl/lib/libcrypto.a" AND EXISTS "/usr/local/ssl/include")
+    string(APPEND AWS_CMAKE_PASS_FLAGS " -Dcrypto_LIBRARY=/usr/local/ssl/lib/libcrypto.a -Dcrypto_INCLUDE_DIR=/usr/local/ssl/include")
+    string(APPEND AWS_CMAKE_PASS_FLAGS " -DOPENSSL_CRYPTO_LIBRARY=/usr/local/ssl/lib/libcrypto.a -DOPENSSL_INCLUDE_DIR=/usr/local/ssl/include")
+    if (EXISTS "/usr/local/ssl/lib/libssl.a")
+      string(APPEND AWS_CMAKE_PASS_FLAGS " -DOPENSSL_SSL_LIBRARY=/usr/local/ssl/lib/libssl.a")
+    endif()
+  endif()
 
   add_third_party(
     aws
@@ -400,7 +415,7 @@ if (WITH_AWS)
     GIT_SHALLOW TRUE
     GIT_CONFIG      submodule.recurse=1 submodule.fetchJobs=10
     PATCH_COMMAND "${AWS_PATCH_COMMAND}"
-    CMAKE_PASS_FLAGS "-DBUILD_ONLY=s3 -DNO_HTTP_CLIENT=ON -DENABLE_TESTING=OFF  -DENABLE_CURL_LOGGING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DAWS_SDK_WARNINGS_ARE_ERRORS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+    CMAKE_PASS_FLAGS "${AWS_CMAKE_PASS_FLAGS}"
     LIB libaws-cpp-sdk-s3.a libaws-cpp-sdk-core.a libaws-crt-cpp.a libaws-c-mqtt.a libaws-c-event-stream.a libaws-c-s3.a libaws-c-auth.a  libaws-c-http.a libaws-c-io.a libs2n.a libaws-c-compression.a libaws-c-cal.a libaws-c-sdkutils.a libaws-checksums.a libaws-c-common.a
   )
 endif()

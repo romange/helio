@@ -18,6 +18,8 @@
 #include "util/aws/s3_read_file.h"
 #include "util/aws/s3_write_file.h"
 #endif
+#include <absl/cleanup/cleanup.h>
+
 #include "util/cloud/aws/aws_creds_provider.h"
 #include "util/cloud/aws/s3_storage.h"
 #include "util/fibers/pool.h"
@@ -58,22 +60,27 @@ std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
 }
 #endif  // WITH_AWS
 
-void ListBuckets() {
-  util::cloud::aws::AwsCredsProvider creds_provider;
-  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
+bool InitAws(util::cloud::aws::AwsCredsProvider* creds, SSL_CTX** ssl_ctx) {
+  std::error_code ec = creds->Init(absl::GetFlag(FLAGS_connect_ms));
   if (ec) {
     LOG(ERROR) << "failed to init credentials: " << ec.message();
-    return;
+    return false;
   }
+  *ssl_ctx = MakeS3SslCtx();
+  return true;
+}
 
-  SSL_CTX* ssl_ctx = MakeS3SslCtx();
+void ListBuckets() {
+  util::cloud::aws::AwsCredsProvider creds_provider;
+  SSL_CTX* ssl_ctx;
+  if (!InitAws(&creds_provider, &ssl_ctx)) return;
+  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
+
   util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
                                       util::fb2::ProactorBase::me());
-  ec = storage.ListBuckets([](std::string_view name) {
+  auto ec = storage.ListBuckets([](std::string_view name) {
     std::cout << "* " << name << std::endl;
   });
-  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
-
   if (ec) {
     LOG(ERROR) << "failed to list buckets: " << ec.message();
   }
@@ -86,21 +93,17 @@ void ListObjects(const std::string& bucket) {
   }
 
   util::cloud::aws::AwsCredsProvider creds_provider;
-  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
-  if (ec) {
-    LOG(ERROR) << "failed to init credentials: " << ec.message();
-    return;
-  }
+  SSL_CTX* ssl_ctx;
+  if (!InitAws(&creds_provider, &ssl_ctx)) return;
+  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
 
-  SSL_CTX* ssl_ctx = MakeS3SslCtx();
   util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
                                       util::fb2::ProactorBase::me());
-  ec = storage.List(bucket, /*prefix=*/"", /*recursive=*/true, absl::GetFlag(FLAGS_list_max_results),
-                    [](const util::cloud::aws::S3Storage::ListItem& item) {
-                      std::cout << "* " << item.key << std::endl;
-                    });
-  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
-
+  auto ec = storage.List(bucket, /*prefix=*/"", /*recursive=*/true,
+                         absl::GetFlag(FLAGS_list_max_results),
+                         [](const util::cloud::aws::S3Storage::ListItem& item) {
+                           std::cout << "* " << item.key << std::endl;
+                         });
   if (ec) {
     LOG(ERROR) << "failed to list objects: " << ec.message();
   }
@@ -113,17 +116,13 @@ void GetObject(const std::string& bucket, const std::string& key) {
   }
 
   util::cloud::aws::AwsCredsProvider creds_provider;
-  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
-  if (ec) {
-    LOG(ERROR) << "failed to init credentials: " << ec.message();
-    return;
-  }
+  SSL_CTX* ssl_ctx;
+  if (!InitAws(&creds_provider, &ssl_ctx)) return;
+  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
 
-  SSL_CTX* ssl_ctx = MakeS3SslCtx();
   util::cloud::aws::ReadFileOptions opts{&creds_provider, ssl_ctx};
   auto res = util::cloud::aws::OpenReadFile(bucket, key, opts);
   if (!res) {
-    if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
     LOG(ERROR) << "failed to open s3 file: " << res.error().message();
     return;
   }
@@ -142,7 +141,6 @@ void GetObject(const std::string& bucket, const std::string& key) {
     }
     read_n += *n;
   }
-  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
   LOG(INFO) << "get-object done; bytes=" << read_n;
 }
 
