@@ -49,15 +49,16 @@ def minio() -> dict:
     binary = _find_s3_demo()
     if not binary:
         pytest.skip("s3_demo binary not found")
+    env = {k: v for k, v in os.environ.items() if k not in ("AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN")}
+    env.update({
+        "AWS_ACCESS_KEY_ID": os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_S3_ENDPOINT": endpoint,
+    })
     return {
         "binary": binary,
-        "env": {
-            **os.environ,
-            "AWS_ACCESS_KEY_ID": os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-            "AWS_SECRET_ACCESS_KEY": os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
-            "AWS_DEFAULT_REGION": "us-east-1",
-            "AWS_S3_ENDPOINT": endpoint,
-        },
+        "env": env,
         "bucket": os.environ.get("MINIO_BUCKET", "ci-test-bucket"),
     }
 

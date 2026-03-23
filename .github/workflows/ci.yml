@@ -128,18 +128,11 @@ jobs:
       run: |
         curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
         chmod +x /tmp/minio
-        mkdir -p /tmp/minio-data
+        mkdir -p /tmp/minio-data/ci-test-bucket
         MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin /tmp/minio server /tmp/minio-data &
         for i in $(seq 1 20); do
           curl -sf http://localhost:9000/minio/health/live && break || sleep 1
         done
-        PIP_BREAK_SYSTEM_PACKAGES=1 pip install --quiet boto3
-        python3 -c "
-        import boto3
-        boto3.client('s3', endpoint_url='http://localhost:9000',
-                     aws_access_key_id='minioadmin', aws_secret_access_key='minioadmin',
-                     region_name='us-east-1').create_bucket(Bucket='ci-test-bucket')
-        "
         echo "MINIO_ENDPOINT=http://localhost:9000" >> $GITHUB_ENV
         echo "MINIO_ACCESS_KEY=minioadmin"          >> $GITHUB_ENV
         echo "MINIO_SECRET_KEY=minioadmin"          >> $GITHUB_ENV
