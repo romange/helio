@@ -106,6 +106,46 @@ void ListObjects(const std::string& bucket) {
   }
 }
 
+void GetObject(const std::string& bucket, const std::string& key) {
+  if (bucket.empty() || key.empty()) {
+    LOG(ERROR) << "missing bucket or key";
+    return;
+  }
+
+  util::cloud::aws::AwsCredsProvider creds_provider;
+  std::error_code ec = creds_provider.Init(absl::GetFlag(FLAGS_connect_ms));
+  if (ec) {
+    LOG(ERROR) << "failed to init credentials: " << ec.message();
+    return;
+  }
+
+  SSL_CTX* ssl_ctx = MakeS3SslCtx();
+  util::cloud::aws::ReadFileOptions opts{&creds_provider, ssl_ctx};
+  auto res = util::cloud::aws::OpenReadFile(bucket, key, opts);
+  if (!res) {
+    if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
+    LOG(ERROR) << "failed to open s3 file: " << res.error().message();
+    return;
+  }
+
+  std::unique_ptr<io::ReadonlyFile> file(*res);
+  LOG(INFO) << "get-object: size=" << file->Size();
+
+  std::vector<uint8_t> buf(1 << 16);
+  size_t read_n = 0;
+  while (read_n < file->Size()) {
+    iovec iov{buf.data(), std::min(buf.size(), file->Size() - read_n)};
+    io::Result<size_t> n = file->Read(read_n, &iov, 1);
+    if (!n) {
+      LOG(ERROR) << "get-object read error: " << n.error().message();
+      break;
+    }
+    read_n += *n;
+  }
+  if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx);
+  LOG(INFO) << "get-object done; bytes=" << read_n;
+}
+
 #ifdef WITH_AWS
 void Upload(const std::string& bucket, const std::string& key, size_t upload_size,
             size_t chunk_size) {
@@ -203,6 +243,8 @@ int main(int argc, char* argv[]) {
       ListBuckets();
     } else if (cmd == "list-objects") {
       ListObjects(absl::GetFlag(FLAGS_bucket));
+    } else if (cmd == "get-object") {
+      GetObject(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
 #ifdef WITH_AWS
     } else if (cmd == "upload" || cmd == "download") {
       util::aws::Init();

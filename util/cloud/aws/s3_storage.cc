@@ -4,14 +4,17 @@
 #include "util/cloud/aws/s3_storage.h"
 
 #include <absl/functional/function_ref.h>
+#include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
-#include <pugixml.hpp>
 
+#include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <optional>
+#include <pugixml.hpp>
 
 #include "base/logging.h"
 #include "strings/escaping.h"
@@ -33,8 +36,8 @@ auto UnexpectedError(errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
-unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx,
-                                        fb2::ProactorBase* pb, unsigned connect_ms) {
+unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx, fb2::ProactorBase* pb,
+                                        unsigned connect_ms) {
   CHECK(pb);
   unique_ptr<http::ClientPool> pool(new http::ClientPool(endpoint, ctx, pb));
   pool->set_connect_timeout(connect_ms);
@@ -102,8 +105,7 @@ error_code ParseXmlListObjects(string_view xml, bool* is_truncated, string* next
   *is_truncated = string_view(root.child_value("IsTruncated")) == "true";
   *next_token = root.child_value("NextContinuationToken");
 
-  VLOG(2) << "aws: ListObjects: is_truncated=" << *is_truncated
-          << " next_token=" << *next_token;
+  VLOG(2) << "aws: ListObjects: is_truncated=" << *is_truncated << " next_token=" << *next_token;
 
   for (pugi::xml_node content = root.child("Contents"); content;
        content = content.next_sibling("Contents")) {
@@ -134,6 +136,91 @@ error_code ParseXmlListObjects(string_view xml, bool* is_truncated, string* next
   }
 
   return {};
+}
+
+class ReadFile final : public io::ReadonlyFile {
+ public:
+  ReadFile(string bucket, string key, ReadFileOptions opts, unique_ptr<http::ClientPool> pool)
+      : bucket_(std::move(bucket)), key_(std::move(key)), opts_(opts), pool_(std::move(pool)) {
+  }
+
+  error_code Close() override {
+    return {};
+  }
+
+  io::SizeOrError Read(size_t offset, const iovec* v, uint32_t len) override;
+
+  size_t Size() const override {
+    return size_;
+  }
+
+  int Handle() const override {
+    return -1;
+  }
+
+  error_code InitRead();
+
+ private:
+  const string bucket_, key_;
+  const ReadFileOptions opts_;
+
+  using Parser = h2::response_parser<h2::buffer_body>;
+  std::optional<Parser> parser_;
+
+  unique_ptr<http::ClientPool> pool_;
+  http::ClientPool::ClientHandle client_handle_;
+
+  size_t size_ = 0, offs_ = 0;
+};
+
+error_code ReadFile::InitRead() {
+  string endpoint = opts_.creds_provider->ServiceEndpoint();
+  string url = absl::StrCat("/", bucket_, "/", key_);
+  detail::EmptyRequestImpl req = FillRequest(endpoint, url, opts_.creds_provider);
+
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
+
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& head_resp = parser_ptr->get();
+  auto it = head_resp.find(h2::field::content_length);
+  if (it == head_resp.end() || !absl::SimpleAtoi(detail::FromBoostSV(it->value()), &size_)) {
+    LOG(ERROR) << "aws: ReadFile: missing content-length for " << bucket_ << "/" << key_;
+    return make_error_code(errc::bad_message);
+  }
+
+  client_handle_.swap(send_res.client_handle);
+  parser_.emplace(std::move(*parser_ptr));
+  return {};
+}
+
+io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
+  DCHECK_EQ(offset, offs_);  // Does not support non-sequential reads.
+  size_t total = 0;
+  for (uint32_t i = 0; i < len; ++i) {
+    auto& body = parser_->get().body();
+    body.data = reinterpret_cast<char*>(v[i].iov_base);
+    body.size = v[i].iov_len;
+
+    auto boost_ec = client_handle_->Recv(&parser_.value());
+
+    size_t read = v[i].iov_len - body.size;
+    total += read;
+    offs_ += read;
+
+    if (boost_ec == h2::error::partial_message) {
+      LOG(ERROR) << "aws: ReadFile: partial message after " << read << " bytes";
+      return nonstd::make_unexpected(make_error_code(errc::connection_aborted));
+    }
+    if (boost_ec && boost_ec != h2::error::need_buffer) {
+      LOG(ERROR) << "aws: ReadFile: recv error: " << boost_ec.message();
+      return nonstd::make_unexpected(boost_ec);
+    }
+    VLOG(1) << "aws: ReadFile: read " << read << "/" << v[i].iov_len << " offs=" << offs_ << "/"
+            << size_;
+  }
+  return total;
 }
 
 }  // namespace
@@ -216,6 +303,18 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
   }
 
   return {};
+}
+
+io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,
+                                           const ReadFileOptions& opts) {
+  DCHECK(opts.creds_provider);
+  string endpoint = opts.creds_provider->ServiceEndpoint();
+  auto pool = CreatePool(endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
+                         opts.creds_provider->connect_ms());
+  auto file = std::make_unique<ReadFile>(bucket, key, opts, std::move(pool));
+  if (auto ec = file->InitRead(); ec)
+    return nonstd::make_unexpected(ec);
+  return file.release();
 }
 
 }  // namespace cloud::aws
