@@ -3,6 +3,9 @@
 
 #include "util/cloud/utils.h"
 
+#include <absl/strings/ascii.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_split.h>
 #include <boost/beast/http/string_body.hpp>
 
 #include "base/logging.h"
@@ -218,6 +221,27 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
   }
 
   return ec;
+}
+
+void ParseIniSection(string_view content, string_view section,
+                     absl::FunctionRef<void(string_view, string_view)> cb) {
+  bool in_section = section.empty();
+  string section_header = section.empty() ? "" : absl::StrCat("[", section, "]");
+
+  for (string_view line : absl::StrSplit(content, '\n')) {
+    line = absl::StripAsciiWhitespace(line);
+    if (line.empty() || line[0] == '#' || line[0] == ';')
+      continue;
+    if (line[0] == '[') {
+      if (!section.empty())
+        in_section = (line == section_header);
+      continue;
+    }
+    if (!in_section)
+      continue;
+    pair<string_view, string_view> kv = absl::StrSplit(line, absl::MaxSplits('=', 1));
+    cb(absl::StripAsciiWhitespace(kv.first), absl::StripAsciiWhitespace(kv.second));
+  }
 }
 
 }  // namespace util::cloud

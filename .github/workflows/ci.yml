@@ -16,6 +16,9 @@ concurrency:
 jobs:
   build:
     name: ${{ matrix.config.name }} on (${{ matrix.os.arch }})
+    permissions:
+      id-token: write
+      contents: read
     strategy:
       matrix:
         os:
@@ -35,8 +38,8 @@ jobs:
             compiler: {cxx: g++, c: gcc}
             build_type: Debug
             cxx_flags: "-fprofile-arcs -ftest-coverage -Werror"
-          - name: fedora30-gcc
-            container: fedora:30
+          - name: fedora30-gcc14
+            container: fedora:30-gcc14
             compiler: {cxx: g++, c: gcc}
             build_type: Debug
           - name: ubuntu24-gcc
@@ -103,7 +106,7 @@ jobs:
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
             https_client_cli s3_demo
           ls -la
-          
+
     - name: Test
       timeout-minutes: 2
       run: |
@@ -120,8 +123,19 @@ jobs:
           gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
           GLOG_logtostderr=1 ctest -V -L CI
 
+    - name: Authenticate to AWS
+      if: >
+        matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64' &&
+        (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      uses: aws-actions/configure-aws-credentials@v5
+      with:
+        role-to-assume: ${{ secrets.AWS_CI_S3_ROLE_ARN }}
+        aws-region: us-east-1
+
     - name: Python tests (echo_server)
       if: contains(matrix.config.name, 'ubuntu') || contains(matrix.config.name, 'alpine')
+      env:
+        S3_TEST_BUCKET: ${{ secrets.S3_REGTEST_BUCKET }}
       run: |
           PIP_BREAK_SYSTEM_PACKAGES=1 pip install pytest
           pwd  # /__w/helio/helio
@@ -132,7 +146,7 @@ jobs:
           leak:ares_strdup
           leak:ares_append_ai_node
           EOF
-          
+
           export LSAN_OPTIONS=suppressions=$(pwd)/asan_suppressions.txt
           cd tests
           python3 -m pytest -q -s
@@ -158,3 +172,4 @@ jobs:
       with:
          files: ./coverage.info
          fail_ci_if_error: false
+
