@@ -46,3 +46,26 @@ def test_list_objects(s3_demo):
         pytest.skip("S3_TEST_BUCKET not set")
     result = _run(s3_demo, "--cmd=list-objects", f"--bucket={bucket}")
     assert result.returncode == 0, f"list-objects failed:\n{result.stderr}"
+
+
+def test_put_get_object(s3_demo):
+    bucket = os.environ.get("S3_TEST_BUCKET")
+    if not bucket:
+        pytest.skip("S3_TEST_BUCKET not set")
+
+    key = "helio-ci-test/put_get_object.bin"
+    upload_size = 16 * 1024 * 1024  # 16 MB — two 8 MB parts
+
+    result = _run(
+        s3_demo,
+        "--cmd=put-object",
+        f"--bucket={bucket}",
+        f"--key={key}",
+        f"--upload_size={upload_size}",
+    )
+    assert result.returncode == 0, f"put-object failed:\n{result.stderr}"
+    assert f"put-object done; bytes={upload_size}" in result.stderr, result.stderr
+
+    result = _run(s3_demo, "--cmd=get-object", f"--bucket={bucket}", f"--key={key}")
+    assert result.returncode == 0, f"get-object failed:\n{result.stderr}"
+    assert f"get-object done; bytes={upload_size}" in result.stderr, result.stderr
