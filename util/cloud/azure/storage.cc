@@ -4,6 +4,7 @@
 #include "util/cloud/azure/storage.h"
 
 #include <absl/cleanup/cleanup.h>
+#include <absl/functional/function_ref.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
 
@@ -85,30 +86,33 @@ ContainerName="mycontainer"> <Blobs> <Blob> <Name>my/path.txt</Name> <Properties
                 </Blob>
     .....
 */
-io::Result<vector<StorageListItem>> ParseXmlListBlobs(string_view xml_resp) {
+error_code ParseXmlListBlobs(string_view xml_resp,
+                             absl::FunctionRef<void(const StorageListItem&)> cb) {
   pugi::xml_document doc;
   pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
 
   if (!result) {
     LOG(ERROR) << "Could not parse xml response " << result.description();
-    return UnexpectedError(errc::bad_message);
+    return make_error_code(errc::bad_message);
   }
 
   pugi::xml_node root = doc.child("EnumerationResults");
   if (root.type() != pugi::node_element) {
     LOG(ERROR) << "Could not find root node " << xml_resp;
-    return UnexpectedError(errc::bad_message);
+    return make_error_code(errc::bad_message);
   }
 
   pugi::xml_node blobs = root.child("Blobs");
   if (blobs.type() != pugi::node_element) {
     LOG(ERROR) << "Could not find Blobs node ";
-    return UnexpectedError(errc::bad_message);
+    return make_error_code(errc::bad_message);
   }
   VLOG(2) << "ListBlobs Response: " << xml_resp;
-  vector<Storage::ListItem> res;
-  for (pugi::xml_node blob = blobs.child("Blob"); blob; blob = blob.next_sibling()) {
-    Storage::ListItem item;
+
+  // Under blobs there can be either Blob or BlobPrefix nodes.
+  // The former is a file, the latter is a "directory".
+  for (pugi::xml_node blob = blobs.child("Blob"); blob; blob = blob.next_sibling("Blob")) {
+    StorageListItem item;
     item.key = blob.child_value("Name");
     pugi::xml_node prop = blob.child("Properties");
     if (!prop) {
@@ -129,14 +133,17 @@ io::Result<vector<StorageListItem>> ParseXmlListBlobs(string_view xml_resp) {
     } else {
       LOG(ERROR) << "Failed to parse time: " << lmstr << " " << err;
     }
-    res.push_back(item);
+    cb(item);
   }
-  for (pugi::xml_node blob = blobs.child("BlobPrefix"); blob; blob = blob.next_sibling()) {
-    Storage::ListItem item;
+
+  for (pugi::xml_node blob = blobs.child("BlobPrefix"); blob;
+       blob = blob.next_sibling("BlobPrefix")) {
+    StorageListItem item;
     item.key = blob.child_value("Name");
-    res.push_back(item);
+    item.is_prefix = true;
+    cb(item);
   }
-  return res;
+  return {};
 }
 
 unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx,
@@ -447,14 +454,7 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
   auto msg = resp.release();
-  auto blobs = ParseXmlListBlobs(msg.body());
-  if (!blobs)
-    return blobs.error();
-
-  for (const auto& b : *blobs) {
-    cb(b);
-  }
-
+  RETURN_ERROR(ParseXmlListBlobs(msg.body(), cb));
   return {};
 }
 
