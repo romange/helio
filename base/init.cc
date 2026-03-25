@@ -6,6 +6,8 @@
 
 #ifdef USE_ABSL_LOG
 #include <absl/log/initialize.h>
+#include <absl/log/log_sink_registry.h>
+#include "base/file_log_sink.h"
 #endif
 
 #include <absl/base/internal/cycleclock.h>
@@ -103,14 +105,21 @@ void RealTimeAggregator::Add(uint64_t start, uint64_t now) {
 
 static std::atomic<int> main_init_guard_count{0};
 
+#ifdef USE_ABSL_LOG
+  static base::FileLogSink file_log_sink;
+#endif
+
 MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
   // MallocExtension::Initialize();
   if (main_init_guard_count.fetch_add(1))
     return;
 
   absl::ParseCommandLine(*argc, *argv);
+
 #ifdef USE_ABSL_LOG
   absl::InitializeLog();
+  file_log_sink.Init();  // TODO: add flags for log dir and max file size.
+  absl::AddLogSink(&file_log_sink);
 #else
   if (!google::IsGoogleLoggingInitialized()) {
     google::InitGoogleLogging((*argv)[0]);
@@ -153,7 +162,10 @@ MainInitGuard::~MainInitGuard() {
     return;
 
   __internal__::ModuleInitializer::RunFtors(false);
-#ifndef USE_ABSL_LOG
+#ifdef USE_ABSL_LOG
+  absl::RemoveLogSink(&file_log_sink);
+  file_log_sink.Flush();
+#else
   google::ShutdownGoogleLogging();
 #endif
 }

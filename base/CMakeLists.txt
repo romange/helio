@@ -1,5 +1,5 @@
-add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc proc_util.cc
-    pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
+add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc file_log_sink.cc
+    proc_util.cc pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
 
 if (LEGACY_GLOG) 
   set(LOG_LIBS glog::glog)
@@ -7,7 +7,7 @@ else()
 
   target_compile_definitions(base PUBLIC -DUSE_ABSL_LOG=1)
   set(LOG_LIBS absl::check absl::log -Wl,--whole-archive absl::log_flags
-      absl::log_initialize)
+      absl::log_initialize -Wl,--no-whole-archive)
 endif()
 
 cxx_link(base ${LOG_LIBS} absl::flags_parse 

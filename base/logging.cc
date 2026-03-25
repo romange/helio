@@ -75,19 +75,23 @@ string MyUserName() {
   return str ? str : string("unknown-user");
 }
 
-#ifndef USE_ABSL_LOG
+#ifdef USE_ABSL_LOG
+void ConsoleLogSink::Send(const absl::LogEntry& entry) {
+  std::cout << entry.text_message() << std::endl;
+}
+#else
 void ConsoleLogSink::send(google::LogSeverity severity, const char* full_filename,
                           const char* base_filename, int line, const struct ::tm* tm_time,
                           const char* message, size_t message_len) {
   std::cout.write(message, message_len);
   std::cout << std::endl;
 }
+#endif
 
 ConsoleLogSink* ConsoleLogSink::instance() {
   static ConsoleLogSink sink;
   return &sink;
 }
-#endif
 
 const char* kProgramName = "";
 
