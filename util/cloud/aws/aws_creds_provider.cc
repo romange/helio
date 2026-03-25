@@ -178,25 +178,6 @@ error_code ParseStsXml(string_view xml, AwsCredentials* out) {
   return {};
 }
 
-struct ParsedUrl {
-  string host, port, path;
-  bool is_https;
-};
-
-// Parses http[s]://host[:port][/path]. Defaults port to 443/80 if omitted.
-ParsedUrl ParseHttpUrl(string_view uri) {
-  bool is_https = absl::ConsumePrefix(&uri, "https://");
-  if (!is_https) absl::ConsumePrefix(&uri, "http://");
-  size_t slash = uri.find('/');
-  string_view host_port = slash == string_view::npos ? uri : uri.substr(0, slash);
-  string path = slash == string_view::npos ? "/" : string(uri.substr(slash));
-  size_t colon = host_port.rfind(':');
-  string host = string(colon == string_view::npos ? host_port : host_port.substr(0, colon));
-  string port = colon == string_view::npos ? (is_https ? "443" : "80")
-                                           : string(host_port.substr(colon + 1));
-  return {std::move(host), std::move(port), std::move(path), is_https};
-}
-
 // ssl_ctx: non-null => TLS connection; null => plain HTTP.
 io::Result<string> FetchUrl(string_view host, string_view port, string_view path, h2::verb method,
                             const vector<pair<string, string>>& headers, string_view body,

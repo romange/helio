@@ -63,8 +63,18 @@ class HttpRequestBase {
 
   virtual boost::beast::http::verb GetMethod() const = 0;
 
+  std::string_view GetTarget() const {
+    return GetTargetInternal();
+  }
+
+  void SetTarget(std::string_view target) {
+    SetTargetInternal(target);
+  }
+
  protected:
   virtual boost::beast::http::header<true>& GetHeadersInternal() = 0;
+  virtual std::string_view GetTargetInternal() const = 0;
+  virtual void SetTargetInternal(std::string_view target) = 0;
 };
 
 class EmptyRequestImpl : public HttpRequestBase {
@@ -93,6 +103,14 @@ class EmptyRequestImpl : public HttpRequestBase {
  protected:
   boost::beast::http::header<true>& GetHeadersInternal() final {
     return req_.base();
+  }
+
+  std::string_view GetTargetInternal() const final {
+    return FromBoostSV(req_.target());
+  }
+
+  void SetTargetInternal(std::string_view target) final {
+    req_.target(boost::beast::string_view{target.data(), target.size()});
   }
 };
 
@@ -125,6 +143,14 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
  protected:
   boost::beast::http::header<true>& GetHeadersInternal() final {
     return req_.base();
+  }
+
+  std::string_view GetTargetInternal() const final {
+    return FromBoostSV(req_.target());
+  }
+
+  void SetTargetInternal(std::string_view target) final {
+    req_.target(boost::beast::string_view{target.data(), target.size()});
   }
 };
 
@@ -195,6 +221,17 @@ class RobustSender {
   http::ClientPool* pool_;
   CredentialsProvider* provider_;
 };
+
+struct ParsedHttpUrl {
+  std::string host;
+  std::string port;
+  std::string path;
+  bool is_https = false;
+};
+
+// Parses http[s]://host[:port][/path] and also accepts host[:port][/path] without scheme.
+// Defaults port to 443 for https scheme and 80 otherwise. Defaults path to '/'.
+ParsedHttpUrl ParseHttpUrl(std::string_view uri);
 
 // Parses INI-format content, calling cb(key, value) for each key=value pair in the
 // named section. Pass empty section to match keys across all sections (flat mode).

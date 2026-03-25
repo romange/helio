@@ -4,6 +4,7 @@
 #include "util/cloud/utils.h"
 
 #include <absl/strings/ascii.h>
+#include <absl/strings/match.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_split.h>
 #include <boost/beast/http/string_body.hpp>
@@ -20,12 +21,23 @@ namespace {
 constexpr auto kResumeIncomplete = h2::status::permanent_redirect;
 
 bool IsUnauthorized(const h2::header<false, h2::fields>& resp) {
-  if (resp.result() != h2::status::unauthorized) {
+  if (resp.result() != h2::status::unauthorized && resp.result() != h2::status::forbidden) {
     return false;
   }
   auto it = resp.find("WWW-Authenticate");
+  if (it == resp.end()) {
+    return false;
+  }
 
-  return it != resp.end();
+  if (resp.result() == h2::status::unauthorized) {
+    return true;
+  }
+
+  string_view auth = detail::FromBoostSV(it->value());
+
+  // Azure returns 403 for expired tokens, together with a WWW-Authenticate header
+  // that contains "Bearer". We want to treat this as unauthorized to trigger refresh.
+  return absl::StrContains(absl::AsciiStrToLower(auth), "bearer");
 }
 
 inline bool DoesServerPushback(h2::status st) {
@@ -137,6 +149,24 @@ RobustSender::SenderResult::~SenderResult() {
 
 RobustSender::RobustSender(http::ClientPool* pool, CredentialsProvider* provider)
     : pool_(pool), provider_(provider) {
+}
+
+ParsedHttpUrl ParseHttpUrl(string_view uri) {
+  bool is_https = absl::ConsumePrefix(&uri, "https://");
+  if (!is_https) {
+    absl::ConsumePrefix(&uri, "http://");
+  }
+
+  size_t slash = uri.find('/');
+  string_view host_port = slash == string_view::npos ? uri : uri.substr(0, slash);
+  string path = slash == string_view::npos ? "/" : string(uri.substr(slash));
+
+  size_t colon = host_port.rfind(':');
+  string host = string(colon == string_view::npos ? host_port : host_port.substr(0, colon));
+  string port = colon == string_view::npos ? (is_https ? "443" : "80")
+                                           : string(host_port.substr(colon + 1));
+
+  return {std::move(host), std::move(port), std::move(path), is_https};
 }
 
 error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* req,
