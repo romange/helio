@@ -10,6 +10,7 @@
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
 
+#include <boost/asio/buffer.hpp>
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
@@ -223,6 +224,117 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   return total;
 }
 
+constexpr size_t kS3DefaultPartSize = 8UL << 20;  // 8MB
+
+// Parses the UploadId from a CreateMultipartUpload XML response.
+io::Result<string> ParseXmlUploadId(string_view xml) {
+  pugi::xml_document doc;
+  pugi::xml_parse_result res = doc.load_buffer(xml.data(), xml.size());
+  if (!res) {
+    LOG(ERROR) << "aws: CreateMultipartUpload: failed to parse XML: " << res.description();
+    return UnexpectedError(errc::bad_message);
+  }
+  string upload_id = doc.child("InitiateMultipartUploadResult").child_value("UploadId");
+  if (upload_id.empty()) {
+    LOG(ERROR) << "aws: CreateMultipartUpload: missing UploadId\n" << xml;
+    return UnexpectedError(errc::bad_message);
+  }
+  return upload_id;
+}
+
+class WriteFile : public detail::AbstractStorageFile {
+ public:
+  WriteFile(string bucket, string key, WriteFileOptions opts, string upload_id,
+            unique_ptr<http::ClientPool> pool)
+      : detail::AbstractStorageFile(key, kS3DefaultPartSize),
+        bucket_(std::move(bucket)),
+        upload_id_(std::move(upload_id)),
+        opts_(opts),
+        pool_(std::move(pool)) {
+  }
+
+  error_code Close() override;
+
+ private:
+  error_code Upload() override;
+
+  const string bucket_;
+  const string upload_id_;
+  unsigned part_num_ = 1;
+  vector<pair<unsigned, string>> parts_;  // (part_num, etag)
+  WriteFileOptions opts_;
+  unique_ptr<http::ClientPool> pool_;
+};
+
+error_code WriteFile::Upload() {
+  size_t body_size = body_mb_.size();
+  CHECK_GT(body_size, 0u);
+
+  string url = absl::StrCat("/", bucket_, "/", create_file_name(), "?partNumber=", part_num_,
+                             "&uploadId=");
+  strings::AppendUrlEncoded(upload_id_, &url);
+
+  detail::DynamicBodyRequestImpl req(url, h2::verb::put);
+  req.SetBody(std::move(body_mb_));
+  req.SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
+  req.SetHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+  req.Finalize();
+  opts_.creds_provider->Sign(&req);
+
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
+
+  auto it = send_res.eb_parser->get().find(h2::field::etag);
+  if (it == send_res.eb_parser->get().end()) {
+    LOG(ERROR) << "aws: UploadPart " << part_num_ << ": missing ETag in response";
+    return make_error_code(errc::bad_message);
+  }
+  string etag(detail::FromBoostSV(it->value()));
+  VLOG(1) << "aws: UploadPart " << part_num_ << " size=" << body_size << " etag=" << etag;
+  parts_.emplace_back(part_num_++, std::move(etag));
+  return {};
+}
+
+error_code WriteFile::Close() {
+  if (body_mb_.size() > 0) {
+    RETURN_ERROR(Upload());
+  }
+
+  // Build CompleteMultipartUpload XML body.
+  string xml = "<CompleteMultipartUpload>";
+  for (const auto& [num, etag] : parts_) {
+    absl::StrAppend(&xml, "<Part><PartNumber>", num, "</PartNumber><ETag>", etag,
+                    "</ETag></Part>");
+  }
+  xml += "</CompleteMultipartUpload>";
+
+  boost::beast::multi_buffer xml_mb;
+  auto buf = xml_mb.prepare(xml.size());
+  boost::asio::buffer_copy(buf, boost::asio::buffer(xml));
+  xml_mb.commit(xml.size());
+
+  string url = absl::StrCat("/", bucket_, "/", create_file_name(), "?uploadId=");
+  strings::AppendUrlEncoded(upload_id_, &url);
+
+  detail::DynamicBodyRequestImpl req(url, h2::verb::post);
+  req.SetBody(std::move(xml_mb));
+  req.SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
+  req.SetHeader(h2::field::content_type, "application/xml");
+  req.SetHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
+  req.Finalize();
+  opts_.creds_provider->Sign(&req);
+
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
+
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
+  VLOG(1) << "aws: CompleteMultipartUpload: " << resp.get().body();
+  return {};
+}
+
 }  // namespace
 
 S3Storage::S3Storage(AwsCredsProvider* creds, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
@@ -303,6 +415,37 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
   }
 
   return {};
+}
+
+io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::string& key,
+                                         const WriteFileOptions& opts) {
+  DCHECK(opts.creds_provider);
+  string endpoint = opts.creds_provider->ServiceEndpoint();
+  auto pool = CreatePool(endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
+                         opts.creds_provider->connect_ms());
+
+  // Initiate multipart upload.
+  string url = absl::StrCat("/", bucket, "/", key, "?uploads");
+  detail::EmptyRequestImpl req(h2::verb::post, url);
+  req.SetHeader(h2::field::host, endpoint);
+  req.Finalize();
+  opts.creds_provider->Sign(&req);
+
+  RobustSender sender(pool.get(), opts.creds_provider);
+  RobustSender::SenderResult send_res;
+  if (auto ec = sender.Send(kSendRetries, &req, &send_res); ec)
+    return nonstd::make_unexpected(ec);
+
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  if (auto ec = send_res.client_handle->Recv(&resp); ec)
+    return nonstd::make_unexpected(ec);
+
+  auto upload_id = ParseXmlUploadId(resp.get().body());
+  if (!upload_id)
+    return nonstd::make_unexpected(upload_id.error());
+
+  VLOG(1) << "aws: CreateMultipartUpload: upload_id=" << *upload_id;
+  return new WriteFile(bucket, key, opts, std::move(*upload_id), std::move(pool));
 }
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,

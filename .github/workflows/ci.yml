@@ -123,6 +123,21 @@ jobs:
           gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
           GLOG_logtostderr=1 ctest -V -L CI
 
+    - name: Start Minio
+      if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
+      run: |
+        curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
+        chmod +x /tmp/minio
+        mkdir -p /tmp/minio-data/ci-test-bucket
+        MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin /tmp/minio server /tmp/minio-data &
+        for i in $(seq 1 20); do
+          curl -sf http://localhost:9000/minio/health/live && break || sleep 1
+        done
+        echo "MINIO_ENDPOINT=http://localhost:9000" >> $GITHUB_ENV
+        echo "MINIO_ACCESS_KEY=minioadmin"          >> $GITHUB_ENV
+        echo "MINIO_SECRET_KEY=minioadmin"          >> $GITHUB_ENV
+        echo "MINIO_BUCKET=ci-test-bucket"          >> $GITHUB_ENV
+
     - name: Authenticate to AWS
       if: >
         matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64' &&
