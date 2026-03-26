@@ -54,9 +54,13 @@ bool FileLogSink::LogFile::Open(const std::string& base_path, int severity,
   path_ = base_path + "." + kSeverityNames[severity] + "." +
           absl::FormatTime("%Y%m%d-%H%M%S", absl::Now(), absl::UTCTimeZone()) + "." + pid_str;
   fp_ = fopen(path_.c_str(), "ae");  // 'e' = O_CLOEXEC
+  if (!fp_) {
+    fprintf(stderr, "file_log_sink: fopen on %s failed: %s\n", path_.c_str(), strerror(errno));
+    return false;
+  }
   file_length_ = 0;
   ResetFlushThresholds();
-  return fp_ != nullptr;
+  return true;
 }
 
 void FileLogSink::LogFile::WriteAndMaybeFlush(absl::string_view data, int sev) {
