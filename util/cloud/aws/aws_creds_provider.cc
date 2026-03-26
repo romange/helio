@@ -11,11 +11,11 @@
 #include <absl/time/time.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#include <pugixml.hpp>
 #include <rapidjson/document.h>
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <pugixml.hpp>
 
 #include "base/logging.h"
 #include "io/file_util.h"
@@ -24,7 +24,6 @@
 #include "util/fibers/proactor_base.h"
 #include "util/http/http_client.h"
 #include "util/http/http_common.h"
-
 
 namespace util {
 namespace cloud::aws {
@@ -72,13 +71,16 @@ string CanonicalUri(string_view path) {
   string result;
   result.reserve(path.size() + 16);
   for (size_t i = 0; i < segments.size(); ++i) {
-    if (i > 0) result.push_back('/');
+    if (i > 0)
+      result.push_back('/');
     strings::AppendUrlEncoded(segments[i], &result);
   }
   return result;
 }
 
-// Sorts query params and percent-encodes each key and value per SigV4 rules.
+// The query string is already percent-encoded in the URL. Per SigV4, the canonical query string
+// must have each param name and value URI-encoded. Since the URL already contains encoded values,
+// we just sort and reassemble without re-encoding to avoid double-encoding (e.g. %2F -> %252F).
 string CanonicalQueryString(string_view query) {
   if (query.empty()) {
     return "";
@@ -88,10 +90,9 @@ string CanonicalQueryString(string_view query) {
 
   string result;
   for (size_t i = 0; i < args.size(); ++i) {
-    if (i > 0) result.push_back('&');
-    strings::AppendUrlEncoded(args[i].first, &result);
-    result.push_back('=');
-    strings::AppendUrlEncoded(args[i].second, &result);
+    if (i > 0)
+      result.push_back('&');
+    absl::StrAppend(&result, args[i].first, "=", args[i].second);
   }
   return result;
 }
@@ -111,7 +112,8 @@ error_code ParseJsonCredentials(string_view json, AwsCredentials* out) {
 
   auto get_str = [&](const char* key, string* dest) -> bool {
     auto it = doc.FindMember(key);
-    if (it == doc.MemberEnd() || !it->value.IsString()) return false;
+    if (it == doc.MemberEnd() || !it->value.IsString())
+      return false;
     *dest = it->value.GetString();
     return true;
   };
@@ -148,9 +150,8 @@ error_code ParseStsXml(string_view xml, AwsCredentials* out) {
   }
 
   // Response: AssumeRoleWithWebIdentityResponse > ... > Credentials > {fields}
-  pugi::xml_node creds = doc.find_node([](pugi::xml_node n) {
-    return strcmp(n.name(), "Credentials") == 0;
-  });
+  pugi::xml_node creds =
+      doc.find_node([](pugi::xml_node n) { return strcmp(n.name(), "Credentials") == 0; });
   if (!creds) {
     LOG(ERROR) << "aws: STS response missing Credentials node\n" << xml;
     return make_error_code(errc::bad_message);
@@ -236,11 +237,13 @@ AwsCredsProvider::AwsCredsProvider(string region) : region_(std::move(region)) {
 }
 
 AwsCredsProvider::~AwsCredsProvider() {
-  if (ssl_ctx_) http::TlsClient::FreeContext(ssl_ctx_);
+  if (ssl_ctx_)
+    http::TlsClient::FreeContext(ssl_ctx_);
 }
 
 SSL_CTX* AwsCredsProvider::GetSslCtx() {
-  if (!ssl_ctx_) ssl_ctx_ = http::TlsClient::CreateSslContext();
+  if (!ssl_ctx_)
+    ssl_ctx_ = http::TlsClient::CreateSslContext();
   return ssl_ctx_;
 }
 
@@ -280,14 +283,19 @@ error_code AwsCredsProvider::Init(unsigned connect_ms) {
     }
   }
 
-  if (auto ec = TryEnvironment(); !ec) return {};
-  if (auto ec = TryProfileFile(); !ec) return {};
-  if (auto ec = TryWebIdentity(); !ec) return {};
-  if (auto ec = TryContainerCreds(); !ec) return {};
+  if (auto ec = TryEnvironment(); !ec)
+    return {};
+  if (auto ec = TryProfileFile(); !ec)
+    return {};
+  if (auto ec = TryWebIdentity(); !ec)
+    return {};
+  if (auto ec = TryContainerCreds(); !ec)
+    return {};
 
   const char* disabled = getenv("AWS_EC2_METADATA_DISABLED");
   if (!disabled || absl::AsciiStrToLower(disabled) != "true") {
-    if (auto ec = TryIMDS(); !ec) return {};
+    if (auto ec = TryIMDS(); !ec)
+      return {};
   } else {
     LOG(INFO) << "aws: EC2 metadata disabled";
   }
@@ -384,8 +392,8 @@ error_code AwsCredsProvider::TryWebIdentity() {
   body += "&RoleSessionName=helio&Version=2011-06-15";
 
   auto resp = FetchUrl("sts.amazonaws.com", "443", "/", h2::verb::post,
-                       {{"content-type", "application/x-www-form-urlencoded"}}, body,
-                       connect_ms_, GetSslCtx());
+                       {{"content-type", "application/x-www-form-urlencoded"}}, body, connect_ms_,
+                       GetSslCtx());
   if (!resp)
     return resp.error();
 
@@ -455,9 +463,9 @@ error_code AwsCredsProvider::TryContainerCreds() {
 
 error_code AwsCredsProvider::TryIMDS() {
   // IMDSv2: first obtain a session token.
-  auto imds_token_res = FetchUrl("169.254.169.254", "80", "/latest/api/token", h2::verb::put,
-                                  {{"X-aws-ec2-metadata-token-ttl-seconds", "21600"}}, "",
-                                  connect_ms_, nullptr);
+  auto imds_token_res =
+      FetchUrl("169.254.169.254", "80", "/latest/api/token", h2::verb::put,
+               {{"X-aws-ec2-metadata-token-ttl-seconds", "21600"}}, "", connect_ms_, nullptr);
   if (!imds_token_res)
     return imds_token_res.error();
   string imds_token = string(absl::StripAsciiWhitespace(*imds_token_res));
@@ -465,9 +473,9 @@ error_code AwsCredsProvider::TryIMDS() {
   vector<pair<string, string>> token_hdr = {{"X-aws-ec2-metadata-token", imds_token}};
 
   // Get the IAM role name.
-  auto role_name_res = FetchUrl("169.254.169.254", "80",
-                                "/latest/meta-data/iam/security-credentials/",
-                                h2::verb::get, token_hdr, "", connect_ms_, nullptr);
+  auto role_name_res =
+      FetchUrl("169.254.169.254", "80", "/latest/meta-data/iam/security-credentials/",
+               h2::verb::get, token_hdr, "", connect_ms_, nullptr);
   if (!role_name_res)
     return role_name_res.error();
   string role_name_raw = std::move(*role_name_res);
@@ -550,12 +558,10 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   vector<pair<string, string>> signed_hdrs;
 
   for (const auto& field : headers) {
-    string name = absl::AsciiStrToLower(
-        string(detail::FromBoostSV(field.name_string())));
+    string name = absl::AsciiStrToLower(string(detail::FromBoostSV(field.name_string())));
     if (name == "host" || name == "x-amz-date" || name == "x-amz-security-token" ||
         absl::StartsWith(name, "x-amz-")) {
-      string val = string(absl::StripAsciiWhitespace(
-          detail::FromBoostSV(field.value())));
+      string val = string(absl::StripAsciiWhitespace(detail::FromBoostSV(field.value())));
       signed_hdrs.push_back({std::move(name), std::move(val)});
     }
   }
@@ -567,7 +573,8 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   string signed_headers_str;
   for (const auto& h : signed_hdrs) {
     absl::StrAppend(&canonical_headers, h.first, ":", h.second, "\n");
-    if (!signed_headers_str.empty()) signed_headers_str.push_back(';');
+    if (!signed_headers_str.empty())
+      signed_headers_str.push_back(';');
     absl::StrAppend(&signed_headers_str, h.first);
   }
 
@@ -589,11 +596,8 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
 
   // Credential scope and string to sign.
   string credential_scope = absl::StrCat(date, "/", region_, "/s3/aws4_request");
-  string string_to_sign = absl::StrCat(
-      "AWS4-HMAC-SHA256\n",
-      datetime, "\n",
-      credential_scope, "\n",
-      Sha256Hex(canonical_request));
+  string string_to_sign = absl::StrCat("AWS4-HMAC-SHA256\n", datetime, "\n", credential_scope, "\n",
+                                       Sha256Hex(canonical_request));
 
   // Derive signing key.
   uint8_t k_date[32], k_region[32], k_service[32], k_signing[32];
@@ -608,10 +612,9 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   string signature = HexEncode(sig_bytes, 32);
 
   // Set Authorization header.
-  string auth = absl::StrCat(
-      "AWS4-HMAC-SHA256 Credential=", creds.access_key_id, "/", credential_scope,
-      ", SignedHeaders=", signed_headers_str,
-      ", Signature=", signature);
+  string auth =
+      absl::StrCat("AWS4-HMAC-SHA256 Credential=", creds.access_key_id, "/", credential_scope,
+                   ", SignedHeaders=", signed_headers_str, ", Signature=", signature);
   req->SetHeader(h2::field::authorization, auth);
 }
 

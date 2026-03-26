@@ -37,8 +37,11 @@ class S3Storage {
                        unsigned max_results, std::function<void(const ListItem&)> cb);
 
  private:
+  std::string BucketEndpoint(std::string_view bucket) const;
+
   AwsCredsProvider* creds_;
   SSL_CTX* ssl_cntx_;
+  fb2::ProactorBase* pb_;
   std::unique_ptr<http::ClientPool> pool_;
 };
 

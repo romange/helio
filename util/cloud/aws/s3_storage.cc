@@ -3,7 +3,9 @@
 
 #include "util/cloud/aws/s3_storage.h"
 
+#include <absl/strings/ascii.h>
 #include <absl/functional/function_ref.h>
+#include <absl/strings/match.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/strip.h>
@@ -32,6 +34,57 @@ namespace h2 = boost::beast::http;
 namespace {
 
 constexpr unsigned kSendRetries = 3;
+
+struct BucketAddressing {
+  string endpoint;     // host[:port] used for connect + Host header.
+  bool virtual_hosted;  // true => bucket.endpoint, false => endpoint/bucket/...
+};
+
+bool SupportsVirtualHostedStyle(string_view endpoint) {
+  if (endpoint.empty()) {
+    return false;
+  }
+
+  string_view host = endpoint;
+
+  // IPv6 literals and multi-colon endpoints should use path-style.
+  if (host.front() == '[' || host.find(':') != host.rfind(':')) {
+    return false;
+  }
+
+  // Strip single :port suffix.
+  size_t colon_pos = host.find(':');
+  if (colon_pos != string_view::npos) {
+    host = host.substr(0, colon_pos);
+  }
+
+  string host_lc = absl::AsciiStrToLower(string(host));
+  return absl::EndsWith(host_lc, ".amazonaws.com") ||
+         absl::EndsWith(host_lc, ".amazonaws.com.cn");
+}
+
+BucketAddressing ResolveBucketAddressing(CredentialsProvider* provider, string_view bucket) {
+  CHECK(provider);
+  string endpoint = provider->ServiceEndpoint();
+  if (SupportsVirtualHostedStyle(endpoint)) {
+    return {absl::StrCat(bucket, ".", endpoint), true};
+  }
+  return {std::move(endpoint), false};
+}
+
+string BucketObjectPath(const BucketAddressing& addressing, string_view bucket, string_view key) {
+  if (addressing.virtual_hosted) {
+    return absl::StrCat("/", key);
+  }
+  return absl::StrCat("/", bucket, "/", key);
+}
+
+string BucketQueryPath(const BucketAddressing& addressing, string_view bucket, string_view query) {
+  if (addressing.virtual_hosted) {
+    return absl::StrCat("/?", query);
+  }
+  return absl::StrCat("/", bucket, "?", query);
+}
 
 auto UnexpectedError(errc code) {
   return nonstd::make_unexpected(make_error_code(code));
@@ -175,9 +228,9 @@ class ReadFile final : public io::ReadonlyFile {
 };
 
 error_code ReadFile::InitRead() {
-  string endpoint = opts_.creds_provider->ServiceEndpoint();
-  string url = absl::StrCat("/", bucket_, "/", key_);
-  detail::EmptyRequestImpl req = FillRequest(endpoint, url, opts_.creds_provider);
+  BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
+  string url = BucketObjectPath(addressing, bucket_, key_);
+  detail::EmptyRequestImpl req = FillRequest(addressing.endpoint, url, opts_.creds_provider);
 
   RobustSender sender(pool_.get(), opts_.creds_provider);
   RobustSender::SenderResult send_res;
@@ -270,13 +323,14 @@ error_code WriteFile::Upload() {
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
 
-  string url = absl::StrCat("/", bucket_, "/", create_file_name(), "?partNumber=", part_num_,
-                             "&uploadId=");
+  BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
+  string url = BucketObjectPath(addressing, bucket_, create_file_name());
+  absl::StrAppend(&url, "?partNumber=", part_num_, "&uploadId=");
   strings::AppendUrlEncoded(upload_id_, &url);
 
   detail::DynamicBodyRequestImpl req(url, h2::verb::put);
   req.SetBody(std::move(body_mb_));
-  req.SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
+  req.SetHeader(h2::field::host, addressing.endpoint);
   req.SetHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
   req.Finalize();
   opts_.creds_provider->Sign(&req);
@@ -314,12 +368,14 @@ error_code WriteFile::Close() {
   boost::asio::buffer_copy(buf, boost::asio::buffer(xml));
   xml_mb.commit(xml.size());
 
-  string url = absl::StrCat("/", bucket_, "/", create_file_name(), "?uploadId=");
+  BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
+  string url = BucketObjectPath(addressing, bucket_, create_file_name());
+  absl::StrAppend(&url, "?uploadId=");
   strings::AppendUrlEncoded(upload_id_, &url);
 
   detail::DynamicBodyRequestImpl req(url, h2::verb::post);
   req.SetBody(std::move(xml_mb));
-  req.SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
+  req.SetHeader(h2::field::host, addressing.endpoint);
   req.SetHeader(h2::field::content_type, "application/xml");
   req.SetHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD");
   req.Finalize();
@@ -338,11 +394,15 @@ error_code WriteFile::Close() {
 }  // namespace
 
 S3Storage::S3Storage(AwsCredsProvider* creds, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
-    : creds_(creds), ssl_cntx_(ssl_cntx) {
+    : creds_(creds), ssl_cntx_(ssl_cntx), pb_(pb) {
   pool_ = CreatePool(creds_->ServiceEndpoint(), ssl_cntx_, pb, creds_->connect_ms());
 }
 
 S3Storage::~S3Storage() = default;
+
+string S3Storage::BucketEndpoint(string_view bucket) const {
+  return ResolveBucketAddressing(creds_, bucket).endpoint;
+}
 
 error_code S3Storage::ListBuckets(function<void(const BucketItem&)> cb) {
   string endpoint = creds_->ServiceEndpoint();
@@ -373,23 +433,25 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
                            unsigned max_results, function<void(const ListItem&)> cb) {
   CHECK(!bucket.empty());
 
-  string endpoint = creds_->ServiceEndpoint();
+  BucketAddressing addressing = ResolveBucketAddressing(creds_, bucket);
+  auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, creds_->connect_ms());
 
-  // Build initial URL: /{bucket}?list-type=2&max-keys=N[&prefix=...][&delimiter=%2F]
-  string base_url = absl::StrCat("/", bucket, "?list-type=2&max-keys=", max_results);
+  string query = absl::StrCat("list-type=2&max-keys=", max_results);
   if (!prefix.empty()) {
-    absl::StrAppend(&base_url, "&prefix=");
-    strings::AppendUrlEncoded(prefix, &base_url);
+    absl::StrAppend(&query, "&prefix=");
+    strings::AppendUrlEncoded(prefix, &query);
   }
   if (!recursive) {
-    absl::StrAppend(&base_url, "&delimiter=%2F");
+    absl::StrAppend(&query, "&delimiter=%2F");
   }
 
+  string base_url = BucketQueryPath(addressing, bucket, query);
+
   string url = base_url;
-  RobustSender sender(pool_.get(), creds_);
+  RobustSender sender(pool.get(), creds_);
 
   while (true) {
-    detail::EmptyRequestImpl req = FillRequest(endpoint, url, creds_);
+    detail::EmptyRequestImpl req = FillRequest(addressing.endpoint, url, creds_);
 
     RobustSender::SenderResult send_res;
     RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
@@ -420,14 +482,15 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
 io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::string& key,
                                          const WriteFileOptions& opts) {
   DCHECK(opts.creds_provider);
-  string endpoint = opts.creds_provider->ServiceEndpoint();
-  auto pool = CreatePool(endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
+  BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
+  auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
                          opts.creds_provider->connect_ms());
 
   // Initiate multipart upload.
-  string url = absl::StrCat("/", bucket, "/", key, "?uploads");
+  string url = BucketObjectPath(addressing, bucket, key);
+  absl::StrAppend(&url, "?uploads");
   detail::EmptyRequestImpl req(h2::verb::post, url);
-  req.SetHeader(h2::field::host, endpoint);
+  req.SetHeader(h2::field::host, addressing.endpoint);
   req.Finalize();
   opts.creds_provider->Sign(&req);
 
@@ -451,8 +514,8 @@ io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::s
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,
                                            const ReadFileOptions& opts) {
   DCHECK(opts.creds_provider);
-  string endpoint = opts.creds_provider->ServiceEndpoint();
-  auto pool = CreatePool(endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
+  BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
+  auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
                          opts.creds_provider->connect_ms());
   auto file = std::make_unique<ReadFile>(bucket, key, opts, std::move(pool));
   if (auto ec = file->InitRead(); ec)

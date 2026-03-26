@@ -120,3 +120,17 @@ def test_put_get_object(s3_demo):
     result = _run(s3_demo, "--cmd=get-object", f"--bucket={bucket}", f"--key={key}")
     assert result.returncode == 0, f"get-object failed:\n{result.stderr}"
     assert f"get-object done; bytes={upload_size}" in result.stderr, result.stderr
+
+
+def test_list_objects_with_prefix(s3_demo):
+    """List with a non-empty prefix to exercise SigV4 signing of pre-encoded query params.
+
+    When prefix is set, the URL contains percent-encoded characters (e.g. delimiter=%2F)
+    and CanonicalQueryString must not re-encode them (which would produce %252F and break
+    the signature).
+    """
+    bucket = os.environ.get("S3_TEST_BUCKET")
+    if not bucket:
+        pytest.skip("S3_TEST_BUCKET not set")
+    result = _run(s3_demo, "--cmd=list-objects", f"--bucket={bucket}", "--prefix=nonexistent/path/")
+    assert result.returncode == 0, f"list-objects with prefix failed:\n{result.stderr}"

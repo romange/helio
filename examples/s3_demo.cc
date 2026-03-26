@@ -36,6 +36,7 @@ SSL_CTX* MakeS3SslCtx() {
 ABSL_FLAG(std::string, cmd, "list-buckets", "Command to run");
 ABSL_FLAG(std::string, bucket, "", "S3 bucket name");
 ABSL_FLAG(std::string, key, "", "S3 file key");
+ABSL_FLAG(std::string, prefix, "", "Object key prefix for list-objects");
 ABSL_FLAG(std::string, endpoint, "", "S3 endpoint");
 ABSL_FLAG(size_t, upload_size, 100 << 20, "Upload file size");
 ABSL_FLAG(size_t, chunk_size, 1024, "File chunk size");
@@ -86,7 +87,7 @@ void ListBuckets() {
   }
 }
 
-void ListObjects(const std::string& bucket) {
+void ListObjects(const std::string& bucket, const std::string& prefix) {
   if (bucket.empty()) {
     LOG(ERROR) << "missing bucket name";
     return;
@@ -97,9 +98,10 @@ void ListObjects(const std::string& bucket) {
   if (!InitAws(&creds_provider, &ssl_ctx)) return;
   absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
 
+  bool recursive = prefix.empty();
   util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
                                       util::fb2::ProactorBase::me());
-  auto ec = storage.List(bucket, /*prefix=*/"", /*recursive=*/true,
+  auto ec = storage.List(bucket, prefix, recursive,
                          absl::GetFlag(FLAGS_list_max_results),
                          [](const util::cloud::aws::S3Storage::ListItem& item) {
                            std::cout << "* " << item.key << std::endl;
@@ -280,7 +282,7 @@ int main(int argc, char* argv[]) {
     if (cmd == "list-buckets") {
       ListBuckets();
     } else if (cmd == "list-objects") {
-      ListObjects(absl::GetFlag(FLAGS_bucket));
+      ListObjects(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_prefix));
     } else if (cmd == "get-object") {
       GetObject(absl::GetFlag(FLAGS_bucket), absl::GetFlag(FLAGS_key));
     } else if (cmd == "put-object") {
