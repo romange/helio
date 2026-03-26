@@ -35,11 +35,23 @@
 #define VLOG_IF(verboselevel, condition) \
   ABSL_LOG_IF(INFO, (condition) && ABSL_VLOG_IS_ON(verboselevel))
 
+#define LOG_EVERY_T(severity, t) ABSL_LOG_EVERY_N_SEC(severity, t)
+#define DLOG_IF ABSL_DLOG_IF
 
 template <typename T> T* CHECK_NOTNULL(T* t) {
   CHECK(t);
   return t;
 }
+
+namespace base {
+class ConsoleLogSink : public absl::LogSink {
+ public:
+  void Send(const absl::LogEntry& entry) override;
+  static ConsoleLogSink* instance();
+};
+}  // namespace base
+
+#define CONSOLE_INFO ABSL_LOG(INFO).ToSinkOnly(base::ConsoleLogSink::instance())
 
 #else
 #include <glog/logging.h>
