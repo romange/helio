@@ -5,11 +5,11 @@
 #pragma once
 
 #ifdef USE_ABSL_LOG
-#include <absl/log/absl_log.h>
 #include <absl/log/absl_check.h>
+#include <absl/log/absl_log.h>
 #include <absl/log/globals.h>
-#include <absl/log/vlog_is_on.h>
 #include <absl/log/log_sink_registry.h>
+#include <absl/log/vlog_is_on.h>
 
 #define CHECK ABSL_CHECK
 #define CHECK_GT ABSL_CHECK_GT
@@ -35,7 +35,9 @@
 #define VLOG_IF(verboselevel, condition) \
   ABSL_LOG_IF(INFO, (condition) && ABSL_VLOG_IS_ON(verboselevel))
 
+#define LOG_EVERY_N(severity, n) ABSL_LOG_EVERY_N(severity, n)
 #define LOG_EVERY_T(severity, t) ABSL_LOG_EVERY_N_SEC(severity, t)
+#define DLOG ABSL_DLOG
 #define DLOG_IF ABSL_DLOG_IF
 
 template <typename T> T* CHECK_NOTNULL(T* t) {
