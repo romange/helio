@@ -7,6 +7,7 @@
 #ifdef USE_ABSL_LOG
 #include <absl/log/initialize.h>
 #include <absl/log/log_sink_registry.h>
+
 #include "base/file_log_sink.h"
 #endif
 
@@ -57,6 +58,8 @@ void ModuleInitializer::RunFtors(bool is_ctor) {
 
 #undef MainInitGuard
 
+static std::atomic<int> main_init_guard_count{0};
+
 namespace base {
 
 uint64_t CycleClock::frequency_ = 0;
@@ -101,13 +104,18 @@ void RealTimeAggregator::Add(uint64_t start, uint64_t now) {
   }
 }
 
-}  // namespace base
-
-static std::atomic<int> main_init_guard_count{0};
-
 #ifdef USE_ABSL_LOG
-  static base::FileLogSink file_log_sink;
+static FileLogSink file_log_sink;
+
+// We initialize and cache the candidate inside the object.
+std::vector<std::string> GetLoggingDirectories() {
+  const auto& dir = file_log_sink.base_dir();
+  return dir.empty() ? std::vector<std::string>{} : std::vector<std::string>{dir};
+}
+
 #endif
+
+}  // namespace base
 
 MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
   // MallocExtension::Initialize();
@@ -118,8 +126,8 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
 
 #ifdef USE_ABSL_LOG
   absl::InitializeLog();
-  file_log_sink.Init();  // TODO: add flags for log dir and max file size.
-  absl::AddLogSink(&file_log_sink);
+  base::file_log_sink.Init();
+  absl::AddLogSink(&base::file_log_sink);
 #else
   if (!google::IsGoogleLoggingInitialized()) {
     google::InitGoogleLogging((*argv)[0]);
@@ -163,8 +171,8 @@ MainInitGuard::~MainInitGuard() {
 
   __internal__::ModuleInitializer::RunFtors(false);
 #ifdef USE_ABSL_LOG
-  absl::RemoveLogSink(&file_log_sink);
-  file_log_sink.Flush();
+  absl::RemoveLogSink(&base::file_log_sink);
+  base::file_log_sink.Flush();
 #else
   google::ShutdownGoogleLogging();
 #endif

@@ -2,7 +2,7 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 // Absl LogSink that writes to per-severity log files, mirroring glog behavior.
-// Files are named: <program>.<user>.log.<SEVERITY>.<yyyymmdd-HHMMSS>.<pid>
+// Files are named: <program>.<user>.<SEVERITY>.<yyyymmdd-HHMMSS>.<pid>.log
 // A message at severity S is written to all files with severity <= S
 // (e.g. ERROR goes to ERROR + WARNING + INFO files).
 // Only compiled when USE_ABSL_LOG is defined.
@@ -22,15 +22,19 @@ namespace base {
 
 class FileLogSink : public absl::LogSink {
  public:
-  FileLogSink() {}
-  ~FileLogSink() final;
+  FileLogSink() {
+  }
+  ~FileLogSink() override;
 
-  // log_dir: directory for log files. If empty, uses /tmp.
-  // max_file_size_mb: rotate when a file exceeds this size.
-  void Init(std::string log_dir = "", uint32_t max_file_size_mb = 200);
+  // Uses --max_log_size (in MB) to control rotation size.
+  void Init();
 
   void Send(const absl::LogEntry& entry) override;
   void Flush() override;
+
+  const std::string& base_dir() const {
+    return base_dir_;
+  }
 
  private:
   // One per severity level: 0=INFO, 1=WARNING, 2=ERROR
@@ -38,9 +42,15 @@ class FileLogSink : public absl::LogSink {
     std::mutex mu_;
     std::string path_;
 
-    bool needs_open(size_t limit) const { return fp_ == nullptr || file_length_ >= limit; }
-    bool dead() const { return reinterpret_cast<uintptr_t>(fp_) == 1; }
-    bool active() const { return fp_ != nullptr && !dead(); }
+    bool needs_open(size_t limit) const {
+      return fp_ == nullptr || file_length_ >= limit;
+    }
+    bool dead() const {
+      return reinterpret_cast<uintptr_t>(fp_) == 1;
+    }
+    bool active() const {
+      return fp_ != nullptr && !dead();
+    }
 
     bool Open(const std::string& base_path, int severity, const std::string& pid_str);
     // Writes data and flushes based on sev and the cached flag values.
@@ -57,9 +67,10 @@ class FileLogSink : public absl::LogSink {
     absl::Time next_flush_time_ = absl::InfinitePast();
   };
 
-  std::string base_path_;       // cached: <log_dir>/<program>.<user>.log
-  std::string pid_str_;         // cached: string form of getpid()
-  size_t max_file_size_bytes_;
+  std::string base_dir_;
+  std::string base_path_;  // cached: <log_dir>/<program>.<user>.log
+  std::string pid_str_;    // cached: string form of getpid()
+  uint32_t max_file_size_mb_ = 0;
   LogFile files_[3];
 };
 

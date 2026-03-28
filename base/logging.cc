@@ -76,6 +76,7 @@ string MyUserName() {
 }
 
 #ifdef USE_ABSL_LOG
+
 void ConsoleLogSink::Send(const absl::LogEntry& entry) {
   std::cout << entry.text_message() << std::endl;
 }
