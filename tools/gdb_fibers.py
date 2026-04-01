@@ -2,10 +2,10 @@
 GDB extension for debugging Helio fibers.
 
 Usage:
-    (gdb) source tools/helio_fibers.py
+    (gdb) source tools/gdb_fibers.py
     (gdb) fibers                  # list all fibers in current thread
     (gdb) fiber-bt <addr|name>    # show backtrace of a fiber
-    (gdb) fiber-switch <addr>     # switch register view to a fiber
+    (gdb) fiber-switch <addr|name>  # switch register view to a fiber
     (gdb) fiber-restore           # restore original register view
 
 Works with both live debugging and core dumps (no inferior calls needed).
