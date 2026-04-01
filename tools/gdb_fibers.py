@@ -35,7 +35,7 @@ _saved_contexts = {}
 
 def _read_u64(addr):
     """Read a uint64_t from an address."""
-    return int(gdb.parse_and_eval(f"*(uint64_t*){addr:#x}"))
+    return int(gdb.Value(addr).cast(gdb.lookup_type("uint64_t").pointer()).dereference())
 
 
 def _read_ptr(addr):
