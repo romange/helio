@@ -225,6 +225,23 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
     LOG(FATAL) << "Error initializing io_uring: (" << init_res << ") "
                << SafeErrorMessage(init_res);
   }
+  // A new io_uring_set_iowait() liburing function allows userspace to disable iowait accounting per ring.
+  // If enable_iowait is set to false, the submit functions will set IORING_ENTER_NO_IOWAIT in the flags to io_uring_enter().
+  // The kernel signals support via IORING_FEAT_NO_IOWAIT feature flag. Available since kernel 6.15.
+  // If kernel does not support IORING_FEAT_NO_IOWAIT, then io_uring_set_iowait will return -EINVAL
+  // and we will fallback to default behavior with iowait enabled.
+  if (init_res == 0 && (params.features & IORING_FEAT_NO_IOWAIT)) {
+    int iowait_res = io_uring_set_iowait(&ring_, 0);
+    if (iowait_res < 0) {
+      iowait_res = -iowait_res;
+      if (iowait_res == EINVAL) {
+        VLOG(1) << "io_uring_set_iowait not supported by kernel, falling back to default iowait behavior";
+      } else {
+        LOG(WARNING) << "io_uring_set_iowait failed: (" << iowait_res << ") "
+                     << SafeErrorMessage(iowait_res);
+      }
+    }
+  }
 
   io_uring_probe* uring_probe = io_uring_get_probe_ring(&ring_);
 
