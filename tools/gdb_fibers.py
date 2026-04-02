@@ -9,22 +9,84 @@ Usage:
     (gdb) fiber-restore           # restore original register view
 
 Works with both live debugging and core dumps (no inferior calls needed).
-Supports x86_64 only.
+Supports x86_64 and aarch64.
 """
 
 import gdb
 
-# boost::context x86_64 System V fcontext register save layout.
-# When a fiber is suspended, entry_.fctx_ points to this area on the fiber's stack.
-# See jump_x86_64_sysv_elf_gas.S in libboost_context.
-FCTX_R12_OFFSET = 0x10
-FCTX_R13_OFFSET = 0x18
-FCTX_R14_OFFSET = 0x20
-FCTX_R15_OFFSET = 0x28
-FCTX_RBX_OFFSET = 0x30
-FCTX_RBP_OFFSET = 0x38
-FCTX_RIP_OFFSET = 0x40  # return address (pushed by call instruction)
-FCTX_FRAME_SIZE = 0x48  # total saved area: 0x40 registers + 0x08 return addr
+# ── boost::context fcontext register save layouts ──────────────────────
+#
+# When a fiber is suspended, entry_.fctx_ points to the saved area on the
+# fiber's stack.  The layout differs by architecture.
+
+_ARCH_CONFIGS = {
+    "x86_64": {
+        # See jump_x86_64_sysv_elf_gas.S in libboost_context.
+        "regs": {
+            "r12": 0x10,
+            "r13": 0x18,
+            "r14": 0x20,
+            "r15": 0x28,
+            "rbx": 0x30,
+            "rbp": 0x38,
+            "rip": 0x40,  # return address (pushed by call instruction)
+        },
+        "frame_size": 0x48,  # 0x40 registers + 0x08 return addr
+        "sp": "rsp",
+        "pc": "rip",
+        "fp": "rbp",
+        "callee_saved": ("rsp", "rbp", "rip", "r12", "r13", "r14", "r15", "rbx"),
+    },
+    "aarch64": {
+        # See jump_arm64_aapcs_elf_gas.S in libboost_context.
+        # sub sp, sp, #0xb0 ; then pairs stored with stp:
+        #   d8-d15  at 0x00..0x3f   (FPU callee-saved)
+        #   x19-x28 at 0x40..0x8f   (integer callee-saved)
+        #   x29,x30 at 0x90         (FP, LR)
+        #   x30     at 0xa0         (PC / return addr for ret x4)
+        "regs": {
+            "d8":  0x00, "d9":  0x08,
+            "d10": 0x10, "d11": 0x18,
+            "d12": 0x20, "d13": 0x28,
+            "d14": 0x30, "d15": 0x38,
+            "x19": 0x40, "x20": 0x48,
+            "x21": 0x50, "x22": 0x58,
+            "x23": 0x60, "x24": 0x68,
+            "x25": 0x70, "x26": 0x78,
+            "x27": 0x80, "x28": 0x88,
+            "x29": 0x90, "x30": 0x98,
+            "pc":  0xa0,  # separate copy of LR used as return address
+        },
+        "frame_size": 0xb0,
+        "sp": "sp",
+        "pc": "pc",
+        "fp": "x29",
+        "callee_saved": (
+            "sp", "pc", "x29", "x30",
+            "x19", "x20", "x21", "x22", "x23", "x24",
+            "x25", "x26", "x27", "x28",
+            "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15",
+        ),
+    },
+}
+
+
+def _get_arch():
+    """Detect target architecture using the GDB Python API.
+
+    Queries the current frame or inferior for the architecture name,
+    avoiding CLI parsing and static caching at import time.
+    """
+    try:
+        name = gdb.newest_frame().architecture().name()
+    except Exception:
+        name = gdb.selected_inferior().architecture().name()
+
+    if name.startswith("aarch64"):
+        return "aarch64"
+    if "x86-64" in name or name.startswith("i386:x86-64"):
+        return "x86_64"
+    raise gdb.GdbError(f"Unsupported architecture: {name}")
 
 TYPE_NAMES = {0: "MAIN", 1: "DISPATCH", 2: "WORKER"}
 PRIO_NAMES = {0: "NORMAL", 1: "BKGND", 2: "HIGH"}
@@ -192,7 +254,7 @@ def _get_entry_offset():
     """Get byte offset of entry_ within FiberInterface.
 
     entry_ is the first DATA member but FiberInterface has a vtable pointer
-    (virtual destructor), so entry_ is typically at offset 8 on x86_64.
+    (virtual destructor), so entry_ is typically at offset 8.
     We use GDB's type info to be safe.
     """
     fi_type = gdb.lookup_type("util::fb2::detail::FiberInterface")
@@ -217,30 +279,49 @@ def _read_saved_regs(fctx):
     """Read saved registers from the fcontext save area. Returns a dict."""
     if fctx == 0:
         return None
-    return {
-        "r12": _read_u64(fctx + FCTX_R12_OFFSET),
-        "r13": _read_u64(fctx + FCTX_R13_OFFSET),
-        "r14": _read_u64(fctx + FCTX_R14_OFFSET),
-        "r15": _read_u64(fctx + FCTX_R15_OFFSET),
-        "rbx": _read_u64(fctx + FCTX_RBX_OFFSET),
-        "rbp": _read_u64(fctx + FCTX_RBP_OFFSET),
-        "rip": _read_u64(fctx + FCTX_RIP_OFFSET),
-        "rsp": fctx + FCTX_FRAME_SIZE,
-    }
+    cfg = _ARCH_CONFIGS[_get_arch()]
+    regs = {}
+    for name, offset in cfg["regs"].items():
+        regs[name] = _read_u64(fctx + offset)
+    # SP is not saved explicitly; it equals fctx + frame_size (the stack
+    # pointer value right before jump_fcontext was called).
+    regs[cfg["sp"]] = fctx + cfg["frame_size"]
+    return regs
+
+
+def _read_reg_raw(name):
+    """Read a GDB register as a uint64_t.
+
+    For integer registers, int(gdb.parse_and_eval("$reg")) works directly.
+    For aarch64 FPU d-registers the GDB Value has a struct type
+    {f, u, s}; we read the '.u' (unsigned) member.
+    """
+    try:
+        return int(gdb.parse_and_eval(f"${name}"))
+    except (gdb.error, TypeError):
+        # aarch64 d-register: access the unsigned member.
+        return int(gdb.parse_and_eval(f"${name}.u"))
 
 
 def _get_current_regs():
     """Save current GDB register values."""
+    cfg = _ARCH_CONFIGS[_get_arch()]
     regs = {}
-    for name in ("rsp", "rbp", "rip", "r12", "r13", "r14", "r15", "rbx"):
-        regs[name] = int(gdb.parse_and_eval(f"${name}"))
+    for name in cfg["callee_saved"]:
+        regs[name] = _read_reg_raw(name)
     return regs
 
 
 def _set_regs(regs):
-    """Set GDB register values from a dict."""
+    """Set GDB register values from a dict.
+
+    For aarch64 d-registers, set the '.u' (unsigned) member.
+    """
     for name, val in regs.items():
-        gdb.execute(f"set ${name} = {val:#x}", to_string=True)
+        if name.startswith("d") and name[1:].isdigit():
+            gdb.execute(f"set ${name}.u = {val:#x}", to_string=True)
+        else:
+            gdb.execute(f"set ${name} = {val:#x}", to_string=True)
 
 
 def _find_fiber(arg):
@@ -448,4 +529,7 @@ FiberBtCommand()
 FiberSwitchCommand()
 FiberRestoreCommand()
 
-gdb.write("Helio fiber debugging commands loaded: fibers, fiber-bt, fiber-switch, fiber-restore\n")
+gdb.write(
+    "Helio fiber debugging commands loaded (x86_64, aarch64): "
+    "fibers, fiber-bt, fiber-switch, fiber-restore\n"
+)
