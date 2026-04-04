@@ -6,7 +6,6 @@
 
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
-#include "util/fibers/detail/wait_queue.h"
 
 #include <atomic>
 #include <boost/intrusive/slist.hpp>
@@ -16,11 +15,14 @@
 
 #include "base/gtest.h"
 #include "base/logging.h"
+#include "base/mpmc_bounded_queue.h"
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/detail/wait_queue.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/future.h"
+#include "util/fibers/simple_channel.h"
 #include "util/fibers/synchronization.h"
 
 #ifdef __linux__
@@ -1094,6 +1096,55 @@ TEST_P(ProactorTest, FiberFile) {
     unique_ptr<io::WriteFile> file(std::move(res.value()));
     std::ignore = file->Close();
   });
+}
+
+// Stress test for SimpleChannel::Pop() TOCTOU race.
+TEST_F(FiberTest, SimpleChannelPopRace) {
+  constexpr unsigned kNumProducers = 4;
+  constexpr unsigned kItemsPerProducer = 3;
+  constexpr unsigned kIterations = 10000;
+  constexpr int kExpectedTotal = kNumProducers * kItemsPerProducer;
+
+  using Channel = SimpleChannel<int, base::mpmc_bounded_queue<int>>;
+
+  vector<unique_ptr<ProactorThread>> proactor_threads;
+  for (unsigned i = 0; i < kNumProducers + 1; i++) {
+    proactor_threads.push_back(make_unique<ProactorThread>(i, ProactorBase::EPOLL));
+  }
+
+  for (unsigned iter = 0; iter < kIterations; iter++) {
+    Channel channel(2, kNumProducers);
+    int popped = 0;
+    int missed = 0;
+
+    vector<Fiber> fibers;
+
+    // Consumer fiber on proactor 0.
+    fibers.push_back(proactor_threads[0]->get()->LaunchFiber([&] {
+      int val;
+      while (channel.Pop(val))
+        popped++;
+      // Items found here were missed by Pop() due to the TOCTOU race.
+      while (channel.TryPop(val))
+        missed++;
+    }));
+
+    // Producer fibers on proactors 1..N.
+    for (unsigned p = 0; p < kNumProducers; p++) {
+      fibers.push_back(proactor_threads[p + 1]->get()->LaunchFiber([&] {
+        for (unsigned i = 0; i < kItemsPerProducer; i++)
+          channel.Push(1);
+        channel.StartClosing();
+      }));
+    }
+
+    for (auto& fb : fibers)
+      fb.Join();
+
+    ASSERT_EQ(missed, 0) << "Pop() has a TOCTOU race: items pushed between "
+                            "TryPop and IsClosing checks are lost, iter " << iter;
+    ASSERT_EQ(popped + missed, kExpectedTotal) << "Data loss at iteration " << iter;
+  }
 }
 
 }  // namespace fb2

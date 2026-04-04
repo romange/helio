@@ -118,7 +118,10 @@ template <typename T, typename Q> bool SimpleChannel<T, Q>::Pop(T& dest) {
     }
 
     if (IsClosing()) {
-      return false;
+      // An item may have been pushed between our TryPop and this check.
+      // All producers finished pushing before calling StartClosing(),
+      // so one more TryPop drains the race window.
+      return TryPop(dest);
     }
 
     pop_ec_.wait(key.epoch());
