@@ -7,6 +7,7 @@
 #ifdef USE_ABSL_LOG
 
 #include <absl/flags/flag.h>
+#include <absl/log/globals.h>
 #include <absl/log/log_entry.h>
 #include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
@@ -113,10 +114,13 @@ ABSL_FLAG(int32_t, logbufsecs, 30, "Buffer log messages for at most this many se
 ABSL_FLAG(uint32_t, max_log_size, 200,
           "Approximate maximum log file size (in MB). A value of 0 is treated as 1.");
 
+// Backward compatibility flags from glog.
+ABSL_FLAG(bool, logtostderr, false, "log messages go to stderr instead of logfiles");
+
 namespace base {
 
 bool FileLogSink::LogFile::Open(const std::string& base_path, int severity,
-                                const std::string& pid_str) {
+                                const std::string& pid_str, const std::string& user_str) {
   if (fp_) {
     Close(false);
   }
@@ -126,7 +130,7 @@ bool FileLogSink::LogFile::Open(const std::string& base_path, int severity,
     return false;
   }
 
-  path_ = absl::StrCat(base_path, ".", kSeverityNames[severity], ".",
+  path_ = absl::StrCat(base_path, ".", user_str, ".", kSeverityNames[severity], ".",
                        absl::FormatTime("%Y%m%d-%H%M%S", absl::Now(), absl::UTCTimeZone()), ".",
                        pid_str, ".log");
 
@@ -138,6 +142,14 @@ bool FileLogSink::LogFile::Open(const std::string& base_path, int severity,
   }
   file_length_ = 0;
   ResetFlushThresholds();
+
+  if (!base_path.empty()) {
+    string link_path = absl::StrCat(base_path, ".", kSeverityNames[severity]);
+    string target = path_.substr(path_.rfind('/') + 1);
+    unlink(link_path.c_str());
+    symlink(target.c_str(), link_path.c_str());
+  }
+
   return true;
 }
 
@@ -182,6 +194,14 @@ void FileLogSink::LogFile::ResetFlushThresholds() {
 }
 
 void FileLogSink::Init() {
+  // Check backward compatibility flags from glog.
+  // logtostderr means no file logging (only stderr).
+  if (absl::GetFlag(FLAGS_logtostderr)) {
+    absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
+    max_file_size_mb_ = 0;
+    return;
+  }
+
   base_dir_ = FindLoggingDir();
   if (base_dir_.empty()) {
     base_path_.clear();
@@ -191,8 +211,9 @@ void FileLogSink::Init() {
 
   assert(base_dir_.back() == '/');
 
-  base_path_ = absl::StrCat(base_dir_, ProgramBaseName(), ".", MyUserName());
+  base_path_ = absl::StrCat(base_dir_, ProgramBaseName());
   pid_str_ = std::to_string(getpid());
+  user_str_ = MyUserName();
   max_file_size_mb_ = std::max<uint32_t>(1U, absl::GetFlag(FLAGS_max_log_size));
 }
 
@@ -221,7 +242,7 @@ void FileLogSink::Send(const absl::LogEntry& entry) {
       continue;
 
     if (lf.needs_open(static_cast<size_t>(max_file_size_mb_) << 20)) {
-      if (!lf.Open(base_path_, i, pid_str_))
+      if (!lf.Open(base_path_, i, pid_str_, user_str_))
         continue;
     }
 

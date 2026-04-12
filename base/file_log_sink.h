@@ -52,7 +52,8 @@ class FileLogSink : public absl::LogSink {
       return fp_ != nullptr && !dead();
     }
 
-    bool Open(const std::string& base_path, int severity, const std::string& pid_str);
+    bool Open(const std::string& base_path, int severity, const std::string& pid_str,
+              const std::string& user_str);
     // Writes data and flushes based on sev and the cached flag values.
     void WriteAndMaybeFlush(absl::string_view data, int sev);
     void FlushLocked();  // caller must hold mu_
@@ -68,8 +69,9 @@ class FileLogSink : public absl::LogSink {
   };
 
   std::string base_dir_;
-  std::string base_path_;  // cached: <log_dir>/<program>.<user>.log
+  std::string base_path_;  // cached: <log_dir>/<program>
   std::string pid_str_;    // cached: string form of getpid()
+  std::string user_str_;   // cached: MyUserName()
   uint32_t max_file_size_mb_ = 0;
   LogFile files_[3];
 };
