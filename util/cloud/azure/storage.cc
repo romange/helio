@@ -173,7 +173,8 @@ detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url,
 
 class ReadFile final : public io::ReadonlyFile {
  public:
-  ReadFile(string read_obj_url, ReadFileOptions opts) : read_obj_url_(read_obj_url), opts_(opts) {
+  ReadFile(string read_obj_url, ReadFileOptions opts)
+      : read_obj_url_(std::move(read_obj_url)), opts_(std::move(opts)) {
   }
 
   virtual ~ReadFile();
@@ -213,7 +214,7 @@ class ReadFile final : public io::ReadonlyFile {
 // size before uploading.
 class WriteFile : public detail::AbstractStorageFile {
  public:
-  WriteFile(string_view container, string_view key, const WriteFileOptions& opts);
+  WriteFile(string_view path_prefix, string_view container, string_view key, WriteFileOptions opts);
   ~WriteFile();
 
   // Closes the object and completes the multipart upload. Therefore the object
@@ -309,11 +310,12 @@ io::SizeOrError ReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   return total;
 }
 
-WriteFile::WriteFile(string_view container, string_view key, const WriteFileOptions& opts)
-    : detail::AbstractStorageFile(key, 1UL << 23), opts_(opts) {
+WriteFile::WriteFile(string_view path_prefix, string_view container, string_view key,
+                     WriteFileOptions opts)
+    : detail::AbstractStorageFile(key, 1UL << 23), opts_(std::move(opts)) {
   string endpoint = opts_.creds_provider->ServiceEndpoint();
   pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
-  target_ = absl::StrCat("/", container, "/", key);
+  target_ = absl::StrCat(path_prefix, "/", container, "/", key);
 }
 
 WriteFile::~WriteFile() {
@@ -400,13 +402,17 @@ auto WriteFile::PrepareBlockListReq() -> unique_ptr<UploadBlockListRequest> {
 }  // namespace
 
 error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
-  SSL_CTX* ctx = http::TlsClient::CreateSslContext();
-  absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
+  SSL_CTX* ctx = creds_->IsHttps() ? http::TlsClient::CreateSslContext() : nullptr;
+  absl::Cleanup cleanup([ctx] {
+    if (ctx)
+      http::TlsClient::FreeContext(ctx);
+  });
 
   string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  detail::EmptyRequestImpl req = FillRequest(endpoint, "/?comp=list", creds_);
+  string list_url = absl::StrCat(creds_->GetPathPrefix(), "/?comp=list");
+  detail::EmptyRequestImpl req = FillRequest(endpoint, list_url, creds_);
   RobustSender sender(pool.get(), creds_);
   RobustSender::SenderResult send_res;
   RETURN_ERROR(sender.Send(3, &req, &send_res));
@@ -429,13 +435,17 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
 
 error_code Storage::List(string_view container, std::string_view prefix, bool recursive,
                          unsigned max_results, function<void(const ListItem&)> cb) {
-  SSL_CTX* ctx = http::TlsClient::CreateSslContext();
-  absl::Cleanup cleanup([ctx] { http::TlsClient::FreeContext(ctx); });
+  SSL_CTX* ctx = creds_->IsHttps() ? http::TlsClient::CreateSslContext() : nullptr;
+  absl::Cleanup cleanup([ctx] {
+    if (ctx)
+      http::TlsClient::FreeContext(ctx);
+  });
 
   string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  string url = absl::StrCat("/", container, "?restype=container&comp=list");
+  string url =
+      absl::StrCat(creds_->GetPathPrefix(), "/", container, "?restype=container&comp=list");
   absl::StrAppend(&url, "&maxresults=", max_results);
   if (!prefix.empty()) {
     absl::StrAppend(&url, "&prefix=");
@@ -458,23 +468,22 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   return {};
 }
 
-string BuildGetObjUrl(const string& container, const string& key) {
-  string url = absl::StrCat("/", container, "/", key);
-  return url;
+string BuildGetObjUrl(string_view path_prefix, const string& container, const string& key) {
+  return absl::StrCat(path_prefix, "/", container, "/", key);
 }
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
                                            const ReadFileOptions& opts) {
-  DCHECK(opts.creds_provider && opts.ssl_cntx);
-  string url = BuildGetObjUrl(container, key);
+  DCHECK(opts.creds_provider);
+  string url = BuildGetObjUrl(opts.creds_provider->GetPathPrefix(), container, key);
   return new ReadFile(url, opts);
 }
 
 io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std::string& key,
                                          const WriteFileOptions& opts) {
-  DCHECK(opts.creds_provider && opts.ssl_cntx);
+  DCHECK(opts.creds_provider);
 
-  return new WriteFile(container, key, opts);
+  return new WriteFile(opts.creds_provider->GetPathPrefix(), container, key, opts);
 }
 
 }  // namespace cloud::azure
