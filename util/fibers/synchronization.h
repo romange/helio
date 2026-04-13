@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
 #include <condition_variable>  // for cv_status
 #include <optional>
 
@@ -20,6 +21,13 @@ namespace fb2 {
 // spurious waits on the consumer side.
 // This class has another wonderful property: notification thread does not need to lock mutex,
 // which means it can be used from the io_context (ring0) fiber.
+//
+// Supports two subscription modes:
+// - One-shot (default): Waiter unlinked after first notification. Use when waiting for a
+//   single event or condition to become true once (see await(), check_or_subscribe()).
+// - Persistent: Waiter remains linked across multiple notifications. Use when you need to
+//   receive all future notifications until explicit unsubscription (see subscribe_persistent()).
+//   Useful for long-lived monitoring or repeated event handling.
 class EventCount {
  public:
   EventCount() noexcept : val_(0) {
@@ -53,20 +61,26 @@ class EventCount {
     }
   };
 
-  // Automatically unlinks waiter when dropped
+  // RAII guard for waiter subscription. Automatically unlinks when destroyed.
+  // For persistent waiters (waiter_->is_persistent() is true): also resets the waiter's persistent
+  // flag on destruction so the waiter can be reused for a different subscription mode.
   class SubKey : public Key {
     friend class EventCount;
-    detail::Waiter* waiter;
+    detail::Waiter* waiter_;
 
-    SubKey(Key&& key, detail::Waiter* w) : Key{std::move(key)}, waiter{w} {
+    SubKey(Key&& key, detail::Waiter* w) noexcept : Key{std::move(key)}, waiter_{w} {
     }
+
+    SubKey(const SubKey&) = delete;
 
    public:
     SubKey(SubKey&& other) noexcept = default;
 
     ~SubKey() {
-      if (me_ != nullptr)
-        me_->unsubscribe(waiter);
+      if (me_ != nullptr) {
+        me_->unsubscribe(waiter_);
+        waiter_->set_persistent(false);
+      }
     }
   };
 
@@ -94,7 +108,16 @@ class EventCount {
   template <typename Condition>
   std::optional<SubKey> check_or_subscribe(Condition condition, detail::Waiter* w);
 
-  // Advanced API, most use-cases will requie await function.
+  // Subscribe a callback-based waiter persistently: both notify() and notifyAll()
+  // fire its callback but do NOT unlink it. Returns a RAII guard that unlinks on
+  // destruction.
+  //
+  // IMPORTANT: The callback must NOT call unsubscribe() or destroy SubKey, because
+  // notification runs under EventCount's internal spinlock and re-entering it would
+  // deadlock. The callback should only set a flag or perform a non-blocking signal.
+  SubKey subscribe_persistent(detail::Waiter* w) noexcept;
+
+  // Advanced API, most use-cases will require await function.
   Key prepareWait() noexcept {
     uint64_t prev = val_.fetch_add(kAddWaiter, std::memory_order_acq_rel);
     return Key(this, prev >> kEpochShift);
@@ -586,6 +609,21 @@ std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Condition condi
       return SubKey{std::move(key), w};
   }
   return {};
+}
+
+inline EventCount::SubKey EventCount::subscribe_persistent(detail::Waiter* w) noexcept {
+  assert(!w->IsLinked());
+  w->set_persistent(true);
+  Key key = prepareWait();
+  std::unique_lock lk(lock_);
+
+  // No epoch check needed here (unlike one-shot subscribe()). One-shot waiters need the
+  // epoch check because they receive exactly one notification - missing the gap notification
+  // means sleeping forever. Persistent waiters remain linked across ALL future notifications,
+  // so even if a notification fires in the prepareWait()-to-Link() gap, the next notification
+  // will reach this waiter. The caller is expected to check its predicate after subscribing.
+  wait_queue_.Link(w);
+  return SubKey{std::move(key), w};
 }
 
 template <typename Condition>

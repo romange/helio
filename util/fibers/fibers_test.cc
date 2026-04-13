@@ -1147,5 +1147,183 @@ TEST_F(FiberTest, SimpleChannelPopRace) {
   }
 }
 
+//
+// Persistent Waiter Tests ---
+//
+
+// Basic persistence - notifyAll fires callback multiple times, waiter stays linked.
+TEST_F(FiberTest, PersistentWaiterNotifyAll) {
+  EventCount ec;
+  unsigned counter{};
+  auto cb = [&counter] { ++counter; };
+  detail::Waiter waiter{cb};
+
+  auto sub = ec.subscribe_persistent(&waiter);
+  EXPECT_TRUE(waiter.IsLinked());
+
+  ec.notifyAll();
+  ec.notifyAll();
+  ec.notifyAll();
+
+  EXPECT_EQ(counter, 3u);
+  EXPECT_TRUE(waiter.IsLinked());
+  EXPECT_TRUE(waiter.is_persistent());
+}
+
+// SubKey RAII - destruction unlinks and resets persistent flag.
+TEST_F(FiberTest, PersistentWaiterSubKeyRAII) {
+  EventCount ec;
+  unsigned counter{};
+  auto cb = [&counter] { ++counter; };
+  detail::Waiter waiter{cb};
+
+  {
+    auto sub = ec.subscribe_persistent(&waiter);
+    EXPECT_TRUE(waiter.IsLinked());
+    EXPECT_TRUE(waiter.is_persistent());
+
+    ec.notifyAll();
+    EXPECT_EQ(counter, 1u);
+  }  // SubKey destroyed here
+
+  EXPECT_FALSE(waiter.IsLinked());
+  EXPECT_FALSE(waiter.is_persistent());
+
+  // Subsequent notifications must not reach the unlinked waiter.
+  ec.notifyAll();
+  EXPECT_EQ(counter, 1u);
+}
+
+// notify() on a single persistent waiter - no starvation DCHECK.
+TEST_F(FiberTest, PersistentWaiterNotifyOneSingle) {
+  EventCount ec;
+  unsigned counter{};
+  auto cb = [&counter] { ++counter; };
+  detail::Waiter waiter{cb};
+
+  auto sub = ec.subscribe_persistent(&waiter);
+
+  // Only one waiter in the queue: &front == &back, so no DCHECK fires.
+  ec.notify();
+  ec.notify();
+
+  EXPECT_EQ(counter, 2u);
+  EXPECT_TRUE(waiter.IsLinked());
+}
+
+// Mixed queue via notifyAll - persistent stays, one-shot fiber wakes.
+TEST_F(FiberTest, PersistentWaiterMixedNotifyAll) {
+  EventCount ec;
+  unsigned persistent_count{};
+  auto cb = [&persistent_count] { ++persistent_count; };
+  detail::Waiter waiter{cb};
+
+  auto sub = ec.subscribe_persistent(&waiter);
+
+  bool fiber_woke{false};
+  Fiber fb(Launch::dispatch, "oneshot", [&] {
+    ec.await([&] { return fiber_woke; });
+  });
+
+  // Both waiters are now in the queue. Fire notifyAll.
+  fiber_woke = true;
+  ec.notifyAll();
+
+  fb.Join();
+
+  // Persistent waiter got the notification, one-shot fiber completed.
+  EXPECT_GE(persistent_count, 1u);
+  EXPECT_TRUE(waiter.IsLinked());
+}
+
+// SubKey move semantics - ownership transfers correctly.
+TEST_F(FiberTest, PersistentWaiterSubKeyMove) {
+  EventCount ec;
+  unsigned counter{};
+  auto cb = [&counter] { ++counter; };
+  detail::Waiter waiter{cb};
+
+  std::optional<EventCount::SubKey> holder;
+  {
+    auto sub = ec.subscribe_persistent(&waiter);
+    holder.emplace(std::move(sub));
+    // Original sub is moved-from; waiter must still be linked via holder.
+  }
+
+  EXPECT_TRUE(waiter.IsLinked());
+  ec.notifyAll();
+  EXPECT_EQ(counter, 1u);
+
+  // Destroy holder - should unlink.
+  holder.reset();
+  EXPECT_FALSE(waiter.IsLinked());
+  EXPECT_FALSE(waiter.is_persistent());
+
+  ec.notifyAll();
+  EXPECT_EQ(counter, 1u);
+}
+
+// Waiter re-use - persistent then one-shot on same Waiter object.
+TEST_F(FiberTest, PersistentWaiterReuse) {
+  EventCount ec;
+  unsigned counter{};
+  auto cb = [&counter] { ++counter; };
+  detail::Waiter waiter{cb};
+
+  // Phase 1: persistent subscription.
+  {
+    auto sub = ec.subscribe_persistent(&waiter);
+    ec.notifyAll();
+    EXPECT_EQ(counter, 1u);
+    EXPECT_TRUE(waiter.is_persistent());
+  }
+  // SubKey destroyed: persistent flag reset, waiter unlinked.
+  EXPECT_FALSE(waiter.is_persistent());
+  EXPECT_FALSE(waiter.IsLinked());
+
+  // Phase 2: one-shot subscription with the same waiter.
+  auto sub = ec.check_or_subscribe([&] { return false; }, &waiter);
+  ASSERT_TRUE(sub.has_value());
+  EXPECT_TRUE(waiter.IsLinked());
+  EXPECT_FALSE(waiter.is_persistent());
+
+  ec.notifyAll();
+  // One-shot waiter should be unlinked after notification.
+  EXPECT_FALSE(waiter.IsLinked());
+  EXPECT_EQ(counter, 2u);
+}
+
+// (Debug only): Starvation guard - DCHECK fires when notify() hits a persistent
+// waiter with other waiters queued behind it.
+#ifndef NDEBUG
+TEST_F(FiberTest, PersistentWaiterStarvationDCheck) {
+  testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+  EXPECT_DEATH(
+      {
+        EventCount ec;
+        unsigned counter{};
+        auto cb = [&counter] { ++counter; };
+        detail::Waiter persistent_waiter{cb};
+
+        auto sub = ec.subscribe_persistent(&persistent_waiter);
+
+        // Add a second (one-shot) waiter behind the persistent one via a fiber.
+        // Launch::dispatch ensures the fiber runs immediately and parks on await().
+        bool wake{false};
+        Fiber fb(Launch::dispatch, "oneshot", [&] { ec.await([&] { return wake; }); });
+
+        // Now there are 2 waiters and the persistent one is at front. DCHECK should fire.
+        ec.notify();
+
+        // Cleanup (unreachable after DCHECK death).
+        wake = true;
+        ec.notifyAll();
+        fb.Join();
+      },
+      "causes starvation");
+}
+#endif
+
 }  // namespace fb2
 }  // namespace util
