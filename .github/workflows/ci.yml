@@ -104,7 +104,7 @@ jobs:
           cd build
 
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
-            https_client_cli s3_demo
+            https_client_cli s3_demo gcs_demo
           ls -la
 
     - name: Test
@@ -138,6 +138,21 @@ jobs:
         echo "MINIO_SECRET_KEY=minioadmin"          >> $GITHUB_ENV
         echo "MINIO_BUCKET=ci-test-bucket"          >> $GITHUB_ENV
 
+    - name: Start Azurite
+      if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
+      run: |
+        curl -fsSL https://nodejs.org/dist/v22.16.0/node-v22.16.0-linux-x64.tar.xz | tar -xJ -C /tmp
+        export PATH=/tmp/node-v22.16.0-linux-x64/bin:$PATH
+        npm install -g azurite
+        azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck &
+        for i in $(seq 1 20); do
+          curl -sf http://localhost:10000/ 2>/dev/null && break
+          # Azurite returns 400 for bare /, so check for any response
+          curl -so /dev/null -w '%{http_code}' http://localhost:10000/ 2>/dev/null | grep -q '400' && break
+          sleep 1
+        done
+        echo "AZURITE_ENDPOINT=http://localhost:10000" >> $GITHUB_ENV
+
     - name: Authenticate to AWS
       if: >
         matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64' &&
@@ -152,7 +167,7 @@ jobs:
       env:
         S3_TEST_BUCKET: ${{ secrets.S3_REGTEST_BUCKET }}
       run: |
-          PIP_BREAK_SYSTEM_PACKAGES=1 pip install pytest
+          PIP_BREAK_SYSTEM_PACKAGES=1 pip install pytest azure-storage-blob
           pwd  # /__w/helio/helio
           cat <<EOF > asan_suppressions.txt
           leak:ares_malloc_zero
@@ -187,4 +202,3 @@ jobs:
       with:
          files: ./coverage.info
          fail_ci_if_error: false
-

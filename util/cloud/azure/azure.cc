@@ -158,7 +158,7 @@ string_view MapGet(const ConnMap& map, string_view key) {
   return it->second;
 }
 
-bool ParseEndpointHost(string_view endpoint, string* host) {
+bool ParseEndpointHost(string_view endpoint, AccountInfo* out) {
   endpoint = absl::StripAsciiWhitespace(endpoint);
   if (endpoint.empty()) {
     return false;
@@ -170,7 +170,16 @@ bool ParseEndpointHost(string_view endpoint, string* host) {
   }
 
   bool default_port = parsed.port == (parsed.is_https ? "443" : "80");
-  *host = default_port ? std::move(parsed.host) : absl::StrCat(parsed.host, ":", parsed.port);
+  out->service_endpoint =
+      default_port ? std::move(parsed.host) : absl::StrCat(parsed.host, ":", parsed.port);
+  out->is_https = parsed.is_https;
+  if (parsed.path != "/") {
+    string_view p = parsed.path;
+    if (p.size() > 1 && p.back() == '/') {
+      p.remove_suffix(1);
+    }
+    out->path_prefix = string(p);
+  }
   return true;
 }
 
@@ -235,23 +244,26 @@ io::Result<pair<string, unsigned>> ParseImdsTokenResponse(string&& response) {
   return make_pair(string(token_it->value.GetString()), expires_in);
 }
 
-error_code ResolveServiceEndpointFromEnv(string_view account_name, string* service_endpoint,
-                                         string* inferred_account_name) {
+// Fills out->service_endpoint, is_https and path_prefix from environment variables.
+// If out->account_name is empty on entry, infers it from the resolved endpoint.
+error_code ResolveServiceEndpointFromEnv(AccountInfo* out) {
   if (const char* ep = getenv("AZURE_STORAGE_BLOB_ENDPOINT"); ep && *ep) {
-    if (!ParseEndpointHost(ep, service_endpoint)) {
+    if (!ParseEndpointHost(ep, out)) {
       return make_error_code(errc::bad_message);
     }
   } else if (const char* url = getenv("AZURE_STORAGE_ACCOUNT_URL"); url && *url) {
-    if (!ParseEndpointHost(url, service_endpoint)) {
+    if (!ParseEndpointHost(url, out)) {
       return make_error_code(errc::bad_message);
     }
-  } else if (!account_name.empty()) {
-    *service_endpoint = absl::StrCat(account_name, ".blob.", kDefaultEndpointSuffix);
+  } else if (!out->account_name.empty()) {
+    out->service_endpoint = absl::StrCat(out->account_name, ".blob.", kDefaultEndpointSuffix);
   } else {
     return make_error_code(errc::not_supported);
   }
 
-  *inferred_account_name = InferAccountNameFromHost(*service_endpoint);
+  if (out->account_name.empty()) {
+    out->account_name = InferAccountNameFromHost(out->service_endpoint);
+  }
   return {};
 }
 
@@ -260,9 +272,8 @@ error_code ResolveServiceEndpointFromEnv(string_view account_name, string* servi
 error_code Credentials::Init(unsigned connect_ms) {
   connect_ms_ = connect_ms ? connect_ms : 1000;
 
-  account_name_.clear();
+  account_info_ = {};
   account_key_.clear();
-  service_endpoint_.clear();
   sas_query_.clear();
   source_ = CredSource::kNone;
   auth_mode_ = AuthMode::kNone;
@@ -275,7 +286,7 @@ error_code Credentials::Init(unsigned connect_ms) {
     error_code ec = (this->*fn)();
     if (!ec) {
       LOG_FIRST_N(INFO, 1) << "azure: loaded credentials; provider=" << name
-                           << " account=" << account_name_;
+                           << " account=" << account_info_.account_name;
       return true;
     }
     if (ec != errc::not_supported) {
@@ -304,10 +315,10 @@ error_code Credentials::Init(unsigned connect_ms) {
 }
 
 string Credentials::ServiceEndpoint() const {
-  if (!service_endpoint_.empty()) {
-    return service_endpoint_;
+  if (!account_info_.service_endpoint.empty()) {
+    return account_info_.service_endpoint;
   }
-  return absl::StrCat(account_name_, ".blob.", kDefaultEndpointSuffix);
+  return absl::StrCat(account_info_.account_name, ".blob.", kDefaultEndpointSuffix);
 }
 
 error_code Credentials::TryConnectionString() {
@@ -325,14 +336,14 @@ error_code Credentials::TryConnectionString() {
     return make_error_code(errc::not_supported);
   }
 
-  string account_name(MapGet(params, "AccountName"));
+  AccountInfo info;
+  info.account_name = string(MapGet(params, "AccountName"));
   string account_key(MapGet(params, "AccountKey"));
   string sas = NormalizeSasQuery(MapGet(params, "SharedAccessSignature"));
 
-  string endpoint;
   string_view blob_endpoint = MapGet(params, "BlobEndpoint");
   if (!blob_endpoint.empty()) {
-    if (!ParseEndpointHost(blob_endpoint, &endpoint)) {
+    if (!ParseEndpointHost(blob_endpoint, &info)) {
       return make_error_code(errc::bad_message);
     }
   } else {
@@ -340,28 +351,26 @@ error_code Credentials::TryConnectionString() {
     if (endpoint_suffix.empty()) {
       endpoint_suffix = kDefaultEndpointSuffix;
     }
-    if (account_name.empty()) {
+    if (info.account_name.empty()) {
       return make_error_code(errc::bad_message);
     }
-    endpoint = absl::StrCat(account_name, ".blob.", endpoint_suffix);
+    info.service_endpoint = absl::StrCat(info.account_name, ".blob.", endpoint_suffix);
+  }
+
+  if (info.account_name.empty()) {
+    info.account_name = InferAccountNameFromHost(info.service_endpoint);
+  }
+  if (info.account_name.empty()) {
+    return make_error_code(errc::bad_message);
   }
 
   if (!account_key.empty()) {
-    if (account_name.empty()) {
-      account_name = InferAccountNameFromHost(endpoint);
-    }
-    if (account_name.empty()) {
-      return make_error_code(errc::bad_message);
-    }
-
-    SetSharedKey(CredSource::kConnectionString, std::move(account_name), std::move(account_key),
-                 std::move(endpoint));
+    SetSharedKey(CredSource::kConnectionString, std::move(info), std::move(account_key));
     return {};
   }
 
   if (!sas.empty()) {
-    SetSas(CredSource::kConnectionString, std::move(account_name), std::move(endpoint),
-           std::move(sas));
+    SetSas(CredSource::kConnectionString, std::move(info), std::move(sas));
     return {};
   }
 
@@ -369,23 +378,18 @@ error_code Credentials::TryConnectionString() {
 }
 
 error_code Credentials::TryEnvSharedKey() {
-  string account = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
   string key = GetEnvOrEmpty("AZURE_STORAGE_KEY");
   string sas = NormalizeSasQuery(GetEnvOrEmpty("AZURE_STORAGE_SAS_TOKEN"));
 
-  string endpoint;
-  string inferred_account;
-  error_code ep_ec = ResolveServiceEndpointFromEnv(account, &endpoint, &inferred_account);
+  AccountInfo info;
+  info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
+  error_code ep_ec = ResolveServiceEndpointFromEnv(&info);
 
   if (!key.empty()) {
-    if (account.empty()) {
-      account = inferred_account;
-    }
-    if (account.empty() || ep_ec) {
+    if (info.account_name.empty() || ep_ec) {
       return ep_ec ? ep_ec : make_error_code(errc::bad_message);
     }
-
-    SetSharedKey(CredSource::kEnv, std::move(account), std::move(key), std::move(endpoint));
+    SetSharedKey(CredSource::kEnv, std::move(info), std::move(key));
     return {};
   }
 
@@ -393,8 +397,7 @@ error_code Credentials::TryEnvSharedKey() {
     if (ep_ec) {
       return ep_ec;
     }
-
-    SetSas(CredSource::kEnv, std::move(account), std::move(endpoint), std::move(sas));
+    SetSas(CredSource::kEnv, std::move(info), std::move(sas));
     return {};
   }
 
@@ -402,14 +405,9 @@ error_code Credentials::TryEnvSharedKey() {
 }
 
 error_code Credentials::TryManagedIdentity() {
-  string account = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
-  string endpoint;
-  string inferred_account;
-
-  RETURN_ERROR(ResolveServiceEndpointFromEnv(account, &endpoint, &inferred_account));
-  if (account.empty()) {
-    account = std::move(inferred_account);
-  }
+  AccountInfo info;
+  info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
+  RETURN_ERROR(ResolveServiceEndpointFromEnv(&info));
 
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
   CHECK(pb);
@@ -442,18 +440,22 @@ error_code Credentials::TryManagedIdentity() {
     return token_ttl.error();
   }
 
-  SetBearer(std::move(account), std::move(endpoint), std::move(token_ttl->first),
-            token_ttl->second);
+  SetBearer(std::move(info), std::move(token_ttl->first), token_ttl->second);
   return {};
 }
 
-void Credentials::SetSharedKey(CredSource src, string account, string key, string endpoint) {
-  account_name_ = std::move(account);
-  account_key_ = std::move(key);
-  service_endpoint_ = std::move(endpoint);
-  sas_query_.clear();
+void Credentials::SetCredentials(CredSource src, AccountInfo info, AuthMode mode,
+                                 string key_or_sas) {
+  account_info_ = std::move(info);
   source_ = src;
-  auth_mode_ = AuthMode::kSharedKey;
+  auth_mode_ = mode;
+  if (mode == AuthMode::kSharedKey) {
+    account_key_ = std::move(key_or_sas);
+    sas_query_.clear();
+  } else {
+    account_key_.clear();
+    sas_query_ = std::move(key_or_sas);
+  }
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     access_token_.clear();
@@ -461,26 +463,19 @@ void Credentials::SetSharedKey(CredSource src, string account, string key, strin
   expire_time_.store(0, std::memory_order_release);
 }
 
-void Credentials::SetSas(CredSource src, string account, string endpoint, string sas) {
-  account_name_ = std::move(account);
-  account_key_.clear();
-  service_endpoint_ = std::move(endpoint);
-  sas_query_ = std::move(sas);
-  source_ = src;
-  auth_mode_ = AuthMode::kSas;
-  {
-    folly::RWSpinLock::WriteHolder lock(lock_);
-    access_token_.clear();
-  }
-  expire_time_.store(0, std::memory_order_release);
+void Credentials::SetSharedKey(CredSource src, AccountInfo info, string key) {
+  SetCredentials(src, std::move(info), AuthMode::kSharedKey, std::move(key));
 }
 
-void Credentials::SetBearer(string account, string endpoint, string token, unsigned ttl) {
-  VLOG(1) << "azure: obtained access token " << token << ", account=" << account
-          << ", endpoint=" << endpoint << ", expires in " << ttl << " seconds";
-  account_name_ = std::move(account);
+void Credentials::SetSas(CredSource src, AccountInfo info, string sas) {
+  SetCredentials(src, std::move(info), AuthMode::kSas, std::move(sas));
+}
+
+void Credentials::SetBearer(AccountInfo info, string token, unsigned ttl) {
+  VLOG(1) << "azure: obtained access token, account=" << info.account_name
+          << ", endpoint=" << info.service_endpoint << ", expires in " << ttl << " seconds";
+  account_info_ = std::move(info);
   account_key_.clear();
-  service_endpoint_ = std::move(endpoint);
   sas_query_.clear();
   source_ = CredSource::kManagedIdentity;
   auth_mode_ = AuthMode::kBearer;
@@ -508,9 +503,10 @@ void Credentials::Sign(detail::HttpRequestBase* req) const {
 
   switch (auth_mode_) {
     case AuthMode::kSharedKey: {
-      string signature =
-          ComputeSignature(account_name_, req->GetMethod(), req->GetHeaders(), account_key_);
-      req->SetHeader("Authorization", absl::StrCat("SharedKey ", account_name_, ":", signature));
+      string signature = ComputeSignature(account_info_.account_name, req->GetMethod(),
+                                          req->GetHeaders(), account_key_);
+      req->SetHeader("Authorization",
+                     absl::StrCat("SharedKey ", account_info_.account_name, ":", signature));
       break;
     }
     case AuthMode::kBearer: {

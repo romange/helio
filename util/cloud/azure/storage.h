@@ -8,6 +8,7 @@
 #include <system_error>
 
 #include "io/file.h"
+#include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/utils.h"
 
 typedef struct ssl_ctx_st SSL_CTX;
@@ -15,11 +16,9 @@ typedef struct ssl_ctx_st SSL_CTX;
 namespace util {
 namespace cloud::azure {
 
-class Credentials;
-
 class Storage {
  public:
-  explicit Storage(CredentialsProvider* creds) : creds_(creds) {
+  explicit Storage(Credentials* creds) : creds_(creds) {
   }
 
   using ContainerItem = std::string_view;
@@ -30,12 +29,13 @@ class Storage {
                        unsigned max_results, std::function<void(const ListItem&)> cb);
 
  private:
-  CredentialsProvider* creds_;
+  Credentials* creds_;
 };
 
 struct ReadFileOptions {
   CredentialsProvider* creds_provider = nullptr;
-  SSL_CTX* ssl_cntx;
+  SSL_CTX* ssl_cntx = nullptr;
+  std::string path_prefix;  // e.g. "/devstoreaccount1" for Azurite
 };
 
 using WriteFileOptions = ReadFileOptions;
