@@ -617,11 +617,11 @@ inline EventCount::SubKey EventCount::subscribe_persistent(detail::Waiter* w) no
   Key key = prepareWait();
   std::unique_lock lk(lock_);
 
-  // No epoch check needed here (unlike one-shot subscribe()). One-shot waiters need the
-  // epoch check because they receive exactly one notification - missing the gap notification
-  // means sleeping forever. Persistent waiters remain linked across ALL future notifications,
-  // so even if a notification fires in the prepareWait()-to-Link() gap, the next notification
-  // will reach this waiter. The caller is expected to check its predicate after subscribing.
+  // No epoch check needed here (unlike one-shot subscribe()). A notification firing in the
+  // prepareWait()-to-Link() gap IS missed by this waiter, but that is safe because:
+  // 1. Persistent waiters stay linked - the next notify/notifyAll will reach them.
+  // 2. The caller MUST check its predicate after subscribing (standard EventCount contract),
+  //    which catches any state change from the missed notification immediately.
   wait_queue_.Link(w);
   return SubKey{std::move(key), w};
 }
