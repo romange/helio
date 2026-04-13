@@ -145,12 +145,16 @@ jobs:
         export PATH=/tmp/node-v22.16.0-linux-x64/bin:$PATH
         npm install -g azurite
         azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck &
+        ready=0
         for i in $(seq 1 20); do
-          curl -sf http://localhost:10000/ 2>/dev/null && break
-          # Azurite returns 400 for bare /, so check for any response
-          curl -so /dev/null -w '%{http_code}' http://localhost:10000/ 2>/dev/null | grep -q '400' && break
+          if curl -sf http://localhost:10000/ 2>/dev/null || \
+             [ "$(curl -so /dev/null -w '%{http_code}' http://localhost:10000/ 2>/dev/null)" = "400" ]; then
+            ready=1
+            break
+          fi
           sleep 1
         done
+        test "$ready" -eq 1
         echo "AZURITE_ENDPOINT=http://localhost:10000" >> $GITHUB_ENV
 
     - name: Authenticate to AWS
