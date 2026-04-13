@@ -411,7 +411,7 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  string list_url = absl::StrCat(creds_->PathPrefix(), "/?comp=list");
+  string list_url = absl::StrCat(creds_->GetPathPrefix(), "/?comp=list");
   detail::EmptyRequestImpl req = FillRequest(endpoint, list_url, creds_);
   RobustSender sender(pool.get(), creds_);
   RobustSender::SenderResult send_res;
@@ -444,7 +444,8 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   string endpoint = creds_->ServiceEndpoint();
   unique_ptr<http::ClientPool> pool = CreatePool(endpoint, ctx, fb2::ProactorBase::me());
 
-  string url = absl::StrCat(creds_->PathPrefix(), "/", container, "?restype=container&comp=list");
+  string url =
+      absl::StrCat(creds_->GetPathPrefix(), "/", container, "?restype=container&comp=list");
   absl::StrAppend(&url, "&maxresults=", max_results);
   if (!prefix.empty()) {
     absl::StrAppend(&url, "&prefix=");
@@ -474,7 +475,7 @@ string BuildGetObjUrl(string_view path_prefix, const string& container, const st
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
                                            const ReadFileOptions& opts) {
   DCHECK(opts.creds_provider);
-  string url = BuildGetObjUrl(opts.path_prefix, container, key);
+  string url = BuildGetObjUrl(opts.creds_provider->GetPathPrefix(), container, key);
   return new ReadFile(url, opts);
 }
 
@@ -482,7 +483,7 @@ io::Result<io::WriteFile*> OpenWriteFile(const std::string& container, const std
                                          const WriteFileOptions& opts) {
   DCHECK(opts.creds_provider);
 
-  return new WriteFile(opts.path_prefix, container, key, opts);
+  return new WriteFile(opts.creds_provider->GetPathPrefix(), container, key, opts);
 }
 
 }  // namespace cloud::azure

@@ -43,7 +43,7 @@ class Credentials : public CredentialsProvider {
 
   // Returns the path prefix from the BlobEndpoint URL (e.g. "/devstoreaccount1" for Azurite).
   // Empty for real Azure endpoints.
-  const std::string& PathPrefix() const {
+  const std::string& GetPathPrefix() const {
     return account_info_.path_prefix;
   }
 

@@ -33,9 +33,8 @@ class Storage {
 };
 
 struct ReadFileOptions {
-  CredentialsProvider* creds_provider = nullptr;
+  Credentials* creds_provider = nullptr;
   SSL_CTX* ssl_cntx = nullptr;
-  std::string path_prefix;  // e.g. "/devstoreaccount1" for Azurite
 };
 
 using WriteFileOptions = ReadFileOptions;

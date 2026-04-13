@@ -144,7 +144,6 @@ void RunAzure(SSL_CTX* ctx) {
       cloud::azure::WriteFileOptions opts;
       opts.creds_provider = &provider;
       opts.ssl_cntx = effective_ctx;
-      opts.path_prefix = provider.PathPrefix();
       io::Result<io::WriteFile*> dest_res = cloud::azure::OpenWriteFile(bucket, dest_key, opts);
       CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
       unique_ptr<io::WriteFile> dest(*dest_res);
@@ -160,7 +159,6 @@ void RunAzure(SSL_CTX* ctx) {
       cloud::azure::ReadFileOptions opts;
       opts.creds_provider = &provider;
       opts.ssl_cntx = effective_ctx;
-      opts.path_prefix = provider.PathPrefix();
 
       io::Result<io::ReadonlyFile*> dest_res = cloud::azure::OpenReadFile(bucket, dest_key, opts);
       CHECK(dest_res) << "Could not open " << dest_key << " " << dest_res.error().message();
