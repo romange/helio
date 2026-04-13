@@ -16,7 +16,21 @@ namespace detail {
 
 class FiberInterface;
 
-// Event subscription object for either fiber wakeups or generic events
+// Waiter represents a pending notification interest in a WaitQueue. It encapsulates
+// either a suspended FiberInterface (to be resumed) or a synchronous Callback (to be
+// executed). Waiters use intrusive list linkage to avoid allocations during synchronization.
+//
+// Subscription modes:
+// - One-shot (default): Waiter is unlinked before notification. Standard behavior for
+//   mutexes and condition variables where each waiter expects exactly one wakeup.
+// - Persistent: Waiter remains linked after notification. Used for long-lived observers
+//   that need to receive multiple events (e.g., backpressure bridges, event multiplexers).
+//
+// Invariant for persistent waiters:
+// Persistent waiters are intended for broadcast scenarios (NotifyAll). A persistent waiter
+// at the front of the queue will consume every NotifyOne() call, starving any waiters queued behind
+// it. Do NOT mix persistent and one-shot waiters on the same WaitQueue if NotifyOne() will be used.
+// Use separate WaitQueues or only use NotifyAll() for persistent subscriptions.
 class Waiter {
   friend class FiberInterface;
   explicit Waiter(FiberInterface* cntx) : cntx_(cntx) {
@@ -31,11 +45,12 @@ class Waiter {
 
   // For some boost versions/distributions, the default move c'tor does not work well,
   // so we implement it explicitly.
-  Waiter(Waiter&& o) : cntx_{std::move(o.cntx_)} {
+  Waiter(Waiter&& o) : cntx_{std::move(o.cntx_)}, persistent_{o.persistent_} {
     // it does not work well for slist because its reference is used by slist members
     // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
     o.cntx_ = static_cast<FiberInterface*>(nullptr);
+    o.persistent_ = false;
   }
 
   // safe_link is used in assertions via IsLinked() method.
@@ -44,6 +59,16 @@ class Waiter {
 
   bool IsLinked() const {
     return wait_hook.is_linked();
+  }
+
+  // Persistent waiters are NOT unlinked by WaitQueue::NotifyOne() or
+  // WaitQueue::NotifyAll(). Their callback is fired but they remain in the queue.
+  bool is_persistent() const {
+    return persistent_;
+  }
+
+  void set_persistent(bool v) {
+    persistent_ = v;
   }
 
   void Notify(FiberInterface* active) const;
@@ -55,6 +80,7 @@ class Waiter {
   void NotifyImpl(const Callback&, FiberInterface* active) const;
 
   std::variant<FiberInterface*, Callback> cntx_;
+  bool persistent_ = false;
 };
 
 // Intrusive list of non-owned waiter objects.
