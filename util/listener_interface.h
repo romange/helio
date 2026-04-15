@@ -65,6 +65,7 @@ class ListenerInterface {
   // traverses all client connection in current thread. cb must adhere to rules from
   // `TraverseConnections`. Specifically, cb should not fiber block so that the underlying
   // connection list won't change during the traversal.
+  // Note: This function may preempt internally (e.g., waiting for active migrations to finish).
   Connection* TraverseConnectionsOnThread(TraverseCB cb, uint32_t limit, Connection* from);
 
   // Must be called from the connection fiber (that runs HandleRequests() function).
