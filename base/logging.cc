@@ -17,10 +17,10 @@ namespace base {
 
 using std::string;
 
-#ifdef __FreeBSD__
-static constexpr char kProcSelf[] = "/proc/curproc/file";
-#else
+#ifdef __linux__
 static constexpr char kProcSelf[] = "/proc/self/exe";
+#elif defined(__FreeBSD__)
+static constexpr char kProcSelf[] = "/proc/curproc/file";
 #endif
 
 static constexpr char kDeletedSuffix[] = " (deleted)";

@@ -72,7 +72,7 @@ class EchoServerHarness:
         if self.proc:
             raise RuntimeError("echo_server already running")
 
-        args = [str(self.binary), "--alsologtostderr"]
+        args = [str(self.binary), "--stderrthreshold=0"]
         if server_args:
             args.extend(server_args)
 
