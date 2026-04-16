@@ -365,7 +365,20 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   Result<size_t> res = TrySend(v, len);
 
   if (res || res.error().value() != EAGAIN) {
-    cb(res);
+    // tl_async_cb_depth guards against unbounded synchronous recursion. When TrySend succeeds
+    // without EAGAIN the callback fires inline — if that callback issues another AsyncWrite
+    // which also succeeds inline, the chain recurses entirely on the dispatcher fiber's stack
+    // (32KB) until it overflows. Deferring via DispatchBrief when already inside a completion
+    // callback breaks the chain: the next iteration of the proactor event loop picks it up.
+    thread_local unsigned tl_async_cb_depth = 0;
+    if (tl_async_cb_depth < 5) {
+      ++tl_async_cb_depth;
+      cb(res);
+      --tl_async_cb_depth;
+    } else {
+      auto* proactor = GetProactor();
+      proactor->DispatchBrief([cb = std::move(cb), res]() mutable { cb(res); });
+    }
     return;
   }
 
@@ -377,8 +390,17 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
 
 // TODO implement async functionality
 void EpollSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  // Same recursion risk as AsyncWriteSome — defer if already inside a completion callback.
+  thread_local unsigned tl_async_cb_depth = 0;
   auto res = ReadSome(v, len);
-  cb(res);
+  if (tl_async_cb_depth < 5) {
+    ++tl_async_cb_depth;
+    cb(res);
+    --tl_async_cb_depth;
+  } else {
+    auto* proactor = GetProactor();
+    proactor->DispatchBrief([cb = std::move(cb), res]() mutable { cb(res); });
+  }
 }
 
 auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
