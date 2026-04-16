@@ -7,6 +7,8 @@
 #include <absl/time/clock.h>
 #include <signal.h>
 #include <string.h>
+#include <ucontext.h>
+#include <unistd.h>
 
 #ifdef __linux__
 #include <sys/epoll.h>
@@ -46,6 +48,48 @@ namespace {
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr size_t kEvBatchSize = 128;
+constexpr size_t kAltStackSize = 65536;
+
+// SIGSEGV handler running on the alternate stack (SA_ONSTACK). Detects fiber stack overflows
+// by comparing the interrupted SP against the active fiber's stack_bottom_. fixedsize_stack
+// has no guard page, so si_addr is unreliable — the overflow silently corrupts adjacent
+// memory and the fault manifests later as a secondary access violation.
+void OnSigSegv(int /*sig*/, siginfo_t* /*info*/, void* ucontext_arg) {
+  auto* fi = detail::FiberActive();
+  uintptr_t stack_bottom = fi ? fi->stack_bottom() : 0;
+
+  uintptr_t sp = 0;
+#if defined(__aarch64__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.sp;
+#elif defined(__x86_64__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.gregs[REG_RSP];
+#endif
+
+  if (stack_bottom && sp < stack_bottom) {
+    const char* name = (fi && fi->name()[0]) ? fi->name() : "unknown";
+    // Write directly to stderr — async-signal-safe, no malloc, no locks.
+    const char prefix[] = "FATAL: Fiber stack overflow detected in fiber '";
+    const char suffix[] = "'\n";
+    write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
+    write(STDERR_FILENO, name, strlen(name));
+    write(STDERR_FILENO, suffix, sizeof(suffix) - 1);
+    abort();
+  }
+
+  // Not a stack overflow — restore default handler and re-raise to produce a core dump.
+  signal(SIGSEGV, SIG_DFL);
+  raise(SIGSEGV);
+}
+
+void InstallSigSegvHandler() {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = OnSigSegv;
+  sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
+  if (sigaction(SIGSEGV, &sa, nullptr) != 0) {
+    LOG(FATAL) << "sigaction(SIGSEGV) failed: " << strerror(errno);
+  }
+}
 
 #ifdef __linux__
 struct EventsBatch {
@@ -153,6 +197,24 @@ void EpollProactor::Init(unsigned pool_index) {
   if (thread_id_ != 0) {
     LOG(FATAL) << "Init was already called";
   }
+
+  // Set up a per-thread alternate signal stack so SIGSEGV can be delivered and diagnosed
+  // even when a fiber's stack is fully exhausted.
+  {
+    // alignas(16): the kernel requires the alternate stack to be aligned to the platform's
+    // stack alignment boundary. Without it the signal frame pushed by the kernel may be
+    // misaligned, causing faults when the handler uses SSE/NEON registers or when function
+    // prologues enforce 16-byte alignment.
+    alignas(16) static thread_local char alt_stack_mem[kAltStackSize];
+    stack_t ss;
+    ss.ss_sp = alt_stack_mem;
+    ss.ss_size = sizeof(alt_stack_mem);
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, nullptr) != 0) {
+      LOG(FATAL) << "sigaltstack failed: " << strerror(errno);
+    }
+  }
+  InstallSigSegvHandler();
 
   centries_.resize(512);  // .index = -1
   next_free_ce_ = 0;

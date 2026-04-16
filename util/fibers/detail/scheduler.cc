@@ -74,6 +74,9 @@ DispatcherImpl::DispatcherImpl(const ctx::preallocated& palloc, ctx::fixedsize_s
                                detail::Scheduler* sched) noexcept
     : FiberInterface{DISPATCH, FiberPriority::NORMAL, 0, "_dispatch"} {
   stack_size_ = palloc.sctx.size;
+  // Paint canaries before constructing the fiber context so CheckStackMargin works
+  // for the dispatcher the same way it does for worker fibers.
+  InitStackBottom(reinterpret_cast<uint8_t*>(palloc.sp) - palloc.size, palloc.size);
   entry_ = ctx::fiber(std::allocator_arg, palloc, std::move(salloc),
                       [this](ctx::fiber&& caller) { return Run(std::move(caller)); });
   scheduler_ = sched;
