@@ -59,7 +59,7 @@ std::vector<std::string> GetLoggingDirectories();
 
 }  // namespace base
 
-#define CONSOLE_INFO ABSL_LOG(INFO).ToSinkOnly(base::ConsoleLogSink::instance())
+#define CONSOLE_INFO ABSL_LOG(INFO).ToSinkAlso(base::ConsoleLogSink::instance())
 
 #else
 #include <glog/logging.h>
