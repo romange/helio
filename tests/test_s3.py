@@ -134,3 +134,44 @@ def test_list_objects_with_prefix(s3_demo):
         pytest.skip("S3_TEST_BUCKET not set")
     result = _run(s3_demo, "--cmd=list-objects", f"--bucket={bucket}", "--prefix=nonexistent/path/")
     assert result.returncode == 0, f"list-objects with prefix failed:\n{result.stderr}"
+
+
+def test_list_objects_cursor_pagination(minio):
+    """Upload several objects under a unique prefix and verify cursor-driven listing
+    returns every key across multiple pages."""
+    prefix = "helio-ci-test/cursor-pagination/"
+    num_objects = 5
+    page_size = 2
+
+    keys = [f"{prefix}obj_{i:02d}.bin" for i in range(num_objects)]
+    for key in keys:
+        result = _run(
+            minio["binary"],
+            "--cmd=put-object",
+            f"--bucket={minio['bucket']}",
+            f"--key={key}",
+            "--upload_size=16",
+            env=minio["env"],
+        )
+        assert result.returncode == 0, f"put-object {key} failed:\n{result.stderr}"
+
+    result = _run(
+        minio["binary"],
+        "--cmd=list-objects",
+        f"--bucket={minio['bucket']}",
+        f"--prefix={prefix}",
+        f"--list_max_results={page_size}",
+        env=minio["env"],
+    )
+    assert result.returncode == 0, f"list-objects failed:\n{result.stderr}"
+
+    for key in keys:
+        assert key in result.stdout, f"{key!r} missing from listing:\n{result.stdout}"
+
+    # With 5 objects at page size 2: pages 0 and 1 each return 2 objects (truncated),
+    # page 2 returns 1 object (final). Expect at least 3 page markers.
+    expected_pages = (num_objects + page_size - 1) // page_size
+    for i in range(expected_pages):
+        assert f"-- page {i} end --" in result.stdout, (
+            f"missing page {i} marker in stdout:\n{result.stdout}"
+        )

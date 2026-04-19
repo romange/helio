@@ -384,108 +384,114 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
       break;
     }
     absl::string_view page_token{it->value.GetString(), it->value.GetStringLength()};
-    empty_req.SetUrl(absl::StrCat(url, "&pageToken=", page_token));
+    string next_url = url;
+    absl::StrAppend(&next_url, "&pageToken=");
+    strings::AppendUrlEncoded(page_token, &next_url);
+    empty_req.SetUrl(next_url);
   }
   return {};
 }
 
-error_code GCS::List(string_view bucket, string_view prefix, bool recursive, ListObjectCb cb) {
+error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
+                     unsigned max_results, ListObjectCb cb, string* page_token) {
   CHECK(!bucket.empty());
+  DCHECK(page_token);
 
   string url = "/storage/v1/b/";
-  absl::StrAppend(&url, bucket, "/o?maxResults=200&prefix=");
+  absl::StrAppend(&url, bucket, "/o?maxResults=", max_results, "&prefix=");
   strings::AppendUrlEncoded(prefix, &url);
   if (!recursive) {
     absl::StrAppend(&url, "&delimiter=%2f");
+  }
+  if (!page_token->empty()) {
+    absl::StrAppend(&url, "&pageToken=");
+    strings::AppendUrlEncoded(*page_token, &url);
   }
 
   detail::EmptyRequestImpl empty_req = detail::CreateGCPEmptyRequest(
       h2::verb::get, creds_provider_.ServiceEndpoint(), url, creds_provider_.access_token());
 
-  rj::Document doc;
   RobustSender sender(client_pool_.get(), &creds_provider_);
-  while (true) {
-    RobustSender::SenderResult send_res;
-    RETURN_ERROR(sender.Send(2, &empty_req, &send_res));
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(2, &empty_req, &send_res));
 
-    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
-    RETURN_ERROR(send_res.client_handle->Recv(&resp));
+  auto msg = resp.release();
+  VLOG(1) << "List response: " << msg.body();
 
-    auto msg = resp.release();
-    VLOG(1) << "List response: " << msg.body();
+  rj::Document doc;
+  doc.ParseInsitu(&msg.body().front());
+  if (doc.HasParseError()) {
+    return make_error_code(errc::bad_message);
+  }
 
-    doc.ParseInsitu(&msg.body().front());
-    if (doc.HasParseError()) {
-      return make_error_code(errc::bad_message);
-    }
+  auto it = doc.FindMember("items");
+  if (it != doc.MemberEnd()) {
+    FETCH_ARRAY_MEMBER(it->value);
 
-    auto it = doc.FindMember("items");
-    if (it != doc.MemberEnd()) {
-      FETCH_ARRAY_MEMBER(it->value);
+    for (size_t i = 0; i < array.Size(); ++i) {
+      const rapidjson::Value& item = array[i];
 
-      for (size_t i = 0; i < array.Size(); ++i) {
-        const rapidjson::Value& item = array[i];
+      /*
+         "kind": "storage#object",
+            "id": "mybucket/mypath/1730099621171118",
+            "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/mypath",
+            "mediaLink":
+         "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/mypath?generation=1730099621171118&alt=media",
+            "name": "mypath",
+            "bucket": "mybucket",
+            "generation": "1730099621171118",
+            "metageneration": "1",
+            "storageClass": "STANDARD",
+            "size": "28466176",
+            "md5Hash": "...",
+            "crc32c": "...",
+            "etag": "....",
+            "timeCreated": "2024-10-28T07:13:41.174Z",
+            "updated": "2024-10-28T07:13:41.174Z",
+            "timeStorageClassUpdated": "2024-10-28T07:13:41.174Z"
 
-        /*
-           "kind": "storage#object",
-              "id": "mybucket/mypath/1730099621171118",
-              "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/mypath",
-              "mediaLink":
-           "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/mypath?generation=1730099621171118&alt=media",
-              "name": "mypath",
-              "bucket": "mybucket",
-              "generation": "1730099621171118",
-              "metageneration": "1",
-              "storageClass": "STANDARD",
-              "size": "28466176",
-              "md5Hash": "...",
-              "crc32c": "...",
-              "etag": "....",
-              "timeCreated": "2024-10-28T07:13:41.174Z",
-              "updated": "2024-10-28T07:13:41.174Z",
-              "timeStorageClassUpdated": "2024-10-28T07:13:41.174Z"
+      */
 
-        */
-
-        auto it = item.FindMember("name");
-        CHECK(it != item.MemberEnd());
-        absl::string_view key_name(it->value.GetString(), it->value.GetStringLength());
-        it = item.FindMember("size");
-        CHECK(it != item.MemberEnd());
-        absl::string_view sz_str(it->value.GetString(), it->value.GetStringLength());
-        size_t item_size = 0;
-        CHECK(absl::SimpleAtoi(sz_str, &item_size));
-        it = item.FindMember("updated");
-        CHECK(it != item.MemberEnd());
-        absl::string_view mtime_str(it->value.GetString(), it->value.GetStringLength());
-        absl::Time time;
-        string err;
-        int64_t time_ns = 0;
-        if (absl::ParseTime(absl::RFC3339_full, mtime_str, &time, &err)) {
-          time_ns = absl::ToUnixNanos(time);
-        } else {
-          LOG(ERROR) << "Failed to parse time: " << mtime_str << " " << err;
-        }
-        cb(ObjectItem{item_size, key_name, time_ns, false});
+      auto it = item.FindMember("name");
+      CHECK(it != item.MemberEnd());
+      absl::string_view key_name(it->value.GetString(), it->value.GetStringLength());
+      it = item.FindMember("size");
+      CHECK(it != item.MemberEnd());
+      absl::string_view sz_str(it->value.GetString(), it->value.GetStringLength());
+      size_t item_size = 0;
+      CHECK(absl::SimpleAtoi(sz_str, &item_size));
+      it = item.FindMember("updated");
+      CHECK(it != item.MemberEnd());
+      absl::string_view mtime_str(it->value.GetString(), it->value.GetStringLength());
+      absl::Time time;
+      string err;
+      int64_t time_ns = 0;
+      if (absl::ParseTime(absl::RFC3339_full, mtime_str, &time, &err)) {
+        time_ns = absl::ToUnixNanos(time);
+      } else {
+        LOG(ERROR) << "Failed to parse time: " << mtime_str << " " << err;
       }
+      cb(ObjectItem{item_size, key_name, time_ns, false});
     }
-    it = doc.FindMember("prefixes");
-    if (it != doc.MemberEnd()) {
-      FETCH_ARRAY_MEMBER(it->value);
-      for (size_t i = 0; i < array.Size(); ++i) {
-        const auto& item = array[i];
-        absl::string_view str(item.GetString(), item.GetStringLength());
-        cb(ObjectItem{0, str, 0, true});
-      }
+  }
+  it = doc.FindMember("prefixes");
+  if (it != doc.MemberEnd()) {
+    FETCH_ARRAY_MEMBER(it->value);
+    for (size_t i = 0; i < array.Size(); ++i) {
+      const auto& item = array[i];
+      absl::string_view str(item.GetString(), item.GetStringLength());
+      cb(ObjectItem{0, str, 0, true});
     }
+  }
 
-    it = doc.FindMember("nextPageToken");
-    if (it == doc.MemberEnd()) {
-      break;
-    }
-    absl::string_view page_token{it->value.GetString(), it->value.GetStringLength()};
-    empty_req.SetUrl(absl::StrCat(url, "&pageToken=", page_token));
+  it = doc.FindMember("nextPageToken");
+  if (it != doc.MemberEnd()) {
+    page_token->assign(it->value.GetString(), it->value.GetStringLength());
+  } else {
+    page_token->clear();
   }
   return {};
 }

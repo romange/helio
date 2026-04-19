@@ -105,7 +105,11 @@ void Run(SSL_CTX* ctx) {
         cout << "Object: " << item.key << ", size: " << item.size
              << " mtime: " << absl::FromUnixNanos(item.mtime_ns) << endl;
       };
-      ec = gcs.List(bucket, prefix, false, cb);
+      string token;
+      do {
+        ec = gcs.List(bucket, prefix, false, 200, cb, &token);
+        if (ec) break;
+      } while (!token.empty());
     }
   } else {
     auto cb = [](std::string_view bname) { CONSOLE_INFO << bname; };
@@ -171,11 +175,14 @@ void RunAzure(SSL_CTX* ctx) {
       }
     }
   } else {
-    ec = storage.List(bucket, prefix, false, 100,
-                      [](const util::cloud::azure::Storage::ListItem& item) {
-                        CONSOLE_INFO << "Object: " << item.key << " " << item.size << " "
-                                     << item.mtime_ns << endl;
-                      });
+    auto cb = [](const util::cloud::azure::Storage::ListItem& item) {
+      CONSOLE_INFO << "Object: " << item.key << " " << item.size << " " << item.mtime_ns << endl;
+    };
+    string token;
+    do {
+      ec = storage.List(bucket, prefix, false, 100, cb, &token);
+      if (ec) break;
+    } while (!token.empty());
     LOG_IF(ERROR, ec) << "Error listing " << bucket << " " << ec.message();
   }
 }
