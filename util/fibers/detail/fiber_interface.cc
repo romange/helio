@@ -244,7 +244,7 @@ __attribute__((no_instrument_function)) TL_FiberInitializer& FbInitializer() noe
   return fb_initializer;
 }
 
-FiberInterface* FiberActive() noexcept {
+__attribute__((no_instrument_function)) FiberInterface* FiberActive() noexcept {
   return FbInitializer().active;
 }
 

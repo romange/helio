@@ -96,7 +96,7 @@ void OnSigSegv(int sig, siginfo_t* info, void* ucontext_arg) {
   // skip the check rather than producing a false-positive fatal error.
   if (sp && stack_bottom && sp < stack_bottom) {
     const char msg[] = "POSSIBLE FIBER STACK OVERFLOW DETECTED\n";
-    write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    std::ignore = write(STDERR_FILENO, msg, sizeof(msg) - 1);
   }
 
   // Restore the previous handler (e.g. Abseil's) and return. The kernel re-executes the
