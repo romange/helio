@@ -7,6 +7,7 @@
 #include <string_view>
 #include <system_error>
 
+#include "absl/base/attributes.h"
 #include "io/file.h"
 #include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/utils.h"
@@ -25,8 +26,19 @@ class Storage {
 
   using ListItem = StorageListItem;
   std::error_code ListContainers(std::function<void(const ContainerItem&)> cb);
-  std::error_code List(std::string_view container, std::string_view prefix, bool recursive,
-                       unsigned max_results, std::function<void(const ListItem&)> cb);
+
+  // Lists blobs under `container` matching `prefix`. Performs a single request.
+  //
+  // `max_results` is the page size (maxresults).
+  //
+  // `continuation_token` must not be null: on input it is the resume marker (empty means
+  // start from the beginning), on output it holds the marker for the next page, or is
+  // cleared if this was the last page. Callers drive pagination by looping until the
+  // marker comes back empty.
+  ABSL_MUST_USE_RESULT std::error_code List(std::string_view container, std::string_view prefix,
+                                             bool recursive, unsigned max_results,
+                                             std::function<void(const ListItem&)> cb,
+                                             std::string* continuation_token);
 
  private:
   Credentials* creds_;
