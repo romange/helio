@@ -365,7 +365,9 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   Result<size_t> res = TrySend(v, len);
 
   if (res || res.error().value() != EAGAIN) {
-    cb(res);
+    // DispatchBrief may preempt the calling fiber if the task queue is full (waits for space).
+    // Preempting inside a cb context is not allowed — design limitation.
+    GetProactor()->DispatchBrief([cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
     return;
   }
 
