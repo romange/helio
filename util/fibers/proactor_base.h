@@ -116,10 +116,17 @@ class ProactorBase {
     return task_queue_.is_full();
   }
 
-  //! Fire and forget - does not wait for the function to run called.
-  //! `f` should not block, lock on mutexes or Await.
-  //! Might block the calling fiber if the queue is full.
+  // Fire and forget - does not wait for the function to run called.
+  // `f` should not block, lock on mutexes or Await.
+  // Might block the calling fiber if the queue is full.
+  // Returns false if the task was enqueued without waiting, true otherwise.
   template <typename Func> bool DispatchBrief(Func&& brief);
+
+  // DispatchLocalBrief is similar to DispatchBrief but is used to dispatch tasks asynchronously
+  // to the same proactor thread.
+  // Unlike DispatchBrief, it never blocks, and if the task queue is full,
+  // it will unload the queue by fetching and running tasks until there is space in the queue.
+  template <typename Func> void DispatchLocalBrief(Func&& brief);
 
   //! Similarly to DispatchBrief but 'f' is wrapped in fiber.
   //! f is allowed to fiber-block or await.
@@ -394,6 +401,19 @@ template <typename Func> bool ProactorBase::DispatchBrief(Func&& f) {
   }
 
   return true;
+}
+
+template <typename Func> void ProactorBase::DispatchLocalBrief(Func&& brief) {
+  assert(InMyThread());
+  while (true) {
+    if (EmplaceTaskQueue(std::forward<Func>(brief)))
+      return;
+
+    Tasklet task;
+    if (task_queue_.try_dequeue(task)) {
+      task();
+    }
+  }
 }
 
 template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()) {
