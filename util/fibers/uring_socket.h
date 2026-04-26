@@ -45,7 +45,12 @@ class UringSocket : public LinuxSocketBase {
 
   using FiberSocketBase::IsConnClosed;
 
+  // Precondition: the callback must not be empty and must not throw.
+  // It will be called from the proactor thread when an error event is detected on the socket.
+  // The callback is called at most once per registration,
+  // and will be automatically unregistered after the first call.
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
+
   void CancelOnErrorCb() final;
   void RegisterOnRecv(OnRecvCb cb) final;
   void ResetOnRecvHook() final;
@@ -85,10 +90,18 @@ class UringSocket : public LinuxSocketBase {
     fd_ = (val << kFdShift) | (fd_ & ((1 << kFdShift) - 1));
   }
 
+  // TODO: to move to uring_socket.cc
   struct ErrorCbRefWrapper {
-    uint32_t error_cb_id = 0;
+    static constexpr uint32_t kInvalidErrorCbId = UINT32_MAX;
+
+    uint32_t error_cb_id = kInvalidErrorCbId;
     uint32_t ref_count = 2;  // one for the socket reference, one for the completion lambda.
+
     std::function<void(uint32_t)> cb;
+
+    bool IsArmed() const {
+      return error_cb_id != kInvalidErrorCbId;
+    }
 
     static ErrorCbRefWrapper* New(std::function<void(uint32_t)> cb) {
       return new ErrorCbRefWrapper(std::move(cb));

@@ -437,6 +437,12 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   return {};
 }
 
+std::error_code Storage::List(std::string_view container, std::string_view prefix, bool recursive,
+                              unsigned max_results, std::function<void(const ListItem&)> cb) {
+  string continuation_token;
+  return List(container, prefix, recursive, max_results, std::move(cb), &continuation_token);
+}
+
 error_code Storage::List(string_view container, std::string_view prefix, bool recursive,
                          unsigned max_results, function<void(const ListItem&)> cb,
                          string* continuation_token) {

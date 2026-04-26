@@ -41,7 +41,7 @@ class EpollSocket : public LinuxSocketBase {
   void CancelOnErrorCb() final;
 
   using FiberSocketBase::IsConnClosed;
-  void RegisterOnRecv(std::function<void (const RecvNotification&)> cb) final;
+  void RegisterOnRecv(std::function<void(const RecvNotification&)> cb) final;
   void ResetOnRecvHook() final;
 
  private:
@@ -78,7 +78,7 @@ class EpollSocket : public LinuxSocketBase {
 
   // Read path
   struct OnRecvRecord {
-    std::function<void (const RecvNotification&)> cb;
+    std::function<void(const RecvNotification&)> cb;
   };
 
   union {

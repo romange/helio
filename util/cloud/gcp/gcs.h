@@ -30,6 +30,10 @@ class GCS {
 
   std::error_code ListBuckets(ListBucketCb cb);
 
+  // Deprecated wrapper, kept only to be able to backport helio to older Dragonfly branches.
+  ABSL_MUST_USE_RESULT std::error_code List(std::string_view bucket, std::string_view prefix,
+                                            bool recursive, ListObjectCb cb);
+
   // Lists objects under `bucket` matching `prefix`. Performs a single request.
   //
   // `max_results` is the page size (maxResults).
@@ -39,8 +43,8 @@ class GCS {
   // if this was the last page. Callers drive pagination by looping until the token
   // comes back empty.
   ABSL_MUST_USE_RESULT std::error_code List(std::string_view bucket, std::string_view prefix,
-                                             bool recursive, unsigned max_results, ListObjectCb cb,
-                                             std::string* page_token);
+                                            bool recursive, unsigned max_results, ListObjectCb cb,
+                                            std::string* page_token);
 
   http::ClientPool* GetConnectionPool() {
     return client_pool_.get();

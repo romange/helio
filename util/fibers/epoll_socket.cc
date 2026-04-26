@@ -47,14 +47,6 @@ int CreateSockFd(int family) {
   return socket(family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_TCP);
 }
 
-/*void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
-  epoll_event ev;
-  ev.events = kEventMask;
-  ev.data.u32 = user_data;
-
-  CHECK_EQ(0, epoll_ctl(poll_fd, EPOLL_CTL_MOD, sock_fd, &ev));
-}*/
-
 #elif defined(__FreeBSD__) || defined(__APPLE__)
 
 constexpr int kEventMask = POLLIN | POLLOUT;
@@ -80,16 +72,6 @@ int CreateSockFd(int family) {
   }
   return fd;
 }
-
-/*
-void RegisterEvents(int poll_fd, int sock_fd, uint32_t user_data) {
-  struct kevent kev[2];
-  uint64_t ud = user_data;
-  EV_SET(&kev[0], sock_fd, EVFILT_WRITE, EV_ADD, 0, 0, (void*)ud);
-  EV_SET(&kev[1], sock_fd, EVFILT_READ, EV_ADD, 0, 0, (void*)ud);
-  CHECK_EQ(0, kevent(poll_fd, kev, 2, NULL, 0, NULL));
-}
-*/
 
 #else
 #error "Unsupported platform"
@@ -545,7 +527,11 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
 
   HandleAsyncRequest(ev_mask);
   if (error_cb_ && (ev_mask & kErrMask)) {
-    error_cb_(ev_mask);
+    // Single-shot: a follow-up edge (e.g. POLLHUP after POLLRDHUP) on the
+    // same fd must not invoke the user callback twice.
+    auto cb = std::move(error_cb_);
+    error_cb_ = {};
+    cb(ev_mask);
   }
 }
 

@@ -368,7 +368,8 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
 
     if (res >= 0) {
       has_recv_data_ = (fc.flags() & IORING_CQE_F_SOCK_NONEMPTY) ? 1 : 0;
-      DVSOCK(2) << "Received " << res << " bytes " << ", has_more " << has_recv_data_;
+      DVSOCK(2) << "Received " << res << " bytes "
+                << ", has_more " << has_recv_data_;
       return res;
     }
     DVSOCK(2) << "Got " << res;
@@ -391,6 +392,7 @@ io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
 void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   CHECK(!error_cb_wrapper_);
   DCHECK(IsOpen());
+  DCHECK(cb);
 
   uint32_t event_mask = POLLERR | POLLHUP;
 
@@ -398,6 +400,10 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   error_cb_wrapper_ = ErrorCbRefWrapper::New(std::move(cb));
   auto se_cb = [data = error_cb_wrapper_](detail::FiberInterface*, Proactor::IoResult res,
                                           uint32_t flags, uint32_t) {
+    // Mark the poll id invalid before Destroy so a subsequent CancelOnErrorCb
+    // on the socket skips PrepPollRemove on what may now be a reused
+    // centries_ slot.
+    data->error_cb_id = ErrorCbRefWrapper::kInvalidErrorCbId;
     auto cb = std::move(data->cb);
     ErrorCbRefWrapper::Destroy(data);
     if (res < 0) {
@@ -411,12 +417,24 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
   se.PrepPollAdd(ShiftedFd(), event_mask);
   se.sqe()->flags |= register_flag();
+
+  // user_data is 32 bits because submit_tag is 0.
   error_cb_wrapper_->error_cb_id = se.sqe()->user_data;
 }
 
 void UringSocket::CancelOnErrorCb() {
   if (!error_cb_wrapper_)
     return;
+
+  // If the error-poll completion already fired, the centries_ slot identified
+  // by error_cb_id has been freed and may have been reused by a subsequent
+  // submission on this proactor. Issuing PrepPollRemove on that user_data now
+  // would cancel an unrelated request. Just release our reference.
+  if (!error_cb_wrapper_->IsArmed()) {
+    ErrorCbRefWrapper::Destroy(error_cb_wrapper_);
+    error_cb_wrapper_ = nullptr;
+    return;
+  }
 
   FiberCall fc(GetProactor());
   fc->PrepPollRemove(error_cb_wrapper_->error_cb_id);
