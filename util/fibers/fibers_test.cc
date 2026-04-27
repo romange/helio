@@ -656,6 +656,24 @@ TEST_P(ProactorTest, AsyncCall) {
   EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
 }
 
+TEST_P(ProactorTest, DispatchLocalBrief) {
+  constexpr unsigned kCount = ProactorBase::kTaskQueueLen * 2;
+  std::atomic<unsigned> counter{0};
+  EventCount ec;
+
+  proactor()->Await([&] {
+    for (unsigned i = 0; i < kCount; ++i) {
+      proactor()->DispatchLocalBrief([&counter] {
+        counter.fetch_add(1, std::memory_order_relaxed);
+      });
+    }
+    proactor()->DispatchLocalBrief([&ec] { ec.notify(); });
+  });
+
+  ec.await([&] { return counter.load() == kCount; });
+  EXPECT_EQ(kCount, counter.load());
+}
+
 TEST_P(ProactorTest, AwaitBrief) {
   thread_local int val = 5;
 
