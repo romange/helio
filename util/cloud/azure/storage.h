@@ -27,6 +27,11 @@ class Storage {
   using ListItem = StorageListItem;
   std::error_code ListContainers(std::function<void(const ContainerItem&)> cb);
 
+  // Deprecated wrapper, kept only to be able to backport helio to older Dragonfly branches.
+  ABSL_MUST_USE_RESULT std::error_code List(std::string_view container, std::string_view prefix,
+                                            bool recursive, unsigned max_results,
+                                            std::function<void(const ListItem&)> cb);
+
   // Lists blobs under `container` matching `prefix`. Performs a single request.
   //
   // `max_results` is the page size (maxresults).

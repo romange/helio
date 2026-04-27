@@ -392,8 +392,19 @@ error_code GCS::ListBuckets(ListBucketCb cb) {
   return {};
 }
 
-error_code GCS::List(string_view bucket, string_view prefix, bool recursive,
-                     unsigned max_results, ListObjectCb cb, string* page_token) {
+std::error_code GCS::List(std::string_view bucket, std::string_view prefix, bool recursive,
+                          ListObjectCb cb) {
+  string page_token;
+  do {
+    error_code ec = List(bucket, prefix, recursive, 1000, cb, &page_token);
+    if (ec)
+      return ec;
+  } while (!page_token.empty());
+  return {};
+}
+
+error_code GCS::List(string_view bucket, string_view prefix, bool recursive, unsigned max_results,
+                     ListObjectCb cb, string* page_token) {
   CHECK(!bucket.empty());
   DCHECK(page_token);
 

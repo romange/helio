@@ -2,8 +2,15 @@
 // Author: Roman Gershman (romange@gmail.com)
 //
 
+#include <arpa/inet.h>
 #include <gmock/gmock.h>
+#include <netinet/in.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
+#include <atomic>
 #include <thread>
 
 #include "base/gtest.h"
@@ -21,10 +28,11 @@
 namespace util {
 namespace fb2 {
 
-constexpr uint32_t kRingDepth = 8;
 using namespace testing;
 
 #ifdef __linux__
+constexpr uint32_t kRingDepth = 8;
+
 void InitProactor(ProactorBase* p) {
   if (p->GetKind() == ProactorBase::IOURING) {
     static_cast<UringProactor*>(p)->Init(0, kRingDepth);
@@ -37,6 +45,20 @@ void InitProactor(ProactorBase* p) {
   static_cast<EpollProactor*>(p)->Init(0);
 }
 #endif
+
+int ConnectClient(uint16_t listen_port) {
+  int fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  CHECK_GE(fd, 0) << "socket() failed: " << strerror(errno);
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(listen_port);
+  CHECK_EQ(1, inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr));
+  CHECK_EQ(0, ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)))
+      << "connect(AF_INET) failed: " << strerror(errno);
+
+  return fd;
+}
 
 using namespace std;
 
@@ -59,6 +81,8 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
   void SetUp() final;
 
   void TearDown() final;
+
+  void LaunchAcceptFiber(bool register_error_cb);
 
   static void SetUpTestCase() {
     testing::FLAGS_gtest_death_test_style = "threadsafe";
@@ -85,7 +109,9 @@ class FiberSocketTest : public testing::TestWithParam<TestParams> {
   Fiber accept_fb_;
   std::error_code accept_ec_;
   FiberSocketBase::endpoint_type listen_ep_;
-  uint32_t conn_sock_err_mask_ = 0;
+  std::atomic_uint conn_sock_err_mask_{0};
+  std::atomic_uint conn_sock_err_count_{0};
+  Done error_cb_called_;
 };
 
 INSTANTIATE_TEST_SUITE_P(Engines, FiberSocketTest,
@@ -150,8 +176,16 @@ void FiberSocketTest::SetUp() {
     address = boost::asio::ip::make_address("127.0.0.1");  // IPv4 loopback
   }
   listen_ep_ = FiberSocketBase::endpoint_type{address, listen_port_};
+  conn_sock_err_mask_ = 0;
+  conn_sock_err_count_.store(0, std::memory_order_relaxed);
+  error_cb_called_.Reset();
 
-  accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
+  LaunchAcceptFiber(true);
+}
+
+void FiberSocketTest::LaunchAcceptFiber(bool register_error_cb) {
+  accept_ec_.clear();
+  accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this, register_error_cb] {
     auto accept_res = listen_socket_->Accept();
     VLOG_IF(1, !accept_res) << "Accept res: " << accept_res.error();
 
@@ -160,10 +194,14 @@ void FiberSocketTest::SetUp() {
       FiberSocketBase* sock = *accept_res;
       conn_socket_.reset(sock);
       conn_socket_->SetProactor(proactor_.get());
-      conn_socket_->RegisterOnErrorCb([this](uint32_t mask) {
-        LOG(INFO) << "Error mask: " << mask;
-        conn_sock_err_mask_ = mask;
-      });
+      if (register_error_cb) {
+        conn_socket_->RegisterOnErrorCb([this](uint32_t mask) {
+          LOG(INFO) << "Error mask: " << mask;
+          conn_sock_err_mask_ |= mask;
+          conn_sock_err_count_.fetch_add(1, std::memory_order_relaxed);
+          error_cb_called_.Notify();
+        });
+      }
     } else {
       accept_ec_ = accept_res.error();
     }
@@ -334,6 +372,126 @@ TEST_P(FiberSocketTest, PollCancel) {
 
   // Should not be updated due to cancellation.
   EXPECT_EQ(0, conn_sock_err_mask_);
+}
+
+// Regression test for EpollSocket::Wakey(): a staged peer disconnect can
+// deliver multiple error edges (for example EPOLLRDHUP followed by POLLHUP),
+// but RegisterOnErrorCb must stay single-shot.
+TEST_P(FiberSocketTest, PollSingleShot) {
+  if (UseIPv6()) {
+    GTEST_SKIP() << "PollSingleShot is limited to IPv4";
+  }
+
+  int fd = ConnectClient(listen_port_);
+
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+
+  ASSERT_EQ(0, ::shutdown(fd, SHUT_WR));
+  ASSERT_TRUE(error_cb_called_.WaitFor(1s)) << "first callback did not fire";
+  error_cb_called_.Reset();
+  LOG(INFO) << "First callback fired, now activating the second one";
+
+  // We enforce RST event on server socket by setting linger option with timeout=0.
+  struct linger ling;
+  ling.l_onoff = 1;
+  ling.l_linger = 0;
+  CHECK_EQ(0, setsockopt(fd, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
+  CHECK_EQ(0, ::close(fd));
+
+  ASSERT_FALSE(error_cb_called_.WaitFor(100ms))
+      << "second callback fired, but should have been single-shot";
+
+  EXPECT_EQ(1u, conn_sock_err_count_.load())
+      << "error callback fired " << conn_sock_err_count_.load()
+      << " times, mask=" << conn_sock_err_mask_;
+#ifdef __linux__
+  EXPECT_TRUE(conn_sock_err_mask_ & POLLRDHUP) << "mask=" << conn_sock_err_mask_;
+#endif
+}
+
+// Regression test for uring stale callback-slot cancellation: after socket A's
+// error callback fires, socket B can reuse A's freed completion slot, and then
+// A.CancelOnErrorCb() must not remove B's live poll request.
+TEST_P(FiberSocketTest, PollCancelSlotReuse) {
+  if (UseIPv6()) {
+    GTEST_SKIP() << "PollSingleShot is limited to IPv4";
+  }
+
+  Done done;
+  std::atomic_uint a_count{0}, b_count{0};
+
+  // Accept connection A first and take ownership away from the fixture. The
+  // fixture installs its own error callback, so we immediately cancel it below
+  // and re-arm the socket under the precise sequence this regression needs.
+  int fd_a = ConnectClient(listen_port_);
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+  std::unique_ptr<FiberSocketBase> sock_a = std::move(conn_socket_);
+  ASSERT_TRUE(sock_a);
+
+  proactor_->Await([&] { sock_a->CancelOnErrorCb(); });
+
+  // Accept connection B before A fires. This is important: if we accepted B
+  // later, the accept machinery itself could consume the just-freed uring
+  // completion slot and weaken the repro.
+  LaunchAcceptFiber(false);
+  int fd_b = ConnectClient(listen_port_);
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+  std::unique_ptr<FiberSocketBase> sock_b = std::move(conn_socket_);
+  ASSERT_TRUE(sock_b);
+
+  // Arm A. The callback only records that A fired; the interesting part is what
+  // happens to A's old poll slot after the callback returns.
+  proactor_->Await([&] {
+    sock_a->RegisterOnErrorCb([&](uint32_t) {
+      a_count.fetch_add(1, std::memory_order_relaxed);
+      done.Notify();
+    });
+  });
+
+  // Trigger A's callback. In the buggy uring path, the callback completion slot
+  // is returned to the free-list before the callback runs, and `fired` is not
+  // marked, so a later stale CancelOnErrorCb() can target a reused slot.
+  ASSERT_EQ(0, ::shutdown(fd_a, SHUT_WR)) << strerror(errno);
+  ASSERT_TRUE(done.WaitFor(1s)) << "A callback did not fire";
+  done.Reset();
+
+  EXPECT_EQ(1u, a_count.load());
+
+  // This is the critical sequence:
+  // 1. Register B so it reuses A's just-freed poll slot.
+  // 2. Immediately cancel A.
+  // Without `data->fired = true`, A's stale cancel may remove B's live poll.
+  proactor_->Await([&] {
+    sock_b->RegisterOnErrorCb([&](uint32_t) {
+      b_count.fetch_add(1, memory_order_relaxed);
+      done.Notify();
+    });
+    sock_a->CancelOnErrorCb();
+  });
+
+  // If the bug is present, B's callback never arrives because A's stale remove
+  // destroyed B's poll request.
+  ASSERT_EQ(0, ::shutdown(fd_b, SHUT_WR)) << strerror(errno);
+  bool b_fired = done.WaitFor(100ms);
+  unsigned b_count_val = b_count.load();
+
+  // Cleanup runs regardless of outcome so the fixture tears down cleanly even
+  // when the repro succeeds and B never fires.
+  proactor_->Await([&] {
+    sock_a->CancelOnErrorCb();
+    sock_b->CancelOnErrorCb();
+    std::ignore = sock_a->Close();
+    std::ignore = sock_b->Close();
+  });
+
+  EXPECT_EQ(0, ::close(fd_a));
+  EXPECT_EQ(0, ::close(fd_b));
+
+  ASSERT_TRUE(b_fired) << "stale cancel removed a reused poll slot";
+  EXPECT_EQ(1u, b_count_val);
 }
 
 TEST_P(FiberSocketTest, AsyncWrite) {
