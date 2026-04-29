@@ -86,7 +86,7 @@ ContainerName="mycontainer"> <Blobs> <Blob> <Name>my/path.txt</Name> <Properties
                 </Blob>
     .....
 */
-error_code ParseXmlListBlobs(string_view xml_resp,
+error_code ParseXmlListBlobs(string_view xml_resp, string* next_marker,
                              absl::FunctionRef<void(const StorageListItem&)> cb) {
   pugi::xml_document doc;
   pugi::xml_parse_result result = doc.load_buffer(xml_resp.data(), xml_resp.size());
@@ -108,6 +108,10 @@ error_code ParseXmlListBlobs(string_view xml_resp,
     return make_error_code(errc::bad_message);
   }
   VLOG(2) << "ListBlobs Response: " << xml_resp;
+
+  if (next_marker) {
+    *next_marker = root.child_value("NextMarker");
+  }
 
   // Under blobs there can be either Blob or BlobPrefix nodes.
   // The former is a file, the latter is a "directory".
@@ -433,8 +437,17 @@ error_code Storage::ListContainers(function<void(const ContainerItem&)> cb) {
   return {};
 }
 
+std::error_code Storage::List(std::string_view container, std::string_view prefix, bool recursive,
+                              unsigned max_results, std::function<void(const ListItem&)> cb) {
+  string continuation_token;
+  return List(container, prefix, recursive, max_results, std::move(cb), &continuation_token);
+}
+
 error_code Storage::List(string_view container, std::string_view prefix, bool recursive,
-                         unsigned max_results, function<void(const ListItem&)> cb) {
+                         unsigned max_results, function<void(const ListItem&)> cb,
+                         string* continuation_token) {
+  DCHECK(continuation_token);
+
   SSL_CTX* ctx = creds_->IsHttps() ? http::TlsClient::CreateSslContext() : nullptr;
   absl::Cleanup cleanup([ctx] {
     if (ctx)
@@ -454,6 +467,10 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   if (!recursive) {
     absl::StrAppend(&url, "&delimiter=%2f");
   }
+  if (!continuation_token->empty()) {
+    absl::StrAppend(&url, "&marker=");
+    strings::AppendUrlEncoded(*continuation_token, &url);
+  }
 
   detail::EmptyRequestImpl req = FillRequest(endpoint, url, creds_);
   RobustSender sender(pool.get(), creds_);
@@ -464,7 +481,7 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   RETURN_ERROR(send_res.client_handle->Recv(&resp));
 
   auto msg = resp.release();
-  RETURN_ERROR(ParseXmlListBlobs(msg.body(), cb));
+  RETURN_ERROR(ParseXmlListBlobs(msg.body(), continuation_token, cb));
   return {};
 }
 

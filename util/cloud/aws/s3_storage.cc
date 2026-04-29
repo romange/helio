@@ -430,8 +430,10 @@ error_code S3Storage::ListBuckets(function<void(const BucketItem&)> cb) {
 }
 
 error_code S3Storage::List(string_view bucket, string_view prefix, bool recursive,
-                           unsigned max_results, function<void(const ListItem&)> cb) {
+                           unsigned max_results, function<void(const ListItem&)> cb,
+                           string* continuation_token) {
   CHECK(!bucket.empty());
+  DCHECK(continuation_token);
 
   BucketAddressing addressing = ResolveBucketAddressing(creds_, bucket);
   auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, creds_->connect_ms());
@@ -445,37 +447,29 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
     absl::StrAppend(&query, "&delimiter=%2F");
   }
 
-  string base_url = BucketQueryPath(addressing, bucket, query);
-
-  string url = base_url;
-  RobustSender sender(pool.get(), creds_);
-
-  while (true) {
-    detail::EmptyRequestImpl req = FillRequest(addressing.endpoint, url, creds_);
-
-    RobustSender::SenderResult send_res;
-    RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
-
-    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
-    RETURN_ERROR(send_res.client_handle->Recv(&resp));
-
-    auto msg = resp.release();
-    DVLOG(3) << "aws: List response: " << msg.body();
-
-    bool is_truncated = false;
-    string next_token;
-    RETURN_ERROR(ParseXmlListObjects(msg.body(), &is_truncated, &next_token, cb));
-
-    if (!is_truncated || next_token.empty()) {
-      break;
-    }
-
-    // Build next page URL with continuation token.
-    url = base_url;
+  string url = BucketQueryPath(addressing, bucket, query);
+  if (!continuation_token->empty()) {
     absl::StrAppend(&url, "&continuation-token=");
-    strings::AppendUrlEncoded(next_token, &url);
+    strings::AppendUrlEncoded(*continuation_token, &url);
   }
 
+  RobustSender sender(pool.get(), creds_);
+  detail::EmptyRequestImpl req = FillRequest(addressing.endpoint, url, creds_);
+
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
+
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
+
+  auto msg = resp.release();
+  DVLOG(3) << "aws: List response: " << msg.body();
+
+  bool is_truncated = false;
+  string next_token;
+  RETURN_ERROR(ParseXmlListObjects(msg.body(), &is_truncated, &next_token, cb));
+
+  *continuation_token = (is_truncated ? std::move(next_token) : string{});
   return {};
 }
 

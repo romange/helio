@@ -101,14 +101,21 @@ void ListObjects(const std::string& bucket, const std::string& prefix) {
   bool recursive = prefix.empty();
   util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
                                       util::fb2::ProactorBase::me());
-  auto ec = storage.List(bucket, prefix, recursive,
-                         absl::GetFlag(FLAGS_list_max_results),
-                         [](const util::cloud::aws::S3Storage::ListItem& item) {
-                           std::cout << "* " << item.key << std::endl;
-                         });
-  if (ec) {
-    LOG(ERROR) << "failed to list objects: " << ec.message();
-  }
+  auto print_item = [](const util::cloud::aws::S3Storage::ListItem& item) {
+    std::cout << "* " << item.key << std::endl;
+  };
+
+  unsigned page_size = absl::GetFlag(FLAGS_list_max_results);
+  std::string cursor;
+  unsigned page_num = 0;
+  do {
+    auto ec = storage.List(bucket, prefix, recursive, page_size, print_item, &cursor);
+    if (ec) {
+      LOG(ERROR) << "failed to list objects: " << ec.message();
+      return;
+    }
+    std::cout << "-- page " << page_num++ << " end --" << std::endl;
+  } while (!cursor.empty());
 }
 
 void GetObject(const std::string& bucket, const std::string& key) {

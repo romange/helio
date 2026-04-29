@@ -12,7 +12,7 @@
 // the headers and the body from the host and resource you gave.
 // for example:
 // ./https_client --host redis.io --resource /commands/asking/ --vmodule=https_client=2
-// --logbuflevel=-1 --alsologtostderr
+// --logbuflevel=-1 --stderrthreshold=0
 // will print the content from https://redis.io/commands/asking command to the log as well as to the
 // terminal
 #include <openssl/err.h>
@@ -86,7 +86,7 @@ using OpResult = io::Result<RequestResults, std::string>;
 
 OpResult ConnectAndRead(ProactorBase* proactor, std::string_view host, std::string_view service,
                         const char* resource, SSL_CTX* ssl_ctx) {
-  
+
   auto list_res = proactor->Await([&] {
     TlsClient http_client{proactor};
 
