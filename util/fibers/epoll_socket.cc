@@ -347,7 +347,7 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   Result<size_t> res = TrySend(v, len);
 
   if (res || res.error().value() != EAGAIN) {
-    cb(res);
+    GetProactor()->DispatchLocalBrief([cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
     return;
   }
 
