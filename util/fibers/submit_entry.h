@@ -240,5 +240,5 @@ class SubmitEntry {
 
 };
 
-}  // namespace uring
+}  // namespace fb2
 }  // namespace util
