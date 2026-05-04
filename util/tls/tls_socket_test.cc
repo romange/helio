@@ -7,6 +7,7 @@
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
+#include <openssl/err.h>
 
 #include <algorithm>
 #include <thread>
@@ -21,6 +22,9 @@
 #include "util/tls/tls_test_infra.h"
 
 #ifdef __linux__
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include "util/fibers/uring_proactor.h"
 #include "util/fibers/uring_socket.h"
 #endif
@@ -187,6 +191,65 @@ void TlsSocketTest::CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_s
   ASSERT_FALSE(ec) << "Connect failed: " << ec.message();
   ASSERT_TRUE(client_sock) << "Client socket is null after connect";
 }
+
+#if defined(__linux__)
+// Requires ktls module support, can be checked with `modinfo tls` and `lsmod | grep tls`.
+TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
+  SSL_CTX* client_ctx = CreateSslCntx(CLIENT);
+  SSL_CTX_set_options(client_ctx, SSL_OP_ENABLE_KTLS);
+
+  int client_fd = ::socket(listen_ep_.protocol().family(), SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+  ASSERT_GE(client_fd, 0) << "socket() failed: " << strerror(errno);
+
+  int rc =
+      ::connect(client_fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()), listen_ep_.size());
+  ASSERT_EQ(rc, 0) << "connect() failed: " << strerror(errno);
+
+  SSL* ssl = SSL_new(client_ctx);
+  ASSERT_NE(ssl, nullptr);
+  ASSERT_EQ(SSL_set_fd(ssl, client_fd), 1);
+
+  rc = SSL_connect(ssl);
+  ASSERT_EQ(rc, 1) << "SSL_connect failed: " << ERR_error_string(ERR_get_error(), nullptr);
+
+  LOG(INFO) << "kTLS test negotiated cipher: " << SSL_get_cipher_name(ssl)
+            << ", proto=" << SSL_get_version(ssl);
+
+  string_view client_msg = "ktls-client-hello";
+  rc = SSL_write(ssl, client_msg.data(), client_msg.size());
+  ASSERT_EQ(rc, static_cast<int>(client_msg.size()))
+      << "SSL_write failed: " << ERR_error_string(ERR_get_error(), nullptr);
+
+  ASSERT_EQ(BIO_get_ktls_send(SSL_get_wbio(ssl)), 1)
+      << "kTLS send path not active. negotiated_cipher=" << SSL_get_cipher_name(ssl)
+      << ", proto=" << SSL_get_version(ssl)
+      << ". Check kernel TLS support, OpenSSL kTLS build, and negotiated cipher/protocol.";
+
+  array<uint8_t, 128> server_buf;
+  auto recv_res = proactor_->Await([&] {
+    return server_socket_->Recv(io::MutableBytes{server_buf.data(), server_buf.size()}, 0);
+  });
+  ASSERT_TRUE(recv_res) << "Server Recv failed: " << recv_res.error().message();
+  ASSERT_EQ(string_view(reinterpret_cast<char*>(server_buf.data()), *recv_res), client_msg);
+
+  string_view server_msg = "server-ack";
+  auto send_ec = proactor_->Await([&] {
+    return server_socket_->Write(
+        io::Bytes{reinterpret_cast<const uint8_t*>(server_msg.data()), server_msg.size()});
+  });
+  ASSERT_FALSE(send_ec) << "Server Write failed: " << send_ec.message();
+
+  array<char, 64> client_buf;
+  rc = SSL_read(ssl, client_buf.data(), client_buf.size());
+  ASSERT_GT(rc, 0);
+  ASSERT_EQ(string_view(client_buf.data(), rc), server_msg);
+
+  std::ignore = SSL_shutdown(ssl);
+  SSL_free(ssl);
+  ::close(client_fd);
+  SSL_CTX_free(client_ctx);
+}
+#endif
 
 TEST_P(TlsSocketTest, ShortWrite) {
   std::unique_ptr<tls::TlsSocket> client_sock;
@@ -1304,12 +1367,15 @@ INSTANTIATE_TEST_SUITE_P(
         // Case 6: Graceful Stream EOF from Engine
         // Scenario: The TLS Engine receives a "close_notify" alert.
         // Expected: Return success with 0 bytes to indicate a clean EOF.
-        TryRecvScenario {
-          .test_name = "EngineEOFGraceful_ReturnsZero", .initial_state = 0,
-          .engine_read_ret = Engine::EOF_GRACEFUL, .engine_output_pending = 0,
-          .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
-          .expected_error = std::error_code{},  // Default generic error_code = Success (0)
-              .expected_bytes = 0               // Standard EOF return
+        TryRecvScenario{
+            .test_name = "EngineEOFGraceful_ReturnsZero",
+            .initial_state = 0,
+            .engine_read_ret = Engine::EOF_GRACEFUL,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::error_code{},  // Default generic error_code = Success (0)
+            .expected_bytes = 0                   // Standard EOF return
         }
 
 #if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)
