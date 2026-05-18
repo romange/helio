@@ -9,8 +9,8 @@
 
 #include "base/logging.h"
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-#error Please update your libssl to libssl1.1 - install libssl-dev
+#if OPENSSL_VERSION_NUMBER < 0x30000000
+#error Please update your libssl - install libssl-dev
 #endif
 
 namespace util {
@@ -24,12 +24,8 @@ static void ClearSslError() {
     const char *file, *data;
     int line, flags;
 
-#if OPENSSL_VERSION_NUMBER >= 0x30000000
     const char* func;
     l = ERR_get_error_all(&file, &line, &func, &data, &flags);
-#else
-    l = ERR_get_error_line_data(&file, &line, &data, &flags);
-#endif
   } while (l);
 }
 
