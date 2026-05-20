@@ -101,7 +101,7 @@ __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
-  SetBusyPollUsec(20);
+  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(20);
 
 #ifdef __linux__
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -149,11 +149,12 @@ bool ProactorBase::InMyThread() const {
   return pthread_self() == thread_id_;
 }
 
-uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f) {
+uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f, string name) {
   DCHECK(InMyThread());
 
   uint32_t res = on_idle_arr_.size();
-  on_idle_arr_.push_back(OnIdleWrapper{.task = std::move(f), .next_ts = 0});
+  on_idle_arr_.push_back(
+      OnIdleWrapper{.task = std::move(f), .task_name = std::move(name), .next_ts = 0});
 
   return res;
 }
@@ -164,7 +165,7 @@ bool ProactorBase::RunOnIdleTasks() {
 
   uint64_t start = GetClockNanos();
   uint64_t curr_ts = start;
-
+  const string* task_name = nullptr;
   bool should_spin = false;
 
   DCHECK_LT(on_idle_next_, on_idle_arr_.size());
@@ -180,6 +181,7 @@ bool ProactorBase::RunOnIdleTasks() {
 
       if (level < 0) {
         on_idle.task = {};
+        task_name = nullptr;
         if (on_idle_next_ + 1 == on_idle_arr_.size()) {
           do {
             on_idle_arr_.pop_back();
@@ -198,6 +200,7 @@ bool ProactorBase::RunOnIdleTasks() {
           uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
           on_idle.next_ts = curr_ts + delta_ns;
         }
+        task_name = &on_idle.task_name;
       }
     }
 
@@ -208,8 +211,9 @@ bool ProactorBase::RunOnIdleTasks() {
     }
   } while (curr_ts < start + 10000);  // 10usec for the run.
   uint64_t duration = curr_ts - start;
-  if (duration >= 500'000) {  // 500us for the run.
-    LOG_EVERY_T(WARNING, 1) << "OnIdle tasks are taking too long: " << duration / 1000 << " us";
+  if (duration >= 1500'000) {  // 1.5ms
+    LOG_EVERY_T(WARNING, 2) << "OnIdle task is taking too long: " << duration / 1000 << " us "
+                            << (task_name ? *task_name : "");
   }
   return should_spin;
 }
@@ -320,10 +324,6 @@ uint64_t ProactorBase::GetCurrentBusyCycles() const {
   return base::CycleClock::Now() - io_wait_end_cycle_;
 }
 
-void ProactorBase::SetBusyPollUsec(uint32_t usec) {
-  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(usec);
-}
-
 // The threshold is set to ~2.5ms.
 bool ProactorBase::ShouldPollL2Tasks() const {
   uint64_t now = base::CycleClock::Now();
@@ -358,7 +358,7 @@ void ProactorBase::IdleEnd(uint64_t start) {
   busy_poll_start_cycle_ = end_cycles;
   io_wait_end_cycle_ = end_cycles;
 
-  // Assuming that cpu clock frequency is
+  // Measure load every 5sec.
   uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
   cpu_idle_cycles_ += (end_cycles - start);
 

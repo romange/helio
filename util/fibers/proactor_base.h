@@ -174,7 +174,7 @@ class ProactorBase {
    * @param f
    * @return uint32_t an unique ids denoting this task. Should be passed to RemoveOnIdleTask().
    */
-  uint32_t AddOnIdleTask(OnIdleTask f);
+  uint32_t AddOnIdleTask(OnIdleTask f, std::string name = {});
 
   //! Must be called from the proactor thread.
   //! PeriodicTask should not block since it runs from I/O loop.
@@ -224,7 +224,10 @@ class ProactorBase {
   // Returns current busy cycles count since the last call to epoll_wait or equivalent.
   uint64_t GetCurrentBusyCycles() const;
 
-  void SetBusyPollUsec(uint32_t usec);
+  // Deprecated.
+  void SetBusyPollUsec(uint32_t usec) {
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -317,6 +320,7 @@ class ProactorBase {
   // Runs tasks when there is available cpu time and no I/O events demand it.
   struct OnIdleWrapper {
     OnIdleTask task;
+    std::string task_name;
     uint64_t next_ts;  // when to run the next time in nano seconds.
   };
 
