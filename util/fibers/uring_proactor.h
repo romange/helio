@@ -201,7 +201,11 @@ class UringProactor : public ProactorBase {
   uint8_t buf_ring_f_ : 1;
   uint8_t bundle_f_ : 1;
   uint8_t incremental_buf_ring_f_ : 1;
-  uint8_t sync_cancel_f_ : 1;
+  // IORING_SETUP_TASKRUN_FLAG + COOP_TASKRUN enabled: kernel publishes
+  // IORING_SQ_TASKRUN in sq_flags, so io_uring_submit can safely skip the
+  // syscall when SQ is empty and no taskrun is pending. Otherwise we must use
+  // io_uring_submit_and_get_events to always enter the kernel.
+  uint8_t taskrun_flag_f_ : 1;
   uint8_t : 2;
 
   EventCount sqe_avail_;
