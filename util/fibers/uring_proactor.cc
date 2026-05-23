@@ -816,11 +816,22 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ++stats_.loop_cnt;
     bool has_cpu_work = false;
 
-    // With TASKRUN_FLAG, io_uring_submit can skip io_uring_enter on idle
-    // iterations (IORING_SQ_TASKRUN signals pending work). Without it, we must
-    // always enter the kernel to fetch completions.
-    int num_submitted =
-        taskrun_flag_f_ ? io_uring_submit(&ring_) : io_uring_submit_and_get_events(&ring_);
+    // Under DEFER_TASKRUN, task work runs only when we enter the kernel with
+    // IORING_ENTER_GETEVENTS. io_uring_submit does NOT set that flag unless
+    // SQ_TASKRUN is observed at the moment of the call, so it can submit SQEs
+    // without draining pending completions and add request latency.
+    // Instead, gate the syscall ourselves and always use submit_and_get_events
+    // when we do enter, so deferred completions are flushed.
+    int num_submitted = 0;
+    bool call_submit = true;
+    if (taskrun_flag_f_) {
+      unsigned sq_ready = io_uring_sq_ready(&ring_);
+      bool taskrun_pending = IO_URING_READ_ONCE(*ring_.sq.kflags) & IORING_SQ_TASKRUN;
+      call_submit = (sq_ready > 0) || taskrun_pending;
+    }
+    if (call_submit) {
+      num_submitted = io_uring_submit_and_get_events(&ring_);
+    }
     bool ring_busy = false;
 
     if (num_submitted > 0) {
