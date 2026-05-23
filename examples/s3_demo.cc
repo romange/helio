@@ -25,10 +25,13 @@
 #include "util/fibers/pool.h"
 #include "util/http/http_client.h"
 
-// Returns nullptr (plain HTTP) when AWS_S3_ENDPOINT is an http:// URL, otherwise a TLS context.
-SSL_CTX* MakeS3SslCtx() {
-  const char* ep = getenv("AWS_S3_ENDPOINT");
-  if (ep && strncmp(ep, "http://", 7) == 0)
+// Returns nullptr (plain HTTP) when the resolved endpoint is an http:// URL,
+// otherwise a TLS context. Checks --endpoint flag first, then AWS_S3_ENDPOINT.
+SSL_CTX* MakeS3SslCtx(const std::string& override_ep) {
+  auto is_http = [](const char* s) { return s && strncmp(s, "http://", 7) == 0; };
+  if (is_http(override_ep.c_str()))
+    return nullptr;
+  if (override_ep.empty() && is_http(getenv("AWS_S3_ENDPOINT")))
     return nullptr;
   return util::http::TlsClient::CreateSslContext();
 }
@@ -67,12 +70,12 @@ bool InitAws(util::cloud::aws::AwsCredsProvider* creds, SSL_CTX** ssl_ctx) {
     LOG(ERROR) << "failed to init credentials: " << ec.message();
     return false;
   }
-  *ssl_ctx = MakeS3SslCtx();
+  *ssl_ctx = MakeS3SslCtx(absl::GetFlag(FLAGS_endpoint));
   return true;
 }
 
 void ListBuckets() {
-  util::cloud::aws::AwsCredsProvider creds_provider;
+  util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
   if (!InitAws(&creds_provider, &ssl_ctx)) return;
   absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
@@ -93,7 +96,7 @@ void ListObjects(const std::string& bucket, const std::string& prefix) {
     return;
   }
 
-  util::cloud::aws::AwsCredsProvider creds_provider;
+  util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
   if (!InitAws(&creds_provider, &ssl_ctx)) return;
   absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
@@ -124,7 +127,7 @@ void GetObject(const std::string& bucket, const std::string& key) {
     return;
   }
 
-  util::cloud::aws::AwsCredsProvider creds_provider;
+  util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
   if (!InitAws(&creds_provider, &ssl_ctx)) return;
   absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
@@ -231,7 +234,7 @@ void PutObject(const std::string& bucket, const std::string& key) {
     return;
   }
 
-  util::cloud::aws::AwsCredsProvider creds_provider;
+  util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
   if (!InitAws(&creds_provider, &ssl_ctx)) return;
   absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });

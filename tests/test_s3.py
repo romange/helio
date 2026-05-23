@@ -136,6 +136,39 @@ def test_list_objects_with_prefix(s3_demo):
     assert result.returncode == 0, f"list-objects with prefix failed:\n{result.stderr}"
 
 
+def test_endpoint_flag_override(minio):
+    """Pass the endpoint via --endpoint instead of AWS_S3_ENDPOINT to exercise
+    AwsCredsProvider::SetEndpointOverride. The override must take precedence
+    over (and work in the absence of) the env var."""
+    endpoint = minio["env"]["AWS_S3_ENDPOINT"]
+    env = {k: v for k, v in minio["env"].items() if k != "AWS_S3_ENDPOINT"}
+
+    result = _run(
+        minio["binary"],
+        "--cmd=list-objects",
+        f"--bucket={minio['bucket']}",
+        f"--endpoint={endpoint}",
+        env=env,
+    )
+    assert result.returncode == 0, f"list-objects with --endpoint failed:\n{result.stderr}"
+    assert "-- page 0 end --" in result.stdout, result.stdout
+
+    # Setting both: --endpoint should win. Point env at a bogus host; --endpoint
+    # at the real minio.
+    env_with_bogus = dict(env)
+    env_with_bogus["AWS_S3_ENDPOINT"] = "http://does-not-resolve.invalid:1"
+    result = _run(
+        minio["binary"],
+        "--cmd=list-objects",
+        f"--bucket={minio['bucket']}",
+        f"--endpoint={endpoint}",
+        env=env_with_bogus,
+    )
+    assert result.returncode == 0, (
+        f"--endpoint did not override AWS_S3_ENDPOINT:\n{result.stderr}"
+    )
+
+
 def test_list_objects_cursor_pagination(minio):
     """Upload several objects under a unique prefix and verify cursor-driven listing
     returns every key across multiple pages."""

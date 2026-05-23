@@ -233,7 +233,8 @@ io::Result<string> FetchUrl(string_view host, string_view port, string_view path
 
 }  // namespace
 
-AwsCredsProvider::AwsCredsProvider(string region) : region_(std::move(region)) {
+AwsCredsProvider::AwsCredsProvider(string region, string endpoint_override)
+    : region_(std::move(region)), endpoint_override_(std::move(endpoint_override)) {
 }
 
 AwsCredsProvider::~AwsCredsProvider() {
@@ -523,9 +524,15 @@ error_code AwsCredsProvider::RefreshToken() {
 }
 
 string AwsCredsProvider::ServiceEndpoint() const {
-  if (const char* ep = getenv("AWS_S3_ENDPOINT"); ep && *ep) {
+  auto format = [](string_view ep) {
     auto [host, port, path, is_https] = ParseHttpUrl(ep);
     return port == (is_https ? "443" : "80") ? host : absl::StrCat(host, ":", port);
+  };
+  if (!endpoint_override_.empty()) {
+    return format(endpoint_override_);
+  }
+  if (const char* ep = getenv("AWS_S3_ENDPOINT"); ep && *ep) {
+    return format(ep);
   }
   return absl::StrCat("s3.", region_, ".amazonaws.com");
 }
