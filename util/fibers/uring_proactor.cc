@@ -176,8 +176,8 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   poll_first_ = 0;
   buf_ring_f_ = 0;
   bundle_f_ = 0;
-  sync_cancel_f_ = 0;
   incremental_buf_ring_f_ = 0;
+  taskrun_flag_f_ = 0;
 
   // If we setup flags that kernel does not recognize, it fails the setup call.
   if (kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 19)) {
@@ -193,11 +193,12 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   }
 
   if (kver.kernel > 6 || (kver.kernel == 6 && kver.major >= 1)) {
-    sync_cancel_f_ = 1;
-
     // This has a positive effect on CPU usage, latency and throughput.
-    params.flags |=
-        (IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SINGLE_ISSUER);
+    // IORING_SETUP_TASKRUN_FLAG is required for the kernel to publish IORING_SQ_TASKRUN in
+    // sq_flags so that io_uring_submit would enter kernel to fetch completions.
+    params.flags |= (IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_COOP_TASKRUN |
+                     IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_SINGLE_ISSUER);
+    taskrun_flag_f_ = 1;
   }
 
   // Officially it's from 6.12 but we take a margin here, just in case.
@@ -815,13 +816,22 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ++stats_.loop_cnt;
     bool has_cpu_work = false;
 
-    // io_uring_submit should be more performant in some case than io_uring_submit_and_get_events
-    // because when there no sqes to flush io_submit may save
-    // a syscall, while io_uring_submit_and_get_events will always do a syscall.
-    // Unfortunately I did not see the impact of it.
-    // Another observation:
-    // AvgCqe/ReapCall goes up if we call here io_uring_submit_and_get_events.
-    int num_submitted = io_uring_submit_and_get_events(&ring_);
+    // Under DEFER_TASKRUN, task work runs only when we enter the kernel with
+    // IORING_ENTER_GETEVENTS. io_uring_submit does NOT set that flag unless
+    // SQ_TASKRUN is observed at the moment of the call, so it can submit SQEs
+    // without draining pending completions and add request latency.
+    // Instead, gate the syscall ourselves and always use submit_and_get_events
+    // when we do enter, so deferred completions are flushed.
+    int num_submitted = 0;
+    bool call_submit = true;
+    if (taskrun_flag_f_) {
+      unsigned sq_ready = io_uring_sq_ready(&ring_);
+      bool taskrun_pending = IO_URING_READ_ONCE(*ring_.sq.kflags) & IORING_SQ_TASKRUN;
+      call_submit = (sq_ready > 0) || taskrun_pending;
+    }
+    if (call_submit) {
+      num_submitted = io_uring_submit_and_get_events(&ring_);
+    }
     bool ring_busy = false;
 
     if (num_submitted > 0) {
