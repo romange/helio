@@ -147,7 +147,10 @@ bool FileLogSink::LogFile::Open(const std::string& base_path, int severity,
     string link_path = absl::StrCat(base_path, ".", kSeverityNames[severity]);
     string target = path_.substr(path_.rfind('/') + 1);
     unlink(link_path.c_str());
-    (void)symlink(target.c_str(), link_path.c_str());
+    if (symlink(target.c_str(), link_path.c_str()) != 0) {
+      fprintf(stderr, "file_log_sink: symlink from %s to %s failed: %s\n", link_path.c_str(),
+              target.c_str(), strerror(errno));
+    }
   }
 
   return true;

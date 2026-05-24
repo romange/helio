@@ -43,14 +43,20 @@ class AwsCredsProvider : public CredentialsProvider {
   AwsCredsProvider& operator=(const AwsCredsProvider&) = delete;
 
  public:
-  explicit AwsCredsProvider(std::string region = "");
+  // `region` empty -> defaults to AWS_REGION / AWS_DEFAULT_REGION / "us-east-1".
+  // `endpoint_override` empty -> falls back to AWS_S3_ENDPOINT, then
+  //   "s3.{region}.amazonaws.com". Accepts a bare "host[:port]" or a full URL
+  //   (e.g. "https://s3.dualstack.us-west-2.amazonaws.com"); scheme and path
+  //   are stripped.
+  explicit AwsCredsProvider(std::string region = {}, std::string endpoint_override = {});
   ~AwsCredsProvider();
 
   unsigned connect_ms() const { return connect_ms_; }
 
   std::error_code Init(unsigned connect_ms) final;
 
-  // Returns "s3.{region}.amazonaws.com" (path-style, bucket-agnostic).
+  // Returns the resolved S3 endpoint host[:port]. Precedence: ctor override >
+  // AWS_S3_ENDPOINT env var > "s3.{region}.amazonaws.com".
   std::string ServiceEndpoint() const final;
 
   // Computes AWS SigV4 and sets x-amz-date, x-amz-security-token, Authorization headers.
@@ -72,6 +78,7 @@ class AwsCredsProvider : public CredentialsProvider {
   std::error_code TryIMDS();
 
   std::string region_;
+  std::string endpoint_override_;
   unsigned connect_ms_ = 2000;
 
   enum class CredSource { kNone, kEnv, kProfile, kWebIdentity, kContainer, kIMDS };
