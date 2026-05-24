@@ -94,17 +94,6 @@ class ProactorBase {
   // If ignore is true, installs SIG_IGN handler for the signals, otherwise SIG_DFL.
   static void ClearSignal(std::initializer_list<uint16_t> signals, bool install_ignore);
 
-  // Returns an approximate (cached) time with nano-sec granularity.
-  // The caller must run in the same thread as the proactor.
-  static uint64_t GetMonotonicTimeNs() {
-    return tl_info_.monotonic_time;
-  }
-
-  // Used by Scheduler to update the monotonic time.
-  static void UpdateMonotonicTime() {
-    tl_info_.monotonic_time = GetClockNanos();
-  }
-
   // Returns an 0 <= index < N, where N is the number of proactor threads in the pool of called
   // from Proactor thread. Returns -1 if Proactor is not part of the pool.
   // Can be accessed from any thread.
@@ -332,7 +321,6 @@ class ProactorBase {
   uint64_t busy_poll_cycle_limit_ = 0;
   uint64_t io_wait_end_cycle_ = 0;
   struct TLInfo {
-    uint64_t monotonic_time = 0;  // in nanoseconds
     ProactorBase* owner = nullptr;
   };
   static __thread TLInfo tl_info_;

@@ -156,7 +156,8 @@ class Scheduler {
     }
   };
 
-  struct RuntimeCounter : public std::array<uint64_t /* runtime ns */, 2 /* FiberPrioriry */> {
+  struct RuntimeCounter
+      : public std::array<uint64_t /* runtime cycles */, 2 /* FiberPrioriry */> {
     using std::array<uint64_t, 2>::operator[];
 
     uint64_t& operator[](FiberPriority p) {
@@ -186,17 +187,17 @@ class Scheduler {
 
   Config config_;
   struct {
-    uint64_t last_normal_ts = 0;  // last timepoint (ns) when NORMAL priority fiber ran
+    uint64_t last_normal_cycles = 0;  // CycleClock value when NORMAL priority fiber last ran
 
-    uint64_t start_ts = 0;   // timestamp (ns) start of round robin run (set by scheduler)
-    uint64_t last_ts = 0;    // timestamp (ns) of last fiber yield
-    uint64_t took_ns = 0;    // ns, how much round robin took so far
-    uint64_t budget_ns = 0;  // ns, budget for running whole round robin
+    uint64_t start_cycles = 0;   // CycleClock at start of round robin run (set by scheduler)
+    uint64_t last_cycles = 0;    // CycleClock at last fiber yield
+    uint64_t took_cycles = 0;    // cycles, how much round robin took so far
+    uint64_t budget_cycles = 0;  // cycles, budget for running whole round robin
 
     uint64_t yields = 0;  // number of yields
   } round_robin_run_;
 
-  RuntimeCounter runtime_ns_;  // total running times of fibers in ns
+  RuntimeCounter runtime_cycles_;  // total running times of fibers in cycles
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
   base::MPSCIntrusiveQueue<FiberInterface> remote_ready_queue_;
