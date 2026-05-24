@@ -163,10 +163,14 @@ bool ProactorBase::RunOnIdleTasks() {
   if (on_idle_arr_.empty())
     return false;
 
-  uint64_t start = GetClockNanos();
+  uint64_t start = base::CycleClock::Now();
   uint64_t curr_ts = start;
   const string* task_name = nullptr;
   bool should_spin = false;
+
+  static const uint64_t kLoopBudgetCycles = base::CycleClock::FromUsec(10);    // 10 usec
+  static const uint64_t kSlowWarnCycles = base::CycleClock::FromUsec(1500);    // 1.5 ms
+  static const uint64_t kIdleMaxCycles = base::CycleClock::FromUsec(kIdleCycleMaxMicros);
 
   DCHECK_LT(on_idle_next_, on_idle_arr_.size());
 
@@ -175,8 +179,6 @@ bool ProactorBase::RunOnIdleTasks() {
     OnIdleWrapper& on_idle = on_idle_arr_[on_idle_next_];
 
     if (on_idle.task && on_idle.next_ts <= curr_ts) {
-      tl_info_.monotonic_time = curr_ts;
-
       int32_t level = on_idle.task();  // run the task
 
       if (level < 0) {
@@ -190,15 +192,14 @@ bool ProactorBase::RunOnIdleTasks() {
           break;  // do/while loop
         }
       } else {  // level >= 0
-        curr_ts = GetClockNanos();
+        curr_ts = base::CycleClock::Now();
 
         if (unsigned(level) >= kOnIdleMaxLevel) {
           level = kOnIdleMaxLevel;
           should_spin = true;
         } else if (on_idle_next_ <
                    on_idle_arr_.size()) {  // check if the array has not been shrunk.
-          uint64_t delta_ns = uint64_t(kIdleCycleMaxMicros) * 1000 / (1 << level);
-          on_idle.next_ts = curr_ts + delta_ns;
+          on_idle.next_ts = curr_ts + (kIdleMaxCycles >> level);
         }
         task_name = &on_idle.task_name;
       }
@@ -209,10 +210,11 @@ bool ProactorBase::RunOnIdleTasks() {
       on_idle_next_ = 0;
       break;
     }
-  } while (curr_ts < start + 10000);  // 10usec for the run.
+  } while (curr_ts - start < kLoopBudgetCycles);
   uint64_t duration = curr_ts - start;
-  if (duration >= 1500'000) {  // 1.5ms
-    LOG_EVERY_T(WARNING, 2) << "OnIdle task is taking too long: " << duration / 1000 << " us "
+  if (duration >= kSlowWarnCycles) {
+    LOG_EVERY_T(WARNING, 2) << "OnIdle task is taking too long: "
+                            << base::CycleClock::ToUsec(duration) << " us "
                             << (task_name ? *task_name : "");
   }
   return should_spin;

@@ -321,7 +321,7 @@ class ProactorBase {
   struct OnIdleWrapper {
     OnIdleTask task;
     std::string task_name;
-    uint64_t next_ts;  // when to run the next time in nano seconds.
+    uint64_t next_ts;  // when to run the next time in cycles.
   };
 
   std::vector<OnIdleWrapper> on_idle_arr_;

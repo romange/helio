@@ -189,6 +189,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
   Tasklet task;
 
+  const uint64_t kTaskBudgetCycles = base::CycleClock::FromUsec(500);
+
   while (true) {
     ++stats_.loop_cnt;
     bool task_queue_exhausted = true;
@@ -197,16 +199,12 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     if (task_queue_.try_dequeue(task)) {
       uint32_t cnt = 0;
-      uint64_t task_start = GetClockNanos();
-
-      // update thread-local clock service via GetMonotonicTimeNs().
-      tl_info_.monotonic_time = task_start;
+      uint64_t task_start = base::CycleClock::Now();
       do {
         task();
         ++stats_.num_task_runs;
         ++cnt;
-        tl_info_.monotonic_time = GetClockNanos();
-        if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
+        if (base::CycleClock::Now() - task_start > kTaskBudgetCycles) {
           ++stats_.task_interrupts;
           task_queue_exhausted = false;
           break;
@@ -282,7 +280,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     uint32_t cqe_count = epoll_res;
     if (cqe_count) {
       ++stats_.completions_fetches;
-      tl_info_.monotonic_time = GetClockNanos();
 
       while (true) {
         VPRO(2) << "Fetched " << cqe_count << " cqes";

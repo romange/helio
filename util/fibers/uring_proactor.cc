@@ -800,6 +800,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
   } jump_from = JUMP_FROM_INIT;
   unsigned jump_counts[JUMP_FROM_TOTAL] = {0};
 
+  const uint64_t kTaskBudgetCycles = base::CycleClock::FromUsec(500);
+
   // The loop must follow these rules:
   // 1. if we task-queue is not empty or if we have ready fibers, then we should
   //    not stall in wait_for_cqe(.., 1, ...).
@@ -820,8 +822,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // IORING_ENTER_GETEVENTS. io_uring_submit does NOT set that flag unless
     // SQ_TASKRUN is observed at the moment of the call, so it can submit SQEs
     // without draining pending completions and add request latency.
-    // Instead, gate the syscall ourselves and always use submit_and_get_events
-    // when we do enter, so deferred completions are flushed.
+    // Therefore, unlike with io_uring_submit, we always set GET_EVENTS when calling io_uring_enter
+    // but similarly to io_uring_submit we check on whether we need to enter at all.
     int num_submitted = 0;
     bool call_submit = true;
     if (taskrun_flag_f_) {
@@ -856,15 +858,11 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // To save redundant timer-calls we start measuring time only when if the queue is not empty.
     if (task_queue_.try_dequeue(task)) {
       uint32_t cnt = 0;
-      uint64_t task_start = GetClockNanos();
-
-      // update thread-local clock service via GetMonotonicTimeNs().
-      tl_info_.monotonic_time = task_start;
+      uint64_t task_start = base::CycleClock::Now();
       do {
         task();
         ++cnt;
-        tl_info_.monotonic_time = GetClockNanos();
-        if (task_start + 500000 < tl_info_.monotonic_time) {  // Break after 500usec
+        if (base::CycleClock::Now() - task_start > kTaskBudgetCycles) {
           ++stats_.task_interrupts;
           has_cpu_work = true;
           break;
