@@ -82,6 +82,13 @@ class EventCount {
         waiter_->set_persistent(false);
       }
     }
+
+    // Silently drop this subkey if the waiter is already unlinked.
+    void Drop() {
+      // Reading IsLinked is not thread safe if it really is linked, but the caller guarantees it
+      assert(!waiter_->IsLinked());
+      me_ = nullptr;
+    }
   };
 
   // Notify one waiter, return if any was notified
