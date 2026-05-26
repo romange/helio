@@ -172,90 +172,120 @@ def test_endpoint_flag_override(minio):
     )
 
 
-class _FailingUploadHandler(http.server.BaseHTTPRequestHandler):
-    """Fake S3 endpoint: accepts CreateMultipartUpload, fails every UploadPart
-    with 507 + `Connection: close`, mirroring MinIO's behavior when out of disk.
-    Reproduces dragonflydb/dragonfly#7410."""
+def _make_failing_upload_handler(*, connection_close: bool):
+    """Build an http handler that accepts CreateMultipartUpload but answers
+    every UploadPart with 507. `connection_close=True` mirrors MinIO's
+    XMinioStorageFull response (drives the Shutdown crash path).
+    `connection_close=False` keeps the socket alive so all retries hit
+    DoesServerPushback (drives the RobustSender retry-exhaustion path)."""
 
-    def log_message(self, *args, **kwargs):  # silence per-request stderr noise
-        pass
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
 
-    def _send(self, status: int, body: bytes, *, close: bool = False):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/xml")
-        self.send_header("Content-Length", str(len(body)))
-        if close:
-            self.send_header("Connection", "close")
-            self.close_connection = True
-        self.end_headers()
-        self.wfile.write(body)
+        def log_message(self, *args, **kwargs):
+            pass
 
-    def do_POST(self):
-        query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
-        if "uploads" in query:
+        def _send(self, status: int, body: bytes, *, close: bool):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            if close:
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            else:
+                self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            if "uploads" in query:
+                body = (
+                    b'<?xml version="1.0" encoding="UTF-8"?>'
+                    b"<InitiateMultipartUploadResult>"
+                    b"<Bucket>fake</Bucket><Key>fake</Key>"
+                    b"<UploadId>fake-upload-id</UploadId>"
+                    b"</InitiateMultipartUploadResult>"
+                )
+                self._send(200, body, close=False)
+                return
+            self._send(404, b"<Error/>", close=False)
+
+        def do_PUT(self):
             body = (
                 b'<?xml version="1.0" encoding="UTF-8"?>'
-                b"<InitiateMultipartUploadResult>"
-                b"<Bucket>fake</Bucket><Key>fake</Key>"
-                b"<UploadId>fake-upload-id</UploadId>"
-                b"</InitiateMultipartUploadResult>"
+                b"<Error><Code>XMinioStorageFull</Code>"
+                b"<Message>Storage backend has reached its capacity</Message></Error>"
             )
-            self._send(200, body)
-            return
-        self._send(404, b"<Error/>")
+            content_len = int(self.headers.get("Content-Length", "0"))
+            if content_len:
+                self.rfile.read(content_len)
+            self._send(507, body, close=connection_close)
 
-    def do_PUT(self):
-        body = (
-            b'<?xml version="1.0" encoding="UTF-8"?>'
-            b"<Error><Code>XMinioStorageFull</Code>"
-            b"<Message>Storage backend has reached its capacity</Message></Error>"
-        )
-        content_len = int(self.headers.get("Content-Length", "0"))
-        if content_len:
-            self.rfile.read(content_len)
-        self._send(507, body, close=True)
+    return Handler
 
 
-@pytest.fixture()
-def failing_s3_endpoint():
-    """Run a fake S3 server on localhost that 507s every UploadPart."""
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FailingUploadHandler)
+def _start_fake_s3(handler_cls):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    return server, thread, f"http://127.0.0.1:{port}"
+
+
+@pytest.fixture()
+def failing_s3_endpoint_close():
+    """Fake S3 that 507s UploadPart with `Connection: close` (MinIO out-of-disk)."""
+    server, thread, url = _start_fake_s3(_make_failing_upload_handler(connection_close=True))
     try:
-        yield f"http://127.0.0.1:{port}"
+        yield url
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
 
-def test_upload_part_507_no_crash(failing_s3_endpoint):
-    """Regression: dragonflydb/dragonfly#7410.
+@pytest.fixture()
+def failing_s3_endpoint_keepalive():
+    """Fake S3 that 507s UploadPart but keeps the connection alive, so all
+    retries hit the DoesServerPushback path in RobustSender::Send."""
+    server, thread, url = _start_fake_s3(_make_failing_upload_handler(connection_close=False))
+    try:
+        yield url
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
-    A 507 on UploadPart with `Connection: close` caused a SIGABRT inside
-    helio's socket Shutdown path (fd_ < 0 CHECK). After the fix, the upload
-    must exit gracefully with a propagated error and no crash."""
+
+def _put_object_against(endpoint: str) -> subprocess.CompletedProcess:
     binary = _find_s3_demo()
     if not binary:
         pytest.skip("s3_demo binary not found")
-
     env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
     env.update({
         "AWS_ACCESS_KEY_ID": "fake",
         "AWS_SECRET_ACCESS_KEY": "fake",
         "AWS_DEFAULT_REGION": "us-east-1",
     })
-    result = _run(
+    return _run(
         binary,
         "--cmd=put-object",
         "--bucket=fake-bucket",
         "--key=fake/key.bin",
         "--upload_size=16",
-        f"--endpoint={failing_s3_endpoint}",
+        f"--endpoint={endpoint}",
         env=env,
     )
+
+
+def test_upload_part_507_no_crash(failing_s3_endpoint_close):
+    """Regression: dragonflydb/dragonfly#7410.
+
+    A 507 on UploadPart with `Connection: close` caused a SIGABRT inside
+    helio's socket Shutdown path (fd_ < 0 CHECK fail). After the fix, the
+    upload must exit gracefully with a propagated error and no crash."""
+    result = _put_object_against(failing_s3_endpoint_close)
 
     # SIGABRT shows up as a negative returncode (-signal.SIGABRT) on POSIX.
     assert result.returncode >= 0, (
@@ -264,7 +294,36 @@ def test_upload_part_507_no_crash(failing_s3_endpoint):
     assert "Check failed: fd_" not in result.stderr, (
         f"hit the LinuxSocketBase::Shutdown CHECK:\n{result.stderr}"
     )
-    # Either Upload() or Close() should have surfaced the failure.
+    assert "put-object close error" in result.stderr or "put-object write error" in result.stderr, (
+        f"expected a graceful upload error in stderr, got:\n{result.stderr}"
+    )
+
+
+def test_upload_part_507_retry_exhaustion_propagates_error(failing_s3_endpoint_keepalive):
+    """Regression: RobustSender::Send must return an error after exhausting
+    pushback retries. Before the fix, the for-loop fell out returning a
+    default-constructed (success) error_code; s3_storage then tried to parse
+    the (empty) response and logged `missing ETag in response`.
+
+    With the keep-alive variant of the fake server, all 3 attempts take the
+    DoesServerPushback path — exhausting retries cleanly so this path is
+    actually exercised (the close variant short-circuits with end_of_stream
+    on the third attempt's send)."""
+    result = _put_object_against(failing_s3_endpoint_keepalive)
+
+    assert result.returncode >= 0, (
+        f"s3_demo terminated by signal {-result.returncode}:\n{result.stderr}"
+    )
+    # The smoking gun for the retry-exhaustion bug: with the bug present
+    # Send returned success and s3_storage logged this while looking for ETag.
+    assert "missing ETag in response" not in result.stderr, (
+        "RobustSender returned success on retry-exhaustion; "
+        "caller tried to parse the response and hit missing-ETag:\n" + result.stderr
+    )
+    # And we should still see at least 3 pushback retries having been attempted.
+    assert result.stderr.count("Retrying(") >= 3, (
+        f"expected RobustSender to exhaust 3 pushback retries:\n{result.stderr}"
+    )
     assert "put-object close error" in result.stderr or "put-object write error" in result.stderr, (
         f"expected a graceful upload error in stderr, got:\n{result.stderr}"
     )
