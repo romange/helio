@@ -104,6 +104,8 @@ class WaitQueue {
   // Return true if any waiter was notified
   bool NotifyAll(FiberInterface* active);
 
+  size_t TotalWaiters() const { return wait_list_.size(); }
+
  private:
   using WaitList = boost::intrusive::list<
       Waiter, boost::intrusive::member_hook<Waiter, Waiter::ListHookType, &Waiter::wait_hook>,

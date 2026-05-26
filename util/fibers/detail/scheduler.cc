@@ -6,6 +6,7 @@
 #include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -510,7 +511,12 @@ void Scheduler::PrintAllFiberStackTraces() {
     string state = "suspended";
     bool add_time = true;
     if (fb->list_hook.is_linked()) {
-      state = "ready";
+      if(fb->flags_.load(std::memory_order_relaxed) & FiberInterface::kTerminatedBit) {
+        state = "terminating";
+      }
+      else {
+        state = "ready";
+      }
     } else if (active == fb) {
       state = "active";
     } else if (fb->sleep_hook.is_linked()) {
@@ -526,12 +532,15 @@ void Scheduler::PrintAllFiberStackTraces() {
 
     if (add_time) {
       uint64_t tsc = CycleClock::Now();
+      // Last time of context switch
       uint64_t delta = tsc - fb->cpu_tsc_;
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
-      absl::StrAppend(&state, ":", delta / freq_ms, "ms");
+      // Last time the fiber got into the ready queue
+      uint64_t last_ready = tsc - fb->ready_tsc_;
+      absl::StrAppend(&state, ":last_context_switch", delta / freq_ms, "ms:last_ready", last_ready / freq_ms, "ms");
     }
 
-    LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
+    LOG(INFO) << "------------ Fiber " << fb->name_ << " with " << fb->join_q_.TotalWaiters() << " waiters(" << state << ") ------------\n"
               << print_cb_str << GetStacktrace();
   };
 
