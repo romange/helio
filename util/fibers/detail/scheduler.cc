@@ -537,10 +537,10 @@ void Scheduler::PrintAllFiberStackTraces() {
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
       // Last time the fiber got into the ready queue
       uint64_t last_ready = tsc - fb->ready_tsc_;
-      absl::StrAppend(&state, ":last_context_switch", delta / freq_ms, "ms:last_ready", last_ready / freq_ms, "ms");
+      absl::StrAppend(&state, ":last_context_switch=", delta / freq_ms, "ms:last_ready=", last_ready / freq_ms, "ms");
     }
 
-    LOG(INFO) << "------------ Fiber " << fb->name_ << " with " << fb->join_q_.TotalWaiters() << " waiters(" << state << ") ------------\n"
+    LOG(INFO) << "------------ Fiber " << fb->name_ << fb->name_ << " (" << state << ") ------------\n"
               << print_cb_str << GetStacktrace();
   };
 
