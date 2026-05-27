@@ -187,6 +187,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     // Writing can return `broken_pipe` so we need to retry.
     if (FiberSocketBase::IsConnClosed(send_err)) {
       VLOG(1) << "Retrying. Connection closed with error: " << send_err.message();
+      ec = send_err;
       continue;
     }
     RETURN_ERROR(send_err);
@@ -198,6 +199,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     // Reading from closed socket can result in `connection_aborted`.
     if (FiberSocketBase::IsConnClosed(header_err)) {
       VLOG(1) << "Retrying. Connection closed with error: " << header_err.message();
+      ec = header_err;
       continue;
     }
     // Unfortunately earlier versions of boost (1.74-) have a bug that do not support the body_limit
@@ -227,6 +229,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     if (DoesServerPushback(msg.result())) {
       LOG(INFO) << "Retrying(" << client_handle->native_handle() << ") with " << msg;
 
+      ec = make_error_code(errc::resource_unavailable_try_again);
       ThisFiber::SleepFor(100ms);
       continue;
     }
@@ -235,6 +238,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
       VLOG(1) << "Refreshing token";
       RETURN_ERROR(provider_->RefreshToken());
       provider_->Sign(req);
+      ec = make_error_code(errc::permission_denied);
       continue;
     }
 

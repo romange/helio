@@ -66,7 +66,7 @@ std::error_code Client::Reconnect() {
 
   if (socket_) {
     error_code ec = socket_->Close();
-    LOG_IF(WARNING, !ec) << "Socket close failed: " << ec.message();
+    LOG_IF(WARNING, ec) << "Socket close failed: " << ec.message();
     socket_.reset();
   }
 
@@ -123,9 +123,9 @@ auto Client::Send(Verb verb, string_view url, string_view body, Response* respon
 #endif
 
 void Client::Shutdown() {
-  if (socket_) {
+  if (socket_ && socket_->IsOpen()) {
     std::error_code ec = socket_->Shutdown(SHUT_RDWR);
-    LOG_IF(WARNING, !ec) << "Socket Shutdown failed: " << ec.message();
+    LOG_IF(WARNING, ec) << "Socket Shutdown failed: " << ec.message();
   }
 }
 

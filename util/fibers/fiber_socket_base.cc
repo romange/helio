@@ -181,11 +181,13 @@ error_code LinuxSocketBase::Listen(unsigned backlog) {
 }
 
 auto LinuxSocketBase::Shutdown(int how) -> error_code {
-  CHECK_GE(fd_, 0);
+  DCHECK_GE(fd_, 0);
+  error_code ec;
+  if (fd_ < 0)
+    return make_error_code(errc::bad_file_descriptor);
 
   // If we shutdown and then try to Send/Recv - the call will stall since no data
   // is sent/received. Therefore we remember the state to allow consistent API experience.
-  error_code ec;
   if (fd_ & IS_SHUTDOWN)
     return ec;
 

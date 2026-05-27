@@ -215,6 +215,9 @@ class RobustSender {
 
   RobustSender(http::ClientPool* pool, CredentialsProvider* provider);
 
+  // In case of failure, returns the error of the last retry attempt or a unrecoverable error.
+  // If succeeds, returns an empty error code and fills result with the response parser
+  // and client handle.
   std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req, SenderResult* result);
 
  private:
