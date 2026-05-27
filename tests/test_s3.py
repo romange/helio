@@ -273,7 +273,7 @@ def _put_object_against(endpoint: str) -> subprocess.CompletedProcess:
         "--cmd=put-object",
         "--bucket=fake-bucket",
         "--key=fake/key.bin",
-        "--upload_size=16",
+        "--upload_size=256",  # small upload size to make it faster.
         f"--endpoint={endpoint}",
         env=env,
     )
