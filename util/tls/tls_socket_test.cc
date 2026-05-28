@@ -271,9 +271,6 @@ TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
 //   - Server read fiber: calls ReadSome concurrently; SSL_read processes the KeyUpdate
 //     record and must handle SSL_ERROR_WANT_WRITE without crashing.
 TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
-  if (GetParam() != "uring")
-    GTEST_SKIP() << "Test requires io_uring (epoll cannot cancel blocked SQEs via close)";
-
   std::string cert_base(TEST_CERT_PATH);
 
   int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
