@@ -96,7 +96,7 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
   thread proactor_thread_;
   unique_ptr<FiberSocketBase> listen_socket_;
   unique_ptr<tls::TlsSocket> server_socket_;
-  SSL_CTX* ssl_ctx_;
+  SSL_CTX* ssl_ctx_ = nullptr;
 
   Fiber accept_fb_;
   std::error_code accept_ec_;
@@ -143,7 +143,10 @@ void TlsSocketTest::SetUp() {
 
   accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
     auto accept_res = listen_socket_->Accept();
-    CHECK(accept_res) << "Accept error: " << accept_res.error();
+    if (!accept_res) {
+      VLOG(1) << "Accept error: " << accept_res.error();
+      return;
+    }
 
     FiberSocketBase* sock = *accept_res;
     VLOG(1) << "Accepted connection " << sock->native_handle();
@@ -154,7 +157,7 @@ void TlsSocketTest::SetUp() {
     ssl_ctx_ = CreateSslCntx(SERVER);
     server_socket_->InitSSL(ssl_ctx_);
     auto tls_accept = server_socket_->Accept();
-    CHECK(accept_res) << "Tls Accept error: " << accept_res.error();
+    CHECK(tls_accept) << "Tls Accept error: " << tls_accept.error();
   });
 }
 
@@ -268,6 +271,9 @@ TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
 //   - Server read fiber: calls ReadSome concurrently; SSL_read processes the KeyUpdate
 //     record and must handle SSL_ERROR_WANT_WRITE without crashing.
 TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
+  if (GetParam() != "uring")
+    GTEST_SKIP() << "Test requires io_uring (epoll cannot cancel blocked SQEs via close)";
+
   std::string cert_base(TEST_CERT_PATH);
 
   int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
@@ -299,13 +305,13 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   constexpr size_t kChunkSize = 64 * 1024;
   std::vector<uint8_t> chunk(kChunkSize, 'z');
 
-  // Write fiber: floods the client with data until the TCP send buffer fills, at
-  // which point Write() yields while holding WRITE_IN_PROGRESS.
+  // Write fiber: floods the client until the TCP send buffer fills and Write() blocks,
+  // holding WRITE_IN_PROGRESS. Loops until error — server_socket_->Close() below
+  // cancels the blocked io_uring SEND sqe (closing the fd cancels all pending sqes),
+  // which returns an error and exits this loop.
   auto write_fb = proactor_->LaunchFiber("WriteFb", [&] {
-    for (int i = 0; i < 1000; ++i) {
-      if (server_socket_->Write(io::Bytes{chunk.data(), chunk.size()}))
-        break;
-    }
+    while (!server_socket_->Write(io::Bytes{chunk.data(), chunk.size()}))
+      ;
   });
 
   // Read fiber: runs concurrently with the blocked write. When SSL_read processes
@@ -317,7 +323,8 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
     uint8_t buf[256];
     iovec iov{buf, sizeof(buf)};
     while (true) {
-      if (!server_socket_->ReadSome(&iov, 1))
+      auto res = server_socket_->ReadSome(&iov, 1);
+      if (!res || *res == 0)  // error or graceful EOF (close_notify)
         break;
     }
   });
@@ -336,7 +343,24 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
       break;
   }
 
-  proactor_->Await([&] { std::ignore = server_socket_->Shutdown(SHUT_RDWR); });
+  // Close the client connection BEFORE asking the server to shut down.
+  // The server's write fiber is blocked in a pending SEND (TCP send buffer is full because we
+  // never read). On uring, ::shutdown(fd) alone does not cancel the blocked sqe. close() with
+  // unread data in the receive buffer sends TCP RST, which causes the server's WriteSome to fail
+  // with ECONNRESET immediately, clearing WRITE_IN_PROGRESS and allowing server Shutdown to
+  // proceed.
+  //
+  // Sequence after close(fd) → TCP RST:
+  //   1. Write fiber's WriteSome fails (ECONNRESET), exits without draining the KeyUpdate ack,
+  //      clears WRITE_IN_PROGRESS, notify_one().
+  //   2. Read fiber wakes from MaybeSendOutput's cv.wait, returns {}.
+  //   3. RecvMsg loops, engine_->Read() returns NEED_READ_AND_MAYBE_WRITE — ack still in output
+  //      buffer because the write fiber exited before draining it.
+  //   4. HandleUpstreamRead sees OutputPending() > 0 with WRITE_IN_PROGRESS clear, calls
+  //      MaybeSendOutput() which fails with ECONNRESET; error propagates and read fiber exits.
+  { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
+  { auto _ = std::move(fd_guard); }   // close() → RST due to unread data
+
   write_fb.JoinIfNeeded();
   read_fb.JoinIfNeeded();
 }

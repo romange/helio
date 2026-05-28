@@ -392,11 +392,12 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 auto TlsSocket::HandleUpstreamRead() -> error_code {
   if (engine_->OutputPending() != 0) {
-    // All tls operations should make sure that output is flushed before finisihing.
-    // If the state machine requested reading, then the output has been flushed,
-    // or there is a concurrent write in progress.
+    // Normally output is flushed before the read path needs upstream data, or a concurrent
+    // write fiber is already in progress (WRITE_IN_PROGRESS). During a TLS 1.3 KeyUpdate the
+    // write fiber may exit (e.g. after a connection reset) without draining the ack, leaving
+    // OutputPending > 0 with WRITE_IN_PROGRESS clear. Flush here; MaybeSendOutput will either
+    // succeed or return the connection error, which is the right outcome either way.
     if ((state_ & WRITE_IN_PROGRESS) == 0) {
-      LOG(DFATAL) << "Should not happen";
       RETURN_ON_ERROR(MaybeSendOutput());
     }
   }
