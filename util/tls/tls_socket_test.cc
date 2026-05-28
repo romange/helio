@@ -355,11 +355,29 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   //      buffer because the write fiber exited before draining it.
   //   4. HandleUpstreamRead sees OutputPending() > 0 with WRITE_IN_PROGRESS clear, calls
   //      MaybeSendOutput() which fails with ECONNRESET; error propagates and read fiber exits.
+  LOG(INFO) << "Closing client connection";
   { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
+  LOG(INFO) << "ssl_guard destroyed, closing fd";
   { auto _ = std::move(fd_guard); }   // close() → RST due to unread data
+  LOG(INFO) << "fd_guard destroyed (RST sent), waiting for server fibers";
+
+  // Watchdog: if the server fibers don't unblock within 10s, dump all fiber stacks and abort.
+  fb2::Done watchdog_done;
+  auto watchdog_fb = proactor_->LaunchFiber("WatchdogFb", [&] {
+    if (!watchdog_done.WaitFor(10s)) {
+      LOG(ERROR) << "Deadlock detected — server fibers did not unblock after RST";
+      proactor_->Await([] { fb2::PrintFiberStackTracesInThread(); });
+      LOG(FATAL) << "Deadlock — aborting";
+    }
+  });
 
   write_fb.JoinIfNeeded();
+  LOG(INFO) << "write_fb joined";
   read_fb.JoinIfNeeded();
+  LOG(INFO) << "read_fb joined";
+
+  watchdog_done.Notify();
+  watchdog_fb.Join();
 }
 #endif
 

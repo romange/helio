@@ -121,7 +121,7 @@ jobs:
           EOF
 
           gdb -ix ./init.gdb --batch -ex r --args ./fibers_test --logtostderr
-          GLOG_logtostderr=1 ctest -V -L CI
+          GLOG_logtostderr=1 GLOG_v=1 ctest -V -L CI
 
     - name: Start Minio
       if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
