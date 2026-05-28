@@ -540,7 +540,7 @@ void Scheduler::PrintAllFiberStackTraces() {
       absl::StrAppend(&state, ":last_context_switch=", delta / freq_ms, "ms:last_ready=", last_ready / freq_ms, "ms");
     }
 
-    LOG(INFO) << "------------ Fiber " << fb->name_ << fb->name_ << " (" << state << ") ------------\n"
+    LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
               << print_cb_str << GetStacktrace();
   };
 
