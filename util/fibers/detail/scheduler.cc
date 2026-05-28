@@ -6,7 +6,6 @@
 #include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
