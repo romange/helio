@@ -7,6 +7,20 @@
 #include <absl/time/clock.h>
 #include <signal.h>
 #include <string.h>
+#ifndef __APPLE__
+#include <ucontext.h>
+#endif
+#include <unistd.h>
+
+// Portable ASAN detection: Clang exposes __has_feature; GCC defines __SANITIZE_ADDRESS__.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#    define HELIO_ASAN 1
+#  endif
+#endif
+#if !defined(HELIO_ASAN) && defined(__SANITIZE_ADDRESS__)
+#  define HELIO_ASAN 1
+#endif
 
 #ifdef __linux__
 #include <sys/epoll.h>
@@ -46,6 +60,62 @@ namespace {
 constexpr uint64_t kIgnoreIndex = 0;
 constexpr uint64_t kUserDataCbIndex = 1024;
 constexpr size_t kEvBatchSize = 128;
+constexpr size_t kAltStackSize = 65536;
+
+// Stack-overflow detection via SIGSEGV is only supported on Linux and FreeBSD where the
+// mcontext_t layout is known. Excluded on macOS (incompatible ucontext_t) and under
+// sanitizers (they manage their own sigaltstack; our static buffer would corrupt their teardown).
+#if !defined(__APPLE__) && !defined(HELIO_ASAN)
+static struct sigaction g_old_sigsegv_sa;
+
+// no_instrument_function: this handler runs on the alternate signal stack. If the project
+// is built with -finstrument-functions (HELIO_INSTRUMENT_STACK), the compiler-inserted
+// __cyg_profile_func_enter call would run on the already-constrained alt stack and could
+// itself fault or recurse, so we opt out of instrumentation here.
+__attribute__((no_instrument_function))
+// SIGSEGV handler running on the alternate stack (SA_ONSTACK). Detects fiber stack overflows
+// by comparing the interrupted SP against the active fiber's stack_bottom_. fixedsize_stack
+// has no guard page, so si_addr is unreliable — the overflow silently corrupts adjacent
+// memory and the fault manifests later as a secondary access violation.
+void OnSigSegv(int sig, siginfo_t* info, void* ucontext_arg) {
+  auto* fi = detail::FiberActive();
+  uintptr_t stack_bottom = fi ? fi->stack_bottom() : 0;
+
+  uintptr_t sp = 0;
+#if defined(__aarch64__) && defined(__linux__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.sp;
+#elif defined(__aarch64__) && defined(__FreeBSD__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.mc_gpregs.gp_sp;
+#elif defined(__x86_64__) && defined(__linux__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.gregs[REG_RSP];
+#elif defined(__x86_64__) && defined(__FreeBSD__)
+  sp = static_cast<ucontext_t*>(ucontext_arg)->uc_mcontext.mc_rsp;
+#endif
+
+  // sp == 0 means the architecture/OS combination above didn't extract the register;
+  // skip the check rather than producing a false-positive fatal error.
+  if (sp && stack_bottom && sp < stack_bottom) {
+    const char msg[] = "POSSIBLE FIBER STACK OVERFLOW DETECTED\n";
+    std::ignore = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+  }
+
+  // Restore the previous handler (e.g. Abseil's) and return. The kernel re-executes the
+  // faulting instruction under the restored handler, which produces a full stack trace of
+  // the faulting fiber — including the overflow case where we already wrote the banner above.
+  sigaction(SIGSEGV, &g_old_sigsegv_sa, nullptr);
+}
+
+__attribute__((no_instrument_function))
+void InstallSigSegvHandler() {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = OnSigSegv;
+  sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
+  if (sigaction(SIGSEGV, &sa, &g_old_sigsegv_sa) != 0) {
+    LOG(FATAL) << "sigaction(SIGSEGV) failed: " << strerror(errno);
+  }
+}
+#endif  // !__APPLE__ && !sanitizers
 
 #ifdef __linux__
 struct EventsBatch {
@@ -153,6 +223,28 @@ void EpollProactor::Init(unsigned pool_index) {
   if (thread_id_ != 0) {
     LOG(FATAL) << "Init was already called";
   }
+
+#if !defined(__APPLE__) && !defined(HELIO_ASAN)
+  // Set up a per-thread alternate signal stack so SIGSEGV can be delivered and diagnosed
+  // even when a fiber's stack is fully exhausted.
+  {
+    // alignas(16): the kernel requires the alternate stack to be aligned to the platform's
+    // stack alignment boundary. Without it the signal frame pushed by the kernel may be
+    // misaligned, causing faults when the handler uses SSE/NEON registers or when function
+    // prologues enforce 16-byte alignment.
+    alignas(16) static thread_local char alt_stack_mem[kAltStackSize];
+    stack_t ss;
+    ss.ss_sp = alt_stack_mem;
+    ss.ss_size = sizeof(alt_stack_mem);
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, nullptr) != 0) {
+      LOG(FATAL) << "sigaltstack failed: " << strerror(errno);
+    }
+  }
+  if (pool_index == 0) {
+    InstallSigSegvHandler();
+  }
+#endif  // !sanitizers
 
   centries_.resize(512);  // .index = -1
   next_free_ce_ = 0;
