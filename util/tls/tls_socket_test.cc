@@ -4,6 +4,7 @@
 
 #include "util/tls/tls_socket.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
@@ -22,6 +23,7 @@
 #include "util/tls/tls_test_infra.h"
 
 #ifdef __linux__
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -94,7 +96,7 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
   thread proactor_thread_;
   unique_ptr<FiberSocketBase> listen_socket_;
   unique_ptr<tls::TlsSocket> server_socket_;
-  SSL_CTX* ssl_ctx_;
+  SSL_CTX* ssl_ctx_ = nullptr;
 
   Fiber accept_fb_;
   std::error_code accept_ec_;
@@ -141,7 +143,10 @@ void TlsSocketTest::SetUp() {
 
   accept_fb_ = proactor_->LaunchFiber("AcceptFb", [this] {
     auto accept_res = listen_socket_->Accept();
-    CHECK(accept_res) << "Accept error: " << accept_res.error();
+    if (!accept_res) {
+      VLOG(1) << "Accept error: " << accept_res.error();
+      return;
+    }
 
     FiberSocketBase* sock = *accept_res;
     VLOG(1) << "Accepted connection " << sock->native_handle();
@@ -152,7 +157,7 @@ void TlsSocketTest::SetUp() {
     ssl_ctx_ = CreateSslCntx(SERVER);
     server_socket_->InitSSL(ssl_ctx_);
     auto tls_accept = server_socket_->Accept();
-    CHECK(accept_res) << "Tls Accept error: " << accept_res.error();
+    CHECK(tls_accept) << "Tls Accept error: " << tls_accept.error();
   });
 }
 
@@ -182,11 +187,11 @@ void TlsSocketTest::TearDown() {
 // Uses output parameter to allow assertions inside the function..
 void TlsSocketTest::CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_sock) {
   SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  auto ssl_ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(ssl_ctx); });
   proactor_->Await([&] {
     client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
     client_sock->InitSSL(ssl_ctx);
   });
-  SSL_CTX_free(ssl_ctx);
   error_code ec = proactor_->Await([&] { return client_sock->Connect(listen_ep_); });
   ASSERT_FALSE(ec) << "Connect failed: " << ec.message();
   ASSERT_TRUE(client_sock) << "Client socket is null after connect";
@@ -196,16 +201,19 @@ void TlsSocketTest::CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_s
 // Requires ktls module support, can be checked with `modinfo tls` and `lsmod | grep tls`.
 TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
   SSL_CTX* client_ctx = CreateSslCntx(CLIENT);
+  auto client_ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(client_ctx); });
   SSL_CTX_set_options(client_ctx, SSL_OP_ENABLE_KTLS);
 
   int client_fd = ::socket(listen_ep_.protocol().family(), SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
   ASSERT_GE(client_fd, 0) << "socket() failed: " << strerror(errno);
+  auto client_fd_guard = absl::MakeCleanup([&] { ::close(client_fd); });
 
   int rc =
       ::connect(client_fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()), listen_ep_.size());
   ASSERT_EQ(rc, 0) << "connect() failed: " << strerror(errno);
 
   SSL* ssl = SSL_new(client_ctx);
+  auto ssl_guard = absl::MakeCleanup([&] { std::ignore = SSL_shutdown(ssl); SSL_free(ssl); });
   ASSERT_NE(ssl, nullptr);
   ASSERT_EQ(SSL_set_fd(ssl, client_fd), 1);
 
@@ -244,10 +252,132 @@ TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
   ASSERT_GT(rc, 0);
   ASSERT_EQ(string_view(client_buf.data(), rc), server_msg);
 
-  std::ignore = SSL_shutdown(ssl);
-  SSL_free(ssl);
-  ::close(client_fd);
-  SSL_CTX_free(client_ctx);
+}
+
+// Reproduces SSL_ERROR_WANT_WRITE on the read path while WRITE_IN_PROGRESS is set.
+//
+// TLS 1.3 KeyUpdate(update_requested) forces the peer's SSL_read to emit a
+// KeyUpdate(update_not_requested) ack. If the BIO is full at that point,
+// SSL_read returns SSL_ERROR_WANT_WRITE, which races with a concurrent write
+// fiber that has already parked with WRITE_IN_PROGRESS.
+//
+// The raw OpenSSL client runs on the gtest test thread (blocking I/O) while the
+// proactor runs server-side fibers on its own thread — no extra threads needed.
+//
+// Setup:
+//   - Test thread (raw SSL): sends SSL_key_update before each write and never reads,
+//     filling the server's TCP send buffer and parking its write fiber.
+//   - Server write fiber: floods the client until TCP buffers fill (WRITE_IN_PROGRESS).
+//   - Server read fiber: calls ReadSome concurrently; SSL_read processes the KeyUpdate
+//     record and must handle SSL_ERROR_WANT_WRITE without crashing.
+TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
+  std::string cert_base(TEST_CERT_PATH);
+
+  int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+  ASSERT_GE(fd, 0);
+  auto fd_guard = absl::MakeCleanup([&] { ::close(fd); });
+
+  ASSERT_EQ(
+      0, ::connect(fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()), listen_ep_.size()));
+
+  SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+  auto ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(ctx); });
+  SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION);
+  SSL_CTX_use_PrivateKey_file(ctx, (cert_base + "/server-key.pem").c_str(), SSL_FILETYPE_PEM);
+  SSL_CTX_use_certificate_chain_file(ctx, (cert_base + "/server-cert.pem").c_str());
+  SSL_CTX_load_verify_locations(ctx, (cert_base + "/ca-cert.pem").c_str(), nullptr);
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+
+  SSL* ssl = SSL_new(ctx);
+  auto ssl_guard = absl::MakeCleanup([&] { SSL_shutdown(ssl); SSL_free(ssl); });
+  SSL_set_fd(ssl, fd);
+
+  // Blocking handshake on the test thread; the proactor thread handles the server side.
+  ASSERT_EQ(1, SSL_connect(ssl)) << ERR_error_string(ERR_get_error(), nullptr);
+  ASSERT_EQ(TLS1_3_VERSION, SSL_version(ssl)) << "expected TLS 1.3 to be negotiated";
+
+  // server_socket_ is set inside accept_fb_; join before launching server fibers.
+  accept_fb_.JoinIfNeeded();
+
+  constexpr size_t kChunkSize = 64 * 1024;
+  std::vector<uint8_t> chunk(kChunkSize, 'z');
+
+  // Write fiber: floods the client until the TCP send buffer fills and Write() blocks,
+  // holding WRITE_IN_PROGRESS. Loops until error — server_socket_->Close() below
+  // cancels the blocked io_uring SEND sqe (closing the fd cancels all pending sqes),
+  // which returns an error and exits this loop.
+  auto write_fb = proactor_->LaunchFiber("WriteFb", [&] {
+    while (!server_socket_->Write(io::Bytes{chunk.data(), chunk.size()}))
+      ;
+  });
+
+  // Read fiber: runs concurrently with the blocked write. When SSL_read processes
+  // the incoming KeyUpdate record it returns SSL_ERROR_WANT_WRITE — the exact
+  // NEED_WRITE-while-WRITE_IN_PROGRESS path exercised by this test.
+  // Note: TLS 1.2 exposes the same path via renegotiation (SSL_renegotiate), which
+  // also causes SSL_read to generate output and potentially return SSL_ERROR_WANT_WRITE.
+  auto read_fb = proactor_->LaunchFiber("ReadFb", [&] {
+    uint8_t buf[256];
+    iovec iov{buf, sizeof(buf)};
+    while (true) {
+      auto res = server_socket_->ReadSome(&iov, 1);
+      if (!res || *res == 0)  // error or graceful EOF (close_notify)
+        break;
+    }
+  });
+
+  // Switch to non-blocking so SSL_write exits promptly once the TCP send buffer fills.
+  int flags = fcntl(fd, F_GETFL, 0);
+  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+  // Do not call SSL_read — starves the server TCP send buffer so its write fiber
+  // parks with WRITE_IN_PROGRESS. Prepend SSL_key_update to each write to maximise
+  // the chance that SSL_read on the server encounters NEED_WRITE while that flag is set.
+  char buf[1] = {};
+  for (int i = 0; i < 100'000; ++i) {
+    SSL_key_update(ssl, SSL_KEY_UPDATE_REQUESTED);
+    if (SSL_write(ssl, buf, 1) <= 0)
+      break;
+  }
+
+  // Close the client connection BEFORE asking the server to shut down.
+  // The server's write fiber is blocked in a pending SEND (TCP send buffer is full because we
+  // never read). On uring, ::shutdown(fd) alone does not cancel the blocked sqe. close() with
+  // unread data in the receive buffer sends TCP RST, which causes the server's WriteSome to fail
+  // with ECONNRESET immediately, clearing WRITE_IN_PROGRESS and allowing server Shutdown to
+  // proceed.
+  //
+  // Sequence after close(fd) → TCP RST:
+  //   1. Write fiber's WriteSome fails (ECONNRESET), exits without draining the KeyUpdate ack,
+  //      clears WRITE_IN_PROGRESS, notify_one().
+  //   2. Read fiber wakes from MaybeSendOutput's cv.wait, returns {}.
+  //   3. RecvMsg loops, engine_->Read() returns NEED_READ_AND_MAYBE_WRITE — ack still in output
+  //      buffer because the write fiber exited before draining it.
+  //   4. HandleUpstreamRead sees OutputPending() > 0 with WRITE_IN_PROGRESS clear, calls
+  //      MaybeSendOutput() which fails with ECONNRESET; error propagates and read fiber exits.
+  LOG(INFO) << "Closing client connection";
+  { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
+  LOG(INFO) << "ssl_guard destroyed, closing fd";
+  { auto _ = std::move(fd_guard); }   // close() → RST due to unread data
+  LOG(INFO) << "fd_guard destroyed (RST sent), waiting for server fibers";
+
+  // Watchdog: if the server fibers don't unblock within 10s, dump all fiber stacks and abort.
+  fb2::Done watchdog_done;
+  auto watchdog_fb = proactor_->LaunchFiber("WatchdogFb", [&] {
+    if (!watchdog_done.WaitFor(10s)) {
+      LOG(ERROR) << "Deadlock detected — server fibers did not unblock after RST";
+      proactor_->Await([] { fb2::PrintFiberStackTracesInThread(); });
+      LOG(FATAL) << "Deadlock — aborting";
+    }
+  });
+
+  write_fb.JoinIfNeeded();
+  LOG(INFO) << "write_fb joined";
+  read_fb.JoinIfNeeded();
+  LOG(INFO) << "read_fb joined";
+
+  watchdog_done.Notify();
+  watchdog_fb.Join();
 }
 #endif
 
@@ -670,15 +800,12 @@ void AsyncTlsSocketTest::TearDown() {
 
 unique_ptr<tls::TlsSocket> AsyncTlsSocketTest::CreateClientSock() {
   unique_ptr<tls::TlsSocket> client_sock;
-  {
-    SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
-
-    proactor_->Await([&] {
-      client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
-      client_sock->InitSSL(ssl_ctx);
-    });
-    SSL_CTX_free(ssl_ctx);
-  }
+  SSL_CTX* ssl_ctx = CreateSslCntx(CLIENT);
+  auto ssl_ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(ssl_ctx); });
+  proactor_->Await([&] {
+    client_sock.reset(new tls::TlsSocket(proactor_->CreateSocket()));
+    client_sock->InitSSL(ssl_ctx);
+  });
   return client_sock;
 }
 
@@ -1108,8 +1235,10 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
     // Create the dummy Context and SSL object
     SSL_CTX* test_ctx = SSL_CTX_new(TLS_method());
     ASSERT_NE(test_ctx, nullptr);
+    auto test_ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(test_ctx); });
     SSL* test_ssl = SSL_new(test_ctx);
     ASSERT_NE(test_ssl, nullptr);
+    auto test_ssl_guard = absl::MakeCleanup([&] { SSL_free(test_ssl); });
 
     // In this unit test, we use a 'dummy' SSL object that has not performed a real handshake.
     // Because TlsSocket (and underlying OpenSSL checks) internally rely on an active cipher
@@ -1142,9 +1271,6 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
     ASSERT_TRUE(sock_->Accept());
     ASSERT_FALSE(sock_->Write(io::Bytes(buf, sizeof(buf))));
 
-    // Cleanup, SSL_free frees the internal session because refcount is 1
-    SSL_free(test_ssl);
-    SSL_CTX_free(test_ctx);
   });
 }
 

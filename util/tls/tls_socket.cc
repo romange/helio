@@ -370,24 +370,17 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   if (engine_->OutputPending() == 0)
     return {};
 
-  // This function is present in both read and write paths.
-  // meaning that both of them can be called concurrently from differrent fibers and then
-  // race over flushing the output buffer. We use state_ to prevent that.
+  // Called from both the read and write paths, which may run concurrently on different fibers.
+  // On the write path this is straightforward. On the read path, the TLS engine can generate
+  // outbound data that must be flushed before reading can continue — this happens during
+  // protocol renegotiation (TLS 1.2) or a KeyUpdate exchange (TLS 1.3), both of which cause
+  // SSL_read to return SSL_ERROR_WANT_WRITE.
+  // In that case a concurrent write fiber may already hold WRITE_IN_PROGRESS. We must wait for
+  // it to finish rather than spinning: without yielding, the fiber spins indefinitely and never
+  // passes control to anyone else, so WRITE_IN_PROGRESS never clears and the engine loops on
+  // NEED_WRITE forever.
+  // See Tls13KeyUpdateNeedWrite test for the concrete scenario.
   if (state_ & WRITE_IN_PROGRESS) {
-    // This should not happen, as we call MaybeSendOutput from reads only when
-    // there is no ongoing write.
-    LOG(DFATAL) << "Should not happen";
-
-    // Fiber1 (Connection fiber):
-    // Reads SSL renegotiation request
-    // Sets WRITE_IN_PROGRESS in state_
-    // Tries to write renegotiation response to socket
-    // BIO (SSL buffer) gets filled up
-    // Fiber2 (runs command):
-    // Tries to write response to socket
-    // Can't write to socket because WRITE_IN_PROGRESS is set.
-
-    // Wait for the other write to complete.
     fb2::NoOpLock lock;
     block_concurrent_cv_.wait(lock, [&] { return !(state_ & WRITE_IN_PROGRESS); });
 
@@ -399,11 +392,12 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
 
 auto TlsSocket::HandleUpstreamRead() -> error_code {
   if (engine_->OutputPending() != 0) {
-    // All tls operations should make sure that output is flushed before finisihing.
-    // If the state machine requested reading, then the output has been flushed,
-    // or there is a concurrent write in progress.
+    // Normally output is flushed before the read path needs upstream data, or a concurrent
+    // write fiber is already in progress (WRITE_IN_PROGRESS). During a TLS 1.3 KeyUpdate the
+    // write fiber may exit (e.g. after a connection reset) without draining the ack, leaving
+    // OutputPending > 0 with WRITE_IN_PROGRESS clear. Flush here; MaybeSendOutput will either
+    // succeed or return the connection error, which is the right outcome either way.
     if ((state_ & WRITE_IN_PROGRESS) == 0) {
-      LOG(DFATAL) << "Should not happen";
       RETURN_ON_ERROR(MaybeSendOutput());
     }
   }
