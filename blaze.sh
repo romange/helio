@@ -4,16 +4,20 @@ TARGET_BUILD_TYPE=Debug
 BUILD_PREF=build
 BUILD_SUF=dbg
 GENERATOR='-GNinja'
-LAUNCHER=$(command -v ccache)
-# coloring
+
 NC=$'\e[0m'
 RED=$'\e[0;31m'
 GREEN=$'\e[0;32m'
-if [ -x "$LAUNCHER" ]; then
-  echo "Using launcher $LAUNCHER"
-  LAUNCHER="-DCMAKE_CXX_COMPILER_LAUNCHER=$LAUNCHER"
-else
-  LAUNCHER=''
+
+# Accumulates extra -D flags for cmake: the ccache launcher below (auto-detected)
+# plus any -D* the user passes on the command line.
+CMAKE_EXTRA=()
+
+# Use ccache as the compiler launcher when present — speeds up incremental builds.
+CCACHE_BIN=$(command -v ccache)
+if [ -x "$CCACHE_BIN" ]; then
+  echo "Using launcher $CCACHE_BIN"
+  CMAKE_EXTRA+=("-DCMAKE_CXX_COMPILER_LAUNCHER=$CCACHE_BIN")
 fi
 
 # We can't assume a specific compiler is installed, so check for both GCC and Clang
@@ -31,9 +35,8 @@ fi
 CXX_COMPILER=$(command -v $DEFAULT_CXX)
 C_COMPILER=$(command -v $DEFAULT_C)
 
-for ((i=1;i <= $#;));do
-  ARG=${!i}
-  case "$ARG" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     -release)
         TARGET_BUILD_TYPE=Release
         BUILD_SUF=opt
@@ -53,17 +56,31 @@ for ((i=1;i <= $#;));do
         GENERATOR=-G'Unix Makefiles'
         shift
         ;;
-    -D*) # bypass flags
-      i=$((i + 1))
-      ;;
+    -build-dir)
+        # Consume the path that should follow -build-dir. Reject it if missing
+        # (user wrote bare `-build-dir`) or if it looks like another flag
+        # (e.g. `-build-dir -release` — easy mistake to make).
+        # ${1:-} expands to "" when $1 is unset; ${1:0:1} is the first character of $1.
+        shift
+        if [ -z "${1:-}" ] || [ "${1:0:1}" = "-" ]; then
+          echo -e "${RED}-build-dir requires a path argument${NC}"
+          exit 1
+        fi
+        BUILD_DIR=$1
+        shift
+        ;;
+    -D*)
+        CMAKE_EXTRA+=("$1")
+        shift
+        ;;
     *)
-     echo -e "${RED}bad option $ARG${NC}"
-     exit 1
-     ;;
+        echo -e "${RED}bad option $1${NC}"
+        exit 1
+        ;;
   esac
 done
 
-BUILD_DIR=${BUILD_PREF}-${BUILD_SUF}
+BUILD_DIR=${BUILD_DIR:-${BUILD_PREF}-${BUILD_SUF}}
 result="$(cmake --version | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+')"
 major="${result%%.*}"
 remainder="${result#*.}"
@@ -79,7 +96,7 @@ fi
   cmake -L -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=$TARGET_BUILD_TYPE \
       -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
       -DCMAKE_C_COMPILER="$C_COMPILER" \
-      "$GENERATOR" "$LAUNCHER" "$@"
+      "$GENERATOR" "${CMAKE_EXTRA[@]}"
 )
 EXIT_CODE=$?
 
