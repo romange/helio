@@ -133,9 +133,31 @@ template <typename T> class mpmc_bounded_queue {
     return true;
   }
 
+  // Single consumer version of try_dequeue. Should be used when only one consumer thread exists.
+  // It has better performance than the multi-consumer version.
+  bool try_dequeue_sc(T& data) {
+    size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
+    cell_t& cell = buffer_[pos & buffer_mask_];
+    size_t seq = cell.sequence.load(std::memory_order_acquire);
+    intptr_t dif = (intptr_t)seq - (intptr_t)(pos + 1);
+    if (dif < 0) {
+      return false;  // the queue is empty.
+    }
+
+    dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
+
+    T& src = reinterpret_cast<T&>(cell.storage);
+    data = std::forward<T>(src);
+    src.~T();
+
+    // Commit transaction, free up the cell.
+    cell.sequence.store(pos + buffer_mask_ + 1, std::memory_order_release);
+    return true;
+  }
+
   size_t capacity() const {
     return buffer_mask_ + 1;
-  }
+  } 
 
   // Represents a point in time. The state could change one cpu cycle later.
   // For single producer cases if a queue is empty it will stay empty until the producer enqueue
@@ -150,7 +172,11 @@ template <typename T> class mpmc_bounded_queue {
   }
 
  private:
-  struct cell_t {
+  static constexpr size_t kCacheLineSize = 64;
+  static constexpr size_t kCellAlignment =
+      alignof(T) > kCacheLineSize ? alignof(T) : kCacheLineSize;
+
+  struct alignas(kCellAlignment) cell_t {
     std::atomic<size_t> sequence;
     alignas(T) char storage[sizeof(T)];
   };

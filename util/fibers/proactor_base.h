@@ -219,8 +219,6 @@ class ProactorBase {
 
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
-  static constexpr unsigned kMaxSpinLimit = 5;
-
   struct PeriodicItem {
     PeriodicTask task;
 
@@ -270,7 +268,9 @@ class ProactorBase {
 
   void IdleEnd(uint64_t start);
 
-  void ResetBusyPoll();
+  void ResetBusyPoll() {
+    busy_poll_start_cycle_ = base::CycleClock::Now();
+  }
 
   uint64_t busy_poll_start_cycle() const {
     return busy_poll_start_cycle_;
@@ -402,7 +402,7 @@ template <typename Func> void ProactorBase::DispatchLocalBrief(Func&& brief) {
       return;
 
     Tasklet task;
-    if (task_queue_.try_dequeue(task)) {
+    if (task_queue_.try_dequeue_sc(task)) {
       task();
     }
   }

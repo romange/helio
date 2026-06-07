@@ -19,10 +19,10 @@ FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 
 void FiberQueue::Run() {
   bool is_closed = false;
-  CbFunc func;
+  Tasklet func;
 
   auto cb = [&] {
-    if (queue_.try_dequeue(func)) {
+    if (queue_.try_dequeue_sc(func)) {
       push_ec_.notify();
       return true;
     }
@@ -40,13 +40,7 @@ void FiberQueue::Run() {
 
     if (is_closed)
       break;
-    try {
-      func();
-
-    } catch (std::exception& e) {
-      // std::exception_ptr p = std::current_exception();
-      LOG(FATAL) << "Exception " << e.what();
-    }
+    func();
   }
 }
 

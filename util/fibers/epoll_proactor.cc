@@ -89,9 +89,7 @@ int EpollCreate() {
 }
 
 int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
-  struct timespec ts {
-    .tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000
-  };
+  struct timespec ts{.tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000};
 
   int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
   return epoll_res;
@@ -185,7 +183,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
   EventsBatch ev_batch;
   uint32_t tq_seq = 0;
-  uint32_t spin_loops = 0;
 
   Tasklet task;
 
@@ -197,7 +194,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     tq_seq = tq_seq_.load(memory_order_acquire);
 
-    if (task_queue_.try_dequeue(task)) {
+    if (task_queue_.try_dequeue_sc(task)) {
       uint32_t cnt = 0;
       uint64_t task_start = base::CycleClock::Now();
       do {
@@ -219,7 +216,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       } while (task_queue_.try_dequeue(task));
 
       stats_.num_task_runs += cnt;
-      DVLOG(2) << "Tasks runs " << stats_.num_task_runs << "/" << spin_loops;
+      DVLOG(2) << "Tasks runs " << stats_.num_task_runs;
+      ResetBusyPoll();
 
       // We notify at the end that the queue is not full.
       // Tested by ProactorTest.AsyncCall.
@@ -236,8 +234,8 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     // 1. No other fibers are active.
     // 2. Specifically SuspendIoLoop was called and returned true.
     // 3. Task queue is empty otherwise we should spin more to unload it.
-    if (task_queue_exhausted && !scheduler->HasAnyReady() && spin_loops >= kMaxSpinLimit) {
-      spin_loops = 0;
+    bool should_poll = (base::CycleClock::Now() - busy_poll_start_cycle()) < busy_poll_cycle_limit_;
+    if (task_queue_exhausted && !scheduler->HasAnyReady() && !should_poll) {
       if (tq_seq_.compare_exchange_weak(tq_seq, WAIT_SECTION_STATE, memory_order_acquire)) {
         // We check stop condition when all the pending events were processed.
         // It's up to the app-user to make sure that the incoming flow of events is stopped before
@@ -267,7 +265,9 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
 
     uint64_t start_cycle = base::CycleClock::Now();
     int epoll_res = EpollWait(epoll_fd_, &ev_batch, timeout);
-    IdleEnd(start_cycle);
+    if (timeout != 0) {
+      IdleEnd(start_cycle);
+    }
 
     if (epoll_res < 0) {
       epoll_res = errno;
@@ -280,6 +280,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     uint32_t cqe_count = epoll_res;
     if (cqe_count) {
       ++stats_.completions_fetches;
+      ResetBusyPoll();
 
       while (true) {
         VPRO(2) << "Fetched " << cqe_count << " cqes";
@@ -297,9 +298,12 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       };
     }
 
-    RunL2Tasks(scheduler);
+    if (RunL2Tasks(scheduler)) {
+      ResetBusyPoll();
+    }
 
     if (scheduler->Run(FiberPriority::NORMAL) == detail::RunFiberResult::HAS_ACTIVE) {
+      ResetBusyPoll();
       continue;
     }
 
@@ -308,14 +312,19 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     if (scheduler->Run(FiberPriority::BACKGROUND) == detail::RunFiberResult::HAS_ACTIVE) {
+      ResetBusyPoll();
       continue;
     }
 
-    if (!RunOnIdleTasks()) {
-      // Pause(spin_loops);
-      ++spin_loops;
-      scheduler->DestroyTerminated();
+    bool spin_on_idle_tasks = RunOnIdleTasks();
+    if (spin_on_idle_tasks) {
+      continue;
     }
+
+    if (should_poll) {
+      Pause(3);
+    }
+    scheduler->DestroyTerminated();
   }
 
   VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << stats_.loop_cnt << "/"
