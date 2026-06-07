@@ -1,17 +1,25 @@
 add_library(base cpu_features.cc hash.cc histogram.cc init.cc logging.cc file_log_sink.cc
     proc_util.cc pthread_utils.cc varz_node.cc cuckoo_map.cc io_buf.cc segment_pool.cc)
 
-if (LEGACY_GLOG) 
+if (LEGACY_GLOG)
   set(LOG_LIBS glog::glog)
 else()
 
   target_compile_definitions(base PUBLIC -DUSE_ABSL_LOG=1)
-  set(LOG_LIBS absl::check absl::log -Wl,--whole-archive absl::log_flags
-      absl::log_initialize -Wl,--no-whole-archive)
+  if (APPLE)
+    # Apple ld has no --whole-archive; force_load archives kept only by static init.
+    set(LOG_LIBS absl::check absl::log
+        "-Wl,-force_load,$<TARGET_FILE:absl::log_flags>"
+        "-Wl,-force_load,$<TARGET_FILE:absl::log_initialize>"
+        absl::log_flags absl::log_initialize)
+  else()
+    set(LOG_LIBS absl::check absl::log -Wl,--whole-archive absl::log_flags
+        absl::log_initialize -Wl,--no-whole-archive)
+  endif()
 endif()
 
-cxx_link(base ${LOG_LIBS} absl::flags_parse 
-    absl::strings absl::symbolize absl::time absl::failure_signal_handler 
+cxx_link(base ${LOG_LIBS} absl::flags_parse
+    absl::strings absl::symbolize absl::time absl::failure_signal_handler
     TRDP::xxhash TRDP::expected)
 
 # Define default gtest_main for tests.
