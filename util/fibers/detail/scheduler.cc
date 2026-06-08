@@ -23,7 +23,6 @@ namespace ctx = boost::context;
 
 using namespace std;
 using base::CycleClock;
-using chrono::duration;
 using chrono::steady_clock;
 
 namespace {
@@ -218,31 +217,34 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     }
   }
 
-  ProactorBase::UpdateMonotonicTime();
-  uint64_t last = exchange(round_robin_run_.last_ts, ProactorBase::GetMonotonicTimeNs());
+  uint64_t last = exchange(round_robin_run_.last_cycles, base::CycleClock::Now());
   round_robin_run_.yields += yield ? 1 : 0;
-  round_robin_run_.took_ns = round_robin_run_.last_ts - round_robin_run_.start_ts;
+  round_robin_run_.took_cycles = round_robin_run_.last_cycles - round_robin_run_.start_cycles;
 
   if (active_fiber->Priority() == FiberPriority::BACKGROUND) {
     // Fast path: keep running the active fiber to avoid costly context switch.
     // Other tasks will be run on the next iteration or when this one is done.
-    if (yield && round_robin_run_.took_ns < round_robin_run_.budget_ns)
+    if (yield && round_robin_run_.took_cycles < round_robin_run_.budget_cycles)
       return {};
 
     // Fiber ate a big chunk of cpu time
-    bool hungry = round_robin_run_.last_ts - last > round_robin_run_.budget_ns;
+    bool hungry = round_robin_run_.last_cycles - last > round_robin_run_.budget_cycles;
     // No other normal fibers were present in last 5ms, server is likely (almost) idle
-    bool likely_idle = round_robin_run_.last_ts - round_robin_run_.last_normal_ts > 5'000'000;
+    bool likely_idle = round_robin_run_.last_cycles - round_robin_run_.last_normal_cycles >
+                       base::CycleClock::FromUsec(5'000);
     // Yield with specified probability (frequency)
-    bool should_yield = round_robin_run_.last_ts % 100 < config_.background_sleep_prob;
+    bool should_yield = round_robin_run_.last_cycles % 100 < config_.background_sleep_prob;
 
     // If the fiber was hungry and we potentially disrupted other fibers, put it to sleep.
     // Alternatively sleep every `frequency` time to yield to the OS for long cpu tasks
     if (yield) {
+      uint64_t sleep_us = 0;
       if (likely_idle && (hungry || should_yield)) {
-        uint64_t took = round_robin_run_.last_ts - last;
-        uint64_t sleep_ns = std::min<uint64_t>(1'500'000, std::max<uint64_t>(took, 10'000));
-        active_fiber->tp_ = steady_clock::now() + duration<uint64_t, std::nano>(sleep_ns);
+        uint64_t took_us = CycleClock::ToUsec(round_robin_run_.last_cycles - last);
+        sleep_us = std::min<uint64_t>(1'500, took_us);
+      }
+      if (sleep_us > 0) {
+        active_fiber->tp_ = steady_clock::now() + chrono::microseconds(sleep_us);
         sleep_queue_.insert(*active_fiber);
       } else {
         AddReady(active_fiber);
@@ -548,16 +550,14 @@ void Scheduler::PrintAllFiberStackTraces() {
 
 RunFiberResult Scheduler::Run(FiberPriority priority) {
   // TODO: use c++ 20 using enum
-  const uint64_t kBaseSlice = 10'000'000 /* 10 ms */;
-
-  ProactorBase::UpdateMonotonicTime();
+  const uint64_t kBaseSliceCycles = base::CycleClock::FromUsec(10'000) /* 10 ms */;
 
   // Reset total runtime every while to restore normal balance.
   // If background fibers took most of the time, punish them by resetting later.
-  if (runtime_ns_.total() >= kBaseSlice) {
-    if (runtime_ns_[FiberPriority::BACKGROUND] <= runtime_ns_[FiberPriority::NORMAL] ||
-        runtime_ns_.total() >= 5 * kBaseSlice) {
-      runtime_ns_.fill(0);
+  if (runtime_cycles_.total() >= kBaseSliceCycles) {
+    if (runtime_cycles_[FiberPriority::BACKGROUND] <= runtime_cycles_[FiberPriority::NORMAL] ||
+        runtime_cycles_.total() >= 5 * kBaseSliceCycles) {
+      runtime_cycles_.fill(0);
     }
   }
 
@@ -569,8 +569,9 @@ RunFiberResult Scheduler::Run(FiberPriority priority) {
 
   // If background fibers are below their warrant, let them run
   if (HasReady(FiberPriority::BACKGROUND) && priority == FiberPriority::NORMAL) {
-    uint64_t warrant = runtime_ns_.total() * config_.background_warrant_pct / 100;
-    if (runtime_ns_[FiberPriority::NORMAL] > 0 && runtime_ns_[FiberPriority::BACKGROUND] <= warrant)
+    uint64_t warrant = runtime_cycles_.total() * config_.background_warrant_pct / 100;
+    if (runtime_cycles_[FiberPriority::NORMAL] > 0 &&
+        runtime_cycles_[FiberPriority::BACKGROUND] <= warrant)
       RunReadyFibersInternal(FiberPriority::BACKGROUND);
   }
 
@@ -583,10 +584,11 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
   const uint64_t Config::* kBudgets[2] = {&Config::budget_normal_fib,
                                           &Config::budget_background_fib};
 
-  ProactorBase::UpdateMonotonicTime();
-  round_robin_run_.took_ns = 0;
-  round_robin_run_.start_ts = round_robin_run_.last_ts = ProactorBase::GetMonotonicTimeNs();
-  round_robin_run_.budget_ns = config_.*kBudgets[static_cast<unsigned>(priority)];
+  round_robin_run_.took_cycles = 0;
+  round_robin_run_.start_cycles = round_robin_run_.last_cycles = base::CycleClock::Now();
+  // Config budgets are stored in nanoseconds.
+  round_robin_run_.budget_cycles =
+      base::CycleClock::FromUsec((config_.*kBudgets[static_cast<unsigned>(priority)]) / 1000);
   round_robin_run_.yields = 0;
 
   // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
@@ -611,7 +613,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop
     // to kMaxTimeSpentNs.
-    if (round_robin_run_.took_ns > round_robin_run_.budget_ns) {
+    if (round_robin_run_.took_cycles > round_robin_run_.budget_cycles) {
       break;
     }
 
@@ -624,9 +626,9 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // return to the dispatcher.
   } while (HasReady(priority));
 
-  runtime_ns_[static_cast<size_t>(priority)] += round_robin_run_.took_ns;
+  runtime_cycles_[static_cast<size_t>(priority)] += round_robin_run_.took_cycles;
   if (priority == FiberPriority::NORMAL)
-    round_robin_run_.last_normal_ts = round_robin_run_.last_ts;
+    round_robin_run_.last_normal_cycles = round_robin_run_.last_cycles;
 
   return HasReady(priority) ? RunFiberResult::HAS_ACTIVE : RunFiberResult::EXHAUSTED;
 }
