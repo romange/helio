@@ -6,6 +6,7 @@
 #include <absl/numeric/bits.h>
 #include <absl/types/span.h>
 
+#include <cassert>
 #include <cstring>
 
 namespace base {
@@ -94,6 +95,23 @@ class IoBuf {
   void Clear() {
     size_ = 0;
     offs_ = 0;
+  }
+
+  // Moves remaining input to the front of the buffer, setting offs_=0.
+  // WARNING: invalidates any outstanding spans from InputBuffer() or AppendBuffer().
+  //
+  // Use this when the buffer is at max capacity (AppendLen==0) and
+  // cannot grow further, but still hold unprocessed input that must not be discarded.
+  // In that case neither ConsumeInput nor EnsureCapacity can help: Compact() is the
+  // only way to reclaim the already-consumed space at the front without data loss
+  // or new allocation.
+  void Compact() {
+    if (offs_ > 0) {
+      assert(offs_ <= size_);
+      memmove(buf_, buf_ + offs_, size_ - offs_);
+      size_ -= offs_;
+      offs_ = 0;
+    }
   }
 
   // Return capacity of whole buffer.

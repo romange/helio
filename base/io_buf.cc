@@ -16,9 +16,7 @@ void IoBuf::ConsumeInput(size_t sz) {
   } else {
     offs_ += sz;
     if (2 * offs_ > size_ && size_ - offs_ < 512) {
-      memcpy(buf_, buf_ + offs_, size_ - offs_);
-      size_ -= offs_;
-      offs_ = 0;
+      Compact();
     }
   }
 }
