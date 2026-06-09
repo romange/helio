@@ -10,15 +10,25 @@ IoBuf::~IoBuf() {
 }
 
 void IoBuf::ConsumeInput(size_t sz) {
+  static constexpr size_t kCompactThreshold = 512;
+
   if (offs_ + sz >= size_) {
     size_ = 0;
     offs_ = 0;
   } else {
     offs_ += sz;
-    if (2 * offs_ > size_ && size_ - offs_ < 512) {
-      memcpy(buf_, buf_ + offs_, size_ - offs_);
-      size_ -= offs_;
-      offs_ = 0;
+    // size_ == capacity_: buffer is completely full, AppendLen == 0. If the caller
+    // needs to write more data into the buffer it will find no space. Compact immediately
+    // when any bytes are consumed from a full buffer to restore append space.
+    // The second condition alone cannot cover this: it requires remaining input < kCompactThreshold,
+    // but a partial command tail can be arbitrarily large, so a full buffer with a large
+    // tail would never compact, leaving AppendLen == 0 permanently.
+    //
+    // offs_ > size_ / 2 && size_ - offs_ < kCompactThreshold: opportunistic compaction when
+    // consumed bytes outnumber remaining input bytes, AND remaining input is tiny.
+    // Reclaims wasted space before it would require a reallocation.
+    if ((size_ == capacity_) || ((offs_ > size_ / 2) && (size_ - offs_ < kCompactThreshold))) {
+      Compact();
     }
   }
 }
