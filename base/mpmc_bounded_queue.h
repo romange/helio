@@ -144,11 +144,11 @@ template <typename T> class mpmc_bounded_queue {
       return false;  // the queue is empty.
     }
 
-    dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
-
     T& src = reinterpret_cast<T&>(cell.storage);
     data = std::forward<T>(src);
     src.~T();
+
+    dequeue_pos_.store(pos + 1, std::memory_order_relaxed);
 
     // Commit transaction, free up the cell.
     cell.sequence.store(pos + buffer_mask_ + 1, std::memory_order_release);
