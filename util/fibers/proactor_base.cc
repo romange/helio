@@ -373,10 +373,6 @@ void ProactorBase::IdleEnd(uint64_t start) {
   detail::ResetFiberRunSeq();
 }
 
-void ProactorBase::ResetBusyPoll() {
-  busy_poll_start_cycle_ = base::CycleClock::Now();
-}
-
 void ProactorBase::Pause(unsigned count) {
   auto pc = pause_amplifier;
 
@@ -396,7 +392,7 @@ void ProactorBase::ModuleInit() {
   while (true) {
     uint64_t now = GetClockNanos();
     for (unsigned i = 0; i < 10; ++i) {
-      Pause(kMaxSpinLimit);
+      Pause(5);
     }
     delta = GetClockNanos() - now;
     VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";

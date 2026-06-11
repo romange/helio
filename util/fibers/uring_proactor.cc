@@ -856,7 +856,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // This should handle wait-free and "brief" CPU-only tasks enqued using Async/Await
     // calls. We allocate quota of 500K nsec (500usec) of CPU time per iteration
     // To save redundant timer-calls we start measuring time only when if the queue is not empty.
-    if (task_queue_.try_dequeue(task)) {
+    if (task_queue_.try_dequeue_sc(task)) {
       uint32_t cnt = 0;
       uint64_t task_start = base::CycleClock::Now();
       do {
@@ -867,7 +867,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
           has_cpu_work = true;
           break;
         }
-      } while (task_queue_.try_dequeue(task));
+      } while (task_queue_.try_dequeue_sc(task));
       stats_.num_task_runs += cnt;
       DVLOG(2) << "Tasks runs " << stats_.num_task_runs;
 
@@ -952,7 +952,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
+    bool should_poll = (base::CycleClock::Now() - busy_poll_start_cycle()) < busy_poll_cycle_limit_;
     if (!ring_busy && should_poll) {
       Pause(3);
 
