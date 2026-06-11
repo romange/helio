@@ -18,20 +18,21 @@ FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 }
 
 void FiberQueue::Run() {
+  static constexpr unsigned kBatchSize = 16;
+
   bool is_closed = false;
-  CbFunc func;
+  CbFunc batch[kBatchSize];
+  unsigned count = 0;
 
   auto cb = [&] {
-    if (queue_.try_dequeue(func)) {
-      push_ec_.notify();
+    if (queue_.try_dequeue_sc(batch[0])) {
+      count = 1;
       return true;
     }
-
     if (is_closed_.load(std::memory_order_acquire)) {
       is_closed = true;
       return true;
     }
-
     return false;
   };
 
@@ -40,13 +41,21 @@ void FiberQueue::Run() {
 
     if (is_closed)
       break;
-    try {
-      func();
 
-    } catch (std::exception& e) {
-      // std::exception_ptr p = std::current_exception();
-      LOG(FATAL) << "Exception " << e.what();
+    while (count < kBatchSize && queue_.try_dequeue_sc(batch[count])) {
+      ++count;
     }
+
+    push_ec_.notifyAll();
+
+    for (unsigned i = 0; i < count; ++i) {
+      try {
+        batch[i]();
+      } catch (std::exception& e) {
+        LOG(FATAL) << "Exception " << e.what();
+      }
+    }
+    count = 0;
   }
 }
 
