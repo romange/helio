@@ -36,26 +36,39 @@ class FiberQueue {
   /**
    * @brief Submits a callback into the queue. Should not be called after calling Shutdown().
    *
+   * Uses the fetch-and-add enqueue discipline of the underlying queue: a single fetch_add claims a
+   * slot (no CAS retry loop, so no contention storm on the enqueue index under many producers),
+   * then we wait for the slot to become free before committing. Waiting first yields once - this
+   * lets microsecond-scale contention (the consumer about to free the slot) resolve without the
+   * heavier park/unpark + notify cycle - and only then blocks on push_ec_.
+   *
    * @tparam F - callback type
    * @param f  - callback object
    * @return true if Add() had to preempt, false is fast path without preemptions was followed.
    */
   template <typename F> bool Add(F&& f) {
-    if (TryAdd(std::forward<F>(f))) {
-      return false;
-    }
+    size_t pos = queue_.claim_slot();
 
-    bool result = false;
-    while (true) {
-      auto key = push_ec_.prepareWait();
-
-      if (TryAdd(std::forward<F>(f))) {
-        break;
+    bool preempted = false;
+    if (!queue_.slot_ready(pos)) {
+      preempted = true;
+      ++blocked_submitters_;
+      detail::FiberActive()->Yield();
+      if (!queue_.slot_ready(pos)) {
+        push_ec_.await([&] { return queue_.slot_ready(pos); });
       }
-      result = true;
-      push_ec_.wait(key.epoch());
+      --blocked_submitters_;
     }
-    return result;
+
+    queue_.commit_slot(pos, std::forward<F>(f));
+    pull_ec_.notify();
+    return preempted;
+  }
+
+  // Number of submitters on the **current thread** that are currently blocked inside
+  // Add() waiting for a full queue to drain. Used as a contention gauge.
+  static unsigned tl_blocked_submitters() {
+    return blocked_submitters_;
   }
 
   /**
@@ -96,6 +109,8 @@ class FiberQueue {
 
   EventCount push_ec_, pull_ec_;
   std::atomic_bool is_closed_{false};
+
+  static __thread unsigned blocked_submitters_;
 };
 
 // This thread pool has a global fiber-friendly queue for incoming tasks.

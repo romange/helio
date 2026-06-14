@@ -14,6 +14,8 @@ namespace fb2 {
 
 using namespace std;
 
+__thread unsigned FiberQueue::blocked_submitters_ = 0;
+
 FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 }
 
