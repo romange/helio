@@ -189,6 +189,27 @@ TEST_F(MPMCTest, ClaimSlotFullUntilDequeued) {
   ASSERT_FALSE(q.try_dequeue_sc(v));
 }
 
+TEST_F(MPMCTest, HasInflightSlots) {
+  mpmc_bounded_queue<int> q(2);
+  EXPECT_FALSE(q.has_inflight_slots());
+
+  // A claimed-but-uncommitted slot is invisible to try_dequeue_sc, yet must register as inflight:
+  // this is what stops a single-consumer shutdown from exiting before the producer commits.
+  size_t pos = q.claim_slot();
+  EXPECT_TRUE(q.has_inflight_slots());
+
+  int v = 0;
+  EXPECT_FALSE(q.try_dequeue_sc(v));  // gap is not yet visible as an item
+  EXPECT_TRUE(q.has_inflight_slots());
+
+  q.commit_slot(pos, 7);
+  EXPECT_TRUE(q.has_inflight_slots());  // committed but not yet dequeued
+
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(7, v);
+  EXPECT_FALSE(q.has_inflight_slots());  // drained: enqueue and dequeue positions converge
+}
+
 // FIFO preserved across many laps of the ring.
 TEST_F(MPMCTest, ClaimCommitLaps) {
   mpmc_bounded_queue<int> q(4);
