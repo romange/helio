@@ -7,6 +7,11 @@
 #include "util/fibers/detail/result_mover.h"
 #include "util/fibers/synchronization.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress"
+#include "base/function2.hpp"
+#pragma GCC diagnostic pop
+
 namespace util {
 namespace fb2 {
 class FiberQueueThreadPool;
@@ -18,6 +23,19 @@ class FiberQueueThreadPool;
  */
 class FiberQueue {
   friend class FiberQueueThreadPool;
+
+  // Fixed-capacity, non-copyable, non-throwing callable. Callbacks up to 32 bytes are stored
+  // inline (no heap allocation), unlike std::function. Keeps queue cells trivially relocatable.
+  using Fu2Fun =
+      fu2::function_base<true /* owns */, false /*non-copyable*/, fu2::capacity_fixed<32, 8>,
+                         false /* non-throwing*/, false /* strong exceptions guarantees*/, void()>;
+
+  struct Tasklet : public Fu2Fun {
+    using Fu2Fun::Fu2Fun;
+    using Fu2Fun::operator=;
+  };
+
+  static_assert(sizeof(Tasklet) == 48);
 
  public:
   explicit FiberQueue(unsigned queue_size = 128);
@@ -101,9 +119,7 @@ class FiberQueue {
   void Run();
 
  private:
-  // task index since the last preemption.
-  using CbFunc = std::function<void()>;
-  using FuncQ = base::mpmc_bounded_queue<CbFunc>;
+  using FuncQ = base::mpmc_bounded_queue<Tasklet>;
 
   FuncQ queue_;
 

@@ -135,8 +135,12 @@ template <typename T> class mpmc_bounded_queue {
 
   // Unconditionally claims a ticket. Never fails. The caller MUST eventually commit_slot(pos),
   // waiting for slot_ready(pos) first if it is not already free.
+  //
+  // relaxed is sufficient: enqueue_pos_ only hands out unique tickets, it carries no data. All
+  // data publication is done by commit_slot's release store and observed by slot_ready's /
+  // try_dequeue's acquire load. This matches try_enqueue, which also bumps enqueue_pos_ relaxed.
   size_t claim_slot() {
-    return enqueue_pos_.fetch_add(1, std::memory_order_acq_rel);
+    return enqueue_pos_.fetch_add(1, std::memory_order_relaxed);
   }
 
   // Returns true once the cell for ticket pos is free to be written (its previous occupant, if
@@ -153,6 +157,15 @@ template <typename T> class mpmc_bounded_queue {
     cell_t& cell = buffer_[pos & buffer_mask_];
     new (&cell.storage) T(std::forward<U>(data));
     cell.sequence.store(pos + 1, std::memory_order_release);
+  }
+
+  // True if any ticket has been claimed (claim_slot or try_enqueue) but not yet dequeued. A
+  // blocking caller that has claimed a slot but not yet committed it shows up here as a gap that
+  // try_dequeue cannot see, so a single-consumer shutdown can use this to avoid exiting while a
+  // commit_slot is still outstanding. Cache coherence makes the claimed enqueue_pos_ bump visible
+  // here promptly, so relaxed loads suffice for this coordination check.
+  bool has_inflight_slots() const {
+    return enqueue_pos_.load(std::memory_order_relaxed) != dequeue_pos_.load(std::memory_order_relaxed);
   }
 
   bool try_dequeue(T& data) {
