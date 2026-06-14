@@ -140,6 +140,148 @@ TEST_F(MPMCTest, SingleConsumerDequeue) {
   ASSERT_FALSE(q.try_dequeue_sc(tmp));
 }
 
+// Fetch-and-add enqueue discipline: claim_slot / slot_ready / commit_slot.
+TEST_F(MPMCTest, ClaimCommit) {
+  mpmc_bounded_queue<int> q(4);
+
+  size_t p0 = q.claim_slot();
+  ASSERT_TRUE(q.slot_ready(p0));
+  q.commit_slot(p0, 10);
+
+  size_t p1 = q.claim_slot();
+  ASSERT_TRUE(q.slot_ready(p1));
+  q.commit_slot(p1, 20);
+
+  int v = 0;
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(10, v);
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(20, v);
+  ASSERT_FALSE(q.try_dequeue_sc(v));
+}
+
+// A claimed slot stays "not ready" while its cell still holds an item from the previous lap,
+// and becomes ready as soon as that item is dequeued.
+TEST_F(MPMCTest, ClaimSlotFullUntilDequeued) {
+  mpmc_bounded_queue<int> q(2);  // capacity 2, cells {0, 1}
+
+  size_t p0 = q.claim_slot();  // -> cell 0
+  size_t p1 = q.claim_slot();  // -> cell 1
+  ASSERT_TRUE(q.slot_ready(p0));
+  ASSERT_TRUE(q.slot_ready(p1));
+  q.commit_slot(p0, 1);
+  q.commit_slot(p1, 2);
+
+  // Third ticket wraps back to cell 0; not free until p0 is dequeued.
+  size_t p2 = q.claim_slot();
+  EXPECT_FALSE(q.slot_ready(p2));
+
+  int v = 0;
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(1, v);
+  EXPECT_TRUE(q.slot_ready(p2));  // dequeuing p0 freed cell 0 for p2
+  q.commit_slot(p2, 3);
+
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(2, v);
+  ASSERT_TRUE(q.try_dequeue_sc(v));
+  EXPECT_EQ(3, v);
+  ASSERT_FALSE(q.try_dequeue_sc(v));
+}
+
+// FIFO preserved across many laps of the ring.
+TEST_F(MPMCTest, ClaimCommitLaps) {
+  mpmc_bounded_queue<int> q(4);
+  int produced = 0, consumed = 0;
+  for (int lap = 0; lap < 1000; ++lap) {
+    for (int i = 0; i < 4; ++i) {
+      size_t pos = q.claim_slot();
+      ASSERT_TRUE(q.slot_ready(pos));
+      q.commit_slot(pos, produced++);
+    }
+    for (int i = 0; i < 4; ++i) {
+      int v = -1;
+      ASSERT_TRUE(q.try_dequeue_sc(v));
+      EXPECT_EQ(consumed++, v);
+    }
+  }
+}
+
+// commit_slot must construct exactly one T and try_dequeue must destroy it - no leaks.
+TEST_F(MPMCTest, ClaimCommitMoveable) {
+  {
+    mpmc_bounded_queue<Moveable> q(4);
+    size_t pos = q.claim_slot();
+    ASSERT_TRUE(q.slot_ready(pos));
+    q.commit_slot(pos, Moveable{});
+    EXPECT_EQ(1, Moveable::ref);
+
+    Moveable dest;
+    ASSERT_TRUE(q.try_dequeue_sc(dest));
+    EXPECT_EQ(1, Moveable::ref);
+  }
+  EXPECT_EQ(0, Moveable::ref);
+}
+
+// The CAS (try_enqueue) and FAA (claim/commit) enqueue disciplines may be mixed on the same queue.
+// Half the producers use each; a single consumer drains. All items must arrive intact.
+TEST_F(MPMCTest, MixedCasFaaStress) {
+  constexpr unsigned kProducers = 8;
+  constexpr size_t kOps = 50000;
+  const size_t total = size_t(kProducers) * kOps;
+
+  mpmc_bounded_queue<uint64_t> q(64);
+  atomic<bool> start{false};
+  atomic<uint64_t> sum_produced{0};
+  uint64_t sum_consumed = 0;
+  size_t consumed = 0;
+
+  thread consumer([&] {
+    while (!start.load(memory_order_acquire)) {
+    }
+    uint64_t v;
+    while (consumed < total) {
+      if (q.try_dequeue_sc(v)) {
+        sum_consumed += v;
+        ++consumed;
+      }
+    }
+  });
+
+  vector<thread> producers;
+  producers.reserve(kProducers);
+  for (unsigned p = 0; p < kProducers; ++p) {
+    producers.emplace_back([&, p] {
+      while (!start.load(memory_order_acquire)) {
+      }
+      const bool use_faa = (p % 2 == 0);
+      uint64_t local_sum = 0;
+      for (size_t j = 0; j < kOps; ++j) {
+        uint64_t val = (uint64_t(p) << 40) | j;
+        local_sum += val;
+        if (use_faa) {
+          size_t pos = q.claim_slot();
+          while (!q.slot_ready(pos)) {
+          }
+          q.commit_slot(pos, val);
+        } else {
+          while (!q.try_enqueue(val)) {
+          }
+        }
+      }
+      sum_produced.fetch_add(local_sum, memory_order_relaxed);
+    });
+  }
+
+  start.store(true, memory_order_release);
+  for (auto& t : producers)
+    t.join();
+  consumer.join();
+
+  EXPECT_EQ(total, consumed);
+  EXPECT_EQ(sum_produced.load(), sum_consumed);
+}
+
 // To see hotspots:
 // perf c2c record ./mpmc_bounded_queue_test --bench --producers=8
 // perf c2c report --stdio
@@ -191,13 +333,73 @@ static void BM_MPMCContention(benchmark::State& state) {
       t.join();
     consumer.join();
 
-    state.counters["enq_fail/op"] =
-        double(enqueue_failures.load()) / total_ops;
+    state.counters["enq_fail/op"] = double(enqueue_failures.load()) / total_ops;
   }
 
   state.SetItemsProcessed(state.iterations() * total_ops);
-  state.SetLabel(absl::StrCat(num_producers, "P/1C q=", queue_size));
+  state.SetLabel(absl::StrCat(num_producers, "P/1C q=", queue_size, " CAS"));
 }
 BENCHMARK(BM_MPMCContention)->MinTime(2.0)->UseRealTime();
+
+// Same workload as BM_MPMCContention but using the fetch-and-add enqueue discipline (claim_slot +
+// spin on slot_ready + commit_slot) instead of the CAS try_enqueue loop. Compares producer-side
+// contention on enqueue_pos_ between the two approaches ("with and without CAS").
+static void BM_MPMCContentionFAA(benchmark::State& state) {
+  const unsigned num_producers = absl::GetFlag(FLAGS_producers);
+  const size_t queue_size = absl::GetFlag(FLAGS_queue_size);
+  const size_t kOpsPerProducer = 1 << 20;
+  const size_t total_ops = num_producers * kOpsPerProducer;
+
+  for (auto _ : state) {
+    mpmc_bounded_queue<uint64_t> queue(queue_size);
+    atomic<bool> start{false};
+    atomic<uint64_t> enqueue_spins{0};
+
+    thread consumer([&] {
+      while (!start.load(memory_order_acquire)) {
+      }
+
+      size_t consumed = 0;
+      uint64_t val;
+      while (consumed < total_ops) {
+        if (queue.try_dequeue_sc(val)) {
+          DoNotOptimize(val);
+          ++consumed;
+        }
+      }
+    });
+
+    vector<thread> producers;
+    producers.reserve(num_producers);
+    for (unsigned i = 0; i < num_producers; ++i) {
+      producers.emplace_back([&] {
+        while (!start.load(memory_order_acquire)) {
+        }
+
+        uint64_t spins = 0;
+        for (size_t j = 0; j < kOpsPerProducer; ++j) {
+          size_t pos = queue.claim_slot();
+          while (!queue.slot_ready(pos)) {
+            ++spins;
+          }
+          queue.commit_slot(pos, j);
+        }
+        enqueue_spins.fetch_add(spins, memory_order_relaxed);
+      });
+    }
+
+    start.store(true, memory_order_release);
+
+    for (auto& t : producers)
+      t.join();
+    consumer.join();
+
+    state.counters["enq_spin/op"] = double(enqueue_spins.load()) / total_ops;
+  }
+
+  state.SetItemsProcessed(state.iterations() * total_ops);
+  state.SetLabel(absl::StrCat(num_producers, "P/1C q=", queue_size, " FAA"));
+}
+BENCHMARK(BM_MPMCContentionFAA)->MinTime(2.0)->UseRealTime();
 
 }  // namespace base
