@@ -7,6 +7,11 @@
 #include "util/fibers/detail/result_mover.h"
 #include "util/fibers/synchronization.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress"
+#include "base/function2.hpp"
+#pragma GCC diagnostic pop
+
 namespace util {
 namespace fb2 {
 class FiberQueueThreadPool;
@@ -18,6 +23,19 @@ class FiberQueueThreadPool;
  */
 class FiberQueue {
   friend class FiberQueueThreadPool;
+
+  // Fixed-capacity, non-copyable, non-throwing callable. Callbacks up to 32 bytes are stored
+  // inline (no heap allocation), unlike std::function. Keeps queue cells trivially relocatable.
+  using Fu2Fun =
+      fu2::function_base<true /* owns */, false /*non-copyable*/, fu2::capacity_fixed<32, 8>,
+                         false /* non-throwing*/, false /* strong exceptions guarantees*/, void()>;
+
+  struct Tasklet : public Fu2Fun {
+    using Fu2Fun::Fu2Fun;
+    using Fu2Fun::operator=;
+  };
+
+  static_assert(sizeof(Tasklet) == 48);
 
  public:
   explicit FiberQueue(unsigned queue_size = 128);
@@ -52,8 +70,11 @@ class FiberQueue {
       if (TryAdd(std::forward<F>(f))) {
         break;
       }
+
       result = true;
+      blocked_submitters_++;
       push_ec_.wait(key.epoch());
+      blocked_submitters_--;
     }
     return result;
   }
@@ -87,15 +108,26 @@ class FiberQueue {
 
   void Run();
 
+  unsigned blocked_submitters() const {
+    return blocked_submitters_;
+  }
+
  private:
-  // task index since the last preemption.
-  using CbFunc = std::function<void()>;
-  using FuncQ = base::mpmc_bounded_queue<CbFunc>;
+  using FuncQ = base::mpmc_bounded_queue<Tasklet>;
 
   FuncQ queue_;
 
-  EventCount push_ec_, pull_ec_;
+  // pull_ec_ is written by every producer (notify() after each commit); push_ec_ is written by the
+  // consumer (notifyAll() once per drained batch) and by blocked producers. Keep these two on
+  // separate cache lines so producer-side and consumer-side wakeup traffic don't ping-pong the same
+  // line. is_closed_ needs no isolation: it is written once (at Shutdown) and only read on the
+  // consumer's park path, where it already touches push_ec_ anyway. queue_ isolates its own
+  // enqueue_pos_/dequeue_pos_ internally.
+  alignas(64) EventCount pull_ec_;
+  alignas(64) EventCount push_ec_;
   std::atomic_bool is_closed_{false};
+
+  static __thread unsigned blocked_submitters_;
 };
 
 // This thread pool has a global fiber-friendly queue for incoming tasks.

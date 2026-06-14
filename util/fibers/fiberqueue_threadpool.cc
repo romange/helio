@@ -14,6 +14,8 @@ namespace fb2 {
 
 using namespace std;
 
+__thread unsigned FiberQueue::blocked_submitters_ = 0;
+
 FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 }
 
@@ -21,7 +23,7 @@ void FiberQueue::Run() {
   static constexpr unsigned kBatchSize = 16;
 
   bool is_closed = false;
-  CbFunc batch[kBatchSize];
+  Tasklet batch[kBatchSize];
   unsigned count = 0;
 
   auto cb = [&] {
@@ -49,11 +51,7 @@ void FiberQueue::Run() {
     push_ec_.notifyAll();
 
     for (unsigned i = 0; i < count; ++i) {
-      try {
-        batch[i]();
-      } catch (std::exception& e) {
-        LOG(FATAL) << "Exception " << e.what();
-      }
+      batch[i]();
     }
     count = 0;
   }
