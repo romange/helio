@@ -14,6 +14,8 @@ namespace fb2 {
 
 using namespace std;
 
+__thread unsigned FiberQueue::blocked_submitters_ = 0;
+
 FiberQueue::FiberQueue(unsigned queue_size) : queue_(queue_size) {
 }
 
@@ -21,7 +23,7 @@ void FiberQueue::Run() {
   static constexpr unsigned kBatchSize = 16;
 
   bool is_closed = false;
-  CbFunc batch[kBatchSize];
+  Tasklet batch[kBatchSize];
   unsigned count = 0;
 
   auto cb = [&] {
@@ -29,7 +31,11 @@ void FiberQueue::Run() {
       count = 1;
       return true;
     }
-    if (is_closed_.load(std::memory_order_acquire)) {
+    // Only exit once closed AND no slot is still inflight. A blocking Add() that has claimed a
+    // slot but not yet committed it is invisible to try_dequeue_sc; exiting here would strand that
+    // callback (and deadlock an Await waiting on it). has_inflight_slots() keeps us parked until
+    // the producer commits and notifies pull_ec_, after which try_dequeue_sc drains it.
+    if (is_closed_.load(std::memory_order_acquire) && !queue_.has_inflight_slots()) {
       is_closed = true;
       return true;
     }

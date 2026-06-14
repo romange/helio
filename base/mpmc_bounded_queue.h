@@ -107,6 +107,67 @@ template <typename T> class mpmc_bounded_queue {
     return true;
   }
 
+  // Fetch-and-add enqueue discipline (claim_slot / slot_ready / commit_slot).
+  //
+  // The "claim a slot with fetch_add, then wait on that slot's turn" idea follows Erik Rigtorp's
+  // MPMCQueue (https://github.com/rigtorp/MPMCQueue, https://rigtorp.se/ringbuffer/), which is in
+  // the lineage of LCRQ (Morrison & Afek, PPoPP 2013). Rigtorp's blocking push/pop busy-spin on the
+  // slot turn and the queue is multi-consumer; here we keep Vyukov's per-cell sequence (above) as
+  // the "turn", expose only fiber-agnostic primitives so the caller can block instead of spin, and
+  // pair them with the single-consumer try_dequeue_sc.
+  //
+  // try_enqueue uses a CAS retry loop so it can detect a full queue and back off *without*
+  // committing. A caller that is allowed to block does not need that: it can claim a slot
+  // unconditionally with a single fetch_add (no CAS, no retry, never fails), then wait until the
+  // slot is free, then commit. This avoids the cache-line contention of the CAS loop on
+  // enqueue_pos_ under many producers.
+  //
+  // The per-cell sequence protocol is shared with try_enqueue, so the two disciplines may be mixed
+  // on the same queue: both advance enqueue_pos_ by exactly one, keeping tickets dense and unique,
+  // and each producer serializes on its own cell via the sequence value.
+  //
+  // These primitives are intentionally fiber-agnostic (pure atomics, no blocking). The blocking
+  // (e.g. via EventCount) is the caller's responsibility and must happen between claim_slot() and
+  // commit_slot(). Typical usage:
+  //   size_t pos = q.claim_slot();
+  //   while (!q.slot_ready(pos)) { /* caller blocks/yields */ }
+  //   q.commit_slot(pos, std::move(item));
+
+  // Unconditionally claims a ticket. Never fails. The caller MUST eventually commit_slot(pos),
+  // waiting for slot_ready(pos) first if it is not already free.
+  //
+  // relaxed is sufficient: enqueue_pos_ only hands out unique tickets, it carries no data. All
+  // data publication is done by commit_slot's release store and observed by slot_ready's /
+  // try_dequeue's acquire load. This matches try_enqueue, which also bumps enqueue_pos_ relaxed.
+  size_t claim_slot() {
+    return enqueue_pos_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // Returns true once the cell for ticket pos is free to be written (its previous occupant, if
+  // any, has been fully dequeued). The acquire load pairs with the dequeue's release store.
+  bool slot_ready(size_t pos) const {
+    cell_t& cell = buffer_[pos & buffer_mask_];
+    return cell.sequence.load(std::memory_order_acquire) == pos;
+  }
+
+  // Constructs data into the slot claimed by ticket pos and publishes it. Precondition:
+  // slot_ready(pos) has returned true. Like try_enqueue, U is a free type to avoid moving the
+  // argument unless it is actually stored.
+  template <typename U> void commit_slot(size_t pos, U&& data) {
+    cell_t& cell = buffer_[pos & buffer_mask_];
+    new (&cell.storage) T(std::forward<U>(data));
+    cell.sequence.store(pos + 1, std::memory_order_release);
+  }
+
+  // True if any ticket has been claimed (claim_slot or try_enqueue) but not yet dequeued. A
+  // blocking caller that has claimed a slot but not yet committed it shows up here as a gap that
+  // try_dequeue cannot see, so a single-consumer shutdown can use this to avoid exiting while a
+  // commit_slot is still outstanding. Cache coherence makes the claimed enqueue_pos_ bump visible
+  // here promptly, so relaxed loads suffice for this coordination check.
+  bool has_inflight_slots() const {
+    return enqueue_pos_.load(std::memory_order_relaxed) != dequeue_pos_.load(std::memory_order_relaxed);
+  }
+
   bool try_dequeue(T& data) {
     cell_t* cell;
     size_t pos;
@@ -173,8 +234,8 @@ template <typename T> class mpmc_bounded_queue {
 
  private:
   static constexpr size_t kCacheLineSize = 64;
-  static constexpr size_t kCellAlignment =
-      alignof(T) > kCacheLineSize ? alignof(T) : kCacheLineSize;
+  static constexpr size_t kCellAlignment = alignof(T) > kCacheLineSize ? alignof(T)
+                                                                       : kCacheLineSize;
 
   struct alignas(kCellAlignment) cell_t {
     std::atomic<size_t> sequence;
