@@ -123,7 +123,14 @@ class FiberQueue {
 
   FuncQ queue_;
 
-  EventCount push_ec_, pull_ec_;
+  // pull_ec_ is written by every producer (notify() after each commit); push_ec_ is written by the
+  // consumer (notifyAll() once per drained batch) and by blocked producers. Keep these two on
+  // separate cache lines so producer-side and consumer-side wakeup traffic don't ping-pong the same
+  // line. is_closed_ needs no isolation: it is written once (at Shutdown) and only read on the
+  // consumer's park path, where it already touches push_ec_ anyway. queue_ isolates its own
+  // enqueue_pos_/dequeue_pos_ internally.
+  alignas(64) EventCount pull_ec_;
+  alignas(64) EventCount push_ec_;
   std::atomic_bool is_closed_{false};
 
   static __thread unsigned blocked_submitters_;
