@@ -26,6 +26,16 @@ struct AwsCredentials {
   }
 };
 
+// Returns the DNS suffix for the AWS partition `region` belongs to:
+// "amazonaws.com.cn" for China (cn-*) regions, "amazonaws.com" otherwise
+// (standard, GovCloud and ISO partitions all use amazonaws.com).
+std::string_view PartitionDnsSuffix(std::string_view region);
+
+// Returns the STS endpoint host for `region`. China (cn-*) has no global STS
+// endpoint, so it uses the regional "sts.{region}.amazonaws.com.cn"; every other
+// partition uses the global "sts.amazonaws.com".
+std::string StsEndpoint(std::string_view region);
+
 // Implements CredentialsProvider for AWS.
 //
 // Credential chain (same order as current util/aws/ SDK chain):
@@ -45,7 +55,8 @@ class AwsCredsProvider : public CredentialsProvider {
  public:
   // `region` empty -> defaults to AWS_REGION / AWS_DEFAULT_REGION / "us-east-1".
   // `endpoint_override` empty -> falls back to AWS_S3_ENDPOINT, then
-  //   "s3.{region}.amazonaws.com". Accepts a bare "host[:port]" or a full URL
+  //   "s3.{region}.{partition-suffix}" (amazonaws.com.cn for China cn-* regions,
+  //   amazonaws.com otherwise). Accepts a bare "host[:port]" or a full URL
   //   (e.g. "https://s3.dualstack.us-west-2.amazonaws.com"); scheme and path
   //   are stripped.
   explicit AwsCredsProvider(std::string region = {}, std::string endpoint_override = {});
@@ -56,7 +67,8 @@ class AwsCredsProvider : public CredentialsProvider {
   std::error_code Init(unsigned connect_ms) final;
 
   // Returns the resolved S3 endpoint host[:port]. Precedence: ctor override >
-  // AWS_S3_ENDPOINT env var > "s3.{region}.amazonaws.com".
+  // AWS_S3_ENDPOINT env var > "s3.{region}.{partition-suffix}" (amazonaws.com.cn
+  // for China cn-* regions, amazonaws.com otherwise).
   std::string ServiceEndpoint() const final;
 
   // Computes AWS SigV4 and sets x-amz-date, x-amz-security-token, Authorization headers.

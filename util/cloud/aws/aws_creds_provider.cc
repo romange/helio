@@ -4,6 +4,7 @@
 #include "util/cloud/aws/aws_creds_provider.h"
 
 #include <absl/strings/ascii.h>
+#include <absl/strings/match.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_split.h>
 #include <absl/strings/strip.h>
@@ -233,6 +234,21 @@ io::Result<string> FetchUrl(string_view host, string_view port, string_view path
 
 }  // namespace
 
+string_view PartitionDnsSuffix(string_view region) {
+  // China is the only public partition with a non-amazonaws.com suffix; GovCloud
+  // (us-gov-*) and ISO partitions keep amazonaws.com.
+  return absl::StartsWith(region, "cn-") ? "amazonaws.com.cn" : "amazonaws.com";
+}
+
+string StsEndpoint(string_view region) {
+  // China has no global STS endpoint, so it must use the regional host; every
+  // other partition uses the global one.
+  if (absl::StartsWith(region, "cn-")) {
+    return absl::StrCat("sts.", region, ".", PartitionDnsSuffix(region));
+  }
+  return "sts.amazonaws.com";
+}
+
 AwsCredsProvider::AwsCredsProvider(string region, string endpoint_override)
     : region_(std::move(region)), endpoint_override_(std::move(endpoint_override)) {
 }
@@ -392,7 +408,7 @@ error_code AwsCredsProvider::TryWebIdentity() {
   strings::AppendUrlEncoded(token, &body);
   body += "&RoleSessionName=helio&Version=2011-06-15";
 
-  auto resp = FetchUrl("sts.amazonaws.com", "443", "/", h2::verb::post,
+  auto resp = FetchUrl(StsEndpoint(region_), "443", "/", h2::verb::post,
                        {{"content-type", "application/x-www-form-urlencoded"}}, body, connect_ms_,
                        GetSslCtx());
   if (!resp)
@@ -534,7 +550,7 @@ string AwsCredsProvider::ServiceEndpoint() const {
   if (const char* ep = getenv("AWS_S3_ENDPOINT"); ep && *ep) {
     return format(ep);
   }
-  return absl::StrCat("s3.", region_, ".amazonaws.com");
+  return absl::StrCat("s3.", region_, ".", PartitionDnsSuffix(region_));
 }
 
 void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
