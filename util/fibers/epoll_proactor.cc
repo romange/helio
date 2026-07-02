@@ -145,7 +145,7 @@ EpollProactor::~EpollProactor() {
   CHECK(is_stopped_);
   close(epoll_fd_);
 
-  DVLOG(1) << "~EpollProactor";
+  DVLOG(2) << "~EpollProactor";
 }
 
 void EpollProactor::Init(unsigned pool_index) {
@@ -284,12 +284,10 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       while (true) {
         VPRO(2) << "Fetched " << cqe_count << " cqes";
         DispatchCompletions(&ev_batch, cqe_count);
+        stats_.num_completions += cqe_count;
 
-        if (cqe_count < kEvBatchSize) {
-          break;
-        }
         epoll_res = EpollWait(epoll_fd_, &ev_batch, 0);
-        if (epoll_res < 0) {
+        if (epoll_res <= 0) {
           break;
         }
         cqe_count = epoll_res;
@@ -317,9 +315,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
       scheduler->DestroyTerminated();
     }
   }
-
-  VPRO(1) << "total/stalls/cqe_fetches/num_suspends: " << stats_.loop_cnt << "/"
-          << stats_.num_stalls << "/" << stats_.completions_fetches << "/" << stats_.num_suspends;
 
   VPRO(1) << "wakeups/stalls/task_int: " << tq_wakeup_ev_.load() << "/" << stats_.task_interrupts;
   VPRO(1) << "centries size: " << centries_.size();

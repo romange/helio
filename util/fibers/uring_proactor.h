@@ -243,7 +243,6 @@ class UringProactor : public ProactorBase {
   uint32_t direct_fds_cnt_ = 0;
   uint32_t get_entry_sq_full_ = 0, get_entry_await_ = 0;
   uint32_t epoll_add_id_ = 1;
-  uint64_t reaped_cqe_cnt_ = 0;
   std::atomic_int64_t last_wake_ts_{0};
 };
 

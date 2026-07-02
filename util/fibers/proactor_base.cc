@@ -98,6 +98,21 @@ std::once_flag module_init;
 // in cc file that does not define it.
 __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
+ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
+  static_assert(sizeof(Stats) == 8 * sizeof(uint64_t));
+
+  num_stalls += other.num_stalls;
+  completions_fetches += other.completions_fetches;
+  loop_cnt += other.loop_cnt;
+  num_task_runs += other.num_task_runs;
+  task_interrupts += other.task_interrupts;
+  num_completions += other.num_completions;
+  uring_submit_calls += other.uring_submit_calls;
+  uring_submit_sqes += other.uring_submit_sqes;
+
+  return *this;
+}
+
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
@@ -168,8 +183,8 @@ bool ProactorBase::RunOnIdleTasks() {
   const string* task_name = nullptr;
   bool should_spin = false;
 
-  static const uint64_t kLoopBudgetCycles = base::CycleClock::FromUsec(10);    // 10 usec
-  static const uint64_t kSlowWarnCycles = base::CycleClock::FromUsec(1500);    // 1.5 ms
+  static const uint64_t kLoopBudgetCycles = base::CycleClock::FromUsec(10);  // 10 usec
+  static const uint64_t kSlowWarnCycles = base::CycleClock::FromUsec(1500);  // 1.5 ms
   static const uint64_t kIdleMaxCycles = base::CycleClock::FromUsec(kIdleCycleMaxMicros);
 
   DCHECK_LT(on_idle_next_, on_idle_arr_.size());
@@ -410,6 +425,16 @@ void ProactorBase::ModuleInit() {
 void ProactorDispatcher::Run(detail::Scheduler* sched) {
   proactor_->cpu_measure_cycle_start_ = base::CycleClock::Now();
   proactor_->MainLoop(sched);
+  auto& stats = proactor_->stats();
+
+  VLOG(1) << "PRO[" << proactor_->GetPoolIndex()
+          << "] total_loop/stalls/cqe_fetches/completions_total: "
+          << stats.num_stalls << "/" << stats.completions_fetches << "/"
+          << stats.num_completions;
+
+  VLOG_IF(1, stats.uring_submit_calls > 0) << "PRO[" << proactor_->GetPoolIndex()
+            << "] uring_submit_calls/uring_submit_count: "
+            << stats.uring_submit_calls << "/" << stats.uring_submit_sqes;
 }
 
 void ProactorDispatcher::Notify() {
