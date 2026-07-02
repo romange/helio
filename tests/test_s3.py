@@ -82,7 +82,11 @@ def test_put_get_object_minio(minio):
     assert f"put-object done; bytes={upload_size}" in result.stderr, result.stderr
 
     result = _run(
-        minio["binary"], "--cmd=list-objects", f"--bucket={minio['bucket']}", env=minio["env"]
+        minio["binary"],
+        "--cmd=list-objects",
+        f"--bucket={minio['bucket']}",
+        f"--prefix={key}",
+        env=minio["env"],
     )
     assert result.returncode == 0, f"list-objects failed:\n{result.stderr}"
     assert key in result.stdout, f"{key!r} not found in listing:\n{result.stdout}"
@@ -116,7 +120,9 @@ def test_put_get_object(s3_demo):
     assert result.returncode == 0, f"put-object failed:\n{result.stderr}"
     assert f"put-object done; bytes={upload_size}" in result.stderr, result.stderr
 
-    result = _run(s3_demo, "--cmd=list-objects", f"--bucket={bucket}")
+    result = _run(
+        s3_demo, "--cmd=list-objects", f"--bucket={bucket}", f"--prefix={key}"
+    )
     assert result.returncode == 0, f"list-objects failed:\n{result.stderr}"
     assert key in result.stdout, f"{key!r} not found in listing:\n{result.stdout}"
 

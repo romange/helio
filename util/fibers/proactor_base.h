@@ -195,7 +195,7 @@ class ProactorBase {
   }
 
   struct Stats {
-    uint64_t num_stalls = 0, completions_fetches = 0, loop_cnt = 0, num_suspends = 0;
+    uint64_t num_stalls = 0, completions_fetches = 0, loop_cnt = 0;
     uint64_t num_task_runs = 0, task_interrupts = 0;
     uint64_t num_completions = 0;
 

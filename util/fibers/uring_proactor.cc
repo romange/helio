@@ -954,7 +954,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // and we enter too often into kernel space.
     bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
     if (!ring_busy && should_poll) {
-      Pause(2);
+      Pause(3);
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();

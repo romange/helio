@@ -99,12 +99,11 @@ std::once_flag module_init;
 __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
 ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
-  static_assert(sizeof(Stats) == 9 * sizeof(uint64_t));
+  static_assert(sizeof(Stats) == 8 * sizeof(uint64_t));
 
   num_stalls += other.num_stalls;
   completions_fetches += other.completions_fetches;
   loop_cnt += other.loop_cnt;
-  num_suspends += other.num_suspends;
   num_task_runs += other.num_task_runs;
   task_interrupts += other.task_interrupts;
   num_completions += other.num_completions;
