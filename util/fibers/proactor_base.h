@@ -197,8 +197,12 @@ class ProactorBase {
   struct Stats {
     uint64_t num_stalls = 0, completions_fetches = 0, loop_cnt = 0, num_suspends = 0;
     uint64_t num_task_runs = 0, task_interrupts = 0;
-    uint64_t cqe_count = 0;
-    uint64_t uring_submit_calls = 0;
+    uint64_t num_completions = 0;
+
+    // Number of times we called io_uring_submit_and_get_events(),
+    // and number of SQES submitted.
+    uint64_t uring_submit_calls = 0, uring_submit_sqes = 0;
+    Stats& operator+=(const Stats& other);
   };
 
   const Stats& stats() const {

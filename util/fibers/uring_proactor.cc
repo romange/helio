@@ -346,15 +346,17 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
 
 void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
                                     detail::FiberInterface* current) {
+  DCHECK_GT(init_count, 0U);
   unsigned batch_count = init_count;
-  while (batch_count > 0) {
+  do {
     ProcessCqeBatch(batch_count, cqes, current);
     io_uring_cq_advance(&ring_, batch_count);
-    reaped_cqe_cnt_ += batch_count;
-    if (batch_count < kCqeBatchLen)
-      break;
+    stats_.num_completions += batch_count;
+
+    // There could be completions added during the processing of the batch,
+    // so we check again.
     batch_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
-  }
+  } while (batch_count > 0);
 
   // In case some of the timer completions filled schedule_periodic_list_.
   for (auto& task_pair : schedule_periodic_list_) {
@@ -832,12 +834,13 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       call_submit = (sq_ready > 0) || taskrun_pending;
     }
     if (call_submit) {
+      stats_.uring_submit_calls++;
       num_submitted = io_uring_submit_and_get_events(&ring_);
     }
     bool ring_busy = false;
 
     if (num_submitted > 0) {
-      ++stats_.uring_submit_calls;
+      stats_.uring_submit_sqes += num_submitted;
       DVLOG(3) << "Submitted " << num_submitted;
     } else if (num_submitted == -EBUSY) {
       VLOG(1) << "EBUSY " << io_uring_sq_ready(&ring_);
@@ -882,9 +885,6 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     if (cqe_count) {
       ++stats_.completions_fetches;
 
-      // cqe tail (ring->cq.ktail) can be updated asynchronously by the kernel even if we
-      // do now execute any syscalls. Therefore we count how many completions we handled
-      // and reap the same amount.
       ReapCompletions(cqe_count, cqes, dispatcher);
 
       if (ShouldPollL2Tasks()) {
@@ -954,7 +954,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // and we enter too often into kernel space.
     bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
     if (!ring_busy && should_poll) {
-      Pause(3);
+      Pause(2);
 
       // We should not spin too much using sched_yield or it burns a fuckload of cpu.
       scheduler->DestroyTerminated();
@@ -1028,14 +1028,10 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     }
   }
 
-  VPRO(1) << "total/stalls/cqe_fetches/num_submits: " << stats_.loop_cnt << "/" << stats_.num_stalls
-          << "/" << stats_.completions_fetches << "/" << stats_.uring_submit_calls;
   VPRO(1) << "jump_counts: ";
   for (unsigned i = 0; i < JUMP_FROM_TOTAL; ++i) {
     VPRO(1) << i << ": " << jump_counts[i];
   }
-  if (stats_.completions_fetches > 0)
-    VPRO(1) << "AvgCqe/ReapCall: " << double(reaped_cqe_cnt_) / stats_.completions_fetches;
   VPRO(1) << "tq_wakeups/tq_wakeup_saved/tq_full/tq_task_int: " << tq_wakeup_ev_.load() << "/"
           << tq_wakeup_skipped_ev_.load() << "/" << tq_full_ev_.load() << "/"
           << stats_.task_interrupts;
