@@ -428,12 +428,13 @@ void ProactorDispatcher::Run(detail::Scheduler* sched) {
   auto& stats = proactor_->stats();
 
   VLOG(1) << "PRO[" << proactor_->GetPoolIndex()
-          << "] total_loop/stalls/cqe_fetches/num_submits: " << stats.loop_cnt << "/"
+          << "] total_loop/stalls/cqe_fetches/completions_total: "
           << stats.num_stalls << "/" << stats.completions_fetches << "/"
-          << stats.uring_submit_calls;
-  if (stats.completions_fetches > 0)
-    VLOG(1) << "PRO[" << proactor_->GetPoolIndex()
-            << "] AvgCqe/ReapCall: " << double(stats.num_completions) / stats.completions_fetches;
+          << stats.num_completions;
+
+  VLOG_IF(1, stats.uring_submit_calls > 0) << "PRO[" << proactor_->GetPoolIndex()
+            << "] uring_submit_calls/uring_submit_count: "
+            << stats.uring_submit_calls << "/" << stats.uring_submit_sqes;
 }
 
 void ProactorDispatcher::Notify() {
