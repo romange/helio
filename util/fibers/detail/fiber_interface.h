@@ -13,8 +13,8 @@
 #include "base/cycle_clock.h"
 #include "base/mpsc_intrusive_queue.h"
 #include "base/pmr/memory_resource.h"
-#include "util/fibers/detail/event_count.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "util/fibers/event_count.h"
 
 namespace util {
 namespace fb2 {

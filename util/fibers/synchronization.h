@@ -13,8 +13,8 @@
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include "base/spinlock.h"
-#include "util/fibers/detail/event_count.h"
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/event_count.h"
 
 namespace util {
 namespace fb2 {
