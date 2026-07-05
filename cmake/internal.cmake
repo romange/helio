@@ -254,6 +254,50 @@ if(HELIO_PERFORMANCE_OPTIMIZATIONS)
     endif()
 endif()
 
+# ---[ PGO: Profile-Guided Optimization ]---
+# Two-phase workflow:
+#   Phase 1 – instrument:  blaze.sh -release -DWITH_PGO_GENERATE=ON
+#                          Run dragonfly under a representative workload, then stop it.
+#                          Clang: set LLVM_PROFILE_FILE=/path/%p.profraw before launching.
+#                          GCC:   .gcda files land in <build>/pgo-profiles/ automatically.
+#   Phase 2 – optimize:    blaze.sh -release -DWITH_PGO_USE=<profile-path>
+#                          Clang: path to merged .profdata (llvm-profdata merge *.profraw).
+#                          GCC:   path to directory containing .gcda files.
+option(WITH_PGO_GENERATE "Instrument binary for PGO profile collection" OFF)
+set(WITH_PGO_USE "" CACHE STRING
+    "PGO profile path: Clang=merged .profdata file, GCC=directory with .gcda files")
+
+if(WITH_PGO_GENERATE AND WITH_PGO_USE)
+  message(FATAL_ERROR "WITH_PGO_GENERATE and WITH_PGO_USE are mutually exclusive")
+endif()
+
+if(WITH_PGO_GENERATE)
+  message(STATUS "PGO: instrumented build — run workload then rebuild with -DWITH_PGO_USE=<profile>")
+  if(USING_CLANG)
+    add_compile_options(-fprofile-instr-generate)
+    add_link_options(-fprofile-instr-generate)
+  else()
+    set(_PGO_GCDA_DIR "${CMAKE_BINARY_DIR}/pgo-profiles")
+    file(MAKE_DIRECTORY "${_PGO_GCDA_DIR}")
+    add_compile_options(-fprofile-generate=${_PGO_GCDA_DIR})
+    add_link_options(-fprofile-generate=${_PGO_GCDA_DIR})
+  endif()
+endif()
+
+if(WITH_PGO_USE)
+  message(STATUS "PGO: optimized build using profiles from: ${WITH_PGO_USE}")
+  if(USING_CLANG)
+    add_compile_options(-fprofile-instr-use=${WITH_PGO_USE})
+    add_link_options(-fprofile-instr-use=${WITH_PGO_USE})
+    # Silence warnings for functions not exercised during profiling
+    add_compile_options(-Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+  else()
+    # -fprofile-correction tolerates minor source drift between profiling and optimize builds
+    add_compile_options(-fprofile-use=${WITH_PGO_USE} -fprofile-correction)
+    add_link_options(-fprofile-use=${WITH_PGO_USE})
+  endif()
+endif()
+
 # ---[ Helper Functions ]---
 set(ROOT_GEN_DIR ${CMAKE_SOURCE_DIR}/genfiles)
 file(MAKE_DIRECTORY ${ROOT_GEN_DIR})
