@@ -164,6 +164,10 @@ BlockingCounter::BlockingCounter(unsigned start_count)
     : counter_{std::make_shared<EmbeddedBlockingCounter>(start_count)} {
 }
 
+FiberBlockingCounter::FiberBlockingCounter(unsigned start_count) : owner_{detail::FiberActive()} {
+  owner_->blocking_counter().Start(start_count);
+}
+
 Barrier::Barrier(size_t initial) : initial_{initial}, current_{initial_} {
   DCHECK_NE(0u, initial);
 }

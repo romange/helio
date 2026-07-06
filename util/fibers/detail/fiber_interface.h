@@ -14,6 +14,7 @@
 #include "base/mpsc_intrusive_queue.h"
 #include "base/pmr/memory_resource.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "util/fibers/event_count.h"
 
 namespace util {
 namespace fb2 {
@@ -212,6 +213,14 @@ class FiberInterface {
     return Waiter{this};
   }
 
+  // Embedded, zero-allocation blocking counter reused by every BlockingCounter constructed
+  // while this fiber is active (see synchronization.h). Assumes no nested/concurrent
+  // rounds on the same fiber - a round must finish (Wait() returns) before the next one
+  // Start()s. This is enforced by EmbeddedBlockingCounter::Start()'s DCHECK in debug builds.
+  EmbeddedBlockingCounter& blocking_counter() {
+    return blocking_counter_;
+  }
+
   void PullMyselfFromRemoteReadyQueue();
 
   bool IsScheduledRemotely() const {
@@ -289,6 +298,9 @@ class FiberInterface {
 
   // FiberInterfaces that join on this fiber to terminate are added here.
   WaitQueue join_q_;
+
+  // See blocking_counter() above.
+  EmbeddedBlockingCounter blocking_counter_;
 
   Scheduler* scheduler_ = nullptr;
 

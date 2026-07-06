@@ -99,7 +99,7 @@ class ProactorPool {
    * Func must accept "ProactorBase&" and it should not block.
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void Await(Func&& func) {
-    BlockingCounter bc(size());
+    fb2::FiberBlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
       bc->Dec();
@@ -115,7 +115,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void AwaitBrief(Func&& func) {
-    BlockingCounter bc(size());
+    fb2::FiberBlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
       bc->Dec();
@@ -170,7 +170,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
-    BlockingCounter bc(size());
+    fb2::FiberBlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](unsigned i, ProactorBase* context) mutable {
       func(i, context);
       bc->Dec();
@@ -189,7 +189,7 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
-    BlockingCounter bc(size());
+    fb2::FiberBlockingCounter bc(size());
     auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
       bc->Dec();
