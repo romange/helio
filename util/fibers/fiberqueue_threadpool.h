@@ -108,7 +108,7 @@ class FiberQueue {
 
   void Run();
 
-  unsigned blocked_submitters() const {
+  static unsigned blocked_submitters() {
     return blocked_submitters_;
   }
 
@@ -173,7 +173,9 @@ class FiberQueueThreadPool {
         break;
       }
 
+      main_w.q->blocked_submitters_++;
       main_w.q->push_ec_.wait(key.epoch());
+      main_w.q->blocked_submitters_--;
     }
   }
 
