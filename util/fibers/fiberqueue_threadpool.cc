@@ -38,22 +38,26 @@ void FiberQueue::Run() {
     return false;
   };
 
-  while (true) {
-    pull_ec_.await(cb);
+  try {
+    while (true) {
+      pull_ec_.await(cb);
 
-    if (is_closed)
-      break;
+      if (is_closed)
+        break;
 
-    while (count < kBatchSize && queue_.try_dequeue_sc(batch[count])) {
-      ++count;
+      while (count < kBatchSize && queue_.try_dequeue_sc(batch[count])) {
+        ++count;
+      }
+
+      push_ec_.notifyAll();
+
+      for (unsigned i = 0; i < count; ++i) {
+        batch[i]();
+      }
+      count = 0;
     }
-
-    push_ec_.notifyAll();
-
-    for (unsigned i = 0; i < count; ++i) {
-      batch[i]();
-    }
-    count = 0;
+  } catch (const std::exception& ex) {
+    LOG(FATAL) << "Exception " << ex.what();
   }
 }
 
