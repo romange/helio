@@ -6,12 +6,22 @@
 
 #include <array>
 #include <cstdint>
+#include <ctime>
 #include <memory>
-#include <numeric>
+#include <utility>
 
 #include "util/proactor_pool.h"
 
 namespace util {
+
+// Default clock policy: returns the current slot index at one-second granularity.
+// A "slot" is the ring-buffer bucket unit, so with this clock a SlidingCounter<NUM>
+// covers a NUM-second window with per-second buckets (the historical behavior).
+struct SecondsClock {
+  uint64_t operator()() const {
+    return static_cast<uint64_t>(time(nullptr));
+  }
+};
 
 namespace detail {
 
@@ -28,11 +38,18 @@ class SlidingCounterBase {
 
 /**
  * @brief Sliding window data structure that can aggregate moving statistics.
- *        It's implmented using ring-buffer with size specified at compile time.
+ *        It's implemented using a ring-buffer with size specified at compile time.
  *
- * @tparam NUM
+ * The Clock policy maps wall time to a monotonically increasing slot index; a new slot
+ * begins each time the clock's returned value increments. The window spans the last NUM
+ * slots. A running total is cached so Sum()/SumTail() are O(1) and never overflow T.
+ *
+ * @tparam NUM   number of ring-buffer buckets (window length in slots).
+ * @tparam T     counter value type.
+ * @tparam Clock policy with `uint64_t operator()() const` returning the current slot index.
  */
-template <unsigned NUM, typename T = int32_t> class SlidingCounter {
+template <unsigned NUM, typename T = int32_t, typename Clock = SecondsClock>
+class SlidingCounter {
   static_assert(NUM > 1, "Invalid window size");
 
   mutable std::array<T, NUM> count_;
@@ -42,34 +59,52 @@ template <unsigned NUM, typename T = int32_t> class SlidingCounter {
     Reset();
   }
 
+  explicit SlidingCounter(Clock clock) : clock_(std::move(clock)) {
+    Reset();
+  }
+
+  Clock& clock() {
+    return clock_;
+  }
+  const Clock& clock() const {
+    return clock_;
+  }
+
   void Inc() {
     IncBy(1);
   }
 
-  void IncBy(int32_t delta) {
-    int32_t bin = MoveTsIfNeeded();
+  void IncBy(T delta) {
+    uint32_t bin = MoveTsIfNeeded();
     count_[bin] += delta;
+    total_ += delta;
   }
 
   // Sums over bins not including the last bin that is currently being filled.
-  T SumTail() const;
+  T SumTail() const {
+    uint32_t head = MoveTsIfNeeded();
+    return total_ - count_[head];
+  }
 
   T Sum() const {
     MoveTsIfNeeded();
-    return std::accumulate(count_.begin(), count_.end(), 0);
+    return total_;
   }
 
   void Reset() {
     count_.fill(0);
+    total_ = 0;
   }
 
  private:
-  // Returns the bin corresponding to the current timestamp. Has second precision.
-  // updates last_ts_ according to the current timestamp and returns the latest bin.
-  // has const semantics even though it updates mutable last_ts_.
+  // Advances to the current slot, clearing any bins that rolled out of the window and
+  // updating the cached total accordingly. Returns the current (head) bin index.
+  // Const semantics even though it mutates the mutable ring state.
   uint32_t MoveTsIfNeeded() const;
 
-  mutable uint32_t last_ts_ = 0;
+  Clock clock_;
+  mutable T total_ = 0;
+  mutable uint64_t last_ts_ = 0;
 };
 
 // Requires proactor_pool initialize all the proactors.
@@ -125,29 +160,26 @@ template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCoun
  Implementation section.
 **********************************************/
 
-template <unsigned NUM, typename T> auto SlidingCounter<NUM, T>::SumTail() const -> T {
-  int32_t start = MoveTsIfNeeded() + 1;  // the tail is one after head.
+template <unsigned NUM, typename T, typename Clock>
+uint32_t SlidingCounter<NUM, T, Clock>::MoveTsIfNeeded() const {
+  uint64_t current = clock_();
 
-  T sum = 0;
-  for (unsigned i = 0; i < NUM - 1; ++i) {
-    sum += count_[(start + i) % NUM];
-  }
-  return sum;
-}
-
-template <unsigned NUM, typename T> uint32_t SlidingCounter<NUM, T>::MoveTsIfNeeded() const {
-  uint32_t current_sec = time(NULL);
-  if (last_ts_ + NUM <= current_sec) {
-    count_.fill(0);
-  } else {
-    // Reset delta upto current_time including.
-    for (uint32_t i = last_ts_ + 1; i <= current_sec; ++i) {
-      count_[i % NUM] = 0;
+  // Clock did not advance (or stepped backward, e.g. NTP): keep the window as is and
+  // attribute to the current head bin. Never move last_ts_ backward or clear.
+  if (current > last_ts_) {
+    if (current - last_ts_ >= NUM) {
+      // More than a full window elapsed: everything is stale.
+      count_.fill(0);
+      total_ = 0;
+    } else {
+      // Clear only the bins that rolled out of the window, keeping the total consistent.
+      for (uint64_t i = last_ts_ + 1; i <= current; ++i)
+        total_ -= std::exchange(count_[i % NUM], T{0});
     }
+    last_ts_ = current;
   }
-  last_ts_ = current_sec;
 
-  return current_sec % NUM;
+  return static_cast<uint32_t>(last_ts_ % NUM);
 }
 
 }  // namespace util
