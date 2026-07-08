@@ -168,6 +168,16 @@ FiberBlockingCounter::FiberBlockingCounter(unsigned start_count) : owner_{detail
   owner_->blocking_counter().Start(start_count);
 }
 
+void FiberBlockingCounter::Release() && {
+  DCHECK(owner_);
+  auto owner = std::move(owner_);
+
+  // Note: Wait() does not guarantee that "owner" refcount will decrease atomically together
+  // with blocking_counter. In other words DEBUG_use_count() is
+  // eventually consistent and may read a higher value right after Wait() resumes.
+  owner->blocking_counter().Dec();
+}
+
 Barrier::Barrier(size_t initial) : initial_{initial}, current_{initial_} {
   DCHECK_NE(0u, initial);
 }

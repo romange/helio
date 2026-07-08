@@ -871,6 +871,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
           break;
         }
       } while (task_queue_.try_dequeue(task));
+      task = {};  // clean up resources associated with the task.
       stats_.num_task_runs += cnt;
       DVLOG(2) << "Tasks runs " << stats_.num_task_runs;
 

@@ -100,12 +100,11 @@ class ProactorPool {
    */
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0> void Await(Func&& func) {
     fb2::FiberBlockingCounter bc(size());
-    auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
+    DispatchBrief([func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
-      bc->Dec();
-    };
-    DispatchBrief(std::move(cb));
-    bc->Wait();
+      std::move(bc).Release();
+    });
+    bc.Wait();
   }
 
   /**
@@ -116,14 +115,12 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void AwaitBrief(Func&& func) {
     fb2::FiberBlockingCounter bc(size());
-    auto cb = [func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
+    DispatchBrief([func = std::forward<Func>(func), bc](unsigned index, ProactorBase* p) mutable {
       func(index, p);
-      bc->Dec();
-    };
-    DispatchBrief(std::move(cb));
-    bc->Wait();
+      std::move(bc).Release();
+    });
+    bc.Wait();
   }
-
 
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   [[deprecated]] void Await(Func&& func) {
@@ -171,12 +168,11 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, unsigned, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
     fb2::FiberBlockingCounter bc(size());
-    auto cb = [func = std::forward<Func>(func), bc](unsigned i, ProactorBase* context) mutable {
+    DispatchOnAll([func = std::forward<Func>(func), bc](unsigned i, ProactorBase* context) mutable {
       func(i, context);
-      bc->Dec();
-    };
-    DispatchOnAll(std::move(cb));
-    bc->Wait();
+      std::move(bc).Release();
+    });
+    bc.Wait();
   }
 
   /**
@@ -190,12 +186,11 @@ class ProactorPool {
   template <typename Func, AcceptArgsCheck<Func, ProactorBase*> = 0>
   void AwaitFiberOnAll(Func&& func) {
     fb2::FiberBlockingCounter bc(size());
-    auto cb = [func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
+    DispatchOnAll([func = std::forward<Func>(func), bc](ProactorBase* context) mutable {
       func(context);
-      bc->Dec();
-    };
-    DispatchOnAll(std::move(cb));
-    bc->Wait();
+      std::move(bc).Release();
+    });
+    bc.Wait();
   }
 
   // Returns vector of proactor thread indiced pinned to cpu_id.
