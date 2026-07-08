@@ -22,6 +22,7 @@
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/future.h"
+#include "util/fibers/pool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/fibers/synchronization.h"
 
@@ -246,7 +247,8 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3("test3", [](int i) {}, 1);
+  Fiber fb3(
+      "test3", [](int i) {}, 1);
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
 }
@@ -278,7 +280,9 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
+  Fiber(
+      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
+      .Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -538,6 +542,17 @@ TEST_F(FiberTest, Notify) {
   fb2.Join();
 }
 
+TEST_F(FiberTest, ProactorPoolRunDoesNotRetainMainFiberRef) {
+  auto* main_fb = detail::FiberActive();
+  const uint32_t base_refs = main_fb->DEBUG_use_count();
+
+  unique_ptr<Pool> pool{Pool::Epoll(1)};
+  pool->Run();
+  EXPECT_EQ(base_refs, main_fb->DEBUG_use_count());
+  pool->Stop();
+  EXPECT_EQ(base_refs, main_fb->DEBUG_use_count());
+}
+
 TEST_F(FiberTest, SwitchAndExecute) {
   Future<detail::FiberInterface*> first, second;
   unsigned cnt1 = 0, cnt2 = 0;
@@ -663,9 +678,8 @@ TEST_P(ProactorTest, DispatchLocalBrief) {
 
   proactor()->Await([&] {
     for (unsigned i = 0; i < kCount; ++i) {
-      proactor()->DispatchLocalBrief([&counter] {
-        counter.fetch_add(1, std::memory_order_relaxed);
-      });
+      proactor()->DispatchLocalBrief(
+          [&counter] { counter.fetch_add(1, std::memory_order_relaxed); });
     }
     proactor()->DispatchLocalBrief([&ec] { ec.notify(); });
   });
@@ -1160,7 +1174,8 @@ TEST_F(FiberTest, SimpleChannelPopRace) {
       fb.Join();
 
     ASSERT_EQ(missed, 0) << "Pop() has a TOCTOU race: items pushed between "
-                            "TryPop and IsClosing checks are lost, iter " << iter;
+                            "TryPop and IsClosing checks are lost, iter "
+                         << iter;
     ASSERT_EQ(popped + missed, kExpectedTotal) << "Data loss at iteration " << iter;
   }
 }
@@ -1239,9 +1254,7 @@ TEST_F(FiberTest, PersistentWaiterMixedNotifyAll) {
   auto sub = ec.subscribe_persistent(&waiter);
 
   bool fiber_woke{false};
-  Fiber fb(Launch::dispatch, "oneshot", [&] {
-    ec.await([&] { return fiber_woke; });
-  });
+  Fiber fb(Launch::dispatch, "oneshot", [&] { ec.await([&] { return fiber_woke; }); });
 
   // Both waiters are now in the queue. Fire notifyAll.
   fiber_woke = true;

@@ -5,12 +5,12 @@
 #pragma once
 
 #include <atomic>
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <cassert>
 #include <condition_variable>  // for cv_status
 #include <memory>
 #include <optional>
-
-#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <utility>
 
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
@@ -291,8 +291,8 @@ class BlockingCounter {
 // Same semantics as BlockingCounter, but backed by the constructing fiber's embedded
 // EmbeddedBlockingCounter (see FiberInterface::blocking_counter()) instead of a heap
 // allocation. Pass by value: copies share the same underlying counter and keep the owning
-// fiber's FiberInterface (and thus the counter) alive via intrusive_ptr refcounting until
-// every copy - including ones captured by remote Dec()-calling closures - is destroyed.
+// fiber's FiberInterface (and thus the counter) alive via intrusive_ptr refcounting until each
+// callback consumes its copy with Release().
 //
 // ONLY use this for a tight, single-call, scoped round: construct, dispatch, Wait(), with
 // nothing else on the constructing fiber touching a blocking counter in between. The fiber
@@ -304,9 +304,12 @@ class FiberBlockingCounter {
  public:
   explicit FiberBlockingCounter(unsigned start_count);
 
-  EmbeddedBlockingCounter* operator->() {
-    return &owner_->blocking_counter();
+  bool Wait() {
+    return owner_->blocking_counter().Wait();
   }
+
+  void Release() &&;
+  void Release() & = delete;
 
  private:
   boost::intrusive_ptr<detail::FiberInterface> owner_;
