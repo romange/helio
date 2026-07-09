@@ -21,6 +21,12 @@ endif()
 
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
+if (WITH_TRACY)
+  # Fiber-aware profiling: TracyFiberEnter/Leave in detail/fiber_interface.cc need Tracy's headers,
+  # the TRACY_ENABLE/TRACY_FIBERS defines and the client symbols. Plain signature matches cxx_link.
+  target_link_libraries(fibers2 Tracy::TracyClient)
+endif()
+
 helio_cxx_test(fibers_test fibers2 LABELS CI)
 helio_cxx_test(fiber_socket_test fibers2 LABELS CI)
 

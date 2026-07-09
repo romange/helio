@@ -29,6 +29,28 @@
 #endif
 #endif  // __aarch64__ __linux__
 
+// --- Tracy fiber instrumentation -----------------------------------------------------------
+// Built only with -DWITH_TRACY=ON (Tracy fiber support). Bracketing each context switch with
+// TracyFiberLeave/TracyFiberEnter makes the profiler attribute zones and switch timing to the
+// correct fiber lane instead of the OS thread. Compiles to nothing otherwise.
+#if defined(TRACY_ENABLE) && defined(TRACY_FIBERS)
+#include <tracy/Tracy.hpp>
+// helio context switches are ALWAYS fiber-to-fiber: the scheduler's main context and the
+// dispatcher are themselves FiberInterface fibers, so control never returns to "non-fiber" code.
+// Per the Tracy manual we therefore call TracyFiberEnter on every switch and OMIT TracyFiberLeave
+// entirely - Enter implicitly ends the previously-running fiber's span on this thread.
+//
+// We MUST NOT emit TracyFiberLeave: with TRACY_ON_DEMAND a thread that entered a fiber before the
+// viewer connected would send a Leave the server cannot match (it never saw the Enter). The server
+// handles Leave via RetrieveThread() (which does NOT auto-create ThreadData) and then dereferences
+// it unconditionally -> null-deref in Worker::ProcessFiberLeave -> the viewer/capture SEGFAULTS.
+// Enter uses NoticeThread() (auto-creates ThreadData) and guards its "close previous span" on a
+// non-null fiber, so Enter-only is crash-safe and complete for both live and on-demand capture.
+#define HELIO_TRACY_FIBER_ENTER(nm) TracyFiberEnter(nm)
+#else
+#define HELIO_TRACY_FIBER_ENTER(nm) (void)0
+#endif
+
 // #define RECORD_FIBER_NAMES 1
 
 ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
@@ -440,7 +462,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
 #endif
 
-  return std::move(entry_).resume_with([prev, fake_stack_save](ctx::fiber_context&& c) {
+  return std::move(entry_).resume_with([this, prev, fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -448,6 +470,8 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 #else
     (void)fake_stack_save;
 #endif
+    // Tracy: now running on `this` fiber's stack (fresh start or resume) - enter its lane.
+    HELIO_TRACY_FIBER_ENTER(name());
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     return ctx::fiber_context{};
   });
@@ -462,7 +486,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
 #endif
 
   // pass pointer to the context that resumes `this`
-  std::move(entry_).resume_with([prev, fn = std::move(fn),
+  std::move(entry_).resume_with([this, prev, fn = std::move(fn),
                                  fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_ && c);
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -470,6 +494,8 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
 #else
     (void)fake_stack_save;
 #endif
+    // Tracy: now running on `this` fiber's stack - enter its lane.
+    HELIO_TRACY_FIBER_ENTER(name());
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
     fn();
 
