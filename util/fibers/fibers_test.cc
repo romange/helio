@@ -1100,6 +1100,62 @@ TEST_P(ProactorTest, Background) {
   fb.Join();
 }
 
+// Regression test for background fiber starvation.
+//
+// Starvation path:
+//   1. A NORMAL fiber runs for >kBaseSlice (10ms), accumulating runtime_ns_[NORMAL].
+//   2. The warrant check in the same Run(NORMAL) call only fires if the bg fiber is already in
+//      ready_queue. If it is not, the accumulated runtime is noted but bg is not run.
+//   3. At the top of the NEXT Run(NORMAL) call, fill(0) zeroes runtime_ns_.
+//   4. If bg is notified from task_queue context (before Run(NORMAL) runs) and has_cpu_work=true
+//      from the spammer, the warrant check sees runtime_ns_[NORMAL]=0 -> fails, and
+//      Run(BACKGROUND) at the bottom is guarded by has_cpu_work -> bg starves indefinitely.
+TEST_P(ProactorTest, BackgroundFiberNotStarved) {
+  Done bg_wake;
+  Done bg_done;
+  std::atomic<bool> stop{false};
+  std::atomic<bool> normal_done{false};
+
+  // BACKGROUND fiber: waits until woken, then signals completion.
+  auto bg = proactor()->LaunchFiber(
+      Fiber::Opts{.priority = FiberPriority::BACKGROUND, .name = "bg"}, [&] {
+        bg_wake.Wait();
+        bg_done.Notify();
+      });
+
+  // Spammer: keeps has_cpu_work=true by spinning 600us (> 500us threshold) and re-posting itself.
+  // After the NORMAL fiber finishes (normal_done=true), notifies bg_wake from task_queue context.
+  // This is the key: bg is notified BETWEEN Run(NORMAL) calls, so the next Run(NORMAL) sees
+  // runtime_ns_[NORMAL]=0 (zeroed by fill(0)) and the warrant check fails.
+  std::function<void()> spammer = [&] {
+    if (stop.load(std::memory_order_relaxed))
+      return;
+    auto end = chrono::steady_clock::now() + 600us;
+    while (chrono::steady_clock::now() < end);
+    if (normal_done.exchange(false)) {
+      // Notify bg from task_queue context, AFTER the previous Run(NORMAL) incremented
+      // runtime_ns_[NORMAL] to 15ms and returned. On the next Run(NORMAL), fill(0) will zero
+      // runtime_ns_ before the warrant check, leaving runtime_ns_[NORMAL]=0 -> warrant fails.
+      bg_wake.Notify();
+    }
+    proactor()->DispatchBrief(spammer);
+  };
+  proactor()->DispatchBrief(spammer);
+
+  // NORMAL fiber: spin >kBaseSlice (10ms) to push runtime_ns_[NORMAL] past the fill(0) threshold.
+  // Does NOT notify bg — leaves that to the spammer so bg enters ready_queue[BACKGROUND] only
+  // after this fiber's runtime has been recorded and fill(0) is pending for the next Run(NORMAL).
+  proactor()->Await([&] {
+    auto end = chrono::steady_clock::now() + 15ms;
+    while (chrono::steady_clock::now() < end);
+    normal_done.store(true, std::memory_order_release);
+  });
+
+  EXPECT_TRUE(bg_done.WaitFor(1s));
+  stop = true;
+  bg.Join();
+}
+
 TEST_P(ProactorTest, Mixed) {
   vector<Fiber> fibers;
   for (size_t i = 0; i < 100u; i++) {
