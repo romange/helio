@@ -69,7 +69,6 @@ unsigned my_gettid() {
 #endif
 
 constexpr uint32_t kRingDepth = 16;
-
 class FiberTest : public testing::Test {
  public:
 };
@@ -251,6 +250,35 @@ TEST_F(FiberTest, Basic) {
   Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
+}
+
+namespace {
+
+std::vector<FiberSwitchHookEvent> switch_hook_events;
+
+void RecordSwitchHookEvent(FiberSwitchHookEvent event) noexcept {
+  switch_hook_events.push_back(event);
+}
+
+}  // namespace
+
+TEST_F(FiberTest, SwitchHook) {
+  switch_hook_events.clear();
+  Fiber fb("switch-hook", [&] {
+    const FiberSwitchHook original = ThisFiber::SetSwitchHook({RecordSwitchHookEvent});
+    EXPECT_FALSE(original);
+
+    ThisFiber::Yield();
+
+    FiberSwitchHook installed = ThisFiber::SetSwitchHook(original);
+    EXPECT_EQ(RecordSwitchHookEvent, installed.callback);
+  });
+
+  fb.Join();
+
+  ASSERT_EQ(2u, switch_hook_events.size());
+  EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, switch_hook_events[0]);
+  EXPECT_EQ(FiberSwitchHookEvent::RESUME, switch_hook_events[1]);
 }
 
 TEST_F(FiberTest, Stack) {
