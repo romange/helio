@@ -69,6 +69,22 @@ unsigned my_gettid() {
 
 constexpr uint32_t kRingDepth = 16;
 
+namespace {
+
+struct SwitchHookTestState {
+  FiberSwitchHookEvent events[4] = {};
+  unsigned event_count = 0;
+};
+
+void RecordSwitchHookEvent(FiberSwitchHookEvent event, void* context) noexcept {
+  if (auto* state = static_cast<SwitchHookTestState*>(context);
+      state->event_count < std::size(state->events)) {
+    state->events[state->event_count++] = event;
+  }
+}
+
+}  // namespace
+
 class FiberTest : public testing::Test {
  public:
 };
@@ -251,6 +267,26 @@ TEST_F(FiberTest, Basic) {
       "test3", [](int i) {}, 1);
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
+}
+
+TEST_F(FiberTest, SwitchHook) {
+  SwitchHookTestState state;
+  Fiber fb("switch-hook", [&] {
+    const FiberSwitchHook original = ThisFiber::SetSwitchHook({RecordSwitchHookEvent, &state});
+    EXPECT_FALSE(original);
+
+    ThisFiber::Yield();
+
+    const auto [callback, context] = ThisFiber::SetSwitchHook(original);
+    EXPECT_EQ(RecordSwitchHookEvent, callback);
+    EXPECT_EQ(&state, context);
+  });
+
+  fb.Join();
+
+  ASSERT_EQ(2u, state.event_count);
+  EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, state.events[0]);
+  EXPECT_EQ(FiberSwitchHookEvent::RESUME, state.events[1]);
 }
 
 TEST_F(FiberTest, Stack) {

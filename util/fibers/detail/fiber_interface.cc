@@ -83,6 +83,12 @@ inline void CpuPause() {
 #endif
 }
 
+void RunSwitchHook(FiberSwitchHook hook, FiberSwitchHookEvent event) noexcept {
+  if (hook.callback) {
+    hook.callback(event, hook.context);
+  }
+}
+
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
 class MainFiberImpl final : public FiberInterface {
@@ -433,6 +439,7 @@ void FiberInterface::AttachScheduler() {
 ctx::fiber_context FiberInterface::SwitchTo() {
   DCHECK(entry_) << name();
   FiberInterface* prev = SwitchSetup();
+  FiberSwitchHook resume_hook = switch_hook_;
 
   // pass pointer to the context that resumes `this`
   void* fake_stack_save = nullptr;
@@ -440,7 +447,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
 #endif
 
-  return std::move(entry_).resume_with([prev, fake_stack_save](ctx::fiber_context&& c) {
+  return std::move(entry_).resume_with([prev, resume_hook, fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -449,12 +456,14 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    RunSwitchHook(resume_hook, FiberSwitchHookEvent::RESUME);
     return ctx::fiber_context{};
   });
 }
 
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   FiberInterface* prev = SwitchSetup();
+  FiberSwitchHook resume_hook = switch_hook_;
 
   void* fake_stack_save = nullptr;
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -462,7 +471,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
 #endif
 
   // pass pointer to the context that resumes `this`
-  std::move(entry_).resume_with([prev, fn = std::move(fn),
+  std::move(entry_).resume_with([prev, resume_hook, fn = std::move(fn),
                                  fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_ && c);
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -471,7 +480,9 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    RunSwitchHook(resume_hook, FiberSwitchHookEvent::RESUME);
     fn();
+    FiberActive()->CallSwitchHook(FiberSwitchHookEvent::SUSPEND);
 
     return ctx::fiber_context{};
   });
@@ -479,6 +490,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   // We resumed.
   DCHECK(FiberActive() == prev);
   DCHECK(!prev->entry_);
+  prev->CallSwitchHook(FiberSwitchHookEvent::RESUME);
 }
 
 void FiberInterface::PullMyselfFromRemoteReadyQueue() {
@@ -521,6 +533,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
 
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
+  to_suspend->CallSwitchHook(FiberSwitchHookEvent::SUSPEND);
   fb_initializer.active = this;
 
 #if RECORD_FIBER_NAMES
