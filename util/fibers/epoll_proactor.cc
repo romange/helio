@@ -62,7 +62,7 @@ int EpollWait(int epoll_fd, EventsBatch* batch, int timeout) {
   return epoll_wait(epoll_fd, batch->cqe, kEvBatchSize, timeout);
 }
 
-void EpollDel(int epoll_fd, int fd) {
+void EpollDel(int epoll_fd, int fd, uint32_t /*event_mask*/) {
   CHECK_EQ(0, epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL));
 }
 
@@ -89,20 +89,24 @@ int EpollCreate() {
 }
 
 int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
-  struct timespec ts {
-    .tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000
-  };
+  struct timespec ts{.tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000};
 
   int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
   return epoll_res;
 }
 
-void EpollDel(int epoll_fd, int fd) {
-  struct kevent kev[2];
+void EpollDel(int epoll_fd, int fd, uint32_t event_mask) {
+  if (event_mask & EpollProactor::EPOLL_IN) {
+    struct kevent kev;
+    EV_SET(&kev, fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    CHECK_EQ(0, kevent(epoll_fd, &kev, 1, NULL, 0, NULL));
+  }
 
-  EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-  EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
-  CHECK_EQ(0, kevent(epoll_fd, kev, 2, NULL, 0, NULL));
+  if (event_mask & EpollProactor::EPOLL_OUT) {
+    struct kevent kev;
+    EV_SET(&kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    CHECK_EQ(0, kevent(epoll_fd, &kev, 1, NULL, 0, NULL));
+  }
 }
 
 uint32_t KevMask(const struct kevent& kev) {
@@ -281,10 +285,23 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     if (cqe_count) {
       ++stats_.completions_fetches;
 
-      while (true) {
+      constexpr unsigned kMaxCompletionBatches = 3;
+
+      // Level-triggered FDs stay ready until a scheduled fiber consumes them, therefore
+      // we can not iterate endlessly without yielding to the scheduler.
+      // Break in two cases: a) we iterated kMaxCompletionBatches times,
+      // b) we got less than kEvBatchSize completions as an indication that we drained the queue.
+
+      // (b) by itself is not enough because there could be many level-triggered events
+      // that will fill ev_batch in full and we will never break.
+      for (unsigned batch = 0; batch < kMaxCompletionBatches; ++batch) {
         VPRO(2) << "Fetched " << cqe_count << " cqes";
         DispatchCompletions(&ev_batch, cqe_count);
         stats_.num_completions += cqe_count;
+
+        if (cqe_count < kEvBatchSize || batch + 1 == kMaxCompletionBatches) {
+          break;
+        }
 
         epoll_res = EpollWait(epoll_fd_, &ev_batch, 0);
         if (epoll_res <= 0) {
@@ -292,7 +309,7 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
         }
         cqe_count = epoll_res;
         ++stats_.completions_fetches;
-      };
+      }
     }
 
     RunL2Tasks(scheduler);
@@ -333,8 +350,15 @@ unsigned EpollProactor::Arm(int fd, CbType cb, uint32_t event_mask) {
 
   next_free_ce_ = e.index;
   e.cb = std::move(cb);
+#if !defined(__linux__)
+  e.event_mask = event_mask;
+#endif
   e.index = -1;
 
+// TODO: we have inconsistent behavior on Linux and FreeBsd.
+// On Linux we pass the event mask potentially allowing level-triggered events
+// to be reported multiple times until the fiber consumes them.
+// On FreeBsd we use EV_CLEAR which means that the event is reported once and then cleared.
 #ifdef __linux__
   epoll_event ev;
   ev.events = event_mask;
@@ -368,7 +392,11 @@ void EpollProactor::Disarm(int fd, unsigned arm_index) {
   centries_[arm_index].index = next_free_ce_;
 
   next_free_ce_ = arm_index;
-  EpollDel(epoll_fd_, fd);
+#if defined(__linux__)
+  EpollDel(epoll_fd_, fd, 0);
+#else
+  EpollDel(epoll_fd_, fd, centries_[arm_index].event_mask);
+#endif
 }
 
 LinuxSocketBase* EpollProactor::CreateSocket() {

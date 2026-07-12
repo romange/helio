@@ -27,6 +27,7 @@
 #include "util/fibers/synchronization.h"
 
 #ifdef __linux__
+#include <sys/epoll.h>
 #include <sys/syscall.h>
 
 #include "util/fibers/uring_proactor.h"
@@ -247,8 +248,7 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3(
-      "test3", [](int i) {}, 1);
+  Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
 }
@@ -280,9 +280,7 @@ TEST_F(FiberTest, Stack) {
 
   // Test with moveable only arguments.
   unique_ptr<int> pass(new int(42));
-  Fiber(
-      "test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass))
-      .Detach();
+  Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
 }
 
 TEST_F(FiberTest, Remote) {
@@ -1128,6 +1126,89 @@ TEST_P(ProactorTest, FiberFile) {
     unique_ptr<io::WriteFile> file(std::move(res.value()));
     std::ignore = file->Close();
   });
+}
+
+TEST_P(ProactorTest, ReadyFdsDoNotStarveScheduler) {
+  if (GetProactorType() == "uring") {
+    GTEST_SKIP() << "Skipped FiberSocketTest.ReadyFdsDoNotStarveScheduler test on uring";
+  }
+
+  EpollProactor* epoll_proactor = static_cast<EpollProactor*>(proactor());
+  constexpr size_t kEvBatchSize = 128;
+  auto run_case = [&](size_t ready_fd_count, uint32_t event_mask,
+                      size_t callbacks_before_draining) {
+    vector<int> event_fds(ready_fd_count);
+    vector<int> write_fds(ready_fd_count);
+    for (size_t i = 0; i < event_fds.size(); ++i) {
+      int pipe_fds[2];
+      ASSERT_EQ(0, pipe(pipe_fds)) << "pipe failed: " << strerror(errno);
+      event_fds[i] = pipe_fds[0];
+      write_fds[i] = pipe_fds[1];
+    }
+
+    Done fiber_finished;
+    atomic_bool cancelled{false};
+    atomic_uint completion_count{0};
+    vector<unsigned> arm_indices(ready_fd_count);
+
+    epoll_proactor->AwaitBrief([&] {
+      for (size_t i = 0; i < event_fds.size(); ++i) {
+        arm_indices[i] = epoll_proactor->Arm(
+            event_fds[i],
+            [&](uint32_t, int, EpollProactor*) {
+              completion_count.fetch_add(1, memory_order_relaxed);
+            },
+            event_mask);
+      }
+
+      Fiber("ReadyFdDrainFb", [&] {
+        while (completion_count.load(memory_order_relaxed) < callbacks_before_draining &&
+               !cancelled.load(memory_order_acquire)) {
+          ThisFiber::SleepFor(1ms);
+        }
+
+        if (!cancelled.load(memory_order_acquire)) {
+          uint64_t val = 0;
+          for (size_t i = 0; i < event_fds.size(); ++i) {
+            EXPECT_EQ(sizeof(val), read(event_fds[i], &val, sizeof(val)));
+            epoll_proactor->Disarm(event_fds[i], arm_indices[i]);
+          }
+        }
+        fiber_finished.Notify();
+      }).Detach();
+
+      uint64_t val = 1;
+      for (int fd : write_fds) {
+        EXPECT_EQ(sizeof(val), write(fd, &val, sizeof(val)));
+      }
+    });
+
+    bool success = fiber_finished.WaitFor(chrono::seconds(1));
+    if (!success) {
+      cancelled.store(true, memory_order_release);
+      ASSERT_TRUE(fiber_finished.WaitFor(chrono::seconds(1)));
+    }
+
+    for (int fd : event_fds) {
+      close(fd);
+    }
+    for (int fd : write_fds) {
+      close(fd);
+    }
+
+    ASSERT_TRUE(success) << "epoll completion loop starved scheduler";
+  };
+
+  // Level-triggered epoll repeatedly reports unread pipes until the drain fiber runs.
+  run_case(kEvBatchSize, EpollProactor::EPOLL_IN, 1);
+
+  // An edge-triggered fourth batch must remain queued for the next loop iteration. If the
+  // bounded drain polls it after the third batch without dispatching it, this fiber cannot drain.
+  uint32_t edge_mask = EpollProactor::EPOLL_IN;
+#ifdef __linux__
+  edge_mask |= EPOLLET;
+#endif
+  run_case(4 * kEvBatchSize, edge_mask, 4 * kEvBatchSize);
 }
 
 // Stress test for SimpleChannel::Pop() TOCTOU race.
