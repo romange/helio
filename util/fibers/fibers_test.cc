@@ -667,6 +667,12 @@ TEST_P(ProactorTest, AsyncCall) {
 
   auto next = chrono::steady_clock::now() + 1s;
   EXPECT_EQ(std::cv_status::no_timeout, ec.await_until([&] { return signal; }, next));
+
+  // await_until can return as soon as it observes `signal`, which may be *before* ec.notify()
+  // finishes executing on the proactor thread. Drain the proactor once more so the notify task
+  // completes before `ec`/`signal` leave scope; otherwise the proactor dereferences a destroyed
+  // stack EventCount (use-after-scope).
+  proactor()->AwaitBrief([] {});
 }
 
 TEST_P(ProactorTest, DispatchLocalBrief) {
