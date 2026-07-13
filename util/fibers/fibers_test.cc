@@ -1130,7 +1130,7 @@ TEST_P(ProactorTest, FiberFile) {
 
 TEST_P(ProactorTest, ReadyFdsDoNotStarveScheduler) {
   if (GetProactorType() == "uring") {
-    GTEST_SKIP() << "Skipped FiberSocketTest.ReadyFdsDoNotStarveScheduler test on uring";
+    GTEST_SKIP() << "Skipped test on uring";
   }
 
   EpollProactor* epoll_proactor = static_cast<EpollProactor*>(proactor());
