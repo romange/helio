@@ -1,7 +1,5 @@
 # Helio - backend development framework in C++ using io_uring and epoll event-loop.
 
-=====
-
 [![ci-tests](https://github.com/romange/async/actions/workflows/ci.yml/badge.svg)](https://github.com/romange/async/actions/workflows/ci.yml)
 
 [![codecov](https://codecov.io/gh/romange/helio/graph/badge.svg?token=2TIU52DK17)](https://codecov.io/gh/romange/helio)
@@ -68,11 +66,11 @@ HTTP handler is implemented using [Boost.Beast](https://www.boost.org/doc/libs/1
 Please see [http_main.cc](https://github.com/romange/async/blob/master/util/http/http_main.cc), for example. HTTP also provides support for backend monitoring (Varz status page) and for an extensible debugging interface. With monitoring C++ backend returns JSON object that is formatted inside status page in the browser. To check how it looks, please go to [localhost:8080](http://localhost:8080) while `echo_server` is running.
 
 
-### Self-profiling
+## Self-profiling
 Every http-powered backend has integrated CPU profiling capabilities using [gperf-tools](https://github.com/gperftools/gperftools) and [pprof](https://github.com/google/pprof)
 Profiling can be triggered in prod using magic-url commands. Enabled profiling usually has a very minimal impact on CPU performance of the running backend.
 
-### Logging
+## Logging
 Logging is based on Google's [glog library](https://github.com/google/glog). The library is very reliable, performant, and solid. It has many features that allow resilient backend development.
 Unfortunately, Google's version has some bugs, which I fixed (waiting for review...), so I use my own fork. Glog library gives me the ability to control the logging levels of a backend at run-time without restarting it.
 
