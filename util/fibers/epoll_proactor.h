@@ -57,6 +57,9 @@ class EpollProactor : public ProactorBase {
   // friend class EpollFiberAlgo;
   struct CompletionEntry {
     CbType cb;
+#if !defined(__linux__)
+    uint32_t event_mask = 0;
+#endif
 
     // serves for linked list management when unused. Also can store an additional payload
     // field when in flight.
