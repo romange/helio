@@ -4,6 +4,8 @@ if(HELIO_THIRD_PARTY_INCLUDED)
 endif()
 set(HELIO_THIRD_PARTY_INCLUDED TRUE)
 
+set(HELIO_CMAKE_DIR "${CMAKE_CURRENT_LIST_DIR}" CACHE INTERNAL "helio cmake module dir")
+
 # Avoid warning about DOWNLOAD_EXTRACT_TIMESTAMP in CMake 3.24:
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
  cmake_policy(SET CMP0135 NEW)
@@ -63,7 +65,7 @@ find_package(Threads REQUIRED)
 
 function(add_third_party name)
   set(options SHARED)
-  set(oneValueArgs CMAKE_PASS_FLAGS)
+  set(oneValueArgs CMAKE_PASS_FLAGS URL URL_HASH)
   set(multiValArgs BUILD_COMMAND INSTALL_COMMAND LIB)
   CMAKE_PARSE_ARGUMENTS(parsed "${options}" "${oneValueArgs}" "${multiValArgs}" ${ARGN})
 
@@ -81,6 +83,25 @@ function(add_third_party name)
 
   set(_DIR ${THIRD_PARTY_DIR}/${name})
   set(INSTALL_ROOT ${THIRD_PARTY_LIB_DIR}/${name})
+
+  # For URL/tarball dependencies, route the download through the shared retry
+  # policy (download_retry.cmake). ExternalProject's built-in URL download is
+  # single-shot, so a transient network flake fails the build; the retry policy
+  # retries with backoff instead. Git-based dependencies are left untouched.
+  set(_download_args "")
+  if (parsed_URL)
+    set(_hash_arg "")
+    if (parsed_URL_HASH)
+      set(_hash_arg -DEXPECTED_HASH=${parsed_URL_HASH})
+    endif()
+    set(_download_args
+      DOWNLOAD_COMMAND ${CMAKE_COMMAND}
+        -DURL=${parsed_URL}
+        -DDEST=${_DIR}-src-archive
+        -DEXTRACT_DIR=${_DIR}
+        ${_hash_arg}
+        -P ${HELIO_CMAKE_DIR}/download_retry.cmake)
+  endif()
 
   if (parsed_LIB)
     set(LIB_FILES "")
@@ -110,10 +131,13 @@ function(add_third_party name)
   endif()
 
   ExternalProject_Add(${name}_project
-    DOWNLOAD_DIR ${_DIR}
+    # DOWNLOAD_DIR must differ from SOURCE_DIR (=_DIR): the downloader removes
+    # EXTRACT_DIR (=_DIR) while the step runs with DOWNLOAD_DIR as its CWD.
+    DOWNLOAD_DIR ${THIRD_PARTY_DIR}
     SOURCE_DIR ${_DIR}
     INSTALL_DIR ${INSTALL_ROOT}
     UPDATE_COMMAND ""
+    ${_download_args}
 
     BUILD_COMMAND ${parsed_BUILD_COMMAND}
 
@@ -172,38 +196,44 @@ function(add_third_party name)
   endif()
 endfunction()
 
+# Download a tarball via download_retry.cmake into a local file for FetchContent
+# to consume, giving FetchContent deps the same retry/backoff as add_third_party.
+# Optional 4th argument is a fallback URL.
+function(fetch_tarball_with_retry name url dest)
+  # Reuse a cached tarball only if it passes MIN_SIZE; otherwise treat it as
+  # truncated/partial (e.g. interrupted run), remove it, and re-download.
+  if(EXISTS "${dest}")
+    file(SIZE "${dest}" _existing_size)
+    if(NOT _existing_size LESS 102400)
+      return()
+    endif()
+    file(REMOVE "${dest}")
+  endif()
+  set(_fallback_arg "")
+  if(ARGC GREATER 3)
+    set(_fallback_arg -DURL_FALLBACK=${ARGV3})
+  endif()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND}
+      -DURL=${url}
+      ${_fallback_arg}
+      -DDEST=${dest}
+      -DMIN_SIZE=102400
+      -P ${HELIO_CMAKE_DIR}/download_retry.cmake
+    RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    file(REMOVE "${dest}")
+    message(FATAL_ERROR "fetch_tarball_with_retry: failed to download ${name} from ${url}")
+  endif()
+endfunction()
+
 set(GTEST_VERSION 1.17.0)
 set(GTEST_RELEASE_URL "https://github.com/google/googletest/releases/download/v${GTEST_VERSION}/googletest-${GTEST_VERSION}.tar.gz")
 set(GTEST_ARCHIVE_URL "https://github.com/google/googletest/archive/v${GTEST_VERSION}.tar.gz")
 set(GTEST_TARBALL "${CMAKE_BINARY_DIR}/googletest-${GTEST_VERSION}.tar.gz")
 
-function(download_and_validate url file out_status)
-  file(DOWNLOAD "${url}" "${file}" STATUS st)
-  list(GET st 0 rc)
-  if(rc EQUAL 0)
-    file(SIZE "${file}" sz)
-    if(sz LESS 102400) # Check if file is < 100KB
-      set(st "1;File too small (${sz} bytes)") # set error and error message
-    endif()
-  endif()
-  set(${out_status} "${st}" PARENT_SCOPE)
-endfunction()
-
-if(NOT EXISTS "${GTEST_TARBALL}")
-  download_and_validate("${GTEST_RELEASE_URL}" "${GTEST_TARBALL}" st1)
-  list(GET st1 0 rc1)
-  if(NOT rc1 EQUAL 0)
-    file(REMOVE "${GTEST_TARBALL}")
-    message(STATUS "Primary download failed: ${st1}. Trying archive URL...")
-    download_and_validate("${GTEST_ARCHIVE_URL}" "${GTEST_TARBALL}" st2)
-    list(GET st2 0 rc2)
-    if(NOT rc2 EQUAL 0)
-      file(REMOVE "${GTEST_TARBALL}")
-      message(FATAL_ERROR "Failed to download googletest.\nRelease: ${st1}\nArchive: ${st2}")
-    endif()
-  endif()
-endif()
-
+# Fetch googletest with retry policy (with archive URL fallback).
+fetch_tarball_with_retry(googletest "${GTEST_RELEASE_URL}" "${GTEST_TARBALL}" "${GTEST_ARCHIVE_URL}")
 FetchContent_Declare(
   gtest
   URL "${GTEST_TARBALL}"
@@ -215,9 +245,14 @@ if (NOT gtest_POPULATED)
     add_subdirectory(${gtest_SOURCE_DIR} ${gtest_BINARY_DIR})
 endif ()
 
+# Fetch benchmark with retry policy
+set(BENCHMARK_URL https://github.com/google/benchmark/archive/v1.9.5.tar.gz)
+set(BENCHMARK_TARBALL "${CMAKE_BINARY_DIR}/benchmark-1.9.5.tar.gz")
+fetch_tarball_with_retry(benchmark "${BENCHMARK_URL}" "${BENCHMARK_TARBALL}")
+
 FetchContent_Declare(
   benchmark
-  URL https://github.com/google/benchmark/archive/v1.9.5.tar.gz
+  URL "${BENCHMARK_TARBALL}"
 )
 
 FetchContent_GetProperties(benchmark)
@@ -233,10 +268,14 @@ if (NOT benchmark_POPULATED)
     add_subdirectory(${benchmark_SOURCE_DIR} ${benchmark_BINARY_DIR})
 endif ()
 
+# Fetch abseil with retry policy
+set(ABSEIL_URL https://github.com/abseil/abseil-cpp/releases/download/20250512.1/abseil-cpp-20250512.1.tar.gz)
+set(ABSEIL_TARBALL "${CMAKE_BINARY_DIR}/abseil-cpp-20250512.1.tar.gz")
+fetch_tarball_with_retry(abseil-cpp "${ABSEIL_URL}" "${ABSEIL_TARBALL}")
 
 FetchContent_Declare(
   abseil_cpp
-  URL https://github.com/abseil/abseil-cpp/releases/download/20250512.1/abseil-cpp-20250512.1.tar.gz
+  URL "${ABSEIL_TARBALL}"
   PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20250512.1.patch"
   COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-gcc-undefined-sanitizer-compilation-fix.patch"
 )

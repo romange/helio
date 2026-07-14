@@ -20,8 +20,11 @@ if (WITH_AWS_CLOUD)
   endif()
 endif()
 
-add_executable(gcs_demo gcs_demo.cc)
-cxx_link(gcs_demo gcp_lib azure_lib)
+# gcs_demo links gcp_lib, which is only built when WITH_GCP is ON.
+if (WITH_GCP)
+  add_executable(gcs_demo gcs_demo.cc)
+  cxx_link(gcs_demo gcp_lib azure_lib)
+endif()
 
 add_executable(https_client_cli https_client_cli.cc)
 cxx_link(https_client_cli base fibers2 http_client_lib tls_lib)
