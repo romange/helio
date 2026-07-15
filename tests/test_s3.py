@@ -178,23 +178,28 @@ def test_endpoint_flag_override(minio):
     )
 
 
-def _make_failing_upload_handler(*, connection_close: bool):
-    """Build an http handler that accepts CreateMultipartUpload but answers
-    every UploadPart with 507. `connection_close=True` mirrors MinIO's
-    XMinioStorageFull response (drives the Shutdown crash path).
-    `connection_close=False` keeps the socket alive so all retries hit
-    DoesServerPushback (drives the RobustSender retry-exhaustion path)."""
+def _make_failing_upload_handler(*, connection_close: bool = False, end_of_stream: bool = False):
+    """Build an http handler that accepts CreateMultipartUpload.
+    If `end_of_stream=True`, drops the connection on the first PUT request
+    (UploadPart), then succeeds with 200 OK and ETag on subsequent PUTs,
+    and supports completing the upload.
+    Otherwise, answers every UploadPart with 507 (out of capacity).
+    `connection_close=True` mirrors MinIO's storage full response."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        put_count = 0
 
         def log_message(self, *args, **kwargs):
             pass
 
-        def _send(self, status: int, body: bytes, *, close: bool):
+        def _send(self, status: int, body: bytes, *, close: bool, headers: dict | None = None):
             self.send_response(status)
             self.send_header("Content-Type", "application/xml")
             self.send_header("Content-Length", str(len(body)))
+            if headers:
+                for k, v in headers.items():
+                    self.send_header(k, v)
             if close:
                 self.send_header("Connection", "close")
                 self.close_connection = True
@@ -215,17 +220,36 @@ def _make_failing_upload_handler(*, connection_close: bool):
                 )
                 self._send(200, body, close=False)
                 return
+            elif "uploadId" in query and end_of_stream:
+                body = (
+                    b'<?xml version="1.0" encoding="UTF-8"?>'
+                    b"<CompleteMultipartUploadResult>"
+                    b"<Bucket>fake</Bucket><Key>fake</Key>"
+                    b"<ETag>fake-etag</ETag>"
+                    b"</CompleteMultipartUploadResult>"
+                )
+                self._send(200, body, close=False)
+                return
             self._send(404, b"<Error/>", close=False)
 
         def do_PUT(self):
+            content_len = int(self.headers.get("Content-Length", "0"))
+            if content_len:
+                self.rfile.read(content_len)
+
+            if end_of_stream:
+                Handler.put_count += 1
+                if Handler.put_count == 1:
+                    self.close_connection = True
+                    return
+                self._send(200, b"", close=False, headers={"ETag": '"fake-etag"'})
+                return
+
             body = (
                 b'<?xml version="1.0" encoding="UTF-8"?>'
                 b"<Error><Code>XMinioStorageFull</Code>"
                 b"<Message>Storage backend has reached its capacity</Message></Error>"
             )
-            content_len = int(self.headers.get("Content-Length", "0"))
-            if content_len:
-                self.rfile.read(content_len)
             self._send(507, body, close=connection_close)
 
     return Handler
@@ -264,7 +288,19 @@ def failing_s3_endpoint_keepalive():
         thread.join(timeout=5)
 
 
-def _put_object_against(endpoint: str) -> subprocess.CompletedProcess:
+@pytest.fixture()
+def end_of_stream_s3_endpoint():
+    """Fake S3 that drops the first UploadPart request completely (end of stream)."""
+    server, thread, url = _start_fake_s3(_make_failing_upload_handler(end_of_stream=True))
+    try:
+        yield url
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _put_object_against(endpoint: str, *extra_args: str) -> subprocess.CompletedProcess:
     binary = _find_s3_demo()
     if not binary:
         pytest.skip("s3_demo binary not found")
@@ -281,6 +317,7 @@ def _put_object_against(endpoint: str) -> subprocess.CompletedProcess:
         "--key=fake/key.bin",
         "--upload_size=256",  # small upload size to make it faster.
         f"--endpoint={endpoint}",
+        *extra_args,
         env=env,
     )
 
@@ -332,6 +369,20 @@ def test_upload_part_507_retry_exhaustion_propagates_error(failing_s3_endpoint_k
     )
     assert "put-object close error" in result.stderr or "put-object write error" in result.stderr, (
         f"expected a graceful upload error in stderr, got:\n{result.stderr}"
+    )
+
+
+def test_upload_part_end_of_stream_retry(end_of_stream_s3_endpoint):
+    """Test that if the first UploadPart gets a silent connection drop (end of stream),
+    RobustSender retries and the upload ultimately succeeds."""
+    result = _put_object_against(end_of_stream_s3_endpoint, "--v=1")
+
+    assert result.returncode == 0, f"put-object failed:\n{result.stderr}"
+    assert "Retrying. Connection closed with error: end of stream" in result.stderr, (
+        f"expected end of stream retry message in stderr, got:\n{result.stderr}"
+    )
+    assert "put-object done; bytes=" in result.stderr, (
+        f"expected successful put-object completion, got:\n{result.stderr}"
     )
 
 
