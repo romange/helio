@@ -7,6 +7,7 @@
 #include <absl/strings/match.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_split.h>
+
 #include <boost/beast/http/string_body.hpp>
 
 #include "base/logging.h"
@@ -163,8 +164,8 @@ ParsedHttpUrl ParseHttpUrl(string_view uri) {
 
   size_t colon = host_port.rfind(':');
   string host = string(colon == string_view::npos ? host_port : host_port.substr(0, colon));
-  string port = colon == string_view::npos ? (is_https ? "443" : "80")
-                                           : string(host_port.substr(colon + 1));
+  string port =
+      colon == string_view::npos ? (is_https ? "443" : "80") : string(host_port.substr(colon + 1));
 
   return {std::move(host), std::move(port), std::move(path), is_https};
 }
@@ -197,7 +198,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
     // result->eb_parser->body_limit(boost::optional<uint64_t>());
     auto header_err = client_handle->ReadHeader(result->eb_parser.get());
     // Reading from closed socket can result in `connection_aborted`.
-    if (FiberSocketBase::IsConnClosed(header_err)) {
+    if (header_err == h2::error::end_of_stream || FiberSocketBase::IsConnClosed(header_err)) {
       VLOG(1) << "Retrying. Connection closed with error: " << header_err.message();
       ec = header_err;
       continue;
