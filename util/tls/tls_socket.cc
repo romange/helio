@@ -546,6 +546,7 @@ void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
     std::memcpy(input_buf.data(), buf->data(), buf->size());
     engine_->CommitInput(buf->size());
     recv_cb({RecvNotification::RecvCompletion{true}});
+    return;
   }
   LOG(FATAL) << "Unhandled type in RecvNotification::read_result variant";
 }
