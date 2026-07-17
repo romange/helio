@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string_view>
+
 #include <absl/functional/function_ref.h>
 
 #include <boost/beast/http/dynamic_body.hpp>
@@ -181,6 +183,8 @@ class AbstractStorageFile : public io::WriteFile {
 
 }  // namespace detail
 
+// Thread-safe interface for fetching credentials and signing requests.
+// Implementations may cache credentials and refresh them as needed.
 class CredentialsProvider {
  public:
   virtual ~CredentialsProvider() = default;
@@ -190,9 +194,9 @@ class CredentialsProvider {
   virtual std::string ServiceEndpoint() const = 0;
 
   virtual void Sign(detail::HttpRequestBase* req) const = 0;
-  // Returns true when the currently cached credentials should be refreshed
-  // before signing another request.
-  virtual bool IsExpired() const {
+
+  // Refreshes expiring credentials. Returns true if credentials were updated.
+  ABSL_MUST_USE_RESULT virtual io::Result<bool> RefreshIfExpiring() {
     return false;
   }
 
@@ -201,7 +205,7 @@ class CredentialsProvider {
   virtual bool ShouldRefreshToken(
       const boost::beast::http::response<boost::beast::http::string_body>& response) const;
 
-  virtual std::error_code RefreshToken() = 0;
+  ABSL_MUST_USE_RESULT virtual std::error_code RefreshToken() = 0;
 };
 
 struct StorageListItem {

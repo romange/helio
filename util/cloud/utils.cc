@@ -142,8 +142,7 @@ error_code AbstractStorageFile::FillBuf(const uint8_t* buffer, size_t length) {
 
 }  // namespace detail
 
-bool CredentialsProvider::ShouldRefreshToken(
-    const h2::response<h2::string_body>& response) const {
+bool CredentialsProvider::ShouldRefreshToken(const h2::response<h2::string_body>& response) const {
   return IsUnauthorized(response);
 }
 
@@ -178,9 +177,13 @@ ParsedHttpUrl ParseHttpUrl(string_view uri) {
 error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* req,
                               SenderResult* result) {
   error_code ec;
-  if (provider_->IsExpired()) {
-    VLOG(1) << "Refreshing expired token before sending request";
-    RETURN_ERROR(provider_->RefreshToken());
+  auto refreshed = provider_->RefreshIfExpiring();
+  if (!refreshed) {
+    return refreshed.error();
+  }
+
+  if (*refreshed) {
+    VLOG(1) << "Refreshed expiring token before sending request";
     provider_->Sign(req);
   }
 

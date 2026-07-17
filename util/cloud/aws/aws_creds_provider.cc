@@ -16,6 +16,7 @@
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <chrono>
 #include <pugixml.hpp>
 
 #include "base/logging.h"
@@ -37,6 +38,8 @@ namespace {
 // SHA256("") — used as payload hash for all GET requests.
 constexpr string_view kEmptyBodyHash =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+constexpr auto kRefreshWaitTimeout = chrono::seconds(30);
+constexpr auto kRefreshWaitInterval = chrono::milliseconds(100);
 
 string HexEncode(const uint8_t* data, size_t len) {
   static const char kHex[] = "0123456789abcdef";
@@ -259,6 +262,7 @@ AwsCredsProvider::~AwsCredsProvider() {
 }
 
 SSL_CTX* AwsCredsProvider::GetSslCtx() {
+  folly::RWSpinLock::WriteHolder lock(lock_);
   if (!ssl_ctx_)
     ssl_ctx_ = http::TlsClient::CreateSslContext();
   return ssl_ctx_;
@@ -338,8 +342,8 @@ error_code AwsCredsProvider::TryEnvironment() {
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     creds_ = std::move(creds);
+    source_ = CredSource::kEnv;
   }
-  source_ = CredSource::kEnv;
   LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=environment";
   return {};
 }
@@ -382,8 +386,8 @@ error_code AwsCredsProvider::TryProfileFile() {
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     creds_ = std::move(creds);
+    source_ = CredSource::kProfile;
   }
-  source_ = CredSource::kProfile;
   LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=profile file";
   return {};
 }
@@ -420,10 +424,8 @@ error_code AwsCredsProvider::TryWebIdentity() {
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     creds_ = std::move(creds);
+    source_ = CredSource::kWebIdentity;
   }
-  role_arn_ = role_arn;
-  web_identity_token_file_ = token_file;
-  source_ = CredSource::kWebIdentity;
   LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=web-identity";
   return {};
 }
@@ -452,8 +454,6 @@ error_code AwsCredsProvider::TryContainerCreds() {
     }
   }
 
-  container_uri_ = uri;
-
   // Determine if http or https.
   vector<pair<string, string>> headers;
   if (!auth_token.empty()) {
@@ -472,8 +472,8 @@ error_code AwsCredsProvider::TryContainerCreds() {
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     creds_ = std::move(creds);
+    source_ = CredSource::kContainer;
   }
-  source_ = CredSource::kContainer;
   LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=container-credentials";
   return {};
 }
@@ -495,17 +495,16 @@ error_code AwsCredsProvider::TryIMDS() {
                h2::verb::get, token_hdr, "", connect_ms_, nullptr);
   if (!role_name_res)
     return role_name_res.error();
-  string role_name_raw = std::move(*role_name_res);
+  string imds_role(absl::StripAsciiWhitespace(*role_name_res));
 
-  imds_role_ = string(absl::StripAsciiWhitespace(role_name_raw));
-  if (imds_role_.empty()) {
+  if (imds_role.empty()) {
     LOG(WARNING) << "aws: IMDS returned empty role name";
     return make_error_code(errc::not_supported);
   }
 
   // Get the credentials for the role.
   auto json = FetchUrl("169.254.169.254", "80",
-                       absl::StrCat("/latest/meta-data/iam/security-credentials/", imds_role_),
+                       absl::StrCat("/latest/meta-data/iam/security-credentials/", imds_role),
                        h2::verb::get, token_hdr, "", connect_ms_, nullptr);
   if (!json)
     return json.error();
@@ -516,14 +515,40 @@ error_code AwsCredsProvider::TryIMDS() {
   {
     folly::RWSpinLock::WriteHolder lock(lock_);
     creds_ = std::move(creds);
+    source_ = CredSource::kIMDS;
   }
-  source_ = CredSource::kIMDS;
-  LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=ec2-metadata; role=" << imds_role_;
+  LOG_FIRST_N(INFO, 1) << "aws: loaded credentials; provider=ec2-metadata; role=" << imds_role;
   return {};
 }
 
 error_code AwsCredsProvider::RefreshToken() {
-  switch (source_) {
+  bool expected = false;
+  if (is_refreshing_.compare_exchange_strong(expected, true, memory_order_acq_rel)) {
+    error_code ec = RefreshTokenImpl();
+    is_refreshing_.store(false, memory_order_release);
+    return ec;
+  }
+
+  // Someone else is already refreshing; wait for it to finish.
+  auto deadline = chrono::steady_clock::now() + kRefreshWaitTimeout;
+  while (is_refreshing_.load(memory_order_acquire)) {
+    if (chrono::steady_clock::now() >= deadline) {
+      return make_error_code(errc::timed_out);
+    }
+    ThisFiber::SleepFor(kRefreshWaitInterval);
+  }
+
+  return {};
+}
+
+error_code AwsCredsProvider::RefreshTokenImpl() {
+  CredSource source;
+  {
+    folly::RWSpinLock::ReadHolder lock(lock_);
+    source = source_;
+  }
+
+  switch (source) {
     case CredSource::kEnv:
     case CredSource::kProfile:
       return {};  // static credentials never expire
@@ -534,7 +559,7 @@ error_code AwsCredsProvider::RefreshToken() {
     case CredSource::kIMDS:
       return TryIMDS();
     case CredSource::kNone:
-      break;
+      return make_error_code(errc::permission_denied);
   }
   return make_error_code(errc::permission_denied);
 }
@@ -637,9 +662,29 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   req->SetHeader(h2::field::authorization, auth);
 }
 
-bool AwsCredsProvider::IsExpired() const {
-  folly::RWSpinLock::ReadHolder lock(lock_);
-  return creds_.IsExpired();
+io::Result<bool> AwsCredsProvider::RefreshIfExpiring() {
+  auto deadline = chrono::steady_clock::now() + kRefreshWaitTimeout;
+  while (true) {
+    {
+      folly::RWSpinLock::ReadHolder creds_lock(lock_);
+      if (!creds_.IsExpiring())
+        return false;
+    }
+
+    bool expected = false;
+    if (is_refreshing_.compare_exchange_strong(expected, true, memory_order_acq_rel)) {
+      error_code ec = RefreshTokenImpl();
+      is_refreshing_.store(false, memory_order_release);
+      if (ec)
+        return nonstd::make_unexpected(ec);
+      return true;
+    }
+
+    if (chrono::steady_clock::now() >= deadline) {
+      return nonstd::make_unexpected(make_error_code(errc::timed_out));
+    }
+    ThisFiber::SleepFor(kRefreshWaitInterval);
+  }
 }
 
 bool AwsCredsProvider::ShouldRefreshToken(
