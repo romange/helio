@@ -62,7 +62,9 @@ class AwsCredsProvider : public CredentialsProvider {
   explicit AwsCredsProvider(std::string region = {}, std::string endpoint_override = {});
   ~AwsCredsProvider();
 
-  unsigned connect_ms() const { return connect_ms_; }
+  unsigned connect_ms() const {
+    return connect_ms_;
+  }
 
   std::error_code Init(unsigned connect_ms) final;
 
@@ -73,6 +75,11 @@ class AwsCredsProvider : public CredentialsProvider {
 
   // Computes AWS SigV4 and sets x-amz-date, x-amz-security-token, Authorization headers.
   void Sign(detail::HttpRequestBase* req) const final;
+
+  bool IsExpired() const final;
+
+  bool ShouldRefreshToken(
+      const boost::beast::http::response<boost::beast::http::string_body>& response) const final;
 
   std::error_code RefreshToken() final;
 

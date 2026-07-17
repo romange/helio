@@ -142,6 +142,11 @@ error_code AbstractStorageFile::FillBuf(const uint8_t* buffer, size_t length) {
 
 }  // namespace detail
 
+bool CredentialsProvider::ShouldRefreshToken(
+    const h2::response<h2::string_body>& response) const {
+  return IsUnauthorized(response);
+}
+
 RobustSender::SenderResult::~SenderResult() {
   if (client_handle && !reuse_connection) {
     client_handle->Shutdown();
@@ -173,6 +178,12 @@ ParsedHttpUrl ParseHttpUrl(string_view uri) {
 error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* req,
                               SenderResult* result) {
   error_code ec;
+  if (provider_->IsExpired()) {
+    VLOG(1) << "Refreshing expired token before sending request";
+    RETURN_ERROR(provider_->RefreshToken());
+    provider_->Sign(req);
+  }
+
   for (unsigned i = 0; i < num_iterations; ++i) {  // Iterate for possible token refresh.
     auto res = pool_->GetHandle();
     if (!res)
@@ -235,7 +246,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
       continue;
     }
 
-    if (IsUnauthorized(msg)) {
+    if (provider_->ShouldRefreshToken(msg)) {
       VLOG(1) << "Refreshing token";
       RETURN_ERROR(provider_->RefreshToken());
       provider_->Sign(req);

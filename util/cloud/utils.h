@@ -3,16 +3,16 @@
 
 #pragma once
 
-#include <string_view>
-
 #include <absl/functional/function_ref.h>
+
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/parser.hpp>
+#include <boost/beast/http/string_body.hpp>
 
+#include "io/file.h"
 #include "util/http/http_client.h"
 #include "util/http/https_client_pool.h"
-#include "io/file.h"
 
 #define RETURN_ERROR(x)                                          \
   do {                                                           \
@@ -190,6 +190,17 @@ class CredentialsProvider {
   virtual std::string ServiceEndpoint() const = 0;
 
   virtual void Sign(detail::HttpRequestBase* req) const = 0;
+  // Returns true when the currently cached credentials should be refreshed
+  // before signing another request.
+  virtual bool IsExpired() const {
+    return false;
+  }
+
+  // Returns true if the provider can refresh credentials to retry `response`.
+  // The default recognizes standard HTTP authentication challenges.
+  virtual bool ShouldRefreshToken(
+      const boost::beast::http::response<boost::beast::http::string_body>& response) const;
+
   virtual std::error_code RefreshToken() = 0;
 };
 

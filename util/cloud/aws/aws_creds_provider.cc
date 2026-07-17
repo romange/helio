@@ -569,9 +569,8 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   // otherwise default to SHA256("") for unsigned GET requests.
   const auto& headers = req->GetHeaders();
   auto hash_it = headers.find("x-amz-content-sha256");
-  string payload_hash = (hash_it != headers.end())
-                            ? string(detail::FromBoostSV(hash_it->value()))
-                            : string(kEmptyBodyHash);
+  string payload_hash = (hash_it != headers.end()) ? string(detail::FromBoostSV(hash_it->value()))
+                                                   : string(kEmptyBodyHash);
 
   req->SetHeader("x-amz-date", datetime);
   req->SetHeader("x-amz-content-sha256", payload_hash);
@@ -609,13 +608,10 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
 
   // Build canonical request.
   string_view method_str = detail::FromBoostSV(h2::to_string(req->GetMethod()));
-  string canonical_request = absl::StrCat(
-      method_str, "\n",
-      canonical_uri, "\n",
-      canonical_qs, "\n",
-      canonical_headers, "\n",  // canonical_headers already ends with \n; this adds blank line
-      signed_headers_str, "\n",
-      payload_hash);
+  string canonical_request =
+      absl::StrCat(method_str, "\n", canonical_uri, "\n", canonical_qs, "\n", canonical_headers,
+                   "\n",  // canonical_headers already ends with \n; this adds blank line
+                   signed_headers_str, "\n", payload_hash);
 
   // Credential scope and string to sign.
   string credential_scope = absl::StrCat(date, "/", region_, "/s3/aws4_request");
@@ -639,6 +635,27 @@ void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
       absl::StrCat("AWS4-HMAC-SHA256 Credential=", creds.access_key_id, "/", credential_scope,
                    ", SignedHeaders=", signed_headers_str, ", Signature=", signature);
   req->SetHeader(h2::field::authorization, auth);
+}
+
+bool AwsCredsProvider::IsExpired() const {
+  folly::RWSpinLock::ReadHolder lock(lock_);
+  return creds_.IsExpired();
+}
+
+bool AwsCredsProvider::ShouldRefreshToken(
+    const boost::beast::http::response<boost::beast::http::string_body>& response) const {
+  if (CredentialsProvider::ShouldRefreshToken(response)) {
+    return true;
+  }
+
+  if (response.result() != boost::beast::http::status::bad_request) {
+    return false;
+  }
+
+  // S3 reports expired temporary credentials as HTTP 400 rather than 401/403.
+  // InvalidToken can result from a web-identity token rotation race.
+  return absl::StrContains(response.body(), "<Code>ExpiredToken</Code>") ||
+         absl::StrContains(response.body(), "<Code>InvalidToken</Code>");
 }
 
 }  // namespace cloud::aws
