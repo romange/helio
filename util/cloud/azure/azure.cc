@@ -363,6 +363,12 @@ error_code Credentials::TryConnectionString() {
   if (info.account_name.empty()) {
     return make_error_code(errc::bad_message);
   }
+  if (!HasMatchingAccount(info.account_name)) {
+    return make_error_code(errc::invalid_argument);
+  }
+  if (!requested_account_name_.empty()) {
+    info = AccountInfoFromUri();
+  }
 
   if (!account_key.empty()) {
     SetSharedKey(CredSource::kConnectionString, std::move(info), std::move(account_key));
@@ -382,8 +388,15 @@ error_code Credentials::TryEnvSharedKey() {
   string sas = NormalizeSasQuery(GetEnvOrEmpty("AZURE_STORAGE_SAS_TOKEN"));
 
   AccountInfo info;
-  info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
-  error_code ep_ec = ResolveServiceEndpointFromEnv(&info);
+
+  if (requested_account_name_.empty()) {
+    info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
+  } else {
+    info = AccountInfoFromUri();
+  }
+
+  error_code ep_ec =
+      requested_account_name_.empty() ? ResolveServiceEndpointFromEnv(&info) : error_code{};
 
   if (!key.empty()) {
     if (info.account_name.empty() || ep_ec) {
@@ -406,8 +419,12 @@ error_code Credentials::TryEnvSharedKey() {
 
 error_code Credentials::TryManagedIdentity() {
   AccountInfo info;
-  info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
-  RETURN_ERROR(ResolveServiceEndpointFromEnv(&info));
+  if (requested_account_name_.empty()) {
+    info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
+    RETURN_ERROR(ResolveServiceEndpointFromEnv(&info));
+  } else {
+    info = AccountInfoFromUri();
+  }
 
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
   CHECK(pb);
@@ -485,6 +502,19 @@ void Credentials::SetBearer(AccountInfo info, string token, unsigned ttl) {
   }
   const time_t now = time(nullptr);
   expire_time_.store(now + (ttl > 60 ? ttl - 60 : ttl), std::memory_order_release);
+}
+
+AccountInfo Credentials::AccountInfoFromUri() const {
+  return {
+      .service_endpoint = absl::StrCat(requested_account_name_, ".blob.", kDefaultEndpointSuffix),
+      .account_name = requested_account_name_,
+      .path_prefix = {},
+      .is_https = true};
+}
+
+bool Credentials::HasMatchingAccount(string_view account_name) const {
+  return requested_account_name_.empty() || account_name.empty() ||
+         absl::EqualsIgnoreCase(account_name, requested_account_name_);
 }
 
 string Credentials::NormalizeSasQuery(string_view query) {

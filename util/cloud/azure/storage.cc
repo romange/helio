@@ -163,6 +163,27 @@ unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx,
   return pool;
 }
 
+void AppendUrlEncodedPath(string_view path, string* dest) {
+  while (true) {
+    size_t separator = path.find('/');
+    strings::AppendUrlEncoded(path.substr(0, separator), dest);
+    if (separator == string_view::npos) {
+      return;
+    }
+    dest->push_back('/');
+    path.remove_prefix(separator + 1);
+  }
+}
+
+string BuildObjectUrl(string_view path_prefix, string_view container, string_view key) {
+  string url(path_prefix);
+  url += '/';
+  strings::AppendUrlEncoded(container, &url);
+  url += '/';
+  AppendUrlEncodedPath(key, &url);
+  return url;
+}
+
 detail::EmptyRequestImpl FillRequest(string_view endpoint, string_view url,
                                      CredentialsProvider* provider) {
   detail::EmptyRequestImpl req(h2::verb::get, url);
@@ -319,7 +340,7 @@ WriteFile::WriteFile(string_view path_prefix, string_view container, string_view
     : detail::AbstractStorageFile(key, 1UL << 23), opts_(std::move(opts)) {
   string endpoint = opts_.creds_provider->ServiceEndpoint();
   pool_ = CreatePool(endpoint, opts_.ssl_cntx, fb2::ProactorBase::me());
-  target_ = absl::StrCat(path_prefix, "/", container, "/", key);
+  target_ = BuildObjectUrl(path_prefix, container, key);
 }
 
 WriteFile::~WriteFile() {
@@ -485,14 +506,10 @@ error_code Storage::List(string_view container, std::string_view prefix, bool re
   return {};
 }
 
-string BuildGetObjUrl(string_view path_prefix, const string& container, const string& key) {
-  return absl::StrCat(path_prefix, "/", container, "/", key);
-}
-
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& container, const std::string& key,
                                            const ReadFileOptions& opts) {
   DCHECK(opts.creds_provider);
-  string url = BuildGetObjUrl(opts.creds_provider->GetPathPrefix(), container, key);
+  string url = BuildObjectUrl(opts.creds_provider->GetPathPrefix(), container, key);
   return new ReadFile(url, opts);
 }
 
