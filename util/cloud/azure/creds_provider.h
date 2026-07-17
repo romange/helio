@@ -24,6 +24,10 @@ struct AccountInfo {
 
 class Credentials : public CredentialsProvider {
  public:
+  explicit Credentials(std::string account_name = {})
+      : requested_account_name_(std::move(account_name)) {
+  }
+
   enum class AuthMode { kNone, kSharedKey, kSas, kBearer };
 
   std::error_code Init(unsigned) final;
@@ -65,6 +69,9 @@ class Credentials : public CredentialsProvider {
   void SetSas(CredSource src, AccountInfo info, std::string sas);
   void SetBearer(AccountInfo info, std::string token, unsigned ttl);
 
+  AccountInfo AccountInfoFromUri() const;
+
+  bool HasMatchingAccount(std::string_view account_name) const;
   static std::string NormalizeSasQuery(std::string_view query);
 
   // Immutable after Init() — read by Sign() without locking.
@@ -73,6 +80,7 @@ class Credentials : public CredentialsProvider {
   AccountInfo account_info_;
   std::string account_key_;
   std::string sas_query_;
+  std::string requested_account_name_;
 
   // Mutable at runtime — protected by lock_ / atomic.
   mutable folly::RWSpinLock lock_;

@@ -98,14 +98,20 @@ def az_env() -> dict:
 
 
 @pytest.fixture(scope="module", autouse=True)
-def create_container(azurite, az_env):
-    """Ensure the test container exists in Azurite."""
-    from azure.core.exceptions import ResourceExistsError
+def az_client(azurite):
+    """Azure SDK client for independently verifying objects written by Helio."""
     from azure.storage.blob import BlobServiceClient
 
-    client = BlobServiceClient.from_connection_string(AZURITE_CONN_STR)
+    return BlobServiceClient.from_connection_string(AZURITE_CONN_STR)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def create_container(az_client):
+    """Ensure the test container exists in Azurite."""
+    from azure.core.exceptions import ResourceExistsError
+
     try:
-        client.create_container(CONTAINER)
+        az_client.create_container(CONTAINER)
     except ResourceExistsError:
         pass
 
@@ -139,6 +145,40 @@ def test_write_read(gcs_demo, az_env):
         gcs_demo,
         f"--bucket={CONTAINER}",
         f"--prefix={prefix}_0",
+        "--read=1",
+        env=az_env,
+    )
+    assert result.returncode == 0, f"read failed:\n{result.stderr}"
+    assert "Read" in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "space key",
+        "percent%key",
+        "query?key",
+        "fragment#key",
+        "r\u00e9sum\u00e9/\u65e5\u672c",
+        "repeated//slash///key",
+    ],
+)
+def test_write_read_escaped_object_key(gcs_demo, az_client, az_env, prefix):
+    """Read and write object keys whose path segments require URL encoding."""
+    object_key = f"{prefix}_0"
+    result = _run(
+        gcs_demo, f"--bucket={CONTAINER}", f"--prefix={prefix}", "--write=1", env=az_env
+    )
+    assert result.returncode == 0, f"write failed:\n{result.stderr}"
+    assert "Written" in result.stderr, result.stderr
+
+    blob = az_client.get_blob_client(container=CONTAINER, blob=object_key)
+    assert blob.get_blob_properties().size > 0
+
+    result = _run(
+        gcs_demo,
+        f"--bucket={CONTAINER}",
+        f"--prefix={object_key}",
         "--read=1",
         env=az_env,
     )

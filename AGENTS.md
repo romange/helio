@@ -52,6 +52,12 @@
 2.  **Implement:** Adhere strictly to Fiber Safety rules. Use smart pointers (`std::unique_ptr`) and RAII (`absl::Cleanup`).
 3.  **Verify:** Always run related tests and `ctest -L CI`.
 
+## 🐍 Python Integration Tests
+
+Before configuring or running tests under `tests/`, read and follow
+[`tests/README.md`](tests/README.md). It documents required binaries, Python dependencies, and the
+local Azurite setup used by the Azure integration tests.
+
 ## 📝 Git Commit Guidelines
 
 *   **Commit Title:** Maximum 70 characters. Use format: `Component: brief description`
