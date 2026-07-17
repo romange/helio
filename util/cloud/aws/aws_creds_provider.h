@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <atomic>
+
 #include "base/RWSpinLock.h"
 #include "util/cloud/utils.h"
 
@@ -21,7 +23,7 @@ struct AwsCredentials {
     return access_key_id.empty() || secret_access_key.empty();
   }
 
-  bool IsExpired() const {
+  bool IsExpiring() const {
     return expiry > 0 && time(nullptr) + 30 >= expiry;
   }
 };
@@ -47,7 +49,7 @@ std::string StsEndpoint(std::string_view region);
 //
 // Sign() computes AWS Signature Version 4 on every call.
 // RefreshToken() re-fetches from whichever source originally succeeded.
-// Thread-safe: RWSpinLock guards creds_.
+// Thread-safe: RWSpinLock guards credential and refresh-source state.
 class AwsCredsProvider : public CredentialsProvider {
   AwsCredsProvider(const AwsCredsProvider&) = delete;
   AwsCredsProvider& operator=(const AwsCredsProvider&) = delete;
@@ -62,7 +64,9 @@ class AwsCredsProvider : public CredentialsProvider {
   explicit AwsCredsProvider(std::string region = {}, std::string endpoint_override = {});
   ~AwsCredsProvider();
 
-  unsigned connect_ms() const { return connect_ms_; }
+  unsigned connect_ms() const {
+    return connect_ms_;
+  }
 
   std::error_code Init(unsigned connect_ms) final;
 
@@ -73,6 +77,11 @@ class AwsCredsProvider : public CredentialsProvider {
 
   // Computes AWS SigV4 and sets x-amz-date, x-amz-security-token, Authorization headers.
   void Sign(detail::HttpRequestBase* req) const final;
+
+  io::Result<bool> RefreshIfExpiring() final;
+
+  bool ShouldRefreshToken(
+      const boost::beast::http::response<boost::beast::http::string_body>& response) const final;
 
   std::error_code RefreshToken() final;
 
@@ -88,6 +97,7 @@ class AwsCredsProvider : public CredentialsProvider {
   std::error_code TryWebIdentity();
   std::error_code TryContainerCreds();
   std::error_code TryIMDS();
+  std::error_code RefreshTokenImpl();
 
   std::string region_;
   std::string endpoint_override_;
@@ -96,14 +106,10 @@ class AwsCredsProvider : public CredentialsProvider {
   enum class CredSource { kNone, kEnv, kProfile, kWebIdentity, kContainer, kIMDS };
   CredSource source_ = CredSource::kNone;
 
-  // Saved for RefreshToken():
-  std::string role_arn_, web_identity_token_file_;
-  std::string container_uri_;
-  std::string imds_role_;
-
   SSL_CTX* ssl_ctx_ = nullptr;
   mutable folly::RWSpinLock lock_;
   AwsCredentials creds_;
+  std::atomic_bool is_refreshing_ = false;
 };
 
 }  // namespace cloud::aws

@@ -6,13 +6,15 @@
 #include <string_view>
 
 #include <absl/functional/function_ref.h>
+
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/parser.hpp>
+#include <boost/beast/http/string_body.hpp>
 
+#include "io/file.h"
 #include "util/http/http_client.h"
 #include "util/http/https_client_pool.h"
-#include "io/file.h"
 
 #define RETURN_ERROR(x)                                          \
   do {                                                           \
@@ -181,6 +183,8 @@ class AbstractStorageFile : public io::WriteFile {
 
 }  // namespace detail
 
+// Thread-safe interface for fetching credentials and signing requests.
+// Implementations may cache credentials and refresh them as needed.
 class CredentialsProvider {
  public:
   virtual ~CredentialsProvider() = default;
@@ -190,7 +194,18 @@ class CredentialsProvider {
   virtual std::string ServiceEndpoint() const = 0;
 
   virtual void Sign(detail::HttpRequestBase* req) const = 0;
-  virtual std::error_code RefreshToken() = 0;
+
+  // Refreshes expiring credentials. Returns true if credentials were updated.
+  ABSL_MUST_USE_RESULT virtual io::Result<bool> RefreshIfExpiring() {
+    return false;
+  }
+
+  // Returns true if the provider can refresh credentials to retry `response`.
+  // The default recognizes standard HTTP authentication challenges.
+  virtual bool ShouldRefreshToken(
+      const boost::beast::http::response<boost::beast::http::string_body>& response) const;
+
+  ABSL_MUST_USE_RESULT virtual std::error_code RefreshToken() = 0;
 };
 
 struct StorageListItem {

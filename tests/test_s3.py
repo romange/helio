@@ -178,17 +178,25 @@ def test_endpoint_flag_override(minio):
     )
 
 
-def _make_failing_upload_handler(*, connection_close: bool = False, end_of_stream: bool = False):
+def _make_failing_upload_handler(
+    *,
+    connection_close: bool = False,
+    end_of_stream: bool = False,
+    expired_token_once: bool = False,
+):
     """Build an http handler that accepts CreateMultipartUpload.
     If `end_of_stream=True`, drops the connection on the first PUT request
     (UploadPart), then succeeds with 200 OK and ETag on subsequent PUTs,
     and supports completing the upload.
     Otherwise, answers every UploadPart with 507 (out of capacity).
-    `connection_close=True` mirrors MinIO's storage full response."""
+    `connection_close=True` mirrors MinIO's storage full response. With
+    `expired_token_once=True`, the first multipart-create request returns S3's
+    HTTP 400 ExpiredToken error, then all requests succeed."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         put_count = 0
+        create_count = 0
 
         def log_message(self, *args, **kwargs):
             pass
@@ -211,6 +219,15 @@ def _make_failing_upload_handler(*, connection_close: bool = False, end_of_strea
         def do_POST(self):
             query = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             if "uploads" in query:
+                Handler.create_count += 1
+                if expired_token_once and Handler.create_count == 1:
+                    body = (
+                        b'<?xml version="1.0" encoding="UTF-8"?>'
+                        b"<Error><Code>ExpiredToken</Code>"
+                        b"<Message>The provided token has expired.</Message></Error>"
+                    )
+                    self._send(400, body, close=False)
+                    return
                 body = (
                     b'<?xml version="1.0" encoding="UTF-8"?>'
                     b"<InitiateMultipartUploadResult>"
@@ -220,7 +237,7 @@ def _make_failing_upload_handler(*, connection_close: bool = False, end_of_strea
                 )
                 self._send(200, body, close=False)
                 return
-            elif "uploadId" in query and end_of_stream:
+            elif "uploadId" in query and (end_of_stream or expired_token_once):
                 body = (
                     b'<?xml version="1.0" encoding="UTF-8"?>'
                     b"<CompleteMultipartUploadResult>"
@@ -237,9 +254,9 @@ def _make_failing_upload_handler(*, connection_close: bool = False, end_of_strea
             if content_len:
                 self.rfile.read(content_len)
 
-            if end_of_stream:
+            if end_of_stream or expired_token_once:
                 Handler.put_count += 1
-                if Handler.put_count == 1:
+                if end_of_stream and Handler.put_count == 1:
                     self.close_connection = True
                     return
                 self._send(200, b"", close=False, headers={"ETag": '"fake-etag"'})
@@ -292,6 +309,18 @@ def failing_s3_endpoint_keepalive():
 def end_of_stream_s3_endpoint():
     """Fake S3 that drops the first UploadPart request completely (end of stream)."""
     server, thread, url = _start_fake_s3(_make_failing_upload_handler(end_of_stream=True))
+    try:
+        yield url
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.fixture()
+def expired_token_s3_endpoint():
+    """Fake S3 that returns S3's 400 ExpiredToken response once."""
+    server, thread, url = _start_fake_s3(_make_failing_upload_handler(expired_token_once=True))
     try:
         yield url
     finally:
@@ -383,6 +412,20 @@ def test_upload_part_end_of_stream_retry(end_of_stream_s3_endpoint):
     )
     assert "put-object done; bytes=" in result.stderr, (
         f"expected successful put-object completion, got:\n{result.stderr}"
+    )
+
+
+def test_expired_token_refresh_retry(expired_token_s3_endpoint):
+    """S3 reports expired STS credentials as HTTP 400 ExpiredToken, not 401/403.
+    RobustSender must refresh and retry the request."""
+    result = _put_object_against(expired_token_s3_endpoint, "--v=1")
+
+    assert result.returncode == 0, f"put-object failed:\n{result.stderr}"
+    assert "Refreshing token" in result.stderr, (
+        f"expected ExpiredToken to trigger credential refresh:\n{result.stderr}"
+    )
+    assert "put-object done; bytes=" in result.stderr, (
+        f"expected successful retry after refresh, got:\n{result.stderr}"
     )
 
 
