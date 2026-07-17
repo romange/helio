@@ -97,6 +97,20 @@ def az_env() -> dict:
     return env
 
 
+@pytest.fixture(scope="module")
+def az_env_uri_account() -> dict:
+    """Environment with discrete (non-connection-string) Azurite credentials, plus a
+    mismatched AZURE_STORAGE_ACCOUNT and a custom AZURE_STORAGE_BLOB_ENDPOINT. Used to
+    verify that a URI-provided account name overrides the environment account while the
+    custom endpoint override is still honored."""
+    env = os.environ.copy()
+    env.pop("AZURE_STORAGE_CONNECTION_STRING", None)
+    env["AZURE_STORAGE_ACCOUNT"] = "not-the-real-account"
+    env["AZURE_STORAGE_KEY"] = AZURITE_KEY
+    env["AZURE_STORAGE_BLOB_ENDPOINT"] = f"http://127.0.0.1:{AZURITE_PORT}/{AZURITE_ACCOUNT}/"
+    return env
+
+
 @pytest.fixture(scope="module", autouse=True)
 def az_client(azurite):
     """Azure SDK client for independently verifying objects written by Helio."""
@@ -147,6 +161,36 @@ def test_write_read(gcs_demo, az_env):
         f"--prefix={prefix}_0",
         "--read=1",
         env=az_env,
+    )
+    assert result.returncode == 0, f"read failed:\n{result.stderr}"
+    assert "Read" in result.stderr, result.stderr
+
+
+def test_uri_account_overrides_env_with_custom_endpoint(gcs_demo, az_client, az_env_uri_account):
+    """A URI-provided account name should take precedence over AZURE_STORAGE_ACCOUNT while
+    the AZURE_STORAGE_BLOB_ENDPOINT override (Azurite) is still honored for connectivity."""
+    prefix = "helio-ci/uri-account"
+    result = _run(
+        gcs_demo,
+        f"--bucket={CONTAINER}",
+        f"--prefix={prefix}",
+        f"--azure_account={AZURITE_ACCOUNT}",
+        "--write=1",
+        env=az_env_uri_account,
+    )
+    assert result.returncode == 0, f"write failed:\n{result.stderr}"
+    assert "Written" in result.stderr, result.stderr
+
+    blob = az_client.get_blob_client(container=CONTAINER, blob=f"{prefix}_0")
+    assert blob.get_blob_properties().size > 0
+
+    result = _run(
+        gcs_demo,
+        f"--bucket={CONTAINER}",
+        f"--prefix={prefix}_0",
+        f"--azure_account={AZURITE_ACCOUNT}",
+        "--read=1",
+        env=az_env_uri_account,
     )
     assert result.returncode == 0, f"read failed:\n{result.stderr}"
     assert "Read" in result.stderr, result.stderr

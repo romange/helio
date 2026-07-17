@@ -89,6 +89,20 @@ TEST_F(AzureCredentialsTest, ConnectionStringSupportsHttpPathStyleEndpoint) {
   EXPECT_EQ(provider.GetPathPrefix(), "/devstoreaccount1");
 }
 
+TEST_F(AzureCredentialsTest, UriAccountUsesEndpointOverride) {
+  setenv("AZURE_STORAGE_ACCOUNT", "otheraccount", 1);
+  setenv("AZURE_STORAGE_KEY", "test-key", 1);
+  setenv("AZURE_STORAGE_BLOB_ENDPOINT", "http://127.0.0.1:10000/devstoreaccount1/", 1);
+
+  Credentials provider{"devstoreaccount1"};
+  ASSERT_FALSE(provider.Init(1));
+  EXPECT_EQ(provider.account_name(), "devstoreaccount1");
+  EXPECT_EQ(provider.account_key(), "test-key");
+  EXPECT_EQ(provider.ServiceEndpoint(), "127.0.0.1:10000");
+  EXPECT_FALSE(provider.IsHttps());
+  EXPECT_EQ(provider.GetPathPrefix(), "/devstoreaccount1");
+}
+
 TEST_F(AzureCredentialsTest, BlobEndpointTakesPrecedenceOverAccountUrl) {
   setenv("AZURE_STORAGE_ACCOUNT", "environmentaccount", 1);
   setenv("AZURE_STORAGE_KEY", "environment-key", 1);

@@ -26,6 +26,9 @@ ABSL_FLAG(uint32_t, read, 0, "If read > 0, then read this many files from GCS");
 ABSL_FLAG(uint32_t, connect_ms, 2000, "");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 ABSL_FLAG(bool, azure, false, "Whether to use Azure instead of GCS");
+ABSL_FLAG(string, azure_account, "",
+          "URI-provided Azure storage account name. When set, it overrides the account name "
+          "otherwise derived from the connection string/environment.");
 
 static io::Result<string> ReadToString(io::ReadonlyFile* file) {
   string res_str;
@@ -120,7 +123,7 @@ void Run(SSL_CTX* ctx) {
 }
 
 void RunAzure(SSL_CTX* ctx) {
-  cloud::azure::Credentials provider;
+  cloud::azure::Credentials provider(GetFlag(FLAGS_azure_account));
   cloud::azure::Storage storage(&provider);
 
   error_code ec = provider.Init(1000);
