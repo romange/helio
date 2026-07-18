@@ -395,8 +395,7 @@ error_code Credentials::TryEnvSharedKey() {
     info = AccountInfoFromUri();
   }
 
-  error_code ep_ec =
-      requested_account_name_.empty() ? ResolveServiceEndpointFromEnv(&info) : error_code{};
+  error_code ep_ec = ResolveServiceEndpointFromEnv(&info);
 
   if (!key.empty()) {
     if (info.account_name.empty() || ep_ec) {
@@ -421,10 +420,10 @@ error_code Credentials::TryManagedIdentity() {
   AccountInfo info;
   if (requested_account_name_.empty()) {
     info.account_name = GetEnvOrEmpty("AZURE_STORAGE_ACCOUNT");
-    RETURN_ERROR(ResolveServiceEndpointFromEnv(&info));
   } else {
     info = AccountInfoFromUri();
   }
+  RETURN_ERROR(ResolveServiceEndpointFromEnv(&info));
 
   fb2::ProactorBase* pb = fb2::ProactorBase::me();
   CHECK(pb);
