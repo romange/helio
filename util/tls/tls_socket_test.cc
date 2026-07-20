@@ -251,7 +251,7 @@ bool TlsSocketTest::KTlsAvailable() {
   // kTLS unavailable -> caller GTEST_SKIP()s. SetUp() parked accept_fb_ in Accept() and on uring
   // TearDown()'s Shutdown() won't cancel that poll, so release it here: connect a throwaway client
   // (AcceptFb accepts it, its handshake fails, the fiber exits), then join. If the probe can't
-  // connect, force-close the listener (closing the fd cancels the accept) so teardown can't hang.
+  // connect, shut the listener down (Shutdown wakes the parked Accept) so teardown can't hang.
   int probe_fd = ::socket(listen_ep_.protocol().family(), SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
   int probe_err = errno;  // socket() error, if it failed
   bool released = false;
@@ -262,10 +262,17 @@ bool TlsSocketTest::KTlsAvailable() {
     ::close(probe_fd);
   }
   if (!released) {
-    // force-close the listener so the parked accept_fb_ is released and teardown cannot hang.
+    // The probe could not connect, so no client will unblock accept_fb_. Shut the listener down to
+    // release it: Shutdown() sets IS_SHUTDOWN and wakes the fiber parked in the synchronous
+    // Accept() (EpollSocket::Close() alone cancels only async requests, so it would NOT wake a
+    // synchronous Accept() and JoinIfNeeded() below could hang). Then close the fd.
     LOG(WARNING) << "kTLS-skip probe failed to connect (" << strerror(probe_err)
-                 << "); force-closing the listener to release accept_fb_.";
-    proactor_->Await([&] { std::ignore = listen_socket_->Close(); });
+                 << "); shutting down the listener to release accept_fb_.";
+    proactor_->Await([&] {
+      if (listen_socket_->IsOpen())
+        std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
+      std::ignore = listen_socket_->Close();
+    });
   }
   accept_fb_.JoinIfNeeded();
 
@@ -1626,13 +1633,12 @@ INSTANTIATE_TEST_SUITE_P(
 
         // Case 6: Graceful Stream EOF from Engine
         // Scenario: The TLS Engine receives a "close_notify" alert.
-        // Expected: Return success with 0 bytes to indicate a clean EOF.
+        // Expected: Return success with 0 bytes to indicate a clean EOF (empty error_code == 0).
         TryRecvScenario {
           .test_name = "EngineEOFGraceful_ReturnsZero", .initial_state = 0,
           .engine_read_ret = Engine::EOF_GRACEFUL, .engine_output_pending = 0,
           .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
-          .expected_error = std::error_code{},  // Default generic error_code = Success (0)
-              .expected_bytes = 0               // Standard EOF return
+          .expected_error = std::error_code{}, .expected_bytes = 0,
         }
 
 #if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)
