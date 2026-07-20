@@ -193,8 +193,9 @@ auto TlsSocket::Close() -> error_code {
 
   if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
     fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(
-        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0; });
+    block_concurrent_cv_.wait(lk, [this] {
+      return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0;
+    });
   }
 
   return res;
@@ -390,6 +391,19 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   return HandleUpstreamWrite();
 }
 
+void TlsSocket::ClearInProgressAndNotify(uint8_t bit) {
+  // Only the two bits other fibers actually wait on should go through here.
+  DCHECK(bit == WRITE_IN_PROGRESS || bit == READ_IN_PROGRESS);
+  // Clearing a bit that was not set means the caller lost track of state - treat it as a bug.
+  DCHECK(state_ & bit);
+  state_ &= ~bit;
+  // Why notify_all: more than one fiber can be parked here on different predicates.
+  // notify_one could wake a fiber whose predicate is still false while leaving another
+  // whose predicate is now true asleep. Every waiter uses wait(lock, pred), so the extra wakeups
+  // are just re-checked and harmless.
+  block_concurrent_cv_.notify_all();
+}
+
 auto TlsSocket::HandleUpstreamRead() -> error_code {
   if (engine_->OutputPending() != 0) {
     // Normally output is flushed before the read path needs upstream data, or a concurrent
@@ -416,10 +430,7 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 
   auto mut_buf = engine_->PeekInputBuf();
   state_ |= READ_IN_PROGRESS;
-  auto guard = absl::MakeCleanup([this] {
-    state_ &= ~READ_IN_PROGRESS;
-    block_concurrent_cv_.notify_one();
-  });
+  auto guard = absl::MakeCleanup([this] { ClearInProgressAndNotify(READ_IN_PROGRESS); });
 
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
   if (!esz) {
@@ -471,8 +482,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   DCHECK(engine_->OutputPending() == 0 || ec);
 
-  state_ &= ~WRITE_IN_PROGRESS;
-  block_concurrent_cv_.notify_one();
+  ClearInProgressAndNotify(WRITE_IN_PROGRESS);
 
   return ec;
 }
@@ -517,6 +527,9 @@ void TlsSocket::CancelOnErrorCb() {
 
 void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
   DCHECK(cb);
+  // Keep a copy so a recv-path engine-output drain completion (StartDrainEngineOutput) can wake the
+  // reader on its own, without waiting for new next_sock_ activity.
+  on_recv_cb_ = cb;
   next_sock_->RegisterOnRecv(
       [recv_cb = std::move(cb), this](const RecvNotification& rn) { OnRecv(rn, recv_cb); });
 }
@@ -549,6 +562,39 @@ void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
     return;
   }
   LOG(FATAL) << "Unhandled type in RecvNotification::read_result variant";
+}
+
+void TlsSocket::StartAsyncWrite(io::AsyncProgressCb async_write_cb) {
+  // Hard CHECK: overwriting a live async_write_req_ would free an AsyncReq still referenced by
+  // in-flight AsyncWriteSome callbacks (use-after-free). Callers guarantee no write is in flight
+  // (TrySend/TryRecv bail out early on WRITE_IN_PROGRESS), so this never fires in correct runs.
+  CHECK(!async_write_req_);
+  DCHECK_GT(engine_->OutputPending(), 0u);
+  // (vec, len) = (nullptr, 0): no new user bytes, we only send what the engine already buffered.
+  // AsyncRoleBasedAction treats a WRITER with vec_ == nullptr as output-only and ends when drained.
+  async_write_req_ =
+      std::make_unique<AsyncReq>(this, std::move(async_write_cb), nullptr, 0, AsyncReq::WRITER);
+  async_write_req_->StartUpstreamWrite();
+}
+
+void TlsSocket::StartDrainEngineOutput() {
+  // Preconditions (no write in flight, output pending) are checked by StartAsyncWrite.
+  // Mark the recv-path engine-output drain as in flight before it starts: while it holds
+  // WRITE_IN_PROGRESS, TryRecv must surface EAGAIN (a wake IS coming via on_recv_cb_) rather than
+  // EBUSY. Cleared below when the write completes.
+  state_ |= RECV_DRAIN_ENGINE_IN_FLIGHT;
+  StartAsyncWrite([this](io::Result<size_t> res) {
+    state_ &= ~RECV_DRAIN_ENGINE_IN_FLIGHT;
+    if (!on_recv_cb_) {
+      // No recv callback registered (blocking Recv() path, or a TryRecv() caller that retries on
+      // its own) - nobody to wake. This is fine, not an error.
+      return;
+    }
+    if (res)
+      on_recv_cb_(RecvNotification{RecvNotification::RecvCompletion{true}});
+    else
+      on_recv_cb_(RecvNotification{res.error()});
+  });
 }
 
 io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
@@ -697,14 +743,10 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
       DVSOCK(3) << "TrySend success but OutputPending=" << engine_output_pending
                 << ". Offloading TLS engine's flush to background.";
 
-      // Create a "Detached" AsyncReq with nullptr vec (no user data). We only want to flush the
-      // engine's output buffer in the background.
-      auto dummy_cb = [](io::Result<size_t>) {};
-      auto req =
-          std::make_unique<AsyncReq>(this, std::move(dummy_cb), nullptr, 0, AsyncReq::WRITER);
-      DCHECK(!async_write_req_);
-      async_write_req_ = std::move(req);
-      async_write_req_->StartUpstreamWrite();
+      // Background write: the user treats a full write as done and may not call us again, so drain
+      // the engine output in the background. No reader is waiting on this write, so it needs no
+      // wake.
+      StartAsyncWrite([](io::Result<size_t>) {});
     }
 
     return total_bytes_sent;
@@ -746,18 +788,25 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
     } else if ((read_result == Engine::NEED_READ_AND_MAYBE_WRITE) ||
                (read_result == Engine::NEED_WRITE)) {  // case 2: Handle NEED_READ/WRITE
       ///////////////////////////////////////////////////////////////
-      // 1. Check for a write conflict:
+      // Check for a write conflict:
       // Write conflicts are expected: The TLS state machine (e.g., renegotiation) may trigger
       // writes during a read operation.
       if (write_in_progress) {
-        // Another fiber is handling TLS writes (handshake/renegotiation);
-        // we cannot safely proceed without blocking this read fiber.
-        // Return partial data if available, or signal retry (EAGAIN) to caller.
-        returned_status = make_error_code(errc::resource_unavailable_try_again);
+        if (state_ & RECV_DRAIN_ENGINE_IN_FLIGHT) {
+          // The in-flight write is THIS socket's own recv-path engine-output drain, so a wake IS
+          // coming: surface EAGAIN, not EBUSY. See TryRecv's result-code contract in tls_socket.h.
+          returned_status = make_error_code(errc::resource_unavailable_try_again);
+        } else {
+          // A genuinely concurrent, non-waking write from another context is using the socket, so
+          // we could not read this time and NO wake is coming: return EBUSY so the caller keeps
+          // expecting input and retries on a later pass. See TryRecv's result-code contract in
+          // tls_socket.h.
+          returned_status = make_error_code(errc::device_or_resource_busy);
+        }
         break;
       }
       ///////////////////////////////////////////////////////////////
-      // 2. Handle Pending Output from TLs engine to upstream socket (write_in_progress is false)
+      // Handle Pending Output from TLS engine to upstream socket (write_in_progress is false)
       // If the engine generated TLS data (handshake/alerts), flush it now.
       // Otherwise, skip to reading.
       size_t output_pending_bytes{engine_->OutputPending()};
@@ -767,18 +816,32 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         auto output_buf{engine_->PeekOutputBuf()};
         auto send_result{next_sock_->TrySend(output_buf)};
         if (!send_result) {
-          // Write failed (EAGAIN or Error).
-
-          returned_status = send_result.error();
+          // Nothing was sent, so we never got to the actual read.
+          auto send_ec = send_result.error();
+          if (send_ec == errc::resource_unavailable_try_again ||
+              send_ec == errc::operation_would_block) {
+            // Send buffer is full: drain this engine's output in a background write and return
+            // EAGAIN. That write's completion re-arms the read via the recv callback, so a wake IS
+            // coming - the caller may clear its pending-input flag and park. See TryRecv's
+            // result-code contract in tls_socket.h.
+            StartDrainEngineOutput();
+            returned_status = make_error_code(errc::resource_unavailable_try_again);
+          } else {
+            returned_status = send_ec;
+          }
           break;
         }
         engine_->ConsumeOutputBuf(*send_result);
 
-        // If we couldn't send everything, we can't proceed safely.
+        // Partial send: the buffer filled mid-write, so the rest of our output is still stuck and
+        // we never reached the read. Same handling as the full-block case above - trigger a
+        // background write and return EAGAIN (a wake is coming via the recv callback). Log at debug
+        // only - this is normal backpressure, not an error.
         if ((*send_result) < output_buf.size()) {
+          StartDrainEngineOutput();
           returned_status = make_error_code(errc::resource_unavailable_try_again);
-          LOG(WARNING) << "TlsSocket::TrySend: partial next_sock_->TrySend: sent" << (*send_result)
-                       << " out of " << output_buf.size() << " bytes. breaking...";
+          DVSOCK(1) << "TlsSocket::TryRecv: partial upstream send " << (*send_result) << "/"
+                    << output_buf.size() << " bytes; started background engine-output drain";
           break;
         }
 
@@ -789,12 +852,15 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       ///////////////////////////////////////////////////////////////
 
       ///////////////////////////////////////////////////////////////
-      // 3. Handle Pending Reads From Upstream Socket
+      // Handle Pending Reads From Upstream Socket
       // An internal read (blocking) might be in progress from another fiber (e.g. during a
       // write). This is not a user error, but a temporary resource contention.
       if ((state_ & READ_IN_PROGRESS) != 0) {
-        DVSOCK(3) << "TryRecv conflict with internal read in progress, returning EAGAIN";
-        returned_status = make_error_code(errc::resource_unavailable_try_again);
+        // A read is using the socket, so we could not read this call. The reason does not matter:
+        // data may still be waiting, so return EBUSY and the caller keeps expecting input. See
+        // TryRecv's result-code contract in tls_socket.h.
+        DVSOCK(3) << "TryRecv conflict with internal read in progress, returning busy";
+        returned_status = make_error_code(errc::device_or_resource_busy);
         break;
       }
       ///////////////////////////////////////////////////////////////
@@ -818,8 +884,12 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         break;
       }
 
-      // recv_result has an error (e.g. EAGAIN)
-      returned_status = recv_result.error();
+      // Kernel read failed. Normalize would-block to EAGAIN (the contract's single "drained, stop
+      // expecting input" code, see tls_socket.h); any other error is fatal - propagate as-is.
+      auto recv_ec = recv_result.error();
+      if (recv_ec == errc::operation_would_block)
+        recv_ec = make_error_code(errc::resource_unavailable_try_again);
+      returned_status = recv_ec;
       break;
     } else if (read_result == Engine::EOF_ABRUPT) {  // case 3: Abrupt EOF
       // The engine detected an abrupt/dirty EOF (no close_notify) from peer.
@@ -893,7 +963,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
 }
 
 void TlsSocket::AsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
-  owner_->state_ &= ~READ_IN_PROGRESS;
+  owner_->ClearInProgressAndNotify(READ_IN_PROGRESS);
   RunPending();
   if (!read_result) {
     // Erronous path. Apply the completion callback and exit.
@@ -996,7 +1066,7 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
 
 void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
   if (!write_result) {
-    owner_->state_ &= ~WRITE_IN_PROGRESS;
+    owner_->ClearInProgressAndNotify(WRITE_IN_PROGRESS);
 
     // broken_pipe - happens when the other side closes the connection. do not log this.
     if (write_result.error() != errc::broken_pipe) {
@@ -1034,7 +1104,7 @@ void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) 
                 << " bytes. Async short write detected";
   }
 
-  owner_->state_ &= ~WRITE_IN_PROGRESS;
+  owner_->ClearInProgressAndNotify(WRITE_IN_PROGRESS);
   RunPending();
 
   // We are done with the write, check if we also need to read because we are
