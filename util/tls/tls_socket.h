@@ -175,10 +175,10 @@ class TlsSocket final : public FiberSocketBase {
   // read-retry RecvCompletion on success, the error on failure), which re-arms the deferred read.
   void StartDrainEngineOutput();
 
-  // Clears an in-progress bit (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
-  // for it in block_concurrent_cv_, so an async completion can't leave a sync waiter stuck. Bits
+  // Clears an in-progress mask (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
+  // for it in block_concurrent_cv_, so an async completion can't leave a sync waiter stuck. Masks
   // nobody waits on are cleared directly.
-  void ClearInProgressAndNotify(uint8_t bit);
+  void ClearInProgressAndNotify(uint8_t mask);
 
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;

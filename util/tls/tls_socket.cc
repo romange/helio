@@ -391,12 +391,12 @@ auto TlsSocket::MaybeSendOutput() -> error_code {
   return HandleUpstreamWrite();
 }
 
-void TlsSocket::ClearInProgressAndNotify(uint8_t bit) {
-  // Only the two bits other fibers actually wait on should go through here.
-  DCHECK(bit == WRITE_IN_PROGRESS || bit == READ_IN_PROGRESS);
-  // Clearing a bit that was not set means the caller lost track of state - treat it as a bug.
-  DCHECK(state_ & bit);
-  state_ &= ~bit;
+void TlsSocket::ClearInProgressAndNotify(uint8_t mask) {
+  // Only the two masks other fibers actually wait on should go through here.
+  DCHECK(mask == WRITE_IN_PROGRESS || mask == READ_IN_PROGRESS);
+  // Clearing a mask that was not set means the caller lost track of state - treat it as a bug.
+  DCHECK(state_ & mask);
+  state_ &= ~mask;
   // Why notify_all: more than one fiber can be parked here on different predicates.
   // notify_one could wake a fiber whose predicate is still false while leaving another
   // whose predicate is now true asleep. Every waiter uses wait(lock, pred), so the extra wakeups
@@ -527,11 +527,12 @@ void TlsSocket::CancelOnErrorCb() {
 
 void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
   DCHECK(cb);
-  // Keep a copy so a recv-path engine-output drain completion (StartDrainEngineOutput) can wake the
-  // reader on its own, without waiting for new next_sock_ activity.
-  on_recv_cb_ = cb;
-  next_sock_->RegisterOnRecv(
-      [recv_cb = std::move(cb), this](const RecvNotification& rn) { OnRecv(rn, recv_cb); });
+  // Note: It is vital to store the callback only once (avoid copy!). Both wake paths - the
+  // next_sock_ recv hook (via OnRecv) and a recv-path engine-output drain completion
+  // (StartDrainEngineOutput) - invoke this single copy, so a callback that carries state by value
+  // cannot diverge between two independent copies.
+  on_recv_cb_ = std::move(cb);
+  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { OnRecv(rn, on_recv_cb_); });
 }
 
 void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
