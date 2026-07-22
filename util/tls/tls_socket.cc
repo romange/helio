@@ -397,7 +397,7 @@ void TlsSocket::ClearInProgressAndNotify(uint8_t mask) {
   // Clearing a mask that was not set means the caller lost track of state - treat it as a bug.
   DCHECK(state_ & mask);
   state_ &= ~mask;
-  // Why notify_all: more than one fiber can be parked here on different predicates.
+  // Why notify_all: more than one fiber can be parked on on block_concurrent_cv_ in different places and on different predicates.
   // notify_one could wake a fiber whose predicate is still false while leaving another
   // whose predicate is now true asleep. Every waiter uses wait(lock, pred), so the extra wakeups
   // are just re-checked and harmless.
@@ -536,6 +536,11 @@ void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
 }
 
 void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
+  // The recv hook can fire once more after ResetOnRecvHook() has cleared on_recv_cb_, if a
+  // notification from next_sock_ was already in flight
+  if (!recv_cb) {
+    return;
+  }
   if ((std::holds_alternative<RecvNotification::RecvCompletion>(rn.read_result)) ||
       (std::holds_alternative<std::error_code>(rn.read_result))) {
     recv_cb(rn);
