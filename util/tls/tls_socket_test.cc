@@ -24,8 +24,12 @@
 
 #ifdef __linux__
 #include <fcntl.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
 
 #include "util/fibers/uring_proactor.h"
 #include "util/fibers/uring_socket.h"
@@ -89,6 +93,13 @@ class TlsSocketTest : public testing::TestWithParam<string_view> {
   void SetUp() final;
   void TearDown() final;
   void CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_sock);
+
+#if defined(__linux__)
+  // Returns true when kTLS is available. If false, the caller should GTEST_SKIP() the kTLS test.
+  // Before returning false (unavailable) it performs some required operations so the caller can
+  // skip without TearDown() hanging. Usage: if (!KTlsAvailable()) GTEST_SKIP() << "...";
+  bool KTlsAvailable();
+#endif
 
   using IoResult = int;
 
@@ -157,7 +168,15 @@ void TlsSocketTest::SetUp() {
     ssl_ctx_ = CreateSslCntx(SERVER);
     server_socket_->InitSSL(ssl_ctx_);
     auto tls_accept = server_socket_->Accept();
-    CHECK(tls_accept) << "Tls Accept error: " << tls_accept.error();
+    if (!tls_accept) {
+      // A client can legitimately drop the connection mid-handshake (e.g. the
+      // KtlsClientFdApiFeasibility test tears down its raw client when kTLS is unavailable). Record
+      // the error and exit the fiber instead of CHECK. tests that need the server socket will then
+      // fail their own assertions gracefully.
+      accept_ec_ = tls_accept.error();
+      LOG(WARNING) << "Tls Accept error: " << tls_accept.error();
+      return;
+    }
   });
 }
 
@@ -165,7 +184,8 @@ void TlsSocketTest::TearDown() {
   VLOG(1) << "TearDown";
 
   proactor_->Await([&] {
-    std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
+    if (listen_socket_->IsOpen())
+      std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
     if (server_socket_) {
       server_socket_->CancelOnErrorCb();
       std::ignore = server_socket_->Shutdown(SHUT_RDWR);
@@ -198,8 +218,79 @@ void TlsSocketTest::CreateClientSocket(std::unique_ptr<tls::TlsSocket>& client_s
 }
 
 #if defined(__linux__)
-// Requires ktls module support, can be checked with `modinfo tls` and `lsmod | grep tls`.
+// Detects whether kernel-TLS (kTLS) is usable, without opening a live connection.
+// The KtlsClientFdApiFeasibility test below needs kTLS. Some environments lack it (e.g. a dev
+// laptop whose kernel has no `tls` module), so that test skips instead of hard-failing there.
+static bool IsKernelTlsAvailable() {
+#if defined(OPENSSL_NO_KTLS)
+  // OpenSSL was built without kTLS, so it can never be used here -> not available.
+  return false;
+#elif defined(TCP_ULP)
+  int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+  if (fd < 0)
+    return false;  // Can't even create a probe socket -> treat kTLS as unavailable.
+
+  // Try to attach the "tls" ULP on an unconnected socket: rc == 0 or ENOTCONN => the kernel
+  // `tls` module is present; ENOENT/EOPNOTSUPP => it is absent.
+  int rc = ::setsockopt(fd, IPPROTO_TCP, TCP_ULP, "tls", sizeof("tls"));
+  int err = errno;
+  ::close(fd);
+
+  bool ktls_module_loaded = (rc == 0) || (err == ENOTCONN);
+  return ktls_module_loaded;  // true => kTLS present, false => kTLS absent.
+#else
+  // No TCP_ULP in the headers -> this platform can't use/probe kTLS -> not available.
+  return false;
+#endif
+}
+
+bool TlsSocketTest::KTlsAvailable() {
+  if (IsKernelTlsAvailable())
+    return true;  // kTLS is present: do not skip.
+
+  // kTLS unavailable -> caller GTEST_SKIP()s. SetUp() parked accept_fb_ in Accept() and on uring
+  // TearDown()'s Shutdown() won't cancel that poll, so release it here: connect a throwaway client
+  // (AcceptFb accepts it, its handshake fails, the fiber exits), then join. If the probe can't
+  // connect, shut the listener down (Shutdown wakes the parked Accept) so teardown can't hang.
+  int probe_fd = ::socket(listen_ep_.protocol().family(), SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+  int probe_err = errno;  // socket() error, if it failed
+  bool released = false;
+  if (probe_fd >= 0) {
+    released = ::connect(probe_fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()),
+                         listen_ep_.size()) == 0;
+    probe_err = errno;  // capture connect()'s errno before close() can overwrite it
+    ::close(probe_fd);
+  }
+  if (!released) {
+    // The probe could not connect, so no client will unblock accept_fb_. Shut the listener down to
+    // release it: Shutdown() sets IS_SHUTDOWN and wakes the fiber parked in the synchronous
+    // Accept() (EpollSocket::Close() alone cancels only async requests, so it would NOT wake a
+    // synchronous Accept() and JoinIfNeeded() below could hang). Then close the fd.
+    LOG(WARNING) << "kTLS-skip probe failed to connect (" << strerror(probe_err)
+                 << "); shutting down the listener to release accept_fb_.";
+    proactor_->Await([&] {
+      if (listen_socket_->IsOpen())
+        std::ignore = listen_socket_->Shutdown(SHUT_RDWR);
+      std::ignore = listen_socket_->Close();
+    });
+  }
+  accept_fb_.JoinIfNeeded();
+
+  return false;  // caller should GTEST_SKIP().
+}
+
+// Note for user - if you want to check whether a machine has kTLS yourself, run these shell
+// commands:
+// - `modinfo tls`      -> shows info if the `tls` kernel module exists on the system.
+// - `lsmod | grep tls` -> shows whether that module is currently loaded.
+// The test itself detects kTLS at runtime via IsKernelTlsAvailable().
 TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
+  // Skip (rather than fail) where kTLS can't work; on supporting envs the assertions below run.
+  if (!KTlsAvailable()) {
+    GTEST_SKIP() << "Kernel TLS (kTLS) not available in this environment; "
+                 << "skipping the kTLS feasibility test.";
+  }
+
   SSL_CTX* client_ctx = CreateSslCntx(CLIENT);
   auto client_ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(client_ctx); });
   SSL_CTX_set_options(client_ctx, SSL_OP_ENABLE_KTLS);
@@ -213,7 +304,10 @@ TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
   ASSERT_EQ(rc, 0) << "connect() failed: " << strerror(errno);
 
   SSL* ssl = SSL_new(client_ctx);
-  auto ssl_guard = absl::MakeCleanup([&] { std::ignore = SSL_shutdown(ssl); SSL_free(ssl); });
+  auto ssl_guard = absl::MakeCleanup([&] {
+    std::ignore = SSL_shutdown(ssl);
+    SSL_free(ssl);
+  });
   ASSERT_NE(ssl, nullptr);
   ASSERT_EQ(SSL_set_fd(ssl, client_fd), 1);
 
@@ -251,7 +345,6 @@ TEST_P(TlsSocketTest, KtlsClientFdApiFeasibility) {
   rc = SSL_read(ssl, client_buf.data(), client_buf.size());
   ASSERT_GT(rc, 0);
   ASSERT_EQ(string_view(client_buf.data(), rc), server_msg);
-
 }
 
 // Reproduces SSL_ERROR_WANT_WRITE on the read path while WRITE_IN_PROGRESS is set.
@@ -277,8 +370,8 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   ASSERT_GE(fd, 0);
   auto fd_guard = absl::MakeCleanup([&] { ::close(fd); });
 
-  ASSERT_EQ(
-      0, ::connect(fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()), listen_ep_.size()));
+  ASSERT_EQ(0,
+            ::connect(fd, reinterpret_cast<const sockaddr*>(listen_ep_.data()), listen_ep_.size()));
 
   SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
   auto ctx_guard = absl::MakeCleanup([&] { SSL_CTX_free(ctx); });
@@ -289,7 +382,10 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
 
   SSL* ssl = SSL_new(ctx);
-  auto ssl_guard = absl::MakeCleanup([&] { SSL_shutdown(ssl); SSL_free(ssl); });
+  auto ssl_guard = absl::MakeCleanup([&] {
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+  });
   SSL_set_fd(ssl, fd);
 
   // Blocking handshake on the test thread; the proactor thread handles the server side.
@@ -358,7 +454,7 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   LOG(INFO) << "Closing client connection";
   { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
   LOG(INFO) << "ssl_guard destroyed, closing fd";
-  { auto _ = std::move(fd_guard); }   // close() → RST due to unread data
+  { auto _ = std::move(fd_guard); }  // close() → RST due to unread data
   LOG(INFO) << "fd_guard destroyed (RST sent), waiting for server fibers";
 
   // Watchdog: if the server fibers don't unblock within 10s, dump all fiber stacks and abort.
@@ -379,7 +475,7 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   watchdog_done.Notify();
   watchdog_fb.Join();
 }
-#endif
+#endif  // #if defined(__linux__)
 
 TEST_P(TlsSocketTest, ShortWrite) {
   std::unique_ptr<tls::TlsSocket> client_sock;
@@ -874,7 +970,7 @@ class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
 };
 
 #if 0
-// TODO once we fix epoll AsyncRead from blocking to nonblocking investiage why it fails on mac,
+// TODO once we fix epoll AsyncRead from blocking to nonblocking investigate why it fails on mac,
 // For now also disable this on mac altogether.
 #ifdef __linux__
 
@@ -939,7 +1035,7 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
 }
 
 #endif
-#endif
+#endif  // #if 0
 
 class AsyncTlsSocketTestPartialRW : public AsyncTlsSocketTest {
  protected:
@@ -1100,7 +1196,7 @@ TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
       opts);
 }
 
-#endif
+#endif  // #ifdef __linux__
 
 }  // namespace fb2
 }  // namespace util
@@ -1180,7 +1276,10 @@ struct TryRecvScenario {
   std::string test_name;
 
   // Initial Conditions
-  uint32_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
+  // e.g., TlsSocket::WRITE_IN_PROGRESS, or WRITE_IN_PROGRESS | RECV_DRAIN_ENGINE_IN_FLIGHT to model
+  // the socket's OWN recv-path engine-output drain (whose completion wakes the reader via
+  // on_recv_cb_, so TryRecv must surface EAGAIN instead of EBUSY).
+  uint32_t initial_state{};
 
   // Engine Behavior
   Engine::OpResult engine_read_ret;  // What engine_->Read() returns
@@ -1270,7 +1369,6 @@ TEST_P(MockTlsSocketTest, HandshakeThenWrite) {
     // Execution
     ASSERT_TRUE(sock_->Accept());
     ASSERT_FALSE(sock_->Write(io::Bytes(buf, sizeof(buf))));
-
   });
 }
 
@@ -1407,10 +1505,31 @@ INSTANTIATE_TEST_SUITE_P(
         // Case 0: Write Conflict
         // Scenario: A write operation (e.g., handshake) is already in progress on another fiber.
         // The Engine requests a read/write op, but we cannot proceed safely due to concurrency.
-        // Expected: Should back off immediately and return EAGAIN (resource_unavailable_try_again).
+        // We never looked at the kernel, so unread data may still be pending there.
+        // Expected: Back off immediately and return device_or_resource_busy (NOT
+        // resource_unavailable_try_again/EAGAIN) so the caller keeps its pending-input latch and
+        // retries once the write completes.
         TryRecvScenario{
-            .test_name = "WriteConflict_ReturnsTryAgain",
+            .test_name = "WriteConflict_ReturnsBusy",
             .initial_state = TestDelegator::GetWriteInProgress(),
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::make_error_code(std::errc::device_or_resource_busy),
+        },
+
+        // Case 0b: Own Recv-Path Engine-Output Drain In Flight
+        // Scenario: WRITE_IN_PROGRESS is set, but the in-flight write is THIS socket's own
+        // recv-path engine-output drain (started by a prior TryRecv to flush engine output). Unlike
+        // a genuinely concurrent writer, its completion invokes on_recv_cb_, so a wake IS coming.
+        // Expected: resource_unavailable_try_again (EAGAIN), NOT device_or_resource_busy/EBUSY -
+        // this is the ONLY WRITE_IN_PROGRESS case that guarantees a wake, so the caller may drop
+        // its pending-input latch and park instead of busy-retrying (which would otherwise spin the
+        // V2 IO loop, since the loop must yield for the background write to complete).
+        TryRecvScenario{
+            .test_name = "OwnRecvDrainEngine_ReturnsTryAgain",
+            .initial_state = TestDelegator::GetWriteInProgress() |
+                             TestDelegator::GetDrainEngineInFlightBit(),
             .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
             .sock_send_ret = std::nullopt,
             .sock_recv_ret = std::nullopt,
@@ -1420,9 +1539,12 @@ INSTANTIATE_TEST_SUITE_P(
         // Case 1: Engine Needs Write -> Socket EAGAIN
         // Scenario: The TLS Engine generated data (e.g. renegotiation) and requests a flush.
         // We attempt to write to the underlying socket, but it returns EAGAIN (socket buffer full).
-        // Expected: We must propagate the EAGAIN to the caller so they can retry later.
+        // We never reached the kernel read, so there might still be data waiting.
+        // Expected: resource_unavailable_try_again (EAGAIN), NOT device_or_resource_busy/EBUSY -
+        // TryRecv started a background write to flush that output and its completion re-arms the
+        // read via the recv callback, so a wake is coming and the caller may drop its latch/park.
         TryRecvScenario{
-            .test_name = "EngineNeedWrite_SocketEagain",
+            .test_name = "EngineNeedWrite_SocketEagain_ReturnsTryAgain",
             .initial_state = 0,
             .engine_read_ret = Engine::NEED_WRITE,
             .engine_output_pending = 100,
@@ -1434,10 +1556,12 @@ INSTANTIATE_TEST_SUITE_P(
 
         // Case 2: Engine Needs Write -> Socket Short Write
         // Scenario: The TLS Engine has 100 bytes pending. The underlying socket only accepts 50.
-        // Since we haven't flushed the full TLS record, we cannot proceed to the read phase safely.
-        // Expected: Return EAGAIN to the caller to indicate the operation is incomplete.
+        // We never reached the kernel read, so there might still be data waiting.
+        // Expected: resource_unavailable_try_again (EAGAIN), NOT device_or_resource_busy/EBUSY -
+        // TryRecv started a background write to flush the remainder and its completion re-arms the
+        // read via the recv callback, so a wake is coming and the caller may drop its latch/park.
         TryRecvScenario{
-            .test_name = "EngineNeedWrite_ShortWrite",
+            .test_name = "EngineNeedWrite_ShortWrite_ReturnsTryAgain",
             .initial_state = 0,
             .engine_read_ret = Engine::NEED_WRITE,
             .engine_output_pending = 100,
@@ -1476,6 +1600,23 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_error = std::make_error_code(std::errc::connection_reset),
         },
 
+        // Case 4b: Engine Needs Read -> Socket EAGAIN (genuinely drained kernel)
+        // Scenario: The engine needs more ciphertext, we reach the real kernel read, and it returns
+        // EAGAIN. The socket is genuinely empty - nothing is pending.
+        // Expected: Stay resource_unavailable_try_again (NOT device_or_resource_busy/EBUSY). This
+        // is the counterpart to Case 0: it is the ONLY path that actually consulted the kernel, so
+        // the caller is allowed to drop its pending-input latch here.
+        TryRecvScenario{
+            .test_name = "UpstreamSocketEagain_ReturnsTryAgain",
+            .initial_state = 0,
+            .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = io::Result<size_t>(nonstd::make_unexpected(
+                std::make_error_code(std::errc::resource_unavailable_try_again))),
+            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+        },
+
         // Case 5: Abrupt Stream EOF from Engine
         // Scenario: The TLS Engine itself detects a fatal error (e.g. bad MAC, protocol violation)
         // or an abrupt closure and returns EOF_ABRUPT.
@@ -1492,16 +1633,12 @@ INSTANTIATE_TEST_SUITE_P(
 
         // Case 6: Graceful Stream EOF from Engine
         // Scenario: The TLS Engine receives a "close_notify" alert.
-        // Expected: Return success with 0 bytes to indicate a clean EOF.
-        TryRecvScenario{
-            .test_name = "EngineEOFGraceful_ReturnsZero",
-            .initial_state = 0,
-            .engine_read_ret = Engine::EOF_GRACEFUL,
-            .engine_output_pending = 0,
-            .sock_send_ret = std::nullopt,
-            .sock_recv_ret = std::nullopt,
-            .expected_error = std::error_code{},  // Default generic error_code = Success (0)
-            .expected_bytes = 0                   // Standard EOF return
+        // Expected: Return success with 0 bytes to indicate a clean EOF (empty error_code == 0).
+        TryRecvScenario {
+          .test_name = "EngineEOFGraceful_ReturnsZero", .initial_state = 0,
+          .engine_read_ret = Engine::EOF_GRACEFUL, .engine_output_pending = 0,
+          .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
+          .expected_error = std::error_code{}, .expected_bytes = 0,
         }
 
 #if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)
@@ -1509,15 +1646,17 @@ INSTANTIATE_TEST_SUITE_P(
         // Scenario: A read operation is already in progress. In Release builds
         // (where DCHECK is compiled out), the code must not crash but instead handle the
         // concurrency error gracefully.
-        // Expected: The runtime check should detect the conflict and return EAGAIN.
+        // Expected: The runtime check should detect the conflict and return device_or_resource_busy
+        // (a concurrent read holds the socket, so data may still be pending - same "busy" contract
+        // as the write-conflict case).
         ,  // <-- Comma to continue the list
         TryRecvScenario{
-            .test_name = "ReadConflict_ReturnsTryAgain",
+            .test_name = "ReadConflict_ReturnsBusy",
             .initial_state = TestDelegator::GetReadInProgress(),
             .engine_read_ret = Engine::NEED_READ_AND_MAYBE_WRITE,
             .sock_send_ret = std::nullopt,
             .sock_recv_ret = std::nullopt,
-            .expected_error = std::make_error_code(std::errc::resource_unavailable_try_again),
+            .expected_error = std::make_error_code(std::errc::device_or_resource_busy),
         }
 #endif
         ));
@@ -1894,8 +2033,13 @@ TEST_P(TrySendAsyncFlushTest, OffloadsStrandedDataToAsync) {
       EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(50));
 
       // E. Offload Trigger Check
-      // Loop breaks. Code checks if pending > 0 to decide on offload to an async write.
-      EXPECT_CALL(*mock_engine_, OutputPending()).WillOnce(testing::Return(50));
+      // Loop breaks. Code checks if pending > 0 to decide on offload to an async write. TrySend
+      // reads OutputPending() once here, and StartAsyncWrite() reads it again in a debug-only
+      // DCHECK_GT - so allow >=1 calls, otherwise DCHECK builds over-saturate this WillOnce and the
+      // mock returns the default 0, tripping the DCHECK.
+      EXPECT_CALL(*mock_engine_, OutputPending())
+          .Times(testing::AtLeast(1))
+          .WillRepeatedly(testing::Return(50));
 
       // F. Async Preparation
       // Code Peeks buffer *before* calling AsyncWriteSome
@@ -2052,6 +2196,217 @@ TEST_F(TlsSocketShutdownTest, ShutdownRaceCrash) {
 
     // Join the shutdown fiber to ensure all work is done before test exit.
     shutdown_fiber.Join();
+  });
+}
+
+// Regression (Mock) tests: the TLS read path must never force its caller into a hot loop.
+//
+// Why this can happen (the bug these guard against):
+//   TryRecv() sometimes has to SEND before it can read. While decrypting an incoming record the
+//   TLS engine can produce outbound control bytes (a TLS 1.3 KeyUpdate ack, a renegotiation
+//   record, an alert). TryRecv first tries to push that output with a non-blocking
+//   next_sock_->TrySend(). If the kernel send buffer is full, that send returns EAGAIN, so TryRecv
+//   cannot read this call.
+//
+//   If TryRecv just reported "try again" and did nothing else, a caller that retries would spin at
+//   100% CPU: nobody is waiting for the socket to become writable, so every retry repeats the same
+//   failed send. Instead TlsSocket sends the stuck output on its own background write (the same
+//   AsyncReq(WRITER) / MaybeSendOutputAsync machinery TrySend already uses) and returns EAGAIN,
+//   which tells the caller "a wake is coming - you may park": when that write completes it WAKES
+//   the read path through the RegisterOnRecv notification.
+//
+// These tests validate that contract:
+//   1. A read that must send its output first (but the send buffer is full) returns EAGAIN and
+//      starts exactly ONE background write; an immediate retry, with that same engine-output drain
+//      still in flight, ALSO returns EAGAIN (its completion re-arms the read via the recv callback,
+//      so a wake IS coming) - not EBUSY - so a retrying caller keeps parking for the wake instead
+//      of spinning, and no second write is started. (EBUSY is reserved for a genuinely concurrent
+//      writer that does NOT wake the reader - see the WriteConflict_ReturnsBusy mock scenario.)
+//   2. When the background write completes, the reader is woken with a read-retry notification.
+//   3. When the background write fails, the reader is woken with the ERROR - not a fake "readable".
+//   4. A recv with NO recv callback still completes cleanly when the drain write finishes - no
+//      crash, the background write drains the engine output, and the wake is simply dropped.
+class TlsSocketRecvDrainEngineOutputTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    proactor_ = std::make_unique<fb2::EpollProactor>();
+    thread_ = std::thread{[this] {
+      fb2::InitProactor(proactor_.get());
+      proactor_->Run();
+    }};
+    proactor_->Await([&] {
+      auto next = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+      next_ = next.get();
+      // under test: sock_ is a tls socket wrapping next
+      sock_ = std::make_unique<TlsSocket>(std::move(next));
+      auto eng = std::make_unique<testing::NiceMock<MockEngine>>();
+      engine_ = eng.get();
+      TestDelegator::SetEngine(sock_.get(), std::move(eng));  // inject the fake engine
+
+      // All four tests start from the same state - a read that must send its output first but
+      // whose send buffer is full - so set it up once here. The background write's completion is
+      // captured into drain_engine_output_completed_cb_ for the tests that complete it.
+      SetupRecvDrainEngineOutput();
+    });
+  }
+
+  void TearDown() override {
+    proactor_->Await([&] {
+      TestDelegator::SetState(sock_.get(), 0);  // clear flags so ~TlsSocket's DCHECK passes
+      std::ignore = sock_->Close();
+    });
+    proactor_->Stop();
+    if (thread_.joinable())
+      thread_.join();
+  }
+
+  // Sets up the mocks so the next TryRecv() must drain the engine output via a background write:
+  // the engine wants to send kPending bytes first (NEED_WRITE), the synchronous TrySend() is full
+  // (EAGAIN), and the background AsyncWriteSome() is captured into
+  // drain_engine_output_completed_cb_ so a test can complete it later. Engine output is modeled
+  // statefully (ConsumeOutputBuf shrinks it), so once the captured write drains it, PeekOutputBuf()
+  // is empty and the background write finishes without restarting.
+  void SetupRecvDrainEngineOutput() {
+    pending_bytes_ = kPending;
+
+    EXPECT_CALL(*engine_, Read(testing::_, testing::_))
+        .WillRepeatedly(testing::Return(Engine::NEED_WRITE));
+    ON_CALL(*engine_, OutputPending()).WillByDefault(testing::Invoke([this] {
+      return pending_bytes_;
+    }));
+    ON_CALL(*engine_, PeekOutputBuf()).WillByDefault(testing::Invoke([this] {
+      return pending_bytes_ > 0 ? Engine::Buffer(out_, pending_bytes_) : Engine::Buffer(nullptr, 0);
+    }));
+    ON_CALL(*engine_, ConsumeOutputBuf(testing::_))
+        .WillByDefault(testing::Invoke([this](unsigned n) {
+          ASSERT_LE(n, pending_bytes_);
+          pending_bytes_ -= n;
+        }));
+
+    // Sync send inside TryRecv fails: send buffer full. Times(1) also pins that the retry does NOT
+    // re-drive this send (it returns EBUSY at the WRITE_IN_PROGRESS check first).
+    EXPECT_CALL(*next_, TrySend(testing::_))
+        .Times(1)
+        .WillOnce(testing::Return(io::Result<size_t>(nonstd::make_unexpected(
+            std::make_error_code(std::errc::resource_unavailable_try_again)))));
+
+    // The stuck output goes to a background write; capture its completion cb so a test can simulate
+    // "socket became writable" later.
+    EXPECT_CALL(*next_, AsyncWriteSome(testing::_, testing::_, testing::_))
+        .Times(1)
+        .WillOnce(testing::Invoke([this](const iovec*, uint32_t, io::AsyncProgressCb cb) {
+          drain_engine_output_completed_cb_ = std::move(cb);
+        }));
+  }
+
+  static constexpr size_t kPending = 100;
+  static constexpr size_t kOutBufSize = 512;
+
+  std::unique_ptr<fb2::ProactorBase> proactor_;
+  std::thread thread_;
+  std::unique_ptr<TlsSocket> sock_;
+  MockEngine* engine_ = nullptr;
+  MockFiberSocket* next_ = nullptr;
+  size_t pending_bytes_ = 0;
+  uint8_t out_[kOutBufSize] = {};
+  io::AsyncProgressCb drain_engine_output_completed_cb_;  // completion cb of the background write
+};
+
+// (1) A read that must send first (send buffer full) returns EAGAIN and starts exactly one
+// background write. An immediate retry, while that same engine-output drain is in flight, ALSO
+// returns EAGAIN (its completion re-arms the read via the recv callback, so a wake IS coming) - not
+// EBUSY - and no second write is driven. This is what prevents the busy loop: a retrying caller
+// keeps getting "a wake is coming / park" rather than "busy / keep retrying". (EBUSY is reserved
+// for a genuinely concurrent writer that does not wake the reader - see WriteConflict_ReturnsBusy
+// in the mock scenarios above.)
+TEST_F(TlsSocketRecvDrainEngineOutputTest, StartsOneBackgroundWriteThenRetryIsTryAgain) {
+  proactor_->Await([&] {
+    uint8_t buf[128];
+    // First call can't read (must send first, send is full) -> EAGAIN (a wake is coming when the
+    // background write it starts completes), and starts exactly one background write.
+    auto r1 = sock_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
+    ASSERT_FALSE(r1);
+    EXPECT_EQ(r1.error(), std::errc::resource_unavailable_try_again);
+
+    // Retry while that same engine-output drain is still in flight: its completion will wake the
+    // reader, so this call also gets EAGAIN (not EBUSY), and no second write is started
+    // (AsyncWriteSome is Times(1)).
+    auto r2 = sock_->TryRecv(io::MutableBytes(buf, sizeof(buf)));
+    ASSERT_FALSE(r2);
+    EXPECT_EQ(r2.error(), std::errc::resource_unavailable_try_again);
+  });
+}
+
+// (2) When the background write completes, the reader is woken with a read-retry notification.
+TEST_F(TlsSocketRecvDrainEngineOutputTest, BackgroundWriteCompletionWakesReader) {
+  proactor_->Await([&] {
+    std::optional<bool> got_data_wake;       // set on a RecvCompletion (read-retry) notification
+    std::optional<std::error_code> got_err;  // set on an error notification
+    sock_->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& n) {
+      if (std::holds_alternative<FiberSocketBase::RecvNotification::RecvCompletion>(n.read_result))
+        got_data_wake = std::get<FiberSocketBase::RecvNotification::RecvCompletion>(n.read_result);
+      else if (auto* ec = std::get_if<std::error_code>(&n.read_result))
+        got_err = *ec;
+    });
+
+    uint8_t buf[128];
+    // Starts the background write, returns EAGAIN (a wake is coming on its completion).
+    ASSERT_FALSE(sock_->TryRecv(io::MutableBytes(buf, sizeof(buf))));
+    ASSERT_TRUE(drain_engine_output_completed_cb_) << "no background write was started";
+
+    // Simulating the kernel reporting the background write finished: the write drains all kPending
+    // bytes; the stateful mock then reports empty output, so it completes.
+    drain_engine_output_completed_cb_(io::Result<size_t>(kPending));
+
+    // Success must produce a READ-RETRY wake so the caller re-drives the read.
+    EXPECT_TRUE(got_data_wake.has_value()) << "reader was not woken after the background write";
+    EXPECT_FALSE(got_err.has_value());
+  });
+}
+
+// (3) When the background write fails, the failure is delivered as an error - not a fake readable.
+TEST_F(TlsSocketRecvDrainEngineOutputTest, BackgroundWriteFailureReportsErrorNotFakeReadable) {
+  proactor_->Await([&] {
+    std::optional<bool> got_data_wake;       // set on a RecvCompletion (read-retry) notification
+    std::optional<std::error_code> got_err;  // set on an error notification
+    sock_->RegisterOnRecv([&](const FiberSocketBase::RecvNotification& n) {
+      if (std::holds_alternative<FiberSocketBase::RecvNotification::RecvCompletion>(n.read_result))
+        got_data_wake = std::get<FiberSocketBase::RecvNotification::RecvCompletion>(n.read_result);
+      else if (auto* ec = std::get_if<std::error_code>(&n.read_result))
+        got_err = *ec;
+    });
+
+    uint8_t buf[128];
+    // Starts the background write, returns EAGAIN (a wake is coming on its completion).
+    ASSERT_FALSE(sock_->TryRecv(io::MutableBytes(buf, sizeof(buf))));
+    ASSERT_TRUE(drain_engine_output_completed_cb_);
+
+    // Simulating the kernel reporting the background write finished:
+    // In this case the background write failed (peer reset). The reader must learn the ERROR, not a
+    // fake "readable" event that would send it back to decrypt data that never arrived.
+    drain_engine_output_completed_cb_(io::Result<size_t>(
+        nonstd::make_unexpected(std::make_error_code(std::errc::connection_reset))));
+
+    ASSERT_TRUE(got_err.has_value()) << "background write error was not surfaced to the reader";
+    EXPECT_EQ(*got_err, std::errc::connection_reset);
+    EXPECT_FALSE(got_data_wake.has_value()) << "an error must not masquerade as a readable event";
+  });
+}
+
+// (4) A recv with NO recv callback still completes cleanly when the drain write finishes: no crash
+// and the engine output is drained. The wake is just dropped (a legitimate raw-TryRecv use).
+TEST_F(TlsSocketRecvDrainEngineOutputTest, WithoutRecvHookCompletesCleanly) {
+  proactor_->Await([&] {
+    // Intentionally do NOT call RegisterOnRecv(): there is no on_recv_cb_ to notify.
+    uint8_t buf[128];
+    // Starts the background write, returns EAGAIN.
+    ASSERT_FALSE(sock_->TryRecv(io::MutableBytes(buf, sizeof(buf))));
+    ASSERT_TRUE(drain_engine_output_completed_cb_) << "no background write was started";
+
+    // Completing the background write must run to completion without crashing, even with no recv
+    // callback registered - the wake is simply dropped. It drains the engine's pending output.
+    drain_engine_output_completed_cb_(io::Result<size_t>(kPending));
+    EXPECT_EQ(pending_bytes_, 0u);
   });
 }
 

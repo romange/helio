@@ -33,6 +33,9 @@ class TestDelegator {
   static constexpr uint32_t GetReadInProgress() {
     return TlsSocket::READ_IN_PROGRESS;
   }
+  static constexpr uint32_t GetDrainEngineInFlightBit() {
+    return TlsSocket::RECV_DRAIN_ENGINE_IN_FLIGHT;
+  }
   static void SetSsl(Engine& engine, SSL* ssl) {
     engine.ssl_ = ssl;
   }

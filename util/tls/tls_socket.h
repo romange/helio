@@ -90,9 +90,30 @@ class TlsSocket final : public FiberSocketBase {
 
   virtual void RegisterOnRecv(OnRecvCb cb) override;
   virtual void ResetOnRecvHook() override {
+    on_recv_cb_ = {};
     next_sock_->ResetOnRecvHook();
   }
 
+  // Result-code contract for the non-blocking TrySend / TryRecv. A returned code describes the
+  // socket's state, not what the caller must do. One correctness rule matters for reads: TryRecv
+  // can report a short-read or EBUSY WITHOUT reaching the kernel, so unread bytes may still be
+  // buffered out of the caller's sight - it must keep expecting input and retry until it gets a
+  // clean EAGAIN, otherwise it may hang waiting for a reply that is never read.
+  //   * >0: progress this call, but possibly short and NOT a completion signal - more data/room
+  //     may still be pending (in the kernel or the TLS engine). Keep the operation live and retry
+  //     later, even without a new readiness notification.
+  //   * resource_unavailable_try_again (EAGAIN):
+  //     - TryRecv: nothing to read now, but a wake IS coming - safe to stop expecting input and
+  //     park (only if a recv callback was registered via RegisterOnRecv; otherwise poll-retry).
+  //     Covers both a drained kernel and output that TryRecv had to defer to a background write.
+  //     - TrySend: generic "would block, retry later" (full send buffer, or local TLS concurrency).
+  //   * device_or_resource_busy (EBUSY): TryRecv only - a genuinely concurrent, non-waking
+  //     context (another fiber's in-progress write or read) holds the socket, so the kernel was
+  //     not consulted and, unlike EAGAIN, NO wake is coming. This holds unconditionally: the
+  //     socket's OWN recv-path engine-output drain is NOT reported here - its completion re-arms
+  //     the read via the recv callback, so that write surfaces EAGAIN above. Keep expecting input
+  //     and retry on a later pass (not a tight loop); do not park.
+  //   * connection_reset / broken_pipe / etc.: fatal - the connection is gone - propagate.
   io::Result<size_t> TrySend(io::Bytes buf) override;
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
   io::Result<size_t> TryRecv(io::MutableBytes buf) override;
@@ -143,9 +164,29 @@ class TlsSocket final : public FiberSocketBase {
 
   void OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb);
 
+  // Starts a background write that sends the engine's already-buffered output to next_sock_ and
+  // calls `async_write_cb` when it finishes (or errors). Used by TrySend and TryRecv to drain
+  // output they could not send inline. Precondition: no async write is already in flight.
+  void StartAsyncWrite(io::AsyncProgressCb async_write_cb);
+
+  // Called from TryRecv when the engine's output it had to send first did not fit in the socket
+  // buffer. Starts a background write (via StartAsyncWrite) to drain that engine output; TryRecv
+  // itself returns EAGAIN. When the write finishes it wakes the reader through on_recv_cb_ (a
+  // read-retry RecvCompletion on success, the error on failure), which re-arms the deferred read.
+  void StartDrainEngineOutput();
+
+  // Clears an in-progress mask (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
+  // for it in block_concurrent_cv_, so an async completion can't leave a sync waiter stuck. Masks
+  // nobody waits on are cleared directly.
+  void ClearInProgressAndNotify(uint8_t mask);
+
   std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
+
+  // Stored recv callback (from RegisterOnRecv) so a recv-path engine-output drain completion can
+  // trigger a read-retry or error notification.
+  OnRecvCb on_recv_cb_;
 
   enum {
     WRITE_IN_PROGRESS = 1,
@@ -153,6 +194,8 @@ class TlsSocket final : public FiberSocketBase {
     SHUTDOWN_IN_PROGRESS = 1 << 2,
     SHUTDOWN_DONE = 1 << 3,
     USER_RECV_IN_PROGRESS = 1 << 4,
+    // A recv-path background write draining the engine's output is in flight.
+    RECV_DRAIN_ENGINE_IN_FLIGHT = 1 << 5,
   };
   uint8_t state_{0};
 
