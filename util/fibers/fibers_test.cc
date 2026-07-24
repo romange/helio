@@ -70,6 +70,10 @@ unsigned my_gettid() {
 
 constexpr uint32_t kRingDepth = 16;
 
+namespace {
+
+}  // namespace
+
 class FiberTest : public testing::Test {
  public:
 };
@@ -252,6 +256,80 @@ TEST_F(FiberTest, Basic) {
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
 }
+
+namespace {
+
+void RecordSwitchHookEvent(FiberSwitchHookEvent event, void* context) noexcept {
+  static_cast<std::vector<FiberSwitchHookEvent>*>(context)->push_back(event);
+}
+
+}  // namespace
+
+TEST_F(FiberTest, SwitchHook) {
+  std::vector<FiberSwitchHookEvent> state;
+  Fiber fb("switch-hook", [&] {
+    const FiberSwitchHook original = ThisFiber::SetSwitchHook({RecordSwitchHookEvent, &state});
+    EXPECT_FALSE(original);
+
+    ThisFiber::Yield();
+
+    const auto [callback, context] = ThisFiber::SetSwitchHook(original);
+    EXPECT_EQ(RecordSwitchHookEvent, callback);
+    EXPECT_EQ(&state, context);
+  });
+
+  fb.Join();
+
+  ASSERT_EQ(2u, state.size());
+  EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, state[0]);
+  EXPECT_EQ(FiberSwitchHookEvent::RESUME, state[1]);
+}
+
+void BM_FiberYieldNoHook(benchmark::State& state) {
+  bool done = false;
+  Fiber peer("yield-peer", [&] {
+    while (!done)
+      ThisFiber::Yield();
+  });
+
+  while (state.KeepRunning())
+    ThisFiber::Yield();
+
+  done = true;
+  peer.Join();
+}
+BENCHMARK(BM_FiberYieldNoHook);
+
+namespace {
+
+void CountSwitchHookEvent(FiberSwitchHookEvent event, void* context) noexcept {
+  auto* count = static_cast<uint64_t*>(context);
+  *count += event == FiberSwitchHookEvent::SUSPEND;
+}
+
+}
+
+void BM_FiberYieldWithHook(benchmark::State& state) {
+  bool done = false;
+  uint64_t switch_count = 0;
+  Fiber peer("yield-hook-peer", [&] {
+    const FiberSwitchHook original =
+        ThisFiber::SetSwitchHook({CountSwitchHookEvent, &switch_count});
+    while (!done)
+      ThisFiber::Yield();
+    ThisFiber::SetSwitchHook(original);
+  });
+
+  const FiberSwitchHook original = ThisFiber::SetSwitchHook({CountSwitchHookEvent, &switch_count});
+  while (state.KeepRunning())
+    ThisFiber::Yield();
+  ThisFiber::SetSwitchHook(original);
+
+  done = true;
+  peer.Join();
+  benchmark::DoNotOptimize(switch_count);
+}
+BENCHMARK(BM_FiberYieldWithHook);
 
 TEST_F(FiberTest, Stack) {
   Fiber fb1, fb2;

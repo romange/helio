@@ -220,6 +220,10 @@ inline uint64_t GetPreemptCount() {
   return fb2::detail::FiberActive()->preempt_cnt();
 }
 
+inline fb2::FiberSwitchHook SetSwitchHook(fb2::FiberSwitchHook hook) noexcept {
+  return fb2::detail::FiberActive()->SetSwitchHook(hook);
+}
+
 class PrintLocalsCallback {
  public:
   template <typename Fn> PrintLocalsCallback(Fn&& fn) {
