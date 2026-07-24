@@ -49,6 +49,11 @@ struct FiberSwitchHook {
   explicit operator bool() const noexcept {
     return callback != nullptr;
   }
+
+  void Run(FiberSwitchHookEvent e) const noexcept {
+    if (callback)
+      callback(e, context);
+  }
 };
 
 // based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
@@ -358,14 +363,6 @@ class FiberInterface {
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
   FiberInterface* SwitchSetup();
-
-  void CallSwitchHook(FiberSwitchHookEvent event) noexcept {
-    auto callback = switch_hook_.callback;
-    if (!callback)
-      return;
-
-    callback(event, switch_hook_.context);
-  }
 };
 
 template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {

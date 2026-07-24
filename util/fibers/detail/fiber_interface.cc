@@ -83,12 +83,6 @@ inline void CpuPause() {
 #endif
 }
 
-void RunSwitchHook(FiberSwitchHook hook, FiberSwitchHookEvent event) noexcept {
-  if (hook.callback) {
-    hook.callback(event, hook.context);
-  }
-}
-
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
 class MainFiberImpl final : public FiberInterface {
@@ -456,7 +450,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
-    RunSwitchHook(resume_hook, FiberSwitchHookEvent::RESUME);
+    resume_hook.Run(FiberSwitchHookEvent::RESUME);
     return ctx::fiber_context{};
   });
 }
@@ -480,9 +474,9 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
-    RunSwitchHook(resume_hook, FiberSwitchHookEvent::RESUME);
+    resume_hook.Run(FiberSwitchHookEvent::RESUME);
     fn();
-    FiberActive()->CallSwitchHook(FiberSwitchHookEvent::SUSPEND);
+    FiberActive()->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
 
     return ctx::fiber_context{};
   });
@@ -490,7 +484,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   // We resumed.
   DCHECK(FiberActive() == prev);
   DCHECK(!prev->entry_);
-  prev->CallSwitchHook(FiberSwitchHookEvent::RESUME);
+  prev->switch_hook_.Run(FiberSwitchHookEvent::RESUME);
 }
 
 void FiberInterface::PullMyselfFromRemoteReadyQueue() {
@@ -533,7 +527,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
 
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
-  to_suspend->CallSwitchHook(FiberSwitchHookEvent::SUSPEND);
+  to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
   fb_initializer.active = this;
 
 #if RECORD_FIBER_NAMES

@@ -71,18 +71,6 @@ constexpr uint32_t kRingDepth = 16;
 
 namespace {
 
-struct SwitchHookTestState {
-  FiberSwitchHookEvent events[4] = {};
-  unsigned event_count = 0;
-};
-
-void RecordSwitchHookEvent(FiberSwitchHookEvent event, void* context) noexcept {
-  if (auto* state = static_cast<SwitchHookTestState*>(context);
-      state->event_count < std::size(state->events)) {
-    state->events[state->event_count++] = event;
-  }
-}
-
 }  // namespace
 
 class FiberTest : public testing::Test {
@@ -263,14 +251,21 @@ TEST_F(FiberTest, Basic) {
   EXPECT_EQ(2, run);
   EXPECT_LT(epoch, FiberSwitchEpoch());
 
-  Fiber fb3(
-      "test3", [](int i) {}, 1);
+  Fiber fb3("test3", [](int i) {}, 1);
   fb3.Join();
   EXPECT_EQ(preempt_cnt_start + 2, ThisFiber::GetPreemptCount());
 }
 
+namespace {
+
+void RecordSwitchHookEvent(FiberSwitchHookEvent event, void* context) noexcept {
+  static_cast<std::vector<FiberSwitchHookEvent>*>(context)->push_back(event);
+}
+
+}  // namespace
+
 TEST_F(FiberTest, SwitchHook) {
-  SwitchHookTestState state;
+  std::vector<FiberSwitchHookEvent> state;
   Fiber fb("switch-hook", [&] {
     const FiberSwitchHook original = ThisFiber::SetSwitchHook({RecordSwitchHookEvent, &state});
     EXPECT_FALSE(original);
@@ -284,9 +279,9 @@ TEST_F(FiberTest, SwitchHook) {
 
   fb.Join();
 
-  ASSERT_EQ(2u, state.event_count);
-  EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, state.events[0]);
-  EXPECT_EQ(FiberSwitchHookEvent::RESUME, state.events[1]);
+  ASSERT_EQ(2u, state.size());
+  EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, state[0]);
+  EXPECT_EQ(FiberSwitchHookEvent::RESUME, state[1]);
 }
 
 TEST_F(FiberTest, Stack) {
