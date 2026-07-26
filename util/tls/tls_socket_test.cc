@@ -445,12 +445,13 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   //
   // Sequence after close(fd) → TCP RST:
   //   1. Write fiber's WriteSome fails (ECONNRESET), exits without draining the KeyUpdate ack,
-  //      clears WRITE_IN_PROGRESS, notify_one().
-  //   2. Read fiber wakes from MaybeSendOutput's cv.wait, returns {}.
+  //      clears WRITE_IN_PROGRESS, notify_all().
+  //   2. Read fiber wakes from MaybeSendEngineOutput's cv.wait, returns {}.
   //   3. RecvMsg loops, engine_->Read() returns NEED_READ_AND_MAYBE_WRITE — ack still in output
   //      buffer because the write fiber exited before draining it.
   //   4. HandleUpstreamRead sees OutputPending() > 0 with WRITE_IN_PROGRESS clear, calls
-  //      MaybeSendOutput() which fails with ECONNRESET; error propagates and read fiber exits.
+  //      MaybeSendEngineOutput() which fails with ECONNRESET; error propagates and read fiber
+  //      exits.
   LOG(INFO) << "Closing client connection";
   { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
   LOG(INFO) << "ssl_guard destroyed, closing fd";
@@ -1674,7 +1675,7 @@ struct TrySendScenario {
   std::optional<io::Result<size_t>> sock_flush_ret;
 
   // Phase 2: Engine behavior when processing User Data
-  // This simulates the result of engine_->Write() called via PushToEngine.
+  // This simulates the result of engine_->Write() called via PushUserDataToEngine.
   // Note: To simulate success, use a positive number (bytes consumed).
   Engine::OpResult engine_write_ret = 0;
 
