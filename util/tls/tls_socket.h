@@ -13,6 +13,10 @@
 #include "util/tls/tls_engine.h"
 
 namespace util {
+namespace fb2 {
+class AsyncTlsSocketNeedWrite;
+}  // namespace fb2
+
 namespace tls {
 
 class Engine;
@@ -23,6 +27,7 @@ class TlsSocket final : public FiberSocketBase {
   using Buffer = Engine::Buffer;
   using FiberSocketBase::endpoint_type;
 
+  // --- Construction / destruction ---
   TlsSocket(std::unique_ptr<FiberSocketBase> next);
 
   // Takes ownership of next
@@ -30,20 +35,20 @@ class TlsSocket final : public FiberSocketBase {
 
   ~TlsSocket();
 
-  // prefix points to the buffer that optionally holds first bytes from the TLS data stream.
-  void InitSSL(SSL_CTX* context, Buffer prefix = {});
+  // --- FiberSocketBase overrides ---
 
-  error_code Shutdown(int how) final;
+  error_code Shutdown(int how) final override;
 
-  AcceptResult Accept() final;
+  AcceptResult Accept() final override;
 
   // The endpoint should not really pass here, it is to keep
   // the interface with FiberSocketBase.
-  error_code Connect(const endpoint_type& ep, std::function<void(int)> on_pre_connect = {}) final;
+  error_code Connect(const endpoint_type& ep,
+                     std::function<void(int)> on_pre_connect = {}) final override;
 
-  error_code Close() final;
+  error_code Close() final override;
 
-  bool IsOpen() const final {
+  bool IsOpen() const final override {
     return next_sock_->IsOpen();
   }
 
@@ -55,14 +60,12 @@ class TlsSocket final : public FiberSocketBase {
     return next_sock_->timeout();
   }
 
-  io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final;
+  io::Result<size_t> RecvMsg(const msghdr& msg, int flags) final override;
   io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) override;
 
-  ::io::Result<size_t> WriteSome(const iovec* ptr, uint32_t len) final;
-  void AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) final;
-  void AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) final;
-
-  SSL* ssl_handle();
+  ::io::Result<size_t> WriteSome(const iovec* ptr, uint32_t len) final override;
+  void AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) final override;
+  void AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) final override;
 
   endpoint_type LocalEndpoint() const override;
   endpoint_type RemoteEndpoint() const override;
@@ -86,10 +89,10 @@ class TlsSocket final : public FiberSocketBase {
   ABSL_MUST_USE_RESULT error_code ListenUDS(const char* path, mode_t permissions,
                                             unsigned backlog) override;
 
-  virtual void SetProactor(ProactorBase* p) override;
+  void SetProactor(ProactorBase* p) override;
 
-  virtual void RegisterOnRecv(OnRecvCb cb) override;
-  virtual void ResetOnRecvHook() override {
+  void RegisterOnRecv(OnRecvCb cb) override;
+  void ResetOnRecvHook() override {
     on_recv_cb_ = {};
     next_sock_->ResetOnRecvHook();
   }
@@ -118,75 +121,79 @@ class TlsSocket final : public FiberSocketBase {
   io::Result<size_t> TrySend(const iovec* v, uint32_t len) override;
   io::Result<size_t> TryRecv(io::MutableBytes buf) override;
 
-  // * NOT PART OF THE API -- USED FOR TESTING PURPOSES ONLY *
-  // This function is used to simulate a corner case of AsyncReadSome. In particular,
-  // when engine_->Read(...) returns NEED_WRITE. According to chatgpt and google
-  // This scenario reproduces "roughly" by:
-  // 1. client connects to server and server accepts.
-  // 2. handshake completes
-  // 4. client stops reading from the socket -> no acks are sent
-  // 5. server keeps sending data until TCP sent buffers are full (because client has not yet acked)
-  // 6. server calls sll_renegotiate followed by an ssl_handshake
-  // 7. server calls AsyncRead which calls engine->Read() which should return NEED_WRITE
-  //    because the state machine requires a protocol renegotiation and the internal buffers
-  //    are full.
-  // So the idea is that when the server reads, the internal openssl state machine needs to
-  // exchange protocol data but it can not because the TCP buffers are full and consequently
-  // the internall BIO buffers are not yet flushed so the engine->Read() will return NEED_WRITE
-  // such that the protocol renegotiation can kick in. Even though this scenario seems easy to
-  // simulate it does not reproduce NEED_WRITE and for now I use this function to simulate it.
-  void __DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+  // --- TlsSocket-specific API (not inherited from FiberSocketBase) ---
 
-  // Used to test AsyncWrite  NEED_WRITE on first PushToEngine. As this scenario is difficult to
-  // time, this function helps simulate it.
-  void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+  // prefix points to the buffer that optionally holds first bytes from the TLS data stream.
+  void InitSSL(SSL_CTX* context, Buffer prefix = {});
+
+  SSL* ssl_handle();
 
  private:
+  // Declared first (destroyed last): some blocking/non-blocking/async states below may still
+  // touch the upstream socket while unwinding, so it must outlive them.
+  std::unique_ptr<FiberSocketBase> next_sock_;
+
+  // --- TLS engine bridge: feeds the engine from the upstream socket and/or the user, and
+  // flushes the engine's encrypted output back to the upstream socket ---
+
+  // TLS engine bridge - Common: used by all three paths (blocking, non-blocking, and async) -
+
   // Both opcode and written can be set.
   struct PushResult {
     size_t written = 0;
     int engine_opcode = 0;  // Engine::OpCode
   };
 
-  // Pushes the buffers into input ssl buffer until either everything is written,
-  // or an error occurs or the engine needs to flush its output. Does not interact with the network,
-  // just with the engine. It's up to the caller to send the output buffer to the network.
-  PushResult PushToEngine(const iovec* ptr, uint32_t len);
+  // Pure in-memory engine/crypto operation, does not touch next_sock_. Feeds user-supplied
+  // plaintext into the engine to be encrypted, until either everything is written, or an error
+  // occurs, or the engine needs to flush its output. It's up to the caller to send the output
+  // buffer to the network.
+  PushResult PushUserDataToEngine(const iovec* ptr, uint32_t len);
+
+  // - TLS engine bridge- Blocking path only -
 
   /// Feed encrypted data from the TLS engine into the network socket.
-  error_code MaybeSendOutput();
+  ABSL_MUST_USE_RESULT error_code MaybeSendEngineOutput();
 
   /// Read encrypted data from the network socket and feed it into the TLS engine.
-  error_code HandleUpstreamRead();
+  ABSL_MUST_USE_RESULT error_code HandleUpstreamRead();
 
-  error_code HandleUpstreamWrite();
-  error_code HandleOp(int op);
+  ABSL_MUST_USE_RESULT error_code HandleUpstreamWrite();
+  ABSL_MUST_USE_RESULT error_code HandleEngineOp(int op);
 
-  void OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb);
+  // - TLS engine bridge - Async path only -
 
-  // Starts a background write that sends the engine's already-buffered output to next_sock_ and
-  // calls `async_write_cb` when it finishes (or errors). Used by TrySend and TryRecv to drain
-  // output they could not send inline. Precondition: no async write is already in flight.
-  void StartAsyncWrite(io::AsyncProgressCb async_write_cb);
+  // Async-notification counterpart of HandleUpstreamRead: when arriving data appears as a
+  // notification instead of a blocking read, this copies it into the engine's input buffer;
+  // retry/error notifications are simply forwarded to the recv callback.
+  void HandleRecvNotification(const RecvNotification& rn, const OnRecvCb& recv_cb);
 
-  // Called from TryRecv when the engine's output it had to send first did not fit in the socket
-  // buffer. Starts a background write (via StartAsyncWrite) to drain that engine output; TryRecv
-  // itself returns EAGAIN. When the write finishes it wakes the reader through on_recv_cb_ (a
-  // read-retry RecvCompletion on success, the error on failure), which re-arms the deferred read.
-  void StartDrainEngineOutput();
-
-  // Clears an in-progress mask (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
-  // for it in block_concurrent_cv_, so an async completion can't leave a sync waiter stuck. Masks
-  // nobody waits on are cleared directly.
-  void ClearInProgressAndNotify(uint8_t mask);
-
-  std::unique_ptr<FiberSocketBase> next_sock_;
   std::unique_ptr<Engine> engine_;
   size_t upstream_write_ = 0;
-
-  // Stored recv callback (from RegisterOnRecv) so a recv-path engine-output drain completion can
-  // trigger a read-retry or error notification.
+  // Stored recv callback. Needed so that a read-retry or error can be delivered to the caller
+  // asynchronously, from whichever internal path ends up producing it, without the caller having
+  // to poll or re-register.
   OnRecvCb on_recv_cb_;
+
+  // --- Background engine-output draining: implemented via the async write mechanism ---
+
+  // Starts a background write that sends the engine's already-buffered output to next_sock_ and
+  // calls `async_write_cb` when it finishes (or errors). Precondition: no async write is already
+  // in flight.
+  void StartAsyncWrite(io::AsyncProgressCb async_write_cb);
+
+  // Starts a background write (via StartAsyncWrite) to drain engine output that did not fit
+  // inline in the socket buffer. When the write finishes it wakes the reader through on_recv_cb_
+  // (a read-retry RecvCompletion on success, the error on failure), which re-arms the deferred
+  // read.
+  void StartAsyncWriteForTryRecv();
+
+  // --- state_ bit helpers: shared by the blocking, non-blocking, and async paths ---
+
+  // Clears an in-progress mask (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
+  // for it on block_concurrent_cv_, so an async completion can't leave a blocking-path waiter
+  // stuck. Masks nobody waits on are cleared directly.
+  void ClearInProgressAndNotify(uint8_t mask);
 
   enum {
     WRITE_IN_PROGRESS = 1,
@@ -199,6 +206,8 @@ class TlsSocket final : public FiberSocketBase {
   };
   uint8_t state_{0};
 
+  // --- Async I/O primitives: drive a read or write to completion via callbacks instead of
+  // blocking the fiber ---
   class AsyncReq {
    public:
     enum Role : std::uint8_t { READER, WRITER };
@@ -258,6 +267,37 @@ class TlsSocket final : public FiberSocketBase {
   // preempt in function context, we simply subscribe the async request to the one in-flight and
   // once that completes it will also continue the one pending/blocked.
   AsyncReq* blocked_async_req_ = nullptr;
+
+  // --- Testing-only members (not part of the public API) ---
+  friend class fb2::AsyncTlsSocketNeedWrite;
+
+  // This function simulates a corner case of AsyncReadSome: engine_->Read(...) returning
+  // NEED_WRITE. This scenario reproduces roughly as follows:
+  // 1. Client connects to server and server accepts.
+  // 2. Handshake completes.
+  // 3. Client stops reading from the socket -> no acks are sent.
+  // 4. Server keeps sending data until TCP send buffers are full (because the client has not
+  //    yet acked).
+  // 5. Server calls SSL_renegotiate followed by SSL_handshake.
+  // 6. Server calls AsyncRead, which calls engine->Read(), which should return NEED_WRITE
+  //    because the state machine requires a protocol renegotiation and the internal buffers
+  //    are full.
+  // The idea is that when the server reads, the internal OpenSSL state machine needs to
+  // exchange protocol data but cannot, because the TCP buffers are full and consequently the
+  // internal BIO buffers are not yet flushed, so engine->Read() will return NEED_WRITE so that
+  // the protocol renegotiation can kick in. Even though this scenario seems easy to simulate, it
+  // does not reliably reproduce NEED_WRITE, so for now this function simulates it directly.
+  void __DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+
+  // Used to test AsyncWrite  NEED_WRITE on first PushUserDataToEngine. As this scenario is
+  // difficult to time, this function helps simulate it.
+  void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+
+  // Needed so a fiber that must wait for an in-progress write or read to finish (e.g. to avoid
+  // two concurrent operations touching the socket/engine at once) can park without spinning: it
+  // yields on this CV instead of busy-looping, and gets woken exactly when the state it is
+  // waiting on changes. Declared last so its relative destruction order (destroyed first) is
+  // unaffected by the members above.
   fb2::CondVarAny block_concurrent_cv_;
 };
 

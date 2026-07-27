@@ -70,21 +70,21 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   Engine::OpResult op_result = engine_->Shutdown();
 
   // TODO: this flow is hacky and should be reworked.
-  // 1. If we are blocked on writes, then MaybeSendOutput() will block as well and shutdown
-  // might deadlock. but if we do not call MaybeSendOutput, then the peer will not get
+  // 1. If we are blocked on writes, then MaybeSendEngineOutput() will block as well and shutdown
+  // might deadlock. but if we do not call MaybeSendEngineOutput, then the peer will not get
   // the close_notify message.
   // Furthermore, the call `next_sock_->Shutdown` below can race with sending close_notify
   // message.
-  // For now we just try to call MaybeSendOutput only if there is no ongoing write.
+  // For now we just try to call MaybeSendEngineOutput only if there is no ongoing write.
   if (op_result && (state_ & WRITE_IN_PROGRESS) == 0) {
     // engine_ could send notification messages to the peer.
-    std::ignore = MaybeSendOutput();
+    std::ignore = MaybeSendEngineOutput();
   }
 
   // In any case we should also shutdown the underlying TCP socket without relying on the
   // the peer. This unblocks any sync operations (like Recv) that are waiting for data. It could be
-  // that when we are in the middle of MaybeSendOutput, and the other fiber calls Close() on this
-  // socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
+  // that when we are in the middle of MaybeSendEngineOutput, and the other fiber calls Close() on
+  // this socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
   // calling Shutdown(). It's not the best behavior, but it's also not disastrous either, because
   // such interaction happens only during the server shutdown.
   error_code res;
@@ -117,9 +117,9 @@ auto TlsSocket::Accept() -> AcceptResult {
     }
 
     // it is important to send output (protocol errors) before we return from this function.
-    error_code ec = MaybeSendOutput();
+    error_code ec = MaybeSendEngineOutput();
     if (ec) {
-      VSOCK(1) << "MaybeSendOutput failed " << ec;
+      VSOCK(1) << "MaybeSendEngineOutput failed " << ec;
       return make_unexpected(ec);
     }
 
@@ -137,7 +137,7 @@ auto TlsSocket::Accept() -> AcceptResult {
       break;
     }
 
-    ec = HandleOp(op_result);
+    ec = HandleEngineOp(op_result);
     if (ec)
       return make_unexpected(ec);
   }
@@ -163,14 +163,14 @@ error_code TlsSocket::Connect(const endpoint_type& endpoint,
     }
 
     // Flush pending output.
-    RETURN_ON_ERROR(MaybeSendOutput());
+    RETURN_ON_ERROR(MaybeSendEngineOutput());
 
     if (op_result == 1) {
       break;
     }
 
     // Flush the ssl data to the socket and run the loop that ensures handshaking converges.
-    RETURN_ON_ERROR(HandleOp(op_result));
+    RETURN_ON_ERROR(HandleEngineOp(op_result));
   }
 
   const SSL_CIPHER* cipher = SSL_get_current_cipher(engine_->native_handle());
@@ -263,7 +263,7 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
       return read_total;  // Return whatever data we have (0 if true EOF)
     }
 
-    error_code ec = HandleOp(op_val);
+    error_code ec = HandleEngineOp(op_val);
     if (ec) {
       // If we already have data, return it now.  The application will process it and call RecvMsg
       // again, at which point we will hit the error again and return it then.
@@ -290,22 +290,22 @@ io::Result<size_t> TlsSocket::Recv(const io::MutableBytes& mb, int flags) {
 
 io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   while (true) {
-    PushResult push_res = PushToEngine(ptr, len);
+    PushResult push_res = PushUserDataToEngine(ptr, len);
     if (push_res.engine_opcode < 0) {
       if (push_res.engine_opcode == Engine::EOF_GRACEFUL) {
         return make_unexpected(make_error_code(std::errc::broken_pipe));
       }
-      auto ec = HandleOp(push_res.engine_opcode);
+      auto ec = HandleEngineOp(push_res.engine_opcode);
       if (ec) {
-        VLOG(1) << "HandleOp failed " << ec.message();
+        VLOG(1) << "HandleEngineOp failed " << ec.message();
         return make_unexpected(ec);
       }
     }
 
     if (push_res.written > 0) {
-      auto ec = MaybeSendOutput();
+      auto ec = MaybeSendEngineOutput();
       if (ec) {
-        VLOG(1) << "MaybeSendOutput failed " << ec.message();
+        VLOG(1) << "MaybeSendEngineOutput failed " << ec.message();
         return make_unexpected(ec);
       }
       return push_res.written;
@@ -313,7 +313,7 @@ io::Result<size_t> TlsSocket::WriteSome(const iovec* ptr, uint32_t len) {
   }
 }
 
-TlsSocket::PushResult TlsSocket::PushToEngine(const iovec* ptr, uint32_t len) {
+TlsSocket::PushResult TlsSocket::PushUserDataToEngine(const iovec* ptr, uint32_t len) {
   PushResult res;
 
   // Chosen to be sufficiently smaller than the usual MTU (1500) and a multiple of 16.
@@ -367,7 +367,7 @@ SSL* TlsSocket::ssl_handle() {
   return engine_ ? engine_->native_handle() : nullptr;
 }
 
-auto TlsSocket::MaybeSendOutput() -> error_code {
+auto TlsSocket::MaybeSendEngineOutput() -> error_code {
   if (engine_->OutputPending() == 0)
     return {};
 
@@ -397,10 +397,10 @@ void TlsSocket::ClearInProgressAndNotify(uint8_t mask) {
   // Clearing a mask that was not set means the caller lost track of state - treat it as a bug.
   DCHECK(state_ & mask);
   state_ &= ~mask;
-  // Why notify_all: more than one fiber can be parked on on block_concurrent_cv_ in different places and on different predicates.
-  // notify_one could wake a fiber whose predicate is still false while leaving another
-  // whose predicate is now true asleep. Every waiter uses wait(lock, pred), so the extra wakeups
-  // are just re-checked and harmless.
+  // Why notify_all: more than one fiber can be parked on block_concurrent_cv_ in different
+  // places and on different predicates. notify_one could wake a fiber whose predicate is still
+  // false while leaving another whose predicate is now true asleep. Every waiter uses wait(lock,
+  // pred), so the extra wakeups are just re-checked and harmless.
   block_concurrent_cv_.notify_all();
 }
 
@@ -409,10 +409,10 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
     // Normally output is flushed before the read path needs upstream data, or a concurrent
     // write fiber is already in progress (WRITE_IN_PROGRESS). During a TLS 1.3 KeyUpdate the
     // write fiber may exit (e.g. after a connection reset) without draining the ack, leaving
-    // OutputPending > 0 with WRITE_IN_PROGRESS clear. Flush here; MaybeSendOutput will either
+    // OutputPending > 0 with WRITE_IN_PROGRESS clear. Flush here; MaybeSendEngineOutput will either
     // succeed or return the connection error, which is the right outcome either way.
     if ((state_ & WRITE_IN_PROGRESS) == 0) {
-      RETURN_ON_ERROR(MaybeSendOutput());
+      RETURN_ON_ERROR(MaybeSendEngineOutput());
     }
   }
 
@@ -487,7 +487,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
   return ec;
 }
 
-error_code TlsSocket::HandleOp(int op_val) {
+error_code TlsSocket::HandleEngineOp(int op_val) {
   switch (op_val) {
     case Engine::EOF_ABRUPT:
       VLOG(1) << "EOF_ABRUPT received " << next_sock_->native_handle();
@@ -495,14 +495,14 @@ error_code TlsSocket::HandleOp(int op_val) {
     case Engine::EOF_GRACEFUL:
       // Peer said goodbye cleanly.
       // However, EOF_GRACEFUL should be handled by the callers (Accept/Connect/Recv/Write)
-      // explicitly before calling HandleOp.
-      LOG(DFATAL) << "EOF_GRACEFUL received in HandleOp *Should be handled by caller) fd="
+      // explicitly before calling HandleEngineOp.
+      LOG(DFATAL) << "EOF_GRACEFUL received in HandleEngineOp (should be handled by caller) fd="
                   << next_sock_->native_handle();
       return std::error_code{};
     case Engine::NEED_READ_AND_MAYBE_WRITE:
       return HandleUpstreamRead();
     case Engine::NEED_WRITE:
-      return MaybeSendOutput();
+      return MaybeSendEngineOutput();
     default:
       LOG(DFATAL) << "Unsupported " << op_val;
   }
@@ -528,14 +528,15 @@ void TlsSocket::CancelOnErrorCb() {
 void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
   DCHECK(cb);
   // Note: It is vital to store the callback only once (avoid copy!). Both wake paths - the
-  // next_sock_ recv hook (via OnRecv) and a recv-path engine-output drain completion
-  // (StartDrainEngineOutput) - invoke this single copy, so a callback that carries state by value
-  // cannot diverge between two independent copies.
+  // next_sock_ recv hook (via HandleRecvNotification) and a recv-path engine-output drain
+  // completion (StartAsyncWriteForTryRecv) - invoke this single copy, so a callback that carries state
+  // by value cannot diverge between two independent copies.
   on_recv_cb_ = std::move(cb);
-  next_sock_->RegisterOnRecv([this](const RecvNotification& rn) { OnRecv(rn, on_recv_cb_); });
+  next_sock_->RegisterOnRecv(
+      [this](const RecvNotification& rn) { HandleRecvNotification(rn, on_recv_cb_); });
 }
 
-void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
+void TlsSocket::HandleRecvNotification(const RecvNotification& rn, const OnRecvCb& recv_cb) {
   // The recv hook can fire once more after ResetOnRecvHook() has cleared on_recv_cb_, if a
   // notification from next_sock_ was already in flight
   if (!recv_cb) {
@@ -550,7 +551,7 @@ void TlsSocket::OnRecv(const RecvNotification& rn, const OnRecvCb& recv_cb) {
     // Copy the arriving data to the TLS engine's input buffer, commit it, and invoke the receive
     // callback.
     auto input_buf{engine_->PeekInputBuf()};
-    DVSOCK(3) << "OnRecv callback invoked (MutableBytes), #bytes =" << buf->size();
+    DVSOCK(3) << "HandleRecvNotification callback invoked (MutableBytes), #bytes =" << buf->size();
 
     // Note about the next CHECK: We must ensure the arriving data (buf) fits entirely into
     // the TLS engine's currently available input buffer space (input_buf). This check
@@ -583,7 +584,7 @@ void TlsSocket::StartAsyncWrite(io::AsyncProgressCb async_write_cb) {
   async_write_req_->StartUpstreamWrite();
 }
 
-void TlsSocket::StartDrainEngineOutput() {
+void TlsSocket::StartAsyncWriteForTryRecv() {
   // Preconditions (no write in flight, output pending) are checked by StartAsyncWrite.
   // Mark the recv-path engine-output drain as in flight before it starts: while it holds
   // WRITE_IN_PROGRESS, TryRecv must surface EAGAIN (a wake IS coming via on_recv_cb_) rather than
@@ -671,8 +672,8 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
     // 3. Push data from user buffer into the engine
     DCHECK_EQ(engine_->OutputPending(), 0u);
     DCHECK_GT(iov_cursor->iov_len, 0u);
-    PushResult push_result{PushToEngine(iov_cursor, curr_iovec_len)};
-    // PushToEngine Result Semantics:
+    PushResult push_result{PushUserDataToEngine(iov_cursor, curr_iovec_len)};
+    // PushUserDataToEngine Result Semantics:
     // 1. written > 0:   Bytes successfully consumed from the user buffer. This happens even if an
     // error/requirement (opcode < 0) immediately follows.
     // 2. opcode < 0:    Engine requires action (NEED_READ/WRITE) or failed (EOF).
@@ -830,7 +831,7 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
             // EAGAIN. That write's completion re-arms the read via the recv callback, so a wake IS
             // coming - the caller may clear its pending-input flag and park. See TryRecv's
             // result-code contract in tls_socket.h.
-            StartDrainEngineOutput();
+            StartAsyncWriteForTryRecv();
             returned_status = make_error_code(errc::resource_unavailable_try_again);
           } else {
             returned_status = send_ec;
@@ -844,7 +845,7 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
         // background write and return EAGAIN (a wake is coming via the recv callback). Log at debug
         // only - this is normal backpressure, not an error.
         if ((*send_result) < output_buf.size()) {
-          StartDrainEngineOutput();
+          StartAsyncWriteForTryRecv();
           returned_status = make_error_code(errc::resource_unavailable_try_again);
           DVSOCK(1) << "TlsSocket::TryRecv: partial upstream send " << (*send_result) << "/"
                     << output_buf.size() << " bytes; started background engine-output drain";
@@ -1146,8 +1147,8 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
     CompleteAsyncReq(engine_written_);
     return;
   }
-  // We need to call PushToTheEngine again
-  PushResult push_res = owner_->PushToEngine(vec_, len_);
+  // We need to call PushUserDataToEngine again
+  PushResult push_res = owner_->PushUserDataToEngine(vec_, len_);
   Engine::OpResult op_val = push_res.engine_opcode;
   engine_written_ = push_res.written;
   if (op_val < 0) {
@@ -1211,7 +1212,7 @@ void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   CHECK(!async_write_req_);
 
   // Write to the engine
-  PushResult push_res = PushToEngine(v, len);
+  PushResult push_res = PushUserDataToEngine(v, len);
 
   auto req = AsyncReq{this, std::move(cb), v, len, AsyncReq::WRITER};
   req.SetEngineWritten(push_res.written);
