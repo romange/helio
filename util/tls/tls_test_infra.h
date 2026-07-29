@@ -23,17 +23,17 @@ class TestDelegator {
   static void SetEngine(TlsSocket* sock, std::unique_ptr<Engine> engine) {
     sock->engine_ = std::move(engine);
   }
-  static void SetState(TlsSocket* sock, uint32_t state) {
+  static void SetState(TlsSocket* sock, uint8_t state) {
     sock->flags_.overwrite(state);
   }
 
-  static constexpr uint32_t GetWriteInProgress() {
+  static constexpr uint8_t GetWriteInProgress() {
     return TlsSocket::WRITE_IN_PROGRESS;
   }
-  static constexpr uint32_t GetReadInProgress() {
+  static constexpr uint8_t GetReadInProgress() {
     return TlsSocket::READ_IN_PROGRESS;
   }
-  static constexpr uint32_t GetDrainEngineInFlightBit() {
+  static constexpr uint8_t GetDrainEngineInFlightBit() {
     return TlsSocket::RECV_DRAIN_ENGINE_IN_FLIGHT;
   }
   static void SetSsl(Engine& engine, SSL* ssl) {

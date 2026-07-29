@@ -245,9 +245,6 @@ class TlsSocket final : public FiberSocketBase {
     void set_shutdown_in_progress() {
       state_ |= SHUTDOWN_IN_PROGRESS;
     }
-    void set_shutdown_done() {
-      state_ |= SHUTDOWN_DONE;
-    }
     void set_user_recv_in_progress() {
       state_ |= USER_RECV_IN_PROGRESS;
     }
@@ -256,9 +253,6 @@ class TlsSocket final : public FiberSocketBase {
     }
 
     // Clearers
-    void clear_shutdown_in_progress() {
-      state_ &= ~SHUTDOWN_IN_PROGRESS;
-    }
     void clear_user_recv_in_progress() {
       state_ &= ~USER_RECV_IN_PROGRESS;
     }
@@ -286,6 +280,12 @@ class TlsSocket final : public FiberSocketBase {
    private:
     // Wait masks may combine WRITE_IN_PROGRESS, READ_IN_PROGRESS, and SHUTDOWN_IN_PROGRESS.
     void wait_until_clear(uint8_t mask);
+    void set_shutdown_done() {
+      state_ |= SHUTDOWN_DONE;
+    }
+    void clear_shutdown_in_progress() {
+      state_ &= ~SHUTDOWN_IN_PROGRESS;
+    }
 
     uint8_t state_{0};
     fb2::CondVarAny cv_;

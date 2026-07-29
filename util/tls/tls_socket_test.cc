@@ -1280,7 +1280,7 @@ struct TryRecvScenario {
   // e.g., TlsSocket::WRITE_IN_PROGRESS, or WRITE_IN_PROGRESS | RECV_DRAIN_ENGINE_IN_FLIGHT to model
   // the socket's OWN recv-path engine-output drain (whose completion wakes the reader via
   // on_recv_cb_, so TryRecv must surface EAGAIN instead of EBUSY).
-  uint32_t initial_state{};
+  uint8_t initial_state{};
 
   // Engine Behavior
   Engine::OpResult engine_read_ret;  // What engine_->Read() returns
@@ -1665,7 +1665,7 @@ struct TrySendScenario {
   std::string test_name;
 
   // Initial Conditions
-  uint32_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
+  uint8_t initial_state{};  // e.g., TlsSocket::WRITE_IN_PROGRESS
 
   // Phase 1: Pre-existing Pending Output (Flush Check engine output to upstream socket)
   // If > 0, TrySend will attempt to flush this before processing user data.
