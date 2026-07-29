@@ -188,13 +188,6 @@ class TlsSocket final : public FiberSocketBase {
   // read.
   void StartAsyncWriteForTryRecv();
 
-  // --- state_ bit helpers: shared by the blocking, non-blocking, and async paths ---
-
-  // Clears an in-progress mask (WRITE_IN_PROGRESS or READ_IN_PROGRESS) and wakes any fiber waiting
-  // for it on block_concurrent_cv_, so an async completion can't leave a blocking-path waiter
-  // stuck. Masks nobody waits on are cleared directly.
-  void ClearInProgressAndNotify(uint8_t mask);
-
   enum {
     WRITE_IN_PROGRESS = 1,
     READ_IN_PROGRESS = 1 << 1,
@@ -204,7 +197,99 @@ class TlsSocket final : public FiberSocketBase {
     // A recv-path background write draining the engine's output is in flight.
     RECV_DRAIN_ENGINE_IN_FLIGHT = 1 << 5,
   };
-  uint8_t state_{0};
+
+  // Shared state and synchronization for the blocking, non-blocking, and async paths.
+  class SocketFlags {
+   public:
+    // Test-only whole-state replacement.
+    void overwrite(uint8_t state) {
+      state_ = state;
+    }
+    uint8_t bits() const {
+      return state_;
+    }
+
+    // Predicates
+    bool write_in_progress() const {
+      return (state_ & WRITE_IN_PROGRESS) != 0;
+    }
+    bool read_in_progress() const {
+      return (state_ & READ_IN_PROGRESS) != 0;
+    }
+    bool shutdown_in_progress() const {
+      return (state_ & SHUTDOWN_IN_PROGRESS) != 0;
+    }
+    bool shutdown_done() const {
+      return (state_ & SHUTDOWN_DONE) != 0;
+    }
+    bool user_recv_in_progress() const {
+      return (state_ & USER_RECV_IN_PROGRESS) != 0;
+    }
+    bool drain_engine_in_flight() const {
+      return (state_ & RECV_DRAIN_ENGINE_IN_FLIGHT) != 0;
+    }
+    bool io_in_progress() const {
+      return write_in_progress() || read_in_progress();
+    }
+    bool io_or_shutdown_in_progress() const {
+      return io_in_progress() || shutdown_in_progress();
+    }
+
+    // Setters
+    void set_write_in_progress() {
+      state_ |= WRITE_IN_PROGRESS;
+    }
+    void set_read_in_progress() {
+      state_ |= READ_IN_PROGRESS;
+    }
+    void set_shutdown_in_progress() {
+      state_ |= SHUTDOWN_IN_PROGRESS;
+    }
+    void set_user_recv_in_progress() {
+      state_ |= USER_RECV_IN_PROGRESS;
+    }
+    void set_drain_engine_in_flight() {
+      state_ |= RECV_DRAIN_ENGINE_IN_FLIGHT;
+    }
+
+    // Clearers
+    void clear_user_recv_in_progress() {
+      state_ &= ~USER_RECV_IN_PROGRESS;
+    }
+    void clear_drain_engine_in_flight() {
+      state_ &= ~RECV_DRAIN_ENGINE_IN_FLIGHT;
+    }
+
+    // In-progress operation synchronization.
+    // Clears exactly one completed read/write bit, then wakes completion waiters.
+    void clear_io_in_progress_and_notify(uint8_t mask);
+    void wait_for_write_completion() {
+      wait_until_clear(WRITE_IN_PROGRESS);
+    }
+    void wait_for_read_completion() {
+      wait_until_clear(READ_IN_PROGRESS);
+    }
+    void wait_for_io_completion() {
+      wait_until_clear(WRITE_IN_PROGRESS | READ_IN_PROGRESS);
+    }
+    void wait_for_io_or_shutdown_completion() {
+      wait_until_clear(WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS);
+    }
+    void complete_shutdown();
+
+   private:
+    // Wait masks may combine WRITE_IN_PROGRESS, READ_IN_PROGRESS, and SHUTDOWN_IN_PROGRESS.
+    void wait_until_clear(uint8_t mask);
+    void set_shutdown_done() {
+      state_ |= SHUTDOWN_DONE;
+    }
+    void clear_shutdown_in_progress() {
+      state_ &= ~SHUTDOWN_IN_PROGRESS;
+    }
+
+    uint8_t state_{0};
+    fb2::CondVarAny cv_;
+  };
 
   // --- Async I/O primitives: drive a read or write to completion via callbacks instead of
   // blocking the fiber ---
@@ -293,12 +378,12 @@ class TlsSocket final : public FiberSocketBase {
   // difficult to time, this function helps simulate it.
   void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
 
-  // Needed so a fiber that must wait for an in-progress write or read to finish (e.g. to avoid
-  // two concurrent operations touching the socket/engine at once) can park without spinning: it
-  // yields on this CV instead of busy-looping, and gets woken exactly when the state it is
-  // waiting on changes. Declared last so its relative destruction order (destroyed first) is
-  // unaffected by the members above.
-  fb2::CondVarAny block_concurrent_cv_;
+  // - Owns the shared state bits and CV used by the blocking, non-blocking, and async paths. A
+  // fiber that conflicts with an in-progress read, write, or shutdown waits on this CV instead of
+  // spinning, then retries when the operation clears its bit and notifies waiters.
+  // - Declared last so it is destroyed first, preserving the prior CV destruction order relative to
+  // the members above.
+  SocketFlags flags_;
 };
 
 }  // namespace tls

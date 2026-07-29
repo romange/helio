@@ -16,9 +16,9 @@
 #include "util/tls/iovec_utils.h"
 #include "util/tls/tls_engine.h"
 
-#define VSOCK(verbosity)                                                      \
-  VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(state_) \
-                  << ", write_total:" << upstream_write_ << " "               \
+#define VSOCK(verbosity)                                                             \
+  VLOG(verbosity) << "sock[" << native_handle() << "], state " << int(flags_.bits()) \
+                  << ", write_total:" << upstream_write_ << " "                      \
                   << " pending output: " << engine_->OutputPending() << " "
 
 #define DVSOCK(verbosity) DVLOG(verbosity) << "sock[" << native_handle() << "] "
@@ -37,6 +37,32 @@ using nonstd::make_unexpected;
     }                      \
   } while (false)
 
+void TlsSocket::SocketFlags::clear_io_in_progress_and_notify(uint8_t mask) {
+  DCHECK(mask == WRITE_IN_PROGRESS || mask == READ_IN_PROGRESS);
+  DCHECK(state_ & mask);
+  state_ &= ~mask;
+  // Waiters have different predicates, so wake all and let each re-check its condition.
+  cv_.notify_all();
+}
+
+void TlsSocket::SocketFlags::complete_shutdown() {
+  set_shutdown_done();
+  clear_shutdown_in_progress();
+  // Waiters have different predicates, so wake all and let each re-check its condition.
+  cv_.notify_all();
+}
+
+void TlsSocket::SocketFlags::wait_until_clear(uint8_t mask) {
+  DCHECK(mask != 0);
+  DCHECK((mask & ~(WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0);
+  if ((state_ & mask) == 0) {
+    return;
+  }
+
+  fb2::NoOpLock lock;
+  cv_.wait(lock, [this, mask] { return (state_ & mask) == 0; });
+}
+
 TlsSocket::TlsSocket(std::unique_ptr<FiberSocketBase> next)
     : FiberSocketBase(next ? next->proactor() : nullptr), next_sock_(std::move(next)) {
 }
@@ -46,7 +72,7 @@ TlsSocket::TlsSocket(FiberSocketBase* next) : TlsSocket(std::unique_ptr<FiberSoc
 
 TlsSocket::~TlsSocket() {
   // sanity check that all pending ops are done.
-  DCHECK_EQ(state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS), 0);
+  DCHECK(!flags_.io_or_shutdown_in_progress());
 }
 
 void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
@@ -62,11 +88,12 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
 
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
-  if (state_ & (SHUTDOWN_DONE | SHUTDOWN_IN_PROGRESS)) {
+  auto& socket_flags = flags_;
+  if (socket_flags.shutdown_done() || socket_flags.shutdown_in_progress()) {
     return {};
   }
 
-  state_ |= SHUTDOWN_IN_PROGRESS;
+  socket_flags.set_shutdown_in_progress();
   Engine::OpResult op_result = engine_->Shutdown();
 
   // TODO: this flow is hacky and should be reworked.
@@ -76,7 +103,7 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   // Furthermore, the call `next_sock_->Shutdown` below can race with sending close_notify
   // message.
   // For now we just try to call MaybeSendEngineOutput only if there is no ongoing write.
-  if (op_result && (state_ & WRITE_IN_PROGRESS) == 0) {
+  if (op_result && !socket_flags.write_in_progress()) {
     // engine_ could send notification messages to the peer.
     std::ignore = MaybeSendEngineOutput();
   }
@@ -91,16 +118,9 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(how);
   }
-  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) {
-    fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(
-        lk, [this] { return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS)) == 0; });
-  }
+  socket_flags.wait_for_io_completion();
 
-  state_ |= SHUTDOWN_DONE;
-  state_ &= ~SHUTDOWN_IN_PROGRESS;
-
-  block_concurrent_cv_.notify_all();
+  socket_flags.complete_shutdown();
   return res;
 }
 
@@ -191,12 +211,7 @@ auto TlsSocket::Close() -> error_code {
   // Close the underlying socket. This unblocks any sync operations.
   auto res = next_sock_->Close();
 
-  if (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) {
-    fb2::NoOpLock lk;
-    block_concurrent_cv_.wait(lk, [this] {
-      return (state_ & (WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS)) == 0;
-    });
-  }
+  flags_.wait_for_io_or_shutdown_completion();
 
   return res;
 }
@@ -208,13 +223,13 @@ io::Result<size_t> TlsSocket::RecvMsg(const msghdr& msg, int flags) {
 
   // A user-level Recv() call is mutually exclusive with other Recv() or TryRecv() calls.
   // We set a flag to detect this usage error.
-  if (state_ & USER_RECV_IN_PROGRESS) {
+  if (flags_.user_recv_in_progress()) {
     LOG(DFATAL)
         << "Usage Error: Concurrent Recv/RecvMsg call detected while another is in progress.";
     return make_unexpected(make_error_code(errc::operation_in_progress));
   }
-  state_ |= USER_RECV_IN_PROGRESS;
-  auto guard{absl::MakeCleanup([this] { state_ &= ~USER_RECV_IN_PROGRESS; })};
+  flags_.set_user_recv_in_progress();
+  auto guard{absl::MakeCleanup([this] { flags_.clear_user_recv_in_progress(); })};
 
   auto* io = msg.msg_iov;
   size_t io_len = msg.msg_iovlen;
@@ -381,56 +396,43 @@ auto TlsSocket::MaybeSendEngineOutput() -> error_code {
   // passes control to anyone else, so WRITE_IN_PROGRESS never clears and the engine loops on
   // NEED_WRITE forever.
   // See Tls13KeyUpdateNeedWrite test for the concrete scenario.
-  if (state_ & WRITE_IN_PROGRESS) {
-    fb2::NoOpLock lock;
-    block_concurrent_cv_.wait(lock, [&] { return !(state_ & WRITE_IN_PROGRESS); });
-
+  auto& socket_flags = flags_;
+  if (socket_flags.write_in_progress()) {
+    socket_flags.wait_for_write_completion();
     return error_code{};
   }
 
   return HandleUpstreamWrite();
 }
 
-void TlsSocket::ClearInProgressAndNotify(uint8_t mask) {
-  // Only the two masks other fibers actually wait on should go through here.
-  DCHECK(mask == WRITE_IN_PROGRESS || mask == READ_IN_PROGRESS);
-  // Clearing a mask that was not set means the caller lost track of state - treat it as a bug.
-  DCHECK(state_ & mask);
-  state_ &= ~mask;
-  // Why notify_all: more than one fiber can be parked on block_concurrent_cv_ in different
-  // places and on different predicates. notify_one could wake a fiber whose predicate is still
-  // false while leaving another whose predicate is now true asleep. Every waiter uses wait(lock,
-  // pred), so the extra wakeups are just re-checked and harmless.
-  block_concurrent_cv_.notify_all();
-}
-
 auto TlsSocket::HandleUpstreamRead() -> error_code {
+  auto& socket_flags = flags_;
   if (engine_->OutputPending() != 0) {
     // Normally output is flushed before the read path needs upstream data, or a concurrent
     // write fiber is already in progress (WRITE_IN_PROGRESS). During a TLS 1.3 KeyUpdate the
     // write fiber may exit (e.g. after a connection reset) without draining the ack, leaving
     // OutputPending > 0 with WRITE_IN_PROGRESS clear. Flush here; MaybeSendEngineOutput will either
     // succeed or return the connection error, which is the right outcome either way.
-    if ((state_ & WRITE_IN_PROGRESS) == 0) {
+    if (!socket_flags.write_in_progress()) {
       RETURN_ON_ERROR(MaybeSendEngineOutput());
     }
   }
 
-  if (state_ & READ_IN_PROGRESS) {
+  if (socket_flags.read_in_progress()) {
     // This may happen as both write and read paths may request reading from upstream during
     // renegotiation. There is assymetry with write and reads, as writes are controlled by
     // our process, and every write by the Engine should follow with SSL_WANT_WRITE, while
     // reads may be the result of renegotiation requests from the peer.
 
     // Wait for the other read to complete.
-    fb2::NoOpLock lock;
-    block_concurrent_cv_.wait(lock, [&] { return !(state_ & READ_IN_PROGRESS); });
+    socket_flags.wait_for_read_completion();
     return error_code{};
   }
 
   auto mut_buf = engine_->PeekInputBuf();
-  state_ |= READ_IN_PROGRESS;
-  auto guard = absl::MakeCleanup([this] { ClearInProgressAndNotify(READ_IN_PROGRESS); });
+  socket_flags.set_read_in_progress();
+  auto guard = absl::MakeCleanup(
+      [&socket_flags] { socket_flags.clear_io_in_progress_and_notify(READ_IN_PROGRESS); });
 
   io::Result<size_t> esz = next_sock_->Recv(mut_buf, 0);
   if (!esz) {
@@ -451,6 +453,7 @@ auto TlsSocket::HandleUpstreamRead() -> error_code {
 }
 
 error_code TlsSocket::HandleUpstreamWrite() {
+  auto& socket_flags = flags_;
   Engine::Buffer buffer = engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
 
@@ -461,7 +464,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   error_code ec;
   // we do not allow concurrent writes from multiple fibers.
-  state_ |= WRITE_IN_PROGRESS;
+  socket_flags.set_write_in_progress();
   do {
     io::Result<size_t> write_result = next_sock_->WriteSome(buffer);
 
@@ -482,7 +485,7 @@ error_code TlsSocket::HandleUpstreamWrite() {
 
   DCHECK(engine_->OutputPending() == 0 || ec);
 
-  ClearInProgressAndNotify(WRITE_IN_PROGRESS);
+  socket_flags.clear_io_in_progress_and_notify(WRITE_IN_PROGRESS);
 
   return ec;
 }
@@ -529,8 +532,8 @@ void TlsSocket::RegisterOnRecv(OnRecvCb cb) {
   DCHECK(cb);
   // Note: It is vital to store the callback only once (avoid copy!). Both wake paths - the
   // next_sock_ recv hook (via HandleRecvNotification) and a recv-path engine-output drain
-  // completion (StartAsyncWriteForTryRecv) - invoke this single copy, so a callback that carries state
-  // by value cannot diverge between two independent copies.
+  // completion (StartAsyncWriteForTryRecv) - invoke this single copy, so a callback that carries
+  // state by value cannot diverge between two independent copies.
   on_recv_cb_ = std::move(cb);
   next_sock_->RegisterOnRecv(
       [this](const RecvNotification& rn) { HandleRecvNotification(rn, on_recv_cb_); });
@@ -589,9 +592,9 @@ void TlsSocket::StartAsyncWriteForTryRecv() {
   // Mark the recv-path engine-output drain as in flight before it starts: while it holds
   // WRITE_IN_PROGRESS, TryRecv must surface EAGAIN (a wake IS coming via on_recv_cb_) rather than
   // EBUSY. Cleared below when the write completes.
-  state_ |= RECV_DRAIN_ENGINE_IN_FLIGHT;
+  flags_.set_drain_engine_in_flight();
   StartAsyncWrite([this](io::Result<size_t> res) {
-    state_ &= ~RECV_DRAIN_ENGINE_IN_FLIGHT;
+    flags_.clear_drain_engine_in_flight();
     if (!on_recv_cb_) {
       // No recv callback registered (blocking Recv() path, or a TryRecv() caller that retries on
       // its own) - nobody to wake. This is fine, not an error.
@@ -612,17 +615,18 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
+  auto& socket_flags = flags_;
   size_t iovec_total_bytes = GetIovecTotalBytes(v, len);
   if (iovec_total_bytes == 0) {
     LOG(DFATAL) << "TrySend with empty iovec";
     return 0;  // nothing to send (POSIX allows zero-length writes)
   }
-  if ((state_ & WRITE_IN_PROGRESS) != 0) {
+  if (socket_flags.write_in_progress()) {
     // Another fiber is currently writing, we cannot safely proceed
     DVSOCK(3) << "TrySend blocked: WRITE_IN_PROGRESS detected";
     return make_unexpected(make_error_code(errc::resource_unavailable_try_again));
   }
-  bool read_in_progress{(state_ & READ_IN_PROGRESS) != 0};
+  bool read_in_progress{socket_flags.read_in_progress()};
   size_t total_bytes_sent{};
   std::error_code returned_status{};
   // We make a local mutable copy of the iovec descriptors because AdvanceIovec
@@ -765,13 +769,14 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
+  auto& socket_flags = flags_;
   size_t total_bytes_read{};
-  bool write_in_progress{(state_ & WRITE_IN_PROGRESS) != 0};
+  bool write_in_progress{socket_flags.write_in_progress()};
   std::error_code returned_status{};  // init to no error
 
   // A user-level TryRecv() call is mutually exclusive with a blocking Recv().
   // We check for the flag set by Recv/RecvMsg to detect this usage error.
-  if (state_ & USER_RECV_IN_PROGRESS) {
+  if (socket_flags.user_recv_in_progress()) {
     LOG(DFATAL) << "Usage Error: A blocking Recv/RecvMsg is already in progress on this socket.";
     return make_unexpected(make_error_code(errc::operation_in_progress));
   }
@@ -799,7 +804,7 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       // Write conflicts are expected: The TLS state machine (e.g., renegotiation) may trigger
       // writes during a read operation.
       if (write_in_progress) {
-        if (state_ & RECV_DRAIN_ENGINE_IN_FLIGHT) {
+        if (socket_flags.drain_engine_in_flight()) {
           // The in-flight write is THIS socket's own recv-path engine-output drain, so a wake IS
           // coming: surface EAGAIN, not EBUSY. See TryRecv's result-code contract in tls_socket.h.
           returned_status = make_error_code(errc::resource_unavailable_try_again);
@@ -862,7 +867,7 @@ io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {
       // Handle Pending Reads From Upstream Socket
       // An internal read (blocking) might be in progress from another fiber (e.g. during a
       // write). This is not a user error, but a temporary resource contention.
-      if ((state_ & READ_IN_PROGRESS) != 0) {
+      if (socket_flags.read_in_progress()) {
         // A read is using the socket, so we could not read this call. The reason does not matter:
         // data may still be waiting, so return EBUSY and the caller keeps expecting input. See
         // TryRecv's result-code contract in tls_socket.h.
@@ -956,7 +961,6 @@ void TlsSocket::SetProactor(ProactorBase* p) {
   next_sock_->SetProactor(p);
   FiberSocketBase::SetProactor(p);
 }
-
 
 }  // namespace tls
 }  // namespace util
