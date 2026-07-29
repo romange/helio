@@ -204,24 +204,34 @@ std::error_code EpollSocket::CancelInFlightOps() {
   // WriteSome()/RecvMsg() path - that's the whole point of this method (see CancelInFlightOps()
   // on UringSocket, which cancels in-flight kernel ops regardless of whether they were
   // submitted synchronously or asynchronously). It is intentionally not called from Close().
+  LOG(WARNING) << "diag: CancelInFlightOps entry, async_write_pending_=" << int(async_write_pending_)
+               << " write_req_=" << write_req_
+               << " suspended=" << (write_req_ ? write_req_->IsSuspended() : -1);
   if (async_write_pending_) {
     DCHECK(async_write_req_);
-    async_write_req_->cb(MakeUnexpected(errc::operation_canceled));
-    delete async_write_req_;
+    AsyncReq* req = async_write_req_;
+    auto cb = std::move(req->cb);
+    delete req;
     async_write_req_ = nullptr;
     async_write_pending_ = 0;
+    cb(MakeUnexpected(errc::operation_canceled));
   } else if (write_req_ && write_req_->IsSuspended()) {
     // A fiber is blocked inside the synchronous WriteSome() - wake it with an error instead of
     // leaving it suspended forever.
+    LOG(WARNING) << "diag: about to Activate write_req_";
     write_req_->Activate(make_error_code(errc::operation_canceled));
+    LOG(WARNING) << "diag: Activate returned";
   }
 
   if (async_read_pending_) {
     DCHECK(async_read_req_);
-    async_read_req_->cb(MakeUnexpected(errc::operation_canceled));
-    delete async_read_req_;
+    // Same reasoning as the write side above: clear state before invoking cb().
+    AsyncReq* req = async_read_req_;
+    auto cb = std::move(req->cb);
+    delete req;
     async_read_req_ = nullptr;
     async_read_pending_ = 0;
+    cb(MakeUnexpected(errc::operation_canceled));
   } else if (recv_hook_registered_) {
     delete on_recv_;
     on_recv_ = nullptr;

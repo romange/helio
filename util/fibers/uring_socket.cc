@@ -107,22 +107,31 @@ auto UringSocket::CancelInFlightOps() -> error_code {
   if (fd_ < 0)
     return {};
 
+  // The fd-scoped cancel below matches ANY pending request on this fd, not just the write/read
+  // we actually want to unstick - including the error-callback poll from RegisterOnErrorCb()
+  // and the multishot recv from RegisterOnRecv(). Those have their own dedicated teardown paths
+  // that correctly reset this socket's bookkeeping.
+  // Run them first so the broad cancel below doesn't silently swallow one of their completions 
+  // and leave that state stale (e.g. a dangling) error_cb_wrapper_.
+  CancelOnErrorCb();
+  ResetOnRecvHook();
+
   // IORING_ASYNC_CANCEL_FD/_FD_FIXED: match candidate requests by this fd instead of by a
-  // specific request's user_data (the default) - we want to hit everything pending on this
-  // socket, not one particular operation.
+  // specific request's user_data (the default) - we want to hit everything still pending on
+  // this socket (the write/read), not one particular operation.
   // IORING_ASYNC_CANCEL_ALL: cancel every matching request, not just the first one found -
   // without this, e.g. a pending write and a pending read on the same fd would only have one
   // of them cancelled.
   unsigned flags = (is_direct_fd_ ? IORING_ASYNC_CANCEL_FD_FIXED : IORING_ASYNC_CANCEL_FD) |
                    IORING_ASYNC_CANCEL_ALL;
 
-  // CancelRequests() wraps io_uring_register_sync_cancel(), which is a real synchronous
+  // CancelRequests() wraps io_uring_register_sync_cancel(), which is a synchronous
   // syscall (IORING_REGISTER_SYNC_CANCEL) - not a submit-then-reap-completion SQE like every
   // other operation here. It blocks the calling thread in the kernel while it locates and
   // cancels matching requests (not a userspace busy-loop), but that also means it does NOT
-  // yield to other fibers on this proactor the way normal io_uring ops do - the whole thread
-  // is blocked for its duration. Should be fine in practice since cancellation itself is a fast
-  // kernel-side lookup+abort, not I/O and it's a rather "exceptional" path.
+  // yield to other fibers on this proactor. The whole thread is blocked for its duration. 
+  // Should be fine in practice since cancellation itself is a fast kernel-side lookup+abort, 
+  // not I/O and it's a rather "exceptional" path.
   int res = GetProactor()->CancelRequests(ShiftedFd(), flags);
 
   // ENOENT means there was nothing pending to cancel - not an error for our purposes.

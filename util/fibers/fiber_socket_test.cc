@@ -1023,24 +1023,84 @@ TEST_P(FiberSocketTest, CancelInFlightOpsSync) {
 
   // Write() suspends the calling fiber until everything is sent, so run it on its own fiber and
   // observe it from here.
+  LOG(WARNING) << "diag: launching write_fb";
   Fiber write_fb = proactor_->LaunchFiber("BlockedWrite", [&] {
+    LOG(WARNING) << "diag: write_fb started, calling Write()";
     write_ec = sock->Write(io::Bytes(buf.get(), kBufSize));
+    LOG(WARNING) << "diag: write_fb Write() returned ec=" << write_ec.message();
     write_completed = true;
   });
 
   // The write must still be stuck - nobody is reading conn_socket_.
+  LOG(WARNING) << "diag: sleeping 100ms";
   ThisFiber::SleepFor(100ms);
+  LOG(WARNING) << "diag: woke up, write_completed=" << write_completed;
   EXPECT_FALSE(write_completed) << "write should not have completed - nobody is draining the peer";
 
   // CancelInFlightOps() must wake the suspended fiber instead of leaving it stuck forever.
+  LOG(WARNING) << "diag: calling CancelInFlightOps()";
+  error_code cancel_ec = proactor_->Await(
+      [&] { return static_cast<LinuxSocketBase*>(sock.get())->CancelInFlightOps(); });
+  LOG(WARNING) << "diag: CancelInFlightOps() returned ec=" << cancel_ec.message();
+  EXPECT_FALSE(cancel_ec) << cancel_ec.message();
+
+  LOG(WARNING) << "diag: joining write_fb";
+  write_fb.Join();
+  LOG(WARNING) << "diag: write_fb joined";
+  EXPECT_TRUE(write_completed);
+  EXPECT_TRUE(write_ec) << "expected an error after cancellation";
+
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
+// Regression test: CancelInFlightOps()'s fd-wide cancel used to be able to silently sweep up an
+// unrelated RegisterOnErrorCb() poll registered on the very same socket, leaving UringSocket's
+// error_cb_wrapper_ dangling - which later crashed Close() via LOG(DFATAL). Registering an error
+// callback alongside a stalled write must not trip that; Close() below must not crash.
+TEST_P(FiberSocketTest, CancelInFlightOpsWithErrorCb) {
+  unique_ptr<FiberSocketBase> sock;
+  Done write_done;
+  error_code write_ec;
+
+  proactor_->Await([&] {
+    sock.reset(proactor_->CreateSocket());
+    error_code ec = sock->Connect(listen_ep_);
+    EXPECT_FALSE(ec);
+    sock->RegisterOnErrorCb([](uint32_t) {});
+  });
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+
+  // Shrink the outgoing buffer so a large write genuinely cannot complete synchronously while
+  // nobody drains the peer (conn_socket_ never reads in this test).
+  proactor_->AwaitBrief([&] {
+    int sndbuf = 1024;
+    CHECK_EQ(0, setsockopt(sock->native_handle(), SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)));
+  });
+
+  constexpr size_t kBufSize = 16 * 1024 * 1024;  // Exceeds any realistic kernel socket buffer.
+  std::unique_ptr<uint8_t[]> buf(new uint8_t[kBufSize]);
+  proactor_->Await([&] {
+    sock->AsyncWrite(io::Bytes(buf.get(), kBufSize), [&](error_code ec) {
+      write_ec = ec;
+      write_done.Notify();
+    });
+  });
+
+  EXPECT_FALSE(write_done.WaitFor(100ms))
+      << "write should not have completed - nobody is draining the peer";
+
   error_code cancel_ec = proactor_->Await(
       [&] { return static_cast<LinuxSocketBase*>(sock.get())->CancelInFlightOps(); });
   EXPECT_FALSE(cancel_ec) << cancel_ec.message();
 
-  write_fb.Join();
-  EXPECT_TRUE(write_completed);
+  ASSERT_TRUE(write_done.WaitFor(3s))
+      << "AsyncWrite callback did not fire after CancelInFlightOps()";
   EXPECT_TRUE(write_ec) << "expected an error after cancellation";
 
+  // Must not crash: previously UringSocket::Close() would LOG(DFATAL) here because
+  // error_cb_wrapper_ was left dangling by the broad cancel above. Deliberately NOT calling
+  // CancelOnErrorCb() here first - CancelInFlightOps() must have already handled it internally.
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 
