@@ -28,7 +28,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsyncWithRead() {
 }
 
 void TlsSocket::AsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
-  owner_->ClearInProgressAndNotify(READ_IN_PROGRESS);
+  owner_->flags_.clear_io_in_progress_and_notify(READ_IN_PROGRESS);
   RunPending();
   if (!read_result) {
     // Erroneous path. Apply the completion callback and exit.
@@ -47,17 +47,18 @@ void TlsSocket::AsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
 }
 
 void TlsSocket::AsyncReq::StartUpstreamRead() {
+  auto& socket_flags = owner_->flags_;
   // Even if we early return below we still should not try to read. When we
   // wake up we will poll the SSL engine which will dictate the next action/step.
   should_read_ = false;
-  if (owner_->state_ & READ_IN_PROGRESS) {
+  if (socket_flags.read_in_progress()) {
     auto* prev = std::exchange(owner_->blocked_async_req_, this);
     CHECK(prev == nullptr);
     return;
   }
 
   auto buffer = owner_->engine_->PeekInputBuf();
-  owner_->state_ |= READ_IN_PROGRESS;
+  socket_flags.set_read_in_progress();
 
   auto& scratch = scratch_iovec_;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
@@ -130,12 +131,13 @@ void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb 
 }
 
 void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
+  auto& socket_flags = owner_->flags_;
   if (!write_result) {
-    owner_->ClearInProgressAndNotify(WRITE_IN_PROGRESS);
+    socket_flags.clear_io_in_progress_and_notify(WRITE_IN_PROGRESS);
 
     // broken_pipe - happens when the other side closes the connection. do not log this.
     if (write_result.error() != errc::broken_pipe) {
-      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << int(owner_->state_)
+      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << int(socket_flags.bits())
               << ", write_total:" << owner_->upstream_write_ << " "
               << " pending output: " << owner_->engine_->OutputPending()
               << " HandleUpstreamAsyncWrite failed " << write_result.error();
@@ -169,7 +171,7 @@ void TlsSocket::AsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) 
                 << " bytes. Async short write detected";
   }
 
-  owner_->ClearInProgressAndNotify(WRITE_IN_PROGRESS);
+  socket_flags.clear_io_in_progress_and_notify(WRITE_IN_PROGRESS);
   RunPending();
 
   // We are done with the write, check if we also need to read because we are
@@ -218,7 +220,8 @@ void TlsSocket::AsyncReq::AsyncRoleBasedAction() {
 }
 
 void TlsSocket::AsyncReq::StartUpstreamWrite() {
-  if (owner_->state_ & WRITE_IN_PROGRESS) {
+  auto& socket_flags = owner_->flags_;
+  if (socket_flags.write_in_progress()) {
     CHECK(owner_->blocked_async_req_ == nullptr);
     owner_->blocked_async_req_ = this;
     return;
@@ -226,11 +229,11 @@ void TlsSocket::AsyncReq::StartUpstreamWrite() {
 
   Engine::Buffer buffer = owner_->engine_->PeekOutputBuf();
   DCHECK(!buffer.empty());
-  DCHECK((owner_->state_ & WRITE_IN_PROGRESS) == 0);
+  DCHECK(!socket_flags.write_in_progress());
 
   DVLOG(2) << "StartUpstreamWrite " << buffer.size();
   // we do not allow concurrent writes from multiple fibers.
-  owner_->state_ |= WRITE_IN_PROGRESS;
+  socket_flags.set_write_in_progress();
 
   auto& scratch = scratch_iovec_;
   scratch.iov_base = const_cast<uint8_t*>(buffer.data());
@@ -245,7 +248,7 @@ void TlsSocket::AsyncReq::MaybeSendOutputAsync() {
     return;
   }
 
-  if (owner_->state_ & WRITE_IN_PROGRESS) {
+  if (owner_->flags_.write_in_progress()) {
     CHECK(owner_->blocked_async_req_ == nullptr);
     owner_->blocked_async_req_ = this;
     return;

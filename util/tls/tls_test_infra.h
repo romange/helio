@@ -24,7 +24,7 @@ class TestDelegator {
     sock->engine_ = std::move(engine);
   }
   static void SetState(TlsSocket* sock, uint32_t state) {
-    sock->state_ = state;
+    sock->flags_.overwrite(state);
   }
 
   static constexpr uint32_t GetWriteInProgress() {
