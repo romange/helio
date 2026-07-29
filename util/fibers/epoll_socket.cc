@@ -193,6 +193,47 @@ auto EpollSocket::Close() -> error_code {
   return ec;
 }
 
+std::error_code EpollSocket::CancelInFlightOps() {
+  // Cleanup pending requests. Unlike UringSocket, there's no kernel-held reference to interrupt
+  // here - write_req_/async_write_req_ (and read_req_/async_read_req_/on_recv_) are a union:
+  // at most one of {synchronous WriteSome() suspended via PendingReq, a queued AsyncWriteSome(),
+  // <read side: also a registered OnRecv hook>} can be outstanding at a time. So cancelling is
+  // just a matter of resolving whichever one is currently set ourselves.
+  //
+  // Unlike Close()'s own cleanup above, this also wakes a fiber suspended in the synchronous
+  // WriteSome()/RecvMsg() path - that's the whole point of this method (see CancelInFlightOps()
+  // on UringSocket, which cancels in-flight kernel ops regardless of whether they were
+  // submitted synchronously or asynchronously). It is intentionally not called from Close().
+  if (async_write_pending_) {
+    DCHECK(async_write_req_);
+    async_write_req_->cb(MakeUnexpected(errc::operation_canceled));
+    delete async_write_req_;
+    async_write_req_ = nullptr;
+    async_write_pending_ = 0;
+  } else if (write_req_ && write_req_->IsSuspended()) {
+    // A fiber is blocked inside the synchronous WriteSome() - wake it with an error instead of
+    // leaving it suspended forever.
+    write_req_->Activate(make_error_code(errc::operation_canceled));
+  }
+
+  if (async_read_pending_) {
+    DCHECK(async_read_req_);
+    async_read_req_->cb(MakeUnexpected(errc::operation_canceled));
+    delete async_read_req_;
+    async_read_req_ = nullptr;
+    async_read_pending_ = 0;
+  } else if (recv_hook_registered_) {
+    delete on_recv_;
+    on_recv_ = nullptr;
+    recv_hook_registered_ = 0;
+  } else if (read_req_ && read_req_->IsSuspended()) {
+    // A fiber is blocked inside the synchronous RecvMsg() - wake it with an error instead of
+    // leaving it suspended forever.
+    read_req_->Activate(make_error_code(errc::operation_canceled));
+  }
+  return {};
+}
+
 void EpollSocket::OnSetProactor() {
   if (fd_ >= 0) {
     CHECK_LT(arm_index_, 0);
