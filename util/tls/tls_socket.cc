@@ -605,14 +605,6 @@ io::Result<size_t> TlsSocket::TrySend(io::Bytes buf) {
   return TrySend(vec, 1);
 }
 
-void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  async_io_.AsyncReadSome(v, len, std::move(cb));
-}
-
-void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  async_io_.AsyncWriteSome(v, len, std::move(cb));
-}
-
 io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
   auto& socket_flags = flags_;
   size_t iovec_total_bytes = GetIovecTotalBytes(v, len);
@@ -765,6 +757,14 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
     return 0;  // No error, Clean EOF case
   }
   return make_unexpected(returned_status);
+}
+
+void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  async_io_.AsyncReadSome(v, len, std::move(cb));
+}
+
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  async_io_.AsyncWriteSome(v, len, std::move(cb));
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {

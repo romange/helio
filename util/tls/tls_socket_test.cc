@@ -956,7 +956,7 @@ TEST_P(AsyncTlsSocketTest, AsyncRW) {
 class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
   virtual void HandleRequest() {
     Done done;
-    // Without handling NEED_WRITE in AsyncReq::CompleteAsyncReq we would deadlock here
+    // Without handling NEED_WRITE in TlsAsyncReq::CompleteAsyncReq we would deadlock here.
     uint8_t res[256];
     iovec v{.iov_base = &res, .iov_len = 256};
     tls::TestDelegator::ForceNeedWriteOnAsyncRead(tls_socket_.get(), &v, 1,
@@ -966,8 +966,8 @@ class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
     VLOG(1) << "Read completed";
     done.Reset();
 
-    tls::TestDelegator::ForceNeedWriteOnAsyncWrite(tls_socket_.get(), &v, 1,
-                                                   [&](auto res) { done.Notify(); });
+    tls::TestDelegator::ForceNeedReadAndMaybeWriteOnAsyncWrite(tls_socket_.get(), &v, 1,
+                                                               [&](auto res) { done.Notify(); });
     done.Wait();
     VLOG(1) << "Write completed";
   }
@@ -1210,16 +1210,16 @@ namespace util::tls {
 void TestDelegator::ForceNeedWriteOnAsyncRead(TlsSocket* sock, const iovec* v, uint32_t len,
                                               io::AsyncProgressCb cb) {
   CHECK(!sock->async_io_.async_read_req_);
-  auto req = TlsAsyncReq{sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::READER};
-  sock->async_io_.async_read_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  sock->async_io_.async_read_req_ = std::make_unique<TlsAsyncReq>(
+      sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::READER);
   sock->async_io_.async_read_req_->HandleOpAsync(Engine::NEED_WRITE);
 }
 
-void TestDelegator::ForceNeedWriteOnAsyncWrite(TlsSocket* sock, const iovec* v, uint32_t len,
-                                               io::AsyncProgressCb cb) {
+void TestDelegator::ForceNeedReadAndMaybeWriteOnAsyncWrite(TlsSocket* sock, const iovec* v,
+                                                           uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!sock->async_io_.async_write_req_);
-  auto req = TlsAsyncReq{sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::WRITER};
-  sock->async_io_.async_write_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  sock->async_io_.async_write_req_ = std::make_unique<TlsAsyncReq>(
+      sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::WRITER);
   sock->async_io_.async_write_req_->HandleOpAsync(Engine::NEED_READ_AND_MAYBE_WRITE);
 }
 

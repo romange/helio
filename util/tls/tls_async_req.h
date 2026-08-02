@@ -27,6 +27,10 @@ class TlsAsyncReq {
       : owner_(owner), async_io_(async_io), caller_completion_cb_(std::move(cb)), vec_(v),
         len_(len), role_(role) {
   }
+  TlsAsyncReq(const TlsAsyncReq&) = delete;
+  TlsAsyncReq& operator=(const TlsAsyncReq&) = delete;
+  TlsAsyncReq(TlsAsyncReq&&) = delete;
+  TlsAsyncReq& operator=(TlsAsyncReq&&) = delete;
 
   // Dispatches the next action requested by the TLS engine.
   void HandleOpAsync(int op_val);
@@ -55,7 +59,7 @@ class TlsAsyncReq {
   void MaybeSendOutputAsync();
   // Starts an upstream read into the engine input buffer.
   void StartUpstreamRead();
-  // Releases request ownership before invoking the caller callback.
+  // Releases request ownership and destroys this after invoking the caller callback.
   void CompleteAsyncReq(io::Result<size_t> result);
   // Continues or completes the request after an upstream write callback.
   void AsyncWriteProgressCb(io::Result<size_t> write_result);

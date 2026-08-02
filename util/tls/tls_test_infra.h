@@ -26,10 +26,11 @@ class TestDelegator {
   static void SetState(TlsSocket* sock, uint8_t state) {
     sock->flags_.overwrite(state);
   }
+  // Defined in tls_socket_test.cc because they construct TlsAsyncReq test requests.
   static void ForceNeedWriteOnAsyncRead(TlsSocket* sock, const iovec* v, uint32_t len,
                                         io::AsyncProgressCb cb);
-  static void ForceNeedWriteOnAsyncWrite(TlsSocket* sock, const iovec* v, uint32_t len,
-                                         io::AsyncProgressCb cb);
+  static void ForceNeedReadAndMaybeWriteOnAsyncWrite(TlsSocket* sock, const iovec* v, uint32_t len,
+                                                     io::AsyncProgressCb cb);
 
   static constexpr uint8_t GetWriteInProgress() {
     return TlsSocket::WRITE_IN_PROGRESS;

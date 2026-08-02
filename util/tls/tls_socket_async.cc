@@ -95,6 +95,7 @@ void TlsAsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
   } else {
     current = std::move(async_io_->async_write_req_);
   }
+  CHECK(current.get() == this);
   current->caller_completion_cb_(result);
 }
 
@@ -146,8 +147,8 @@ void TlsAsyncIo::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb
 
   // We could not read from the engine. Dispatch async op.
   DCHECK_GT(len, 0u);
-  auto req = TlsAsyncReq{owner_, this, std::move(cb), v, len, TlsAsyncReq::READER};
-  async_read_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  async_read_req_ =
+      std::make_unique<TlsAsyncReq>(owner_, this, std::move(cb), v, len, TlsAsyncReq::READER);
   async_read_req_->HandleOpAsync(op_val);
 }
 
@@ -296,10 +297,9 @@ void TlsAsyncIo::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressC
   // Write to the engine
   TlsSocket::PushResult push_res = owner_->PushUserDataToEngine(v, len);
 
-  auto req = TlsAsyncReq{owner_, this, std::move(cb), v, len, TlsAsyncReq::WRITER};
-  req.SetEngineWritten(push_res.written);
-
-  async_write_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  async_write_req_ =
+      std::make_unique<TlsAsyncReq>(owner_, this, std::move(cb), v, len, TlsAsyncReq::WRITER);
+  async_write_req_->SetEngineWritten(push_res.written);
   const int op_val = push_res.engine_opcode;
 
   // Handle engine state.
