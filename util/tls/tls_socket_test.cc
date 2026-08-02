@@ -1006,7 +1006,8 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
       }
 
       VLOG(1) << "Step 2";
-      // Write it again to simulate NEED_READ_AND_MAYBE_WRITE in ForceNeedWriteOnAsyncWrite.
+      // Write it again to simulate NEED_READ_AND_MAYBE_WRITE in
+      // ForceNeedReadAndMaybeWriteOnAsyncWrite.
       tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
         done.Notify();
