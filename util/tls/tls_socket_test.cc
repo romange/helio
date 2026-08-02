@@ -19,6 +19,7 @@
 #include "util/fibers/fibers.h"
 #include "util/fibers/synchronization.h"
 #include "util/tls/iovec_utils.h"
+#include "util/tls/tls_async_req.h"
 #include "util/tls/tls_socket.h"
 #include "util/tls/tls_test_infra.h"
 
@@ -958,13 +959,15 @@ class AsyncTlsSocketNeedWrite : public AsyncTlsSocketTest {
     // Without handling NEED_WRITE in AsyncReq::CompleteAsyncReq we would deadlock here
     uint8_t res[256];
     iovec v{.iov_base = &res, .iov_len = 256};
-    tls_socket_->__DebugForceNeedWriteOnAsyncRead(&v, 1, [&](auto res) { done.Notify(); });
+    tls::TestDelegator::ForceNeedWriteOnAsyncRead(tls_socket_.get(), &v, 1,
+                                                  [&](auto res) { done.Notify(); });
 
     done.Wait();
     VLOG(1) << "Read completed";
     done.Reset();
 
-    tls_socket_->__DebugForceNeedWriteOnAsyncWrite(&v, 1, [&](auto res) { done.Notify(); });
+    tls::TestDelegator::ForceNeedWriteOnAsyncWrite(tls_socket_.get(), &v, 1,
+                                                   [&](auto res) { done.Notify(); });
     done.Wait();
     VLOG(1) << "Write completed";
   }
@@ -1003,7 +1006,7 @@ TEST_P(AsyncTlsSocketNeedWrite, AsyncReadNeedWrite) {
       }
 
       VLOG(1) << "Step 2";
-      // Write it again to simulate NEED_READ_AND_MAYBE_WRITE in __DebugForceNeedWriteOnAsyncWrite
+      // Write it again to simulate NEED_READ_AND_MAYBE_WRITE in ForceNeedWriteOnAsyncWrite.
       tls_sock->AsyncWrite(&v, 1, [&](auto result) mutable {
         EXPECT_FALSE(result);
         done.Notify();
@@ -1203,6 +1206,22 @@ TEST_P(AsyncTlsSocketRenegotiate, Renegotiate) {
 }  // namespace util
 
 namespace util::tls {
+
+void TestDelegator::ForceNeedWriteOnAsyncRead(TlsSocket* sock, const iovec* v, uint32_t len,
+                                              io::AsyncProgressCb cb) {
+  CHECK(!sock->async_io_.async_read_req_);
+  auto req = TlsAsyncReq{sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::READER};
+  sock->async_io_.async_read_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  sock->async_io_.async_read_req_->HandleOpAsync(Engine::NEED_WRITE);
+}
+
+void TestDelegator::ForceNeedWriteOnAsyncWrite(TlsSocket* sock, const iovec* v, uint32_t len,
+                                               io::AsyncProgressCb cb) {
+  CHECK(!sock->async_io_.async_write_req_);
+  auto req = TlsAsyncReq{sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::WRITER};
+  sock->async_io_.async_write_req_ = std::make_unique<TlsAsyncReq>(std::move(req));
+  sock->async_io_.async_write_req_->HandleOpAsync(Engine::NEED_READ_AND_MAYBE_WRITE);
+}
 
 // Mock Fixture
 class MockTlsSocketTest : public testing::TestWithParam<std::string> {

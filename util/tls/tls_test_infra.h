@@ -26,6 +26,10 @@ class TestDelegator {
   static void SetState(TlsSocket* sock, uint8_t state) {
     sock->flags_.overwrite(state);
   }
+  static void ForceNeedWriteOnAsyncRead(TlsSocket* sock, const iovec* v, uint32_t len,
+                                        io::AsyncProgressCb cb);
+  static void ForceNeedWriteOnAsyncWrite(TlsSocket* sock, const iovec* v, uint32_t len,
+                                         io::AsyncProgressCb cb);
 
   static constexpr uint8_t GetWriteInProgress() {
     return TlsSocket::WRITE_IN_PROGRESS;
