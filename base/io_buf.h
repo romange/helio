@@ -139,7 +139,8 @@ class IoBuf {
   }
 
   // Returns a counter identifying the current raw buffer memory. It changes only when Reserve or
-  // ShrinkTo replaces that memory.
+  // ShrinkTo replaces that memory, not when Compact() changes the layout within it. Do not use it
+  // as a span-validity check.
   uint64_t generation() const {
     return generation_;
   }
