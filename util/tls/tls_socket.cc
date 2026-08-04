@@ -575,16 +575,7 @@ void TlsSocket::HandleRecvNotification(const RecvNotification& rn, const OnRecvC
 }
 
 void TlsSocket::StartAsyncWrite(io::AsyncProgressCb async_write_cb) {
-  // Hard CHECK: overwriting a live async_write_req_ would free an AsyncReq still referenced by
-  // in-flight AsyncWriteSome callbacks (use-after-free). Callers guarantee no write is in flight
-  // (TrySend/TryRecv bail out early on WRITE_IN_PROGRESS), so this never fires in correct runs.
-  CHECK(!async_write_req_);
-  DCHECK_GT(engine_->OutputPending(), 0u);
-  // (vec, len) = (nullptr, 0): no new user bytes, we only send what the engine already buffered.
-  // AsyncRoleBasedAction treats a WRITER with vec_ == nullptr as output-only and ends when drained.
-  async_write_req_ =
-      std::make_unique<AsyncReq>(this, std::move(async_write_cb), nullptr, 0, AsyncReq::WRITER);
-  async_write_req_->StartUpstreamWrite();
+  async_io_.StartAsyncWrite(std::move(async_write_cb));
 }
 
 void TlsSocket::StartAsyncWriteForTryRecv() {
@@ -766,6 +757,14 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
     return 0;  // No error, Clean EOF case
   }
   return make_unexpected(returned_status);
+}
+
+void TlsSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  async_io_.AsyncReadSome(v, len, std::move(cb));
+}
+
+void TlsSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
+  async_io_.AsyncWriteSome(v, len, std::move(cb));
 }
 
 io::Result<size_t> TlsSocket::TryRecv(io::MutableBytes buf) {

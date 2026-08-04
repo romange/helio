@@ -10,13 +10,10 @@
 
 #include "util/fiber_socket_base.h"
 #include "util/fibers/synchronization.h"
+#include "util/tls/tls_async_io.h"
 #include "util/tls/tls_engine.h"
 
 namespace util {
-namespace fb2 {
-class AsyncTlsSocketNeedWrite;
-}  // namespace fb2
-
 namespace tls {
 
 class Engine;
@@ -291,92 +288,11 @@ class TlsSocket final : public FiberSocketBase {
     fb2::CondVarAny cv_;
   };
 
-  // --- Async I/O primitives: drive a read or write to completion via callbacks instead of
-  // blocking the fiber ---
-  class AsyncReq {
-   public:
-    enum Role : std::uint8_t { READER, WRITER };
+  // TlsAsyncIo owns async request state and drives the async state machine.
+  friend class TlsAsyncIo;
+  friend class TlsAsyncReq;
 
-    AsyncReq(TlsSocket* owner, io::AsyncProgressCb cb, const iovec* v, uint32_t len, Role role)
-        : owner_(owner), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), role_(role) {
-    }
-
-    void HandleOpAsync(int op_val);
-    void StartUpstreamWrite();
-    void SetEngineWritten(size_t written) {
-      engine_written_ = written;
-    }
-
-   private:
-    TlsSocket* owner_;
-    // Callback passed from the user.
-    io::AsyncProgressCb caller_completion_cb_;
-
-    const iovec* vec_;
-    uint32_t len_;
-
-    Role role_;
-
-    iovec scratch_iovec_ = {};
-
-    size_t engine_written_ = 0;
-    bool should_read_ = false;
-
-    // Asynchronous helpers
-    void MaybeSendOutputAsyncWithRead();
-    void MaybeSendOutputAsync();
-
-    void StartUpstreamRead();
-
-    void CompleteAsyncReq(io::Result<size_t> result);
-
-    void AsyncWriteProgressCb(io::Result<size_t> write_result);
-    void AsyncReadProgressCb(io::Result<size_t> result);
-
-    // Both reader and writer can at any point dispatch a RW operation.
-    // So, AsyncWriteProgress* must decide how to complete based on its role and this
-    // function extracts the common execution paths.
-    void AsyncRoleBasedAction();
-
-    // Helper function to handle WRITE_IN_PROGRESS and READ_IN_PROGRESS without preemption.
-    // When an operation can't continue because there is already one in progress, it early returns
-    // and copies itself to blocked_async_req_. When the in progress operation completes,
-    // it resumes the one pending.
-    void RunPending();
-  };
-
-  std::unique_ptr<AsyncReq> async_read_req_;
-  std::unique_ptr<AsyncReq> async_write_req_;
-
-  // Pending request that is blocked on WRITE_IN_PROGRESS or READ_IN_PROGRESS. Since we can't
-  // preempt in function context, we simply subscribe the async request to the one in-flight and
-  // once that completes it will also continue the one pending/blocked.
-  AsyncReq* blocked_async_req_ = nullptr;
-
-  // --- Testing-only members (not part of the public API) ---
-  friend class fb2::AsyncTlsSocketNeedWrite;
-
-  // This function simulates a corner case of AsyncReadSome: engine_->Read(...) returning
-  // NEED_WRITE. This scenario reproduces roughly as follows:
-  // 1. Client connects to server and server accepts.
-  // 2. Handshake completes.
-  // 3. Client stops reading from the socket -> no acks are sent.
-  // 4. Server keeps sending data until TCP send buffers are full (because the client has not
-  //    yet acked).
-  // 5. Server calls SSL_renegotiate followed by SSL_handshake.
-  // 6. Server calls AsyncRead, which calls engine->Read(), which should return NEED_WRITE
-  //    because the state machine requires a protocol renegotiation and the internal buffers
-  //    are full.
-  // The idea is that when the server reads, the internal OpenSSL state machine needs to
-  // exchange protocol data but cannot, because the TCP buffers are full and consequently the
-  // internal BIO buffers are not yet flushed, so engine->Read() will return NEED_WRITE so that
-  // the protocol renegotiation can kick in. Even though this scenario seems easy to simulate, it
-  // does not reliably reproduce NEED_WRITE, so for now this function simulates it directly.
-  void __DebugForceNeedWriteOnAsyncRead(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
-
-  // Used to test AsyncWrite  NEED_WRITE on first PushUserDataToEngine. As this scenario is
-  // difficult to time, this function helps simulate it.
-  void __DebugForceNeedWriteOnAsyncWrite(const iovec* v, uint32_t len, io::AsyncProgressCb cb);
+  TlsAsyncIo async_io_{this};
 
   // - Owns the shared state bits and CV used by the blocking, non-blocking, and async paths. A
   // fiber that conflicts with an in-progress read, write, or shutdown waits on this CV instead of
