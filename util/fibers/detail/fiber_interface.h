@@ -9,6 +9,7 @@
 #include <boost/intrusive/list.hpp>
 #include <boost/intrusive/set.hpp>
 #include <chrono>
+#include <utility>
 
 #include "base/cycle_clock.h"
 #include "base/mpsc_intrusive_queue.h"
@@ -32,6 +33,24 @@ enum class FiberPriority : uint8_t {
   NORMAL = 0,      // default priority
   BACKGROUND = 1,  // background priority, runs when no NORMAL fibers are ready.
   HIGH = 2,       // High priority, activated earlier than other fibers.
+};
+
+enum class FiberSwitchHookEvent : uint8_t {
+  SUSPEND,
+  RESUME,
+};
+
+// Runs inside the fiber context switch path. The callback must not preempt.
+struct FiberSwitchHook {
+  using Callback = void (*)(FiberSwitchHookEvent) noexcept;
+
+  Callback callback = nullptr;
+
+  explicit operator bool() const noexcept {
+    return callback != nullptr;
+  }
+
+  void Run(FiberSwitchHookEvent e) const noexcept;
 };
 
 // based on boost::context::fixedsize_stack but uses pmr::memory_resource for allocation.
@@ -235,6 +254,10 @@ class FiberInterface {
     return preempt_cnt_;
   }
 
+  FiberSwitchHook SetSwitchHook(FiberSwitchHook hook) noexcept {
+    return std::exchange(switch_hook_, hook);
+  }
+
   // Assigns a print callback that is called by Scheduler::PrintAllFiberStackTraces.
   // Please note that there can be at most one callback at any time during the lifetime of fiber.
   void SetPrintStacktraceCb(std::function<std::string()> cb) {
@@ -308,6 +331,8 @@ class FiberInterface {
 
   // number of times this fiber was preempted.
   uint64_t preempt_cnt_ = 0;
+
+  FiberSwitchHook switch_hook_;
 
   // used for sleeping with a timeout. Specifies the time when this fiber should be woken up.
   std::chrono::steady_clock::time_point tp_;

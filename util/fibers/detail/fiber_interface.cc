@@ -433,6 +433,7 @@ void FiberInterface::AttachScheduler() {
 ctx::fiber_context FiberInterface::SwitchTo() {
   DCHECK(entry_) << name();
   FiberInterface* prev = SwitchSetup();
+  FiberSwitchHook resume_hook = switch_hook_;
 
   // pass pointer to the context that resumes `this`
   void* fake_stack_save = nullptr;
@@ -440,7 +441,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
 #endif
 
-  return std::move(entry_).resume_with([prev, fake_stack_save](ctx::fiber_context&& c) {
+  return std::move(entry_).resume_with([prev, resume_hook, fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -449,12 +450,14 @@ ctx::fiber_context FiberInterface::SwitchTo() {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    resume_hook.Run(FiberSwitchHookEvent::RESUME);
     return ctx::fiber_context{};
   });
 }
 
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   FiberInterface* prev = SwitchSetup();
+  FiberSwitchHook resume_hook = switch_hook_;
 
   void* fake_stack_save = nullptr;
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -462,7 +465,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
 #endif
 
   // pass pointer to the context that resumes `this`
-  std::move(entry_).resume_with([prev, fn = std::move(fn),
+  std::move(entry_).resume_with([prev, resume_hook, fn = std::move(fn),
                                  fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_ && c);
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -471,6 +474,7 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
     (void)fake_stack_save;
 #endif
     prev->entry_ = std::move(c);  // update the return address in the context we just switch from.
+    resume_hook.Run(FiberSwitchHookEvent::RESUME);
     fn();
 
     return ctx::fiber_context{};
@@ -521,6 +525,7 @@ FiberInterface* FiberInterface::SwitchSetup() {
 
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
+  to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
   fb_initializer.active = this;
 
 #if RECORD_FIBER_NAMES
@@ -599,6 +604,15 @@ void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
 }
 
 }  // namespace detail
+
+void FiberSwitchHook::Run(FiberSwitchHookEvent e) const noexcept {
+  if (!callback)
+    return;
+
+  detail::EnterFiberAtomicSection();
+  callback(e);
+  detail::LeaveFiberAtomicSection();
+}
 
 void SetCustomDispatcher(DispatchPolicy* policy) {
   detail::TL_FiberInitializer& fb_init = detail::FbInitializer();
