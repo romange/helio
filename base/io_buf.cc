@@ -39,10 +39,26 @@ void IoBuf::Reserve(size_t sz) {
     return;
 
   sz = absl::bit_ceil(sz);
-  uint8_t* nb = new (std::align_val_t{alignment_}) uint8_t[sz];
+  Reallocate(sz);
+}
+
+bool IoBuf::ShrinkTo(size_t target_capacity) {
+  if (target_capacity >= capacity_)
+    return false;
+
+  target_capacity = absl::bit_ceil(target_capacity);
+  if ((target_capacity >= capacity_) || (target_capacity < InputLen()))
+    return false;
+
+  Reallocate(target_capacity);
+  return true;
+}
+
+void IoBuf::Reallocate(size_t new_capacity) {
+  uint8_t* new_buf = new (std::align_val_t{alignment_}) uint8_t[new_capacity];
   if (buf_) {
     if (size_ > offs_) {
-      memcpy(nb, buf_ + offs_, size_ - offs_);
+      memcpy(new_buf, buf_ + offs_, size_ - offs_);
       size_ -= offs_;
       offs_ = 0;
     } else {
@@ -50,9 +66,9 @@ void IoBuf::Reserve(size_t sz) {
     }
     ::operator delete[](buf_, std::align_val_t{alignment_});
   }
-
-  buf_ = nb;
-  capacity_ = sz;
+  buf_ = new_buf;
+  capacity_ = new_capacity;
+  ++generation_;
 }
 
 void IoBuf::Swap(IoBuf& other) {
@@ -61,6 +77,7 @@ void IoBuf::Swap(IoBuf& other) {
   std::swap(size_, other.size_);
   std::swap(alignment_, other.alignment_);
   std::swap(capacity_, other.capacity_);
+  std::swap(generation_, other.generation_);
 }
 
 };  // namespace base

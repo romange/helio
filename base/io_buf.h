@@ -7,6 +7,7 @@
 #include <absl/types/span.h>
 
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 
 namespace base {
@@ -14,6 +15,15 @@ namespace base {
 // Generic buffer for reads and writes.
 // Write directly to AppendBuffer() and mark bytes as written with CommitWrite.
 // Read from InputBuffer() and mark bytes as read with ConsumeInput.
+//
+// Here's how IoBuf looks in memory:
+//
+// buf_:    [  consumed  |  unread input  |  append room  ]
+//          ^            ^                ^               ^
+//          0           offs_            size_         capacity_
+//
+// InputBuffer(): immutable view [offs_, size_): bytes ready to parse.
+// AppendBuffer(): mutable view [size_, capacity_): room for new reads or writes.
 class IoBuf {
  public:
   using Bytes = absl::Span<uint8_t>;
@@ -80,14 +90,23 @@ class IoBuf {
   // Ensures append buffer is large enough.
   void WriteAndCommit(const void* source, size_t num_copy);
 
-  // Ensure required append buffer size.
+  // Ensure required append buffer size without reallocating when the current append region fits.
   void EnsureCapacity(size_t sz) {
-    Reserve(size_ + sz);
+    if (sz > AppendLen()) {
+      Reserve(size_ + sz);
+    }
   }
 
-  // Reserve by whole buffer size.
-  // Use EnsureCapacity instead for resizing only by desired append buffer size.
+  // Ensures the whole buffer has at least full_size capacity. An equal-size request (full_size is
+  // equal to the current capacity) reallocates the raw buffer and compacts unread input. Use
+  // EnsureCapacity for append space instead.
   void Reserve(size_t full_size);
+
+  // Reduces capacity while preserving unread input. The new capacity is the smallest power of two
+  // that is at least target_capacity; a zero target selects one byte. Returns false if the target
+  // is at least the current capacity, the resulting capacity cannot hold InputLen(), or the target
+  // rounds to the current capacity.
+  [[nodiscard]] bool ShrinkTo(size_t target_capacity);
 
   // ============== GENERIC ===========
 
@@ -119,12 +138,21 @@ class IoBuf {
     return capacity_;
   }
 
+  // Returns a counter identifying the current raw buffer memory. It changes only when Reserve or
+  // ShrinkTo replaces that memory, not when Compact() changes the layout within it. Do not use it
+  // as a span-validity check.
+  uint64_t generation() const {
+    return generation_;
+  }
+
   struct MemoryUsage {
     size_t consumed = 0;
     size_t input_length = 0;
     size_t append_length = 0;
 
-    size_t GetTotalSize() const { return consumed + input_length + append_length; }
+    size_t GetTotalSize() const {
+      return consumed + input_length + append_length;
+    }
 
     MemoryUsage& operator+=(const MemoryUsage& o) {
       consumed += o.consumed;
@@ -136,20 +164,26 @@ class IoBuf {
 
   MemoryUsage GetMemoryUsage() const {
     return {
-      .consumed = offs_,
-      .input_length = InputLen(),
-      .append_length = AppendLen(),
+        .consumed = offs_,
+        .input_length = InputLen(),
+        .append_length = AppendLen(),
     };
   }
 
  private:
+  void Reallocate(size_t new_capacity);
   void Swap(IoBuf& other);
 
   uint8_t* buf_ = nullptr;
+  // Offset to unread input within buf_.
   size_t offs_ = 0;
+  // Number of bytes written into buf_, including consumed input before offs_.
   size_t size_ = 0;
   size_t alignment_ = 8;
+  // Total size of buf_.
   size_t capacity_ = 0;
+  // Tracks raw buffer memory replacements.
+  uint64_t generation_ = 0;
 };
 
 }  // namespace base
