@@ -10,6 +10,10 @@
 #define _MAC_OS_ 1
 #endif
 
+#if defined(__FreeBSD__)
+#include <pthread_np.h>
+#endif
+
 namespace base {
 
 static void* start_cpp_function(void* arg) {
@@ -31,12 +35,28 @@ void InitCondVarWithClock(clockid_t clock_id, pthread_cond_t* var) {
   PTHREAD_CHECK(condattr_destroy(&attr));
 }
 
-pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg) {
+pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg,
+                       int cpu_affinity) {
   CHECK_LT(strlen(name), 16U);
 
   pthread_attr_t attrs;
   PTHREAD_CHECK(attr_init(&attrs));
   PTHREAD_CHECK(attr_setstacksize(&attrs, kThreadStackSize));
+
+#if defined(__linux__) || defined(__FreeBSD__)
+  if (cpu_affinity >= 0) {
+    cpu_set_t cps;
+    CPU_ZERO(&cps);
+    CPU_SET(cpu_affinity, &cps);
+    int rc = pthread_attr_setaffinity_np(&attrs, sizeof(cps), &cps);
+    if (rc != 0) {
+      LOG(WARNING) << "Could not set affinity attr to cpu " << cpu_affinity << ": "
+                   << strerror(rc);
+    }
+  }
+#else
+  (void)cpu_affinity;
+#endif
 
   pthread_t result;
   VLOG(1) << "Starting thread " << name;
@@ -52,8 +72,9 @@ pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg
   return result;
 }
 
-pthread_t StartThread(const char* name, std::function<void()> f) {
-  return StartThread(name, start_cpp_function, new std::function<void()>(std::move(f)));
+pthread_t StartThread(const char* name, std::function<void()> f, int cpu_affinity) {
+  return StartThread(name, start_cpp_function, new std::function<void()>(std::move(f)),
+                     cpu_affinity);
 }
 
 }  // namespace base

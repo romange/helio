@@ -13,6 +13,7 @@
 #include <mutex>
 #include <thread>
 
+#include "base/flags.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
@@ -25,6 +26,13 @@
 #include "util/fibers/pool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/fibers/synchronization.h"
+
+#if defined(__linux__) || defined(__FreeBSD__)
+#include <sched.h>
+
+ABSL_DECLARE_FLAG(std::string, proactor_cpu_list);
+ABSL_DECLARE_FLAG(uint32_t, proactor_cpu_offset);
+#endif
 
 #ifdef __linux__
 #include <sys/epoll.h>
@@ -1442,6 +1450,75 @@ TEST_F(FiberTest, PersistentWaiterStarvationDCheck) {
       "causes starvation");
 }
 #endif
+
+#if defined(__linux__) || defined(__FreeBSD__)
+
+// Returns the list of cpus this process is allowed to run on.
+static vector<unsigned> OnlineCpuList() {
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  CHECK_EQ(0, sched_getaffinity(0, sizeof(allowed), &allowed));
+  vector<unsigned> online;
+  for (unsigned c = 0; c < CPU_SETSIZE; ++c) {
+    if (CPU_ISSET(c, &allowed))
+      online.push_back(c);
+  }
+  return online;
+}
+
+// Verifies that proactor_cpu_list pins proactor thread i to list[i], in the exact
+// (possibly non-ascending) order given - not just "some" cpu.
+TEST_F(FiberTest, ProactorPoolCpuList) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 2) {
+    GTEST_SKIP() << "Needs at least 2 online cpus";
+  }
+
+  // Deliberately reversed (last, first) to prove we are not just relying on ascending order.
+  unsigned cpu_a = online.back();
+  unsigned cpu_b = online.front();
+  absl::SetFlag(&FLAGS_proactor_cpu_list, absl::StrCat(cpu_a, ",", cpu_b));
+
+  unique_ptr<Pool> pool(Pool::Epoll());  // pool size defaults to the cpu list length (2).
+  pool->Run();
+  ASSERT_EQ(2u, pool->size());
+
+  vector<int> actual_cpu(2, -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  EXPECT_EQ(int(cpu_a), actual_cpu[0]);
+  EXPECT_EQ(int(cpu_b), actual_cpu[1]);
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_cpu_list, "");  // reset - flags are process-global.
+}
+
+// Verifies that proactor_cpu_offset rotates the default ascending cpu assignment,
+// including wraparound.
+TEST_F(FiberTest, ProactorPoolCpuOffset) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 2) {
+    GTEST_SKIP() << "Needs at least 2 online cpus";
+  }
+
+  absl::SetFlag(&FLAGS_proactor_cpu_offset, 1u);
+
+  unique_ptr<Pool> pool(Pool::Epoll(online.size()));
+  pool->Run();
+
+  vector<int> actual_cpu(online.size(), -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  for (unsigned i = 0; i < online.size(); ++i) {
+    unsigned expected = online[(i + 1) % online.size()];
+    EXPECT_EQ(int(expected), actual_cpu[i]) << "thread " << i;
+  }
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_cpu_offset, 0u);  // reset - flags are process-global.
+}
+
+#endif  // defined(__linux__) || defined(__FreeBSD__)
 
 }  // namespace fb2
 }  // namespace util
