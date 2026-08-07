@@ -58,5 +58,20 @@ TEST_F(AwsCredsProviderTest, ServiceEndpointOverride) {
   EXPECT_EQ(provider.ServiceEndpoint(), "my-minio.example:9000");
 }
 
+// Regression test for https://github.com/romange/helio/issues/627: the
+// container-credentials auth token must be sent as-is, with no "Bearer "
+// scheme prefix, or the EKS Pod Identity Agent (and ECS task metadata) reject
+// the request with HTTP 400.
+TEST_F(AwsCredsProviderTest, ContainerCredsHeadersNoBearerPrefix) {
+  auto headers = ContainerCredsHeaders("eks-pod-identity-token");
+  ASSERT_EQ(headers.size(), 1u);
+  EXPECT_EQ(headers[0].first, "Authorization");
+  EXPECT_EQ(headers[0].second, "eks-pod-identity-token");
+}
+
+TEST_F(AwsCredsProviderTest, ContainerCredsHeadersEmptyTokenOmitsHeader) {
+  EXPECT_TRUE(ContainerCredsHeaders("").empty());
+}
+
 }  // namespace cloud::aws
 }  // namespace util
