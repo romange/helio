@@ -4,6 +4,11 @@
 
 #include "util/proactor_pool.h"
 
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
+
 #include <vector>
 
 #include "base/flags.h"
@@ -22,6 +27,15 @@ using namespace std;
 
 ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
 ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
+ABSL_FLAG(string, proactor_cpu_list, "",
+          "Explicit list of cpu ids to pin proactor threads to, e.g. \"1,4,6,7\" or "
+          "\"48-95,0-47\". Proactor thread i is pinned to entry (i % list_size). Takes priority "
+          "over proactor_cpu_offset. If set and proactor_threads is 0, the pool size defaults to "
+          "the list length.");
+ABSL_FLAG(uint32_t, proactor_cpu_offset, 0,
+          "Rotates the default sequential cpu assignment: proactor thread i is pinned to the "
+          "((i + offset) % num_online_cpus)-th online cpu (in ascending order) instead of the "
+          "(i % num_online_cpus)-th. Ignored if proactor_cpu_list is set.");
 
 namespace util {
 
@@ -107,13 +121,44 @@ static unsigned NumOnlineCpus() {
   return CPU_COUNT(&cpus);
 }
 
+// Parses a comma-separated list of cpu ids and/or inclusive ranges, e.g.
+// "1,4,6,7" or "48-95,0-47". Order is preserved (ranges expand in the order given),
+// duplicates are allowed as-is.
+vector<unsigned> ParseCpuList(string_view str) {
+  vector<unsigned> res;
+  for (string_view part : absl::StrSplit(str, ',', absl::SkipEmpty())) {
+    size_t dash = part.find('-');
+    if (dash == string_view::npos) {
+      unsigned v = 0;
+      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_cpu_list: " << part;
+      res.push_back(v);
+    } else {
+      unsigned lo = 0, hi = 0;
+      CHECK(absl::SimpleAtoi(part.substr(0, dash), &lo))
+          << "Invalid cpu range in proactor_cpu_list: " << part;
+      CHECK(absl::SimpleAtoi(part.substr(dash + 1), &hi))
+          << "Invalid cpu range in proactor_cpu_list: " << part;
+      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_cpu_list: " << part;
+      for (unsigned v = lo; v <= hi; ++v) {
+        res.push_back(v);
+      }
+    }
+  }
+  return res;
+}
+
 }  // namespace
 
 ProactorPool::ProactorPool(std::size_t pool_size) {
   if (pool_size == 0) {
     auto num_pthreads = absl::GetFlag(FLAGS_proactor_threads);
-    // thread::hardware_concurrency() returns number of online cpus but ignores taskset.
-    pool_size = num_pthreads > 0 ? num_pthreads : NumOnlineCpus();
+    if (num_pthreads > 0) {
+      pool_size = num_pthreads;
+    } else {
+      // thread::hardware_concurrency() returns number of online cpus but ignores taskset.
+      vector<unsigned> cpu_list = ParseCpuList(absl::GetFlag(FLAGS_proactor_cpu_list));
+      pool_size = cpu_list.empty() ? NumOnlineCpus() : cpu_list.size();
+    }
     VLOG(1) << "Setting pool size to " << pool_size;
   }
 
@@ -246,11 +291,19 @@ void ProactorPool::SetupProactors() {
   CHECK_EQ(rel_cpu_index, num_online_cpus) << "Such beast is not supported";
   cpu_threads_.resize(abs_cpu_index + 1);
 
-  cpu_set_t cps;
-  CPU_ZERO(&cps);
+  vector<unsigned> cpu_list = ParseCpuList(absl::GetFlag(FLAGS_proactor_cpu_list));
+  for (unsigned cpu : cpu_list) {
+    CHECK_LT(cpu, cpu_threads_.size())
+        << "proactor_cpu_list: cpu id out of range: " << cpu;
+    CHECK(CPU_ISSET(cpu, &online_cpus))
+        << "proactor_cpu_list: cpu " << cpu << " is not online/allowed for this process";
+  }
+  uint32_t cpu_offset = absl::GetFlag(FLAGS_proactor_cpu_offset);
 
+  bool explicit_pin = !cpu_list.empty() || cpu_offset != 0;
   bool set_affinity = (mode == AffinityMode::ON) ||
-                      (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2);
+                      (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2) ||
+                      explicit_pin;
 
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
@@ -261,29 +314,43 @@ void ProactorPool::SetupProactors() {
       proactor_[i]->Run();
     };
 
-    pthread_t tid = base::StartThread(buf, std::move(cb));
 #if defined(__linux__) || defined(__FreeBSD__)
+    int cpu_affinity = -1;
     if (set_affinity) {
-      // Spread proactor threads across online CPUs.
-      int rel_indx = i % num_online_cpus;
-      unsigned abs_cpu = rel_to_abs_cpu[rel_indx];
-      CHECK_LT(abs_cpu, cpu_threads_.size());
-      CPU_SET(abs_cpu, &cps);
-
-      int rc = pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
-      if (rc == 0) {
-        VLOG(1) << "Setting affinity of thread " << i << " on cpu " << abs_cpu;
-        cpu_threads_[abs_cpu].push_back(i);
+      unsigned abs_cpu;
+      if (!cpu_list.empty()) {
+        abs_cpu = cpu_list[i % cpu_list.size()];
       } else {
-        LOG(WARNING) << "Error calling pthread_setaffinity_np: " << strerror(rc) << "\n";
+        unsigned rel_indx = (i + cpu_offset) % num_online_cpus;
+        abs_cpu = rel_to_abs_cpu[rel_indx];
       }
+      CHECK_LT(abs_cpu, cpu_threads_.size());
+      cpu_affinity = static_cast<int>(abs_cpu);
+    }
 
-      CPU_CLR(abs_cpu, &cps);
+    // Pin the thread's affinity before it starts running (via pthread_attr_setaffinity_np),
+    // rather than after via pthread_setaffinity_np: setting it after only migrates the
+    // thread's *execution*, not memory it may have already first-touched (see
+    // base::StartThread's doc comment for the full rationale).
+    base::StartThread(buf, std::move(cb), cpu_affinity);
+    if (cpu_affinity >= 0) {
+      VLOG(1) << "Pinned thread " << i << " to cpu " << cpu_affinity;
+      cpu_threads_[cpu_affinity].push_back(i);
     }
 #else
-    (void)tid;
+    base::StartThread(buf, std::move(cb));
     (void)set_affinity;
 #endif
+  }
+
+  if (!cpu_list.empty() || cpu_offset != 0) {
+    string mapping;
+    for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
+      if (!cpu_threads_[cpu].empty()) {
+        absl::StrAppend(&mapping, " cpu", cpu, "={", absl::StrJoin(cpu_threads_[cpu], ","), "}");
+      }
+    }
+    LOG(INFO) << "Proactor thread->cpu mapping:" << mapping;
   }
 
   state_ = RUN;
