@@ -252,6 +252,17 @@ string StsEndpoint(string_view region) {
   return "sts.amazonaws.com";
 }
 
+vector<pair<string, string>> ContainerCredsHeaders(string_view auth_token) {
+  vector<pair<string, string>> headers;
+  if (!auth_token.empty()) {
+    // ECS/EKS Pod Identity container-credentials endpoints expect the raw token as the
+    // header value, with no "Bearer " scheme prefix (unlike normal OAuth bearer auth).
+    // See https://github.com/romange/helio/issues/627.
+    headers.push_back({"Authorization", string(auth_token)});
+  }
+  return headers;
+}
+
 AwsCredsProvider::AwsCredsProvider(string region, string endpoint_override)
     : region_(std::move(region)), endpoint_override_(std::move(endpoint_override)) {
 }
@@ -454,11 +465,7 @@ error_code AwsCredsProvider::TryContainerCreds() {
     }
   }
 
-  // Determine if http or https.
-  vector<pair<string, string>> headers;
-  if (!auth_token.empty()) {
-    headers.push_back({"Authorization", absl::StrCat("Bearer ", auth_token)});
-  }
+  vector<pair<string, string>> headers = ContainerCredsHeaders(auth_token);
 
   auto [host, port, path, is_https] = ParseHttpUrl(uri);
   auto resp = FetchUrl(host, port, path, h2::verb::get, headers, "", connect_ms_,

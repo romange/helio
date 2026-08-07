@@ -4,6 +4,8 @@
 #pragma once
 
 #include <atomic>
+#include <utility>
+#include <vector>
 
 #include "base/RWSpinLock.h"
 #include "util/cloud/utils.h"
@@ -37,6 +39,12 @@ std::string_view PartitionDnsSuffix(std::string_view region);
 // endpoint, so it uses the regional "sts.{region}.amazonaws.com.cn"; every other
 // partition uses the global "sts.amazonaws.com".
 std::string StsEndpoint(std::string_view region);
+
+// Builds the request headers for the ECS/EKS Pod Identity container-credentials
+// endpoint. Empty when `auth_token` is empty; otherwise a single "Authorization"
+// header whose value is the raw token, with no "Bearer " scheme prefix (unlike
+// normal OAuth bearer auth) — see https://github.com/romange/helio/issues/627.
+std::vector<std::pair<std::string, std::string>> ContainerCredsHeaders(std::string_view auth_token);
 
 // Implements CredentialsProvider for AWS.
 //
