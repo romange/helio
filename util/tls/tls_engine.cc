@@ -257,11 +257,11 @@ auto Engine::ToOpResult(int result, const char* location) -> OpResult {
           VLOG(1) << "SSL application data after close_notify " << location;
           break;
         default: {
-          // All other protocol errors are warnings/fatal
+          // All other protocol errors terminate only the affected connection.
+          // They are fatal for the connection, but not to the entire process.
           state_ |= FATAL_ERROR;
-          LOG_EVERY_T(WARNING, 1) << "SSL protocol error " << ERROR_DETAILS(queue_error, location)
-                                  << " bytes_read: " << bytes_read_
-                                  << " bytes_written: " << bytes_written_;
+          VLOG(1) << "SSL protocol error " << ERROR_DETAILS(queue_error, location)
+                  << " bytes_read: " << bytes_read_ << " bytes_written: " << bytes_written_;
         }
       }
       break;
