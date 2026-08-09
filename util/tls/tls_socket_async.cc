@@ -22,21 +22,102 @@ TlsAsyncIo::TlsAsyncIo(TlsSocket* owner) : owner_(owner) {
 
 TlsAsyncIo::~TlsAsyncIo() = default;
 
+int TlsAsyncIo::EngineRead(const iovec* v) {
+  int op_val = owner_->engine_->Read(reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len);
+  DVLOG(2) << "Engine::Read tried to read " << v->iov_len << " bytes, got " << op_val;
+  return op_val;
+}
+
+TlsAsyncIo::PushResult TlsAsyncIo::PushUserDataToEngine(const iovec* v, uint32_t len) {
+  TlsSocket::PushResult result = owner_->PushUserDataToEngine(v, len);
+  return {result.written, result.engine_opcode};
+}
+
+size_t TlsAsyncIo::EngineOutputPending() const {
+  return owner_->engine_->OutputPending();
+}
+
+void TlsAsyncIo::EngineCommitInput(size_t size) {
+  owner_->engine_->CommitInput(size);
+}
+
+void TlsAsyncIo::EngineConsumeOutput(size_t size) {
+  owner_->upstream_write_ += size;
+  owner_->engine_->ConsumeOutputBuf(size);
+}
+
+bool TlsAsyncIo::read_in_progress() const {
+  return owner_->flags_.read_in_progress();
+}
+
+bool TlsAsyncIo::write_in_progress() const {
+  return owner_->flags_.write_in_progress();
+}
+
+void TlsAsyncIo::clear_io_in_progress_and_notify(IoFlag flag) {
+  const uint8_t owner_flag = (flag == IoFlag::kReadInProgress) ? TlsSocket::READ_IN_PROGRESS
+                                                               : TlsSocket::WRITE_IN_PROGRESS;
+  owner_->flags_.clear_io_in_progress_and_notify(owner_flag);
+}
+
+uint8_t TlsAsyncIo::flags_bits() const {
+  return owner_->flags_.bits();
+}
+
+size_t TlsAsyncIo::upstream_write() const {
+  return owner_->upstream_write_;
+}
+
+FiberSocketBase::native_handle_type TlsAsyncIo::native_handle() const {
+  return owner_->native_handle();
+}
+
+void TlsAsyncIo::StartUpstreamRead(iovec* scratch, io::AsyncProgressCb cb) {
+  auto buffer = owner_->engine_->PeekInputBuf();
+  owner_->flags_.set_read_in_progress();
+  scratch->iov_base = const_cast<uint8_t*>(buffer.data());
+  scratch->iov_len = buffer.size();
+  owner_->next_sock_->AsyncReadSome(scratch, 1, std::move(cb));
+}
+
+void TlsAsyncIo::StartUpstreamWrite(iovec* scratch, io::AsyncProgressCb cb) {
+  Engine::Buffer buffer = owner_->engine_->PeekOutputBuf();
+  DCHECK(!buffer.empty());
+  DCHECK(!owner_->flags_.write_in_progress());
+  DVLOG(2) << "StartUpstreamWrite " << buffer.size();
+  owner_->flags_.set_write_in_progress();
+  scratch->iov_base = const_cast<uint8_t*>(buffer.data());
+  scratch->iov_len = buffer.size();
+  owner_->next_sock_->AsyncWriteSome(scratch, 1, std::move(cb));
+}
+
+bool TlsAsyncIo::ContinueUpstreamWrite(iovec* scratch, io::AsyncProgressCb cb) {
+  Engine::Buffer buffer = owner_->engine_->PeekOutputBuf();
+  if (buffer.empty()) {
+    return false;
+  }
+  DCHECK(owner_->flags_.write_in_progress());
+  scratch->iov_base = const_cast<uint8_t*>(buffer.data());
+  scratch->iov_len = buffer.size();
+  owner_->next_sock_->AsyncWriteSome(scratch, 1, std::move(cb));
+  return true;
+}
+
 void TlsAsyncIo::StartAsyncWrite(io::AsyncProgressCb async_write_cb) {
   // Hard CHECK: overwriting a live request would free a TlsAsyncReq still referenced by in-flight
   // AsyncWriteSome callbacks (use-after-free). Callers guarantee no write is in flight
   // (TrySend/TryRecv bail out early on WRITE_IN_PROGRESS), so this never fires in correct runs.
   CHECK(!async_write_req_);
-  DCHECK_GT(owner_->engine_->OutputPending(), 0u);
+  DCHECK_GT(EngineOutputPending(), 0u);
   // (vec, len) = (nullptr, 0): no new user bytes, only the engine's buffered output is sent.
   // AsyncRoleBasedAction treats a WRITER with vec_ == nullptr as output-only and ends when drained.
-  async_write_req_ = std::make_unique<TlsAsyncReq>(owner_, this, std::move(async_write_cb), nullptr,
-                                                   0, TlsAsyncReq::WRITER);
+  async_write_req_ = std::make_unique<TlsAsyncReq>(this, std::move(async_write_cb), nullptr, 0,
+                                                   TlsAsyncReq::WRITER);
   async_write_req_->StartUpstreamWrite();
 }
 
 void TlsAsyncReq::MaybeSendOutputAsyncWithRead() {
-  if (owner_->engine_->OutputPending() != 0) {
+  if (async_io_->EngineOutputPending() != 0) {
     // Once the networking socket completes the write, it will start the read path
     // We use this bool to signal this.
     should_read_ = true;
@@ -48,8 +129,8 @@ void TlsAsyncReq::MaybeSendOutputAsyncWithRead() {
 }
 
 void TlsAsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
-  owner_->flags_.clear_io_in_progress_and_notify(TlsSocket::READ_IN_PROGRESS);
-  RunPending();
+  async_io_->clear_io_in_progress_and_notify(TlsAsyncIo::IoFlag::kReadInProgress);
+  async_io_->RunPending();
   if (!read_result) {
     // Erroneous path. Apply the completion callback and exit.
     CompleteAsyncReq(read_result);
@@ -62,30 +143,22 @@ void TlsAsyncReq::AsyncReadProgressCb(io::Result<size_t> read_result) {
   }
 
   DVLOG(1) << "AsyncProgressCb " << *read_result << " bytes";
-  owner_->engine_->CommitInput(*read_result);
+  async_io_->EngineCommitInput(*read_result);
   AsyncRoleBasedAction();
 }
 
 void TlsAsyncReq::StartUpstreamRead() {
-  auto& socket_flags = owner_->flags_;
   // Even if we early return below we still should not try to read. When we
   // wake up we will poll the SSL engine which will dictate the next action/step.
   should_read_ = false;
-  if (socket_flags.read_in_progress()) {
+  if (async_io_->read_in_progress()) {
     auto* prev = std::exchange(async_io_->blocked_async_req_, this);
     CHECK(prev == nullptr);
     return;
   }
 
-  auto buffer = owner_->engine_->PeekInputBuf();
-  socket_flags.set_read_in_progress();
-
-  auto& scratch = scratch_iovec_;
-  scratch.iov_base = const_cast<uint8_t*>(buffer.data());
-  scratch.iov_len = buffer.size();
-
-  owner_->next_sock_->AsyncReadSome(&scratch, 1,
-                                    [this](auto res) { this->AsyncReadProgressCb(res); });
+  async_io_->StartUpstreamRead(&scratch_iovec_,
+                               [this](auto res) { this->AsyncReadProgressCb(res); });
 }
 
 void TlsAsyncReq::CompleteAsyncReq(io::Result<size_t> result) {
@@ -128,73 +201,62 @@ void TlsAsyncIo::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb
   // Engine read
   CHECK(!async_read_req_);
 
-  Engine::OpResult op_val =
-      owner_->engine_->Read(reinterpret_cast<uint8_t*>(v->iov_base), v->iov_len);
-  DVLOG(2) << "Engine::Read tried to read " << v->iov_len << " bytes, got " << op_val;
+  Engine::OpResult op_val = EngineRead(v);
   // We read some data from the engine. Satisfy the request and return.
   if (op_val > 0) {
     return cb(op_val);
   }
 
   if (op_val == Engine::EOF_ABRUPT) {
-    VLOG(1) << "EOF_ABRUPT received " << owner_->next_sock_->native_handle();
+    VLOG(1) << "EOF_ABRUPT received " << native_handle();
     return cb(make_unexpected(make_error_code(errc::connection_reset)));
   }
   if (op_val == Engine::EOF_GRACEFUL) {
-    VLOG(1) << "EOF_GRACEFUL received " << owner_->next_sock_->native_handle();
+    VLOG(1) << "EOF_GRACEFUL received " << native_handle();
     return cb(0);  // return 0 to indicate EOF
   }
 
   // We could not read from the engine. Dispatch async op.
   DCHECK_GT(len, 0u);
-  async_read_req_ =
-      std::make_unique<TlsAsyncReq>(owner_, this, std::move(cb), v, len, TlsAsyncReq::READER);
+  async_read_req_ = std::make_unique<TlsAsyncReq>(this, std::move(cb), v, len, TlsAsyncReq::READER);
   async_read_req_->HandleOpAsync(op_val);
 }
 
 void TlsAsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
-  auto& socket_flags = owner_->flags_;
   if (!write_result) {
-    socket_flags.clear_io_in_progress_and_notify(TlsSocket::WRITE_IN_PROGRESS);
+    async_io_->clear_io_in_progress_and_notify(TlsAsyncIo::IoFlag::kWriteInProgress);
 
     // broken_pipe - happens when the other side closes the connection. do not log this.
     if (write_result.error() != errc::broken_pipe) {
-      VLOG(1) << "sock[" << owner_->native_handle() << "], state " << int(socket_flags.bits())
-              << ", write_total:" << owner_->upstream_write_ << " "
-              << " pending output: " << owner_->engine_->OutputPending()
+      VLOG(1) << "sock[" << async_io_->native_handle() << "], state "
+              << int(async_io_->flags_bits()) << ", write_total:" << async_io_->upstream_write()
+              << " pending output: " << async_io_->EngineOutputPending()
               << " HandleUpstreamAsyncWrite failed " << write_result.error();
     }
 
     // We are done. Erroneous exit.
-    RunPending();
+    async_io_->RunPending();
     CompleteAsyncReq(write_result);
     return;
   }
 
   CHECK_GT(*write_result, 0u);
-  owner_->upstream_write_ += *write_result;
-  owner_->engine_->ConsumeOutputBuf(*write_result);
-  // We might have more data pending. Peek again.
-  TlsSocket::Buffer buffer = owner_->engine_->PeekOutputBuf();
+  async_io_->EngineConsumeOutput(*write_result);
 
-  // We are not done. Re-arm the async write until we drive it to completion or error.
-  // We would also like to avoid fragmented socket writes so we make sure we drain it here
-  if (!buffer.empty()) {
-    auto& scratch = scratch_iovec_;
-    scratch.iov_base = const_cast<uint8_t*>(buffer.data());
-    scratch.iov_len = buffer.size();
-    owner_->next_sock_->AsyncWriteSome(
-        &scratch, 1, [this](auto write_result) { AsyncWriteProgressCb(write_result); });
+  // Re-arm the async write until we drive it to completion or error.
+  // We would also like to avoid fragmented socket writes so we make sure we drain it here.
+  if (async_io_->ContinueUpstreamWrite(&scratch_iovec_,
+                                       [this](auto result) { AsyncWriteProgressCb(result); })) {
     return;
   }
 
-  if (owner_->engine_->OutputPending() > 0) {
-    LOG(DFATAL) << "ssl buffer is not empty with " << owner_->engine_->OutputPending()
+  if (async_io_->EngineOutputPending() > 0) {
+    LOG(DFATAL) << "ssl buffer is not empty with " << async_io_->EngineOutputPending()
                 << " bytes. Async short write detected";
   }
 
-  socket_flags.clear_io_in_progress_and_notify(TlsSocket::WRITE_IN_PROGRESS);
-  RunPending();
+  async_io_->clear_io_in_progress_and_notify(TlsAsyncIo::IoFlag::kWriteInProgress);
+  async_io_->RunPending();
 
   // We are done with the write, check if we also need to read because we are
   // in NEED_READ_AND_MAYBE_WRITE state
@@ -208,8 +270,7 @@ void TlsAsyncReq::AsyncWriteProgressCb(io::Result<size_t> write_result) {
 
 void TlsAsyncReq::AsyncRoleBasedAction() {
   if (role_ == READER) {
-    auto op_val = owner_->engine_->Read(reinterpret_cast<uint8_t*>(vec_->iov_base), vec_->iov_len);
-    DVLOG(2) << "Engine::Read tried to read " << vec_->iov_len << " bytes, got " << op_val;
+    auto op_val = async_io_->EngineRead(vec_);
     HandleOpAsync(op_val);
     return;
   }
@@ -230,7 +291,7 @@ void TlsAsyncReq::AsyncRoleBasedAction() {
     return;
   }
   // We need to call PushUserDataToEngine again
-  TlsSocket::PushResult push_res = owner_->PushUserDataToEngine(vec_, len_);
+  TlsAsyncIo::PushResult push_res = async_io_->PushUserDataToEngine(vec_, len_);
   Engine::OpResult op_val = push_res.engine_opcode;
   engine_written_ = push_res.written;
   if (op_val < 0) {
@@ -242,35 +303,22 @@ void TlsAsyncReq::AsyncRoleBasedAction() {
 }
 
 void TlsAsyncReq::StartUpstreamWrite() {
-  auto& socket_flags = owner_->flags_;
-  if (socket_flags.write_in_progress()) {
+  if (async_io_->write_in_progress()) {
     CHECK(async_io_->blocked_async_req_ == nullptr);
     async_io_->blocked_async_req_ = this;
     return;
   }
 
-  Engine::Buffer buffer = owner_->engine_->PeekOutputBuf();
-  DCHECK(!buffer.empty());
-  DCHECK(!socket_flags.write_in_progress());
-
-  DVLOG(2) << "StartUpstreamWrite " << buffer.size();
-  // we do not allow concurrent writes from multiple fibers.
-  socket_flags.set_write_in_progress();
-
-  auto& scratch = scratch_iovec_;
-  scratch.iov_base = const_cast<uint8_t*>(buffer.data());
-  scratch.iov_len = buffer.size();
-
-  owner_->next_sock_->AsyncWriteSome(
-      &scratch, 1, [this](auto write_result) { AsyncWriteProgressCb(write_result); });
+  async_io_->StartUpstreamWrite(&scratch_iovec_,
+                                [this](auto result) { AsyncWriteProgressCb(result); });
 }
 
 void TlsAsyncReq::MaybeSendOutputAsync() {
-  if (owner_->engine_->OutputPending() == 0) {
+  if (async_io_->EngineOutputPending() == 0) {
     return;
   }
 
-  if (owner_->flags_.write_in_progress()) {
+  if (async_io_->write_in_progress()) {
     CHECK(async_io_->blocked_async_req_ == nullptr);
     async_io_->blocked_async_req_ = this;
     return;
@@ -295,10 +343,10 @@ void TlsAsyncIo::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressC
   CHECK(!async_write_req_);
 
   // Write to the engine
-  TlsSocket::PushResult push_res = owner_->PushUserDataToEngine(v, len);
+  PushResult push_res = PushUserDataToEngine(v, len);
 
   async_write_req_ =
-      std::make_unique<TlsAsyncReq>(owner_, this, std::move(cb), v, len, TlsAsyncReq::WRITER);
+      std::make_unique<TlsAsyncReq>(this, std::move(cb), v, len, TlsAsyncReq::WRITER);
   async_write_req_->SetEngineWritten(push_res.written);
   const int op_val = push_res.engine_opcode;
 
@@ -314,25 +362,25 @@ void TlsAsyncIo::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressC
   }
 }
 
-void TlsAsyncReq::RunPending() {
-  if (!async_io_->blocked_async_req_) {
+void TlsAsyncIo::RunPending() {
+  if (!blocked_async_req_) {
     return;
   }
 
-  auto* blocked = std::exchange(async_io_->blocked_async_req_, nullptr);
+  auto* blocked = std::exchange(blocked_async_req_, nullptr);
 
   if (blocked->should_read_) {
     blocked->StartUpstreamRead();
     return;
   }
 
-  if (blocked->role_ == Role::WRITER) {
-    auto current = std::move(async_io_->async_write_req_);
-    owner_->AsyncWriteSome(current->vec_, current->len_, std::move(current->caller_completion_cb_));
+  if (blocked->role_ == TlsAsyncReq::WRITER) {
+    auto current = std::move(async_write_req_);
+    AsyncWriteSome(current->vec_, current->len_, std::move(current->caller_completion_cb_));
     return;
   }
-  auto current = std::move(async_io_->async_read_req_);
-  owner_->AsyncReadSome(current->vec_, current->len_, std::move(current->caller_completion_cb_));
+  auto current = std::move(async_read_req_);
+  AsyncReadSome(current->vec_, current->len_, std::move(current->caller_completion_cb_));
 }
 
 }  // namespace tls

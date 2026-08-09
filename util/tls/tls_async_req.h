@@ -15,17 +15,14 @@ namespace tls {
 
 class TestDelegator;
 class TlsAsyncIo;
-class TlsSocket;
 
 // Drives one TLS read or write request until it invokes its completion callback.
 class TlsAsyncReq {
  public:
   enum Role : std::uint8_t { READER, WRITER };
   // Captures one caller request and the components that advance it.
-  TlsAsyncReq(TlsSocket* owner, TlsAsyncIo* async_io, io::AsyncProgressCb cb, const iovec* v,
-              uint32_t len, Role role)
-      : owner_(owner), async_io_(async_io), caller_completion_cb_(std::move(cb)), vec_(v),
-        len_(len), role_(role) {
+  TlsAsyncReq(TlsAsyncIo* async_io, io::AsyncProgressCb cb, const iovec* v, uint32_t len, Role role)
+      : async_io_(async_io), caller_completion_cb_(std::move(cb)), vec_(v), len_(len), role_(role) {
   }
   TlsAsyncReq(const TlsAsyncReq&) = delete;
   TlsAsyncReq& operator=(const TlsAsyncReq&) = delete;
@@ -42,8 +39,8 @@ class TlsAsyncReq {
 
  private:
   friend class TestDelegator;
+  friend class TlsAsyncIo;
 
-  TlsSocket* owner_;
   TlsAsyncIo* async_io_;
   io::AsyncProgressCb caller_completion_cb_;
   const iovec* vec_;
@@ -67,8 +64,6 @@ class TlsAsyncReq {
   void AsyncReadProgressCb(io::Result<size_t> result);
   // Advances the read or write state machine after an engine operation.
   void AsyncRoleBasedAction();
-  // Resumes the request deferred behind a completed upstream operation.
-  void RunPending();
 };
 
 }  // namespace tls

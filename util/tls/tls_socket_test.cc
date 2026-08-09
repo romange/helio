@@ -482,6 +482,7 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
 TEST_P(TlsSocketTest, ShortWrite) {
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
+  accept_fb_.Join();
 
   auto client_fb = proactor_->LaunchFiber([&] {
     uint8_t buf[256];
@@ -520,6 +521,8 @@ TEST_P(TlsSocketTest, ShortWrite) {
 TEST_P(TlsSocketTest, TryRecvVector) {
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
+  accept_fb_.Join();
+
   const std::string kPart1{"Hello, "};
   const std::string kPart2{"Vector!"};
   const std::string kFull{kPart1 + kPart2};
@@ -554,12 +557,12 @@ TEST_P(TlsSocketTest, TryRecvVector) {
       } else if (res && (*res == 0)) {
         break;  // EOF
       } else if (res.error() != std::errc::resource_unavailable_try_again &&
-                 res.error() != std::errc::operation_would_block) {
-        // Real error occurred (not EAGAIN/EWOULDBLOCK)
-        break;
+                 res.error() != std::errc::operation_would_block &&
+                 res.error() != std::errc::device_or_resource_busy) {
+        FAIL() << "TryRecv failed with an unexpected error: " << res.error().message();
       }
 
-      // We must back off when receiving EAGAIN
+      // Back off after a retryable result so other socket operations can progress.
       ThisFiber::SleepFor(10ms);
     }
 
@@ -693,6 +696,7 @@ TEST_P(TrySendVectorTest, SendScatterGather) {
   CHECK_GT(target_iovec_count, 0u) << "Iovec count must be greater than zero";
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
+  accept_fb_.Join();
 
   // 2. Prepare Data
   static constexpr size_t kPayloadSize = 16384;
@@ -1211,16 +1215,16 @@ namespace util::tls {
 void TestDelegator::ForceNeedWriteOnAsyncRead(TlsSocket* sock, const iovec* v, uint32_t len,
                                               io::AsyncProgressCb cb) {
   CHECK(!sock->async_io_.async_read_req_);
-  sock->async_io_.async_read_req_ = std::make_unique<TlsAsyncReq>(
-      sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::READER);
+  sock->async_io_.async_read_req_ =
+      std::make_unique<TlsAsyncReq>(&sock->async_io_, std::move(cb), v, len, TlsAsyncReq::READER);
   sock->async_io_.async_read_req_->HandleOpAsync(Engine::NEED_WRITE);
 }
 
 void TestDelegator::ForceNeedReadAndMaybeWriteOnAsyncWrite(TlsSocket* sock, const iovec* v,
                                                            uint32_t len, io::AsyncProgressCb cb) {
   CHECK(!sock->async_io_.async_write_req_);
-  sock->async_io_.async_write_req_ = std::make_unique<TlsAsyncReq>(
-      sock, &sock->async_io_, std::move(cb), v, len, TlsAsyncReq::WRITER);
+  sock->async_io_.async_write_req_ =
+      std::make_unique<TlsAsyncReq>(&sock->async_io_, std::move(cb), v, len, TlsAsyncReq::WRITER);
   sock->async_io_.async_write_req_->HandleOpAsync(Engine::NEED_READ_AND_MAYBE_WRITE);
 }
 
