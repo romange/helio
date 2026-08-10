@@ -4,6 +4,7 @@
 
 #include "util/proactor_pool.h"
 
+#include <absl/container/flat_hash_set.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
@@ -27,15 +28,11 @@ using namespace std;
 
 ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
 ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
-ABSL_FLAG(string, proactor_cpu_list, "",
-          "Explicit list of cpu ids to pin proactor threads to, e.g. \"1,4,6,7\" or "
-          "\"48-95,0-47\". Proactor thread i is pinned to entry (i % list_size). Takes priority "
-          "over proactor_cpu_offset. If set and proactor_threads is 0, the pool size defaults to "
-          "the list length.");
-ABSL_FLAG(uint32_t, proactor_cpu_offset, 0,
-          "Rotates the default sequential cpu assignment: proactor thread i is pinned to the "
-          "((i + offset) % num_online_cpus)-th online cpu (in ascending order) instead of the "
-          "(i % num_online_cpus)-th. Ignored if proactor_cpu_list is set.");
+ABSL_FLAG(string, proactor_irq_cpus, "",
+          "Explicit list of cpu ids/ranges handling irqs, e.g. \"1,4,6,7\" or \"0-47\". These "
+          "cpus are pinned to the highest proactor thread indices; every other online cpu is "
+          "pinned to the lower indices. Does not affect pool size. Ignored (with a logged error) "
+          "if it names an offline cpu or more cpus than the pool has threads.");
 
 namespace util {
 
@@ -152,13 +149,8 @@ vector<unsigned> ParseCpuList(string_view str) {
 ProactorPool::ProactorPool(std::size_t pool_size) {
   if (pool_size == 0) {
     auto num_pthreads = absl::GetFlag(FLAGS_proactor_threads);
-    if (num_pthreads > 0) {
-      pool_size = num_pthreads;
-    } else {
-      // thread::hardware_concurrency() returns number of online cpus but ignores taskset.
-      vector<unsigned> cpu_list = ParseCpuList(absl::GetFlag(FLAGS_proactor_cpu_list));
-      pool_size = cpu_list.empty() ? NumOnlineCpus() : cpu_list.size();
-    }
+    // thread::hardware_concurrency() returns number of online cpus but ignores taskset.
+    pool_size = num_pthreads > 0 ? num_pthreads : NumOnlineCpus();
     VLOG(1) << "Setting pool size to " << pool_size;
   }
 
@@ -291,19 +283,42 @@ void ProactorPool::SetupProactors() {
   CHECK_EQ(rel_cpu_index, num_online_cpus) << "Such beast is not supported";
   cpu_threads_.resize(abs_cpu_index + 1);
 
-  vector<unsigned> cpu_list = ParseCpuList(absl::GetFlag(FLAGS_proactor_cpu_list));
-  for (unsigned cpu : cpu_list) {
-    CHECK_LT(cpu, cpu_threads_.size())
-        << "proactor_cpu_list: cpu id out of range: " << cpu;
-    CHECK(CPU_ISSET(cpu, &online_cpus))
-        << "proactor_cpu_list: cpu " << cpu << " is not online/allowed for this process";
+  // irq_cpus are pinned to the highest thread indices; every other online cpu (the
+  // "complement") is pinned to the lower indices, in ascending order. A mismatch (offline cpu,
+  // or more irq cpus than pool threads) is not fatal: it's logged and the flag is ignored
+  // entirely, falling back to the default spread below.
+  vector<unsigned> irq_cpus = ParseCpuList(absl::GetFlag(FLAGS_proactor_irq_cpus));
+  vector<unsigned> effective_list;
+  if (!irq_cpus.empty()) {
+    bool valid = true;
+    for (unsigned cpu : irq_cpus) {
+      if (cpu >= cpu_threads_.size() || !CPU_ISSET(cpu, &online_cpus)) {
+        LOG(ERROR) << "proactor_irq_cpus: cpu " << cpu
+                   << " is not online/allowed for this process; ignoring proactor_irq_cpus.";
+        valid = false;
+        break;
+      }
+    }
+    if (valid && irq_cpus.size() > pool_size_) {
+      LOG(ERROR) << "proactor_irq_cpus: specifies " << irq_cpus.size()
+                 << " cpus, more than the pool size (" << pool_size_
+                 << "); ignoring proactor_irq_cpus.";
+      valid = false;
+    }
+    if (valid) {
+      absl::flat_hash_set<unsigned> irq_set(irq_cpus.begin(), irq_cpus.end());
+      for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
+        if (CPU_ISSET(cpu, &online_cpus) && !irq_set.contains(cpu)) {
+          effective_list.push_back(cpu);
+        }
+      }
+      effective_list.insert(effective_list.end(), irq_cpus.begin(), irq_cpus.end());
+    }
   }
-  uint32_t cpu_offset = absl::GetFlag(FLAGS_proactor_cpu_offset);
 
-  bool explicit_pin = !cpu_list.empty() || cpu_offset != 0;
   bool set_affinity = (mode == AffinityMode::ON) ||
                       (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2) ||
-                      explicit_pin;
+                      !effective_list.empty();
 
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
@@ -318,10 +333,10 @@ void ProactorPool::SetupProactors() {
     int cpu_affinity = -1;
     if (set_affinity) {
       unsigned abs_cpu;
-      if (!cpu_list.empty()) {
-        abs_cpu = cpu_list[i % cpu_list.size()];
+      if (!effective_list.empty()) {
+        abs_cpu = effective_list[i % effective_list.size()];
       } else {
-        unsigned rel_indx = (i + cpu_offset) % num_online_cpus;
+        unsigned rel_indx = i % num_online_cpus;
         abs_cpu = rel_to_abs_cpu[rel_indx];
       }
       CHECK_LT(abs_cpu, cpu_threads_.size());
@@ -343,7 +358,7 @@ void ProactorPool::SetupProactors() {
 #endif
   }
 
-  if (!cpu_list.empty() || cpu_offset != 0) {
+  if (!effective_list.empty()) {
     string mapping;
     for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
       if (!cpu_threads_[cpu].empty()) {

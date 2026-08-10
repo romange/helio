@@ -5,6 +5,7 @@
 #include "util/fibers/fibers.h"
 
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 #include <gmock/gmock.h>
 
 #include <atomic>
@@ -30,8 +31,7 @@
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sched.h>
 
-ABSL_DECLARE_FLAG(std::string, proactor_cpu_list);
-ABSL_DECLARE_FLAG(uint32_t, proactor_cpu_offset);
+ABSL_DECLARE_FLAG(std::string, proactor_irq_cpus);
 #endif
 
 #ifdef __linux__
@@ -1466,42 +1466,18 @@ static vector<unsigned> OnlineCpuList() {
   return online;
 }
 
-// Verifies that proactor_cpu_list pins proactor thread i to list[i], in the exact
-// (possibly non-ascending) order given - not just "some" cpu.
-TEST_F(FiberTest, ProactorPoolCpuList) {
+// Verifies that proactor_irq_cpus pins the listed cpu(s) to the highest thread indices,
+// and every other online cpu to the lower indices, in ascending order.
+TEST_F(FiberTest, ProactorPoolIrqCpus) {
   vector<unsigned> online = OnlineCpuList();
   if (online.size() < 2) {
     GTEST_SKIP() << "Needs at least 2 online cpus";
   }
 
-  // Deliberately reversed (last, first) to prove we are not just relying on ascending order.
-  unsigned cpu_a = online.back();
-  unsigned cpu_b = online.front();
-  absl::SetFlag(&FLAGS_proactor_cpu_list, absl::StrCat(cpu_a, ",", cpu_b));
-
-  unique_ptr<Pool> pool(Pool::Epoll());  // pool size defaults to the cpu list length (2).
-  pool->Run();
-  ASSERT_EQ(2u, pool->size());
-
-  vector<int> actual_cpu(2, -1);
-  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
-
-  EXPECT_EQ(int(cpu_a), actual_cpu[0]);
-  EXPECT_EQ(int(cpu_b), actual_cpu[1]);
-
-  pool->Stop();
-  absl::SetFlag(&FLAGS_proactor_cpu_list, "");  // reset - flags are process-global.
-}
-
-// Verifies that proactor_cpu_offset rotates the default ascending cpu assignment,
-// including wraparound.
-TEST_F(FiberTest, ProactorPoolCpuOffset) {
-  vector<unsigned> online = OnlineCpuList();
-  if (online.size() < 2) {
-    GTEST_SKIP() << "Needs at least 2 online cpus";
-  }
-
-  absl::SetFlag(&FLAGS_proactor_cpu_offset, 1u);
+  // Mark the first online cpu as the irq cpu: it should end up pinned to the *last*
+  // thread index, with every other cpu shifted up to fill the lower indices in ascending order.
+  unsigned irq_cpu = online.front();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrCat(irq_cpu));
 
   unique_ptr<Pool> pool(Pool::Epoll(online.size()));
   pool->Run();
@@ -1509,13 +1485,37 @@ TEST_F(FiberTest, ProactorPoolCpuOffset) {
   vector<int> actual_cpu(online.size(), -1);
   pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
 
-  for (unsigned i = 0; i < online.size(); ++i) {
-    unsigned expected = online[(i + 1) % online.size()];
-    EXPECT_EQ(int(expected), actual_cpu[i]) << "thread " << i;
+  for (unsigned i = 0; i + 1 < online.size(); ++i) {
+    EXPECT_EQ(int(online[i + 1]), actual_cpu[i]) << "thread " << i;
+  }
+  EXPECT_EQ(int(irq_cpu), actual_cpu[online.size() - 1]);
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+}
+
+// Verifies that specifying more irq cpus than the pool has threads is non-fatal: the flag is
+// ignored (logged, not CHECK-failed) and pinning falls back to the default ascending spread.
+TEST_F(FiberTest, ProactorPoolIrqCpusMismatchFallsBack) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 3) {
+    GTEST_SKIP() << "Needs at least 3 online cpus";
+  }
+
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrJoin(online, ","));
+
+  unique_ptr<Pool> pool(Pool::Epoll(2));  // pool smaller than the irq cpu list.
+  pool->Run();
+
+  vector<int> actual_cpu(2, -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  for (unsigned i = 0; i < 2; ++i) {
+    EXPECT_EQ(int(online[i % online.size()]), actual_cpu[i]) << "thread " << i;
   }
 
   pool->Stop();
-  absl::SetFlag(&FLAGS_proactor_cpu_offset, 0u);  // reset - flags are process-global.
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
 }
 
 #endif  // defined(__linux__) || defined(__FreeBSD__)

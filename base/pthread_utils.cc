@@ -36,25 +36,24 @@ void InitCondVarWithClock(clockid_t clock_id, pthread_cond_t* var) {
 }
 
 pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg,
-                       int cpu_affinity) {
+                      int cpu_affinity) {
   CHECK_LT(strlen(name), 16U);
 
   pthread_attr_t attrs;
   PTHREAD_CHECK(attr_init(&attrs));
   PTHREAD_CHECK(attr_setstacksize(&attrs, kThreadStackSize));
 
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__GLIBC__) || defined(__FreeBSD__)
+  // musl (e.g. Alpine) lacks pthread_attr_setaffinity_np, so it falls back below instead.
   if (cpu_affinity >= 0) {
     cpu_set_t cps;
     CPU_ZERO(&cps);
     CPU_SET(cpu_affinity, &cps);
     int rc = pthread_attr_setaffinity_np(&attrs, sizeof(cps), &cps);
-    if (rc != 0) {
-      LOG(WARNING) << "Could not set affinity attr to cpu " << cpu_affinity << ": "
-                   << strerror(rc);
-    }
+    CHECK_EQ(0, rc) << "Could not set affinity attr to cpu " << cpu_affinity << ": "
+                    << strerror(rc);
   }
-#else
+#elif !defined(__linux__)
   (void)cpu_affinity;
 #endif
 
@@ -62,6 +61,18 @@ pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg
   VLOG(1) << "Starting thread " << name;
 
   PTHREAD_CHECK(create(&result, &attrs, start_routine, arg));
+
+#if defined(__linux__) && !defined(__GLIBC__)
+  // Fallback for musl: no pre-creation affinity API, so pin after creation instead.
+  if (cpu_affinity >= 0) {
+    cpu_set_t cps;
+    CPU_ZERO(&cps);
+    CPU_SET(cpu_affinity, &cps);
+    int rc = pthread_setaffinity_np(result, sizeof(cps), &cps);
+    CHECK_EQ(0, rc) << "Could not set affinity to cpu " << cpu_affinity << ": " << strerror(rc);
+  }
+#endif
+
 #ifndef _MAC_OS_
   int my_err = pthread_setname_np(result, name);
   if (my_err != 0) {
