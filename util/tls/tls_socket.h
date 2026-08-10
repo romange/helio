@@ -290,7 +290,6 @@ class TlsSocket final : public FiberSocketBase {
 
   // TlsAsyncIo owns async request state and drives the async state machine.
   friend class TlsAsyncIo;
-  friend class TlsAsyncReq;
 
   TlsAsyncIo async_io_{this};
 

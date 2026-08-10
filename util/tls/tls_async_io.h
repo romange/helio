@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -19,7 +20,8 @@ class TestDelegator;
 // Owns the active TLS read/write requests and coordinates their asynchronous progress.
 class TlsAsyncIo {
  public:
-  // CTOR/DTOR are defined in tls_socket_async.cc where TlsAsyncReq is complete for unique_ptr cleanup.
+  // CTOR/DTOR are defined in tls_socket_async.cc where TlsAsyncReq is complete for unique_ptr
+  // cleanup.
   explicit TlsAsyncIo(TlsSocket* owner);
   ~TlsAsyncIo();
 
@@ -34,7 +36,36 @@ class TlsAsyncIo {
   friend class TlsAsyncReq;
   friend class TestDelegator;
 
+  struct PushResult {
+    size_t written;
+    int engine_opcode;
+  };
+
+  enum class IoFlag : uint8_t { kReadInProgress, kWriteInProgress };
+
+  int EngineRead(const iovec* v);
+  PushResult PushUserDataToEngine(const iovec* v, uint32_t len);
+  size_t EngineOutputPending() const;
+  void EngineCommitInput(size_t size);
+  void EngineConsumeOutput(size_t size);
+
+  void StartUpstreamRead(iovec* scratch, io::AsyncProgressCb cb);
+  void StartUpstreamWrite(iovec* scratch, io::AsyncProgressCb cb);
+  // Returns false when no TLS output remains and no upstream write is scheduled.
+  bool ContinueUpstreamWrite(iovec* scratch, io::AsyncProgressCb cb);
+  void RunPending();
+
+  // setter/ getters / clearers
+  bool read_in_progress() const;
+  bool write_in_progress() const;
+  void clear_io_in_progress_and_notify(IoFlag flag);
+  uint8_t flags_bits() const;
+  size_t upstream_write() const;
+  FiberSocketBase::native_handle_type native_handle() const;
+
   TlsSocket* owner_;
+
+  // Two independently active logical operations, both can be alive simultaneously.
   std::unique_ptr<TlsAsyncReq> async_read_req_;
   std::unique_ptr<TlsAsyncReq> async_write_req_;
 
