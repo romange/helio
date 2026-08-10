@@ -16,6 +16,15 @@
 
 namespace base {
 
+#if defined(__linux__) || defined(__FreeBSD__)
+static cpu_set_t SingleCpuSet(int cpu) {
+  cpu_set_t cps;
+  CPU_ZERO(&cps);
+  CPU_SET(cpu, &cps);
+  return cps;
+}
+#endif
+
 static void* start_cpp_function(void* arg) {
   std::function<void()>* fp = (std::function<void()>*)arg;
   CHECK(*fp);
@@ -46,9 +55,7 @@ pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg
 #if defined(__GLIBC__) || defined(__FreeBSD__)
   // musl (e.g. Alpine) lacks pthread_attr_setaffinity_np, so it falls back below instead.
   if (cpu_affinity >= 0) {
-    cpu_set_t cps;
-    CPU_ZERO(&cps);
-    CPU_SET(cpu_affinity, &cps);
+    cpu_set_t cps = SingleCpuSet(cpu_affinity);
     int rc = pthread_attr_setaffinity_np(&attrs, sizeof(cps), &cps);
     CHECK_EQ(0, rc) << "Could not set affinity attr to cpu " << cpu_affinity << ": "
                     << strerror(rc);
@@ -65,9 +72,7 @@ pthread_t StartThread(const char* name, void* (*start_routine)(void*), void* arg
 #if defined(__linux__) && !defined(__GLIBC__)
   // Fallback for musl: no pre-creation affinity API, so pin after creation instead.
   if (cpu_affinity >= 0) {
-    cpu_set_t cps;
-    CPU_ZERO(&cps);
-    CPU_SET(cpu_affinity, &cps);
+    cpu_set_t cps = SingleCpuSet(cpu_affinity);
     int rc = pthread_setaffinity_np(result, sizeof(cps), &cps);
     CHECK_EQ(0, rc) << "Could not set affinity to cpu " << cpu_affinity << ": " << strerror(rc);
   }
