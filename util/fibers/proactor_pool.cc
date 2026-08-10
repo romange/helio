@@ -127,15 +127,15 @@ vector<unsigned> ParseCpuList(string_view str) {
     size_t dash = part.find('-');
     if (dash == string_view::npos) {
       unsigned v = 0;
-      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_cpu_list: " << part;
+      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_irq_cpus: " << part;
       res.push_back(v);
     } else {
       unsigned lo = 0, hi = 0;
       CHECK(absl::SimpleAtoi(part.substr(0, dash), &lo))
-          << "Invalid cpu range in proactor_cpu_list: " << part;
+          << "Invalid cpu range in proactor_irq_cpus: " << part;
       CHECK(absl::SimpleAtoi(part.substr(dash + 1), &hi))
-          << "Invalid cpu range in proactor_cpu_list: " << part;
-      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_cpu_list: " << part;
+          << "Invalid cpu range in proactor_irq_cpus: " << part;
+      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_irq_cpus: " << part;
       for (unsigned v = lo; v <= hi; ++v) {
         res.push_back(v);
       }
@@ -283,12 +283,14 @@ void ProactorPool::SetupProactors() {
   CHECK_EQ(rel_cpu_index, num_online_cpus) << "Such beast is not supported";
   cpu_threads_.resize(abs_cpu_index + 1);
 
-  // irq_cpus are pinned to the highest thread indices; every other online cpu (the
-  // "complement") is pinned to the lower indices, in ascending order. A mismatch (offline cpu,
-  // or more irq cpus than pool threads) is not fatal: it's logged and the flag is ignored
-  // entirely, falling back to the default spread below.
+  // irq_cpus are pinned to the last irq_cpus.size() thread indices; every other online cpu
+  // (the "complement") is pinned to the remaining, lower indices, cycling in ascending order if
+  // there are more such indices than complement cpus. A mismatch (offline cpu, more irq cpus
+  // than pool threads, or no complement cpu left to fill the non-irq indices) is not fatal: it's
+  // logged and the flag is ignored entirely, falling back to the default spread below.
   vector<unsigned> irq_cpus = ParseCpuList(absl::GetFlag(FLAGS_proactor_irq_cpus));
-  vector<unsigned> effective_list;
+  vector<unsigned> complement;
+  bool use_irq_cpus = false;
   if (!irq_cpus.empty()) {
     bool valid = true;
     for (unsigned cpu : irq_cpus) {
@@ -305,20 +307,32 @@ void ProactorPool::SetupProactors() {
                  << "); ignoring proactor_irq_cpus.";
       valid = false;
     }
+    absl::flat_hash_set<unsigned> irq_set(irq_cpus.begin(), irq_cpus.end());
+    if (valid && irq_set.size() != irq_cpus.size()) {
+      LOG(ERROR) << "proactor_irq_cpus: contains a duplicate cpu id; ignoring proactor_irq_cpus.";
+      valid = false;
+    }
     if (valid) {
-      absl::flat_hash_set<unsigned> irq_set(irq_cpus.begin(), irq_cpus.end());
       for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
         if (CPU_ISSET(cpu, &online_cpus) && !irq_set.contains(cpu)) {
-          effective_list.push_back(cpu);
+          complement.push_back(cpu);
         }
       }
-      effective_list.insert(effective_list.end(), irq_cpus.begin(), irq_cpus.end());
+      if (pool_size_ > irq_cpus.size() && complement.empty()) {
+        LOG(ERROR) << "proactor_irq_cpus: no cpu left to assign to the non-irq threads; "
+                      "ignoring proactor_irq_cpus.";
+        valid = false;
+      }
     }
+    use_irq_cpus = valid;
   }
+  // Number of thread indices [0, non_irq_count) assigned to complement cpus; the remaining
+  // [non_irq_count, pool_size_) indices are assigned to irq_cpus, one each.
+  unsigned non_irq_count = use_irq_cpus ? pool_size_ - irq_cpus.size() : 0;
 
   bool set_affinity = (mode == AffinityMode::ON) ||
                       (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2) ||
-                      !effective_list.empty();
+                      use_irq_cpus;
 
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
@@ -333,8 +347,9 @@ void ProactorPool::SetupProactors() {
     int cpu_affinity = -1;
     if (set_affinity) {
       unsigned abs_cpu;
-      if (!effective_list.empty()) {
-        abs_cpu = effective_list[i % effective_list.size()];
+      if (use_irq_cpus) {
+        abs_cpu =
+            i < non_irq_count ? complement[i % complement.size()] : irq_cpus[i - non_irq_count];
       } else {
         unsigned rel_indx = i % num_online_cpus;
         abs_cpu = rel_to_abs_cpu[rel_indx];
@@ -358,7 +373,7 @@ void ProactorPool::SetupProactors() {
 #endif
   }
 
-  if (!effective_list.empty()) {
+  if (use_irq_cpus) {
     string mapping;
     for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
       if (!cpu_threads_[cpu].empty()) {
