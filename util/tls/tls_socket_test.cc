@@ -11,6 +11,7 @@
 #include <openssl/err.h>
 
 #include <algorithm>
+#include <array>
 #include <thread>
 
 #include "base/gtest.h"
@@ -1349,6 +1350,90 @@ TEST_P(MockTlsSocketTest, BasicWrite) {
     auto res = sock_->Write(io::Bytes(buf, 5));
     ASSERT_FALSE(res);  // assert no error
   });
+}
+
+// Verifies that a blocked async writer resumes its existing request and does not submit already
+// consumed plaintext to the TLS engine again.
+TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
+  // Build a TLS socket around mock engine and upstream socket components.
+  auto next = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+  MockFiberSocket* mock_next = next.get();
+  TlsSocket sock(std::move(next));
+
+  auto mock_engine = std::make_unique<testing::NiceMock<MockEngine>>();
+  MockEngine* engine = mock_engine.get();
+  TestDelegator::SetEngine(&sock, std::move(mock_engine));
+
+  // Model one byte of reader output followed by one byte of writer output.
+  std::array<uint8_t, 2> encrypted_output{};
+  size_t pending_output = 1;
+  int read_calls = 0;
+  std::string engine_write;
+  io::AsyncProgressCb reader_write_cb;
+  size_t reader_result = 0;
+  size_t writer_result = 0;
+
+  // Mock the engine (default): OutputPending returns pending_output, PeekOutputBuf returns the corresponding buffer, and ConsumeOutputBuf reduces pending_output.
+  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] {
+    return pending_output;
+  }));
+  ON_CALL(*engine, PeekOutputBuf()).WillByDefault(testing::Invoke([&] {
+    return Engine::Buffer(encrypted_output.data(), pending_output);
+  }));
+  ON_CALL(*engine, ConsumeOutputBuf(testing::_))
+      .WillByDefault(testing::Invoke([&](unsigned size) {
+        ASSERT_LE(size, pending_output);
+        pending_output -= size;
+      }));
+
+  // Mock engine Read/Write: expected to be called exactly once
+  EXPECT_CALL(*engine, Read(testing::_, testing::_))
+      .WillRepeatedly(testing::Invoke([&](uint8_t*, size_t) {
+        return read_calls++ == 0 ? Engine::OpResult{Engine::NEED_WRITE} : Engine::OpResult{1};
+      }));
+  EXPECT_CALL(*engine, Write(testing::_))
+      .WillOnce(testing::Invoke([&](const Engine::Buffer& data) {
+        // Accept only the first four plaintext bytes and reject any second engine submission.
+        engine_write.assign(reinterpret_cast<const char*>(data.data()), data.size());
+        ++pending_output;
+        return Engine::OpResult{4};
+      }));
+
+  // Mock the raw socket AsyncWriteSome: Hold the reader's upstream write, then complete the resumed writer's output write.
+  EXPECT_CALL(*mock_next, AsyncWriteSome(testing::_, 1, testing::_))
+      .WillOnce(testing::Invoke([&](const iovec* v, uint32_t, io::AsyncProgressCb cb) {
+        EXPECT_EQ(v->iov_len, 1u);
+        reader_write_cb = std::move(cb);
+      }))
+      .WillOnce(testing::Invoke([](const iovec* v, uint32_t, io::AsyncProgressCb cb) {
+        EXPECT_EQ(v->iov_len, 1u);
+        cb(1);
+      }));
+
+  // Start the reader request so it owns the shared upstream write lane.
+  uint8_t read_buffer = 0;
+  iovec read_iovec{.iov_base = &read_buffer, .iov_len = 1};
+  sock.AsyncReadSome(&read_iovec, 1, [&](io::Result<size_t> result) {
+    ASSERT_TRUE(result);
+    reader_result = *result;
+  });
+  ASSERT_TRUE(reader_write_cb);
+
+  // Start a writer that makes partial engine progress while the reader write is in flight.
+  std::array<uint8_t, 8> plaintext{'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'};
+  iovec write_iovec{.iov_base = plaintext.data(), .iov_len = plaintext.size()};
+  sock.AsyncWriteSome(&write_iovec, 1, [&](io::Result<size_t> result) {
+    ASSERT_TRUE(result);
+    writer_result = *result;
+  });
+
+  // Complete the reader write, which causes RunPending() to resume the blocked writer.
+  reader_write_cb(1);
+
+  // The writer must complete with its original progress and must not call Engine::Write again.
+  EXPECT_EQ(engine_write, "ABCDEFGH");
+  EXPECT_EQ(reader_result, 1u);
+  EXPECT_EQ(writer_result, 4u);
 }
 
 // Verifies the logical flow of Handshake followed by Write.
