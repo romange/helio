@@ -375,8 +375,12 @@ void TlsAsyncIo::RunPending() {
   }
 
   if (blocked->role_ == TlsAsyncReq::WRITER) {
-    // We might have already pushed some data to the engine - the request is statefull.
-    // So we must continue, we cannot just start a new one.
+    // The request is stateful: it may have already pushed data to the engine.
+    // Continue it rather than starting a new request with the original plaintext.
+    if (EngineOutputPending() > 0) {
+      blocked->MaybeSendOutputAsync();
+      return;
+    }
     blocked->AsyncRoleBasedAction();
     return;
   }

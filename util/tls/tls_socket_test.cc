@@ -1373,7 +1373,8 @@ TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
   size_t reader_result = 0;
   size_t writer_result = 0;
 
-  // Mock the engine (default): OutputPending returns pending_output, PeekOutputBuf returns the corresponding buffer, and ConsumeOutputBuf reduces pending_output.
+  // Mock the engine (default): OutputPending returns pending_output, PeekOutputBuf returns the
+  // corresponding buffer, and ConsumeOutputBuf reduces pending_output.
   ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] {
     return pending_output;
   }));
@@ -1386,7 +1387,7 @@ TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
         pending_output -= size;
       }));
 
-  // Mock engine Read/Write: expected to be called exactly once
+  // Mock engine I/O: Read may be called multiple times; Write must be called once.
   EXPECT_CALL(*engine, Read(testing::_, testing::_))
       .WillRepeatedly(testing::Invoke([&](uint8_t*, size_t) {
         return read_calls++ == 0 ? Engine::OpResult{Engine::NEED_WRITE} : Engine::OpResult{1};
@@ -1399,7 +1400,7 @@ TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
         return Engine::OpResult{4};
       }));
 
-  // Mock the raw socket AsyncWriteSome: Hold the reader's upstream write, then complete the resumed writer's output write.
+  // Hold the reader's upstream write, then complete the resumed writer's output write.
   EXPECT_CALL(*mock_next, AsyncWriteSome(testing::_, 1, testing::_))
       .WillOnce(testing::Invoke([&](const iovec* v, uint32_t, io::AsyncProgressCb cb) {
         EXPECT_EQ(v->iov_len, 1u);
@@ -1434,6 +1435,73 @@ TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
   EXPECT_EQ(engine_write, "ABCDEFGH");
   EXPECT_EQ(reader_result, 1u);
   EXPECT_EQ(writer_result, 4u);
+}
+
+// Verifies that a resumed writer propagates a raw-socket write failure instead of reporting its
+// partial engine progress as success.
+TEST(TlsAsyncIoTest, PropagatesFailureWhenResumingBlockedWriter) {
+  auto next = std::make_unique<testing::NiceMock<MockFiberSocket>>();
+  MockFiberSocket* mock_next = next.get();
+  TlsSocket sock(std::move(next));
+
+  auto mock_engine = std::make_unique<testing::NiceMock<MockEngine>>();
+  MockEngine* engine = mock_engine.get();
+  TestDelegator::SetEngine(&sock, std::move(mock_engine));
+
+  std::array<uint8_t, 2> encrypted_output{};
+  size_t pending_output = 1;
+  int read_calls = 0;
+  io::AsyncProgressCb reader_write_cb;
+  std::optional<std::error_code> reader_error;
+  std::optional<std::error_code> writer_error;
+
+  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] {
+    return pending_output;
+  }));
+  ON_CALL(*engine, PeekOutputBuf()).WillByDefault(testing::Invoke([&] {
+    return Engine::Buffer(encrypted_output.data(), pending_output);
+  }));
+  EXPECT_CALL(*engine, Read(testing::_, testing::_))
+      .WillRepeatedly(testing::Invoke([&](uint8_t*, size_t) {
+        return read_calls++ == 0 ? Engine::OpResult{Engine::NEED_WRITE} : Engine::OpResult{1};
+      }));
+  EXPECT_CALL(*engine, Write(testing::_)).WillOnce(testing::Invoke([&](const Engine::Buffer&) {
+    ++pending_output;
+    return Engine::OpResult{4};
+  }));
+
+  // The failed reader write leaves its output pending, so the resumed writer flushes both bytes.
+  EXPECT_CALL(*mock_next, AsyncWriteSome(testing::_, 1, testing::_))
+      .WillOnce(testing::Invoke([&](const iovec* v, uint32_t, io::AsyncProgressCb cb) {
+        EXPECT_EQ(v->iov_len, 1u);
+        reader_write_cb = std::move(cb);
+      }))
+      .WillOnce(testing::Invoke([](const iovec* v, uint32_t, io::AsyncProgressCb cb) {
+        EXPECT_EQ(v->iov_len, 2u);
+        cb(nonstd::make_unexpected(std::make_error_code(std::errc::connection_reset)));
+      }));
+
+  uint8_t read_buffer{};
+  iovec read_iovec{.iov_base = &read_buffer, .iov_len = 1};
+  sock.AsyncReadSome(&read_iovec, 1, [&](io::Result<size_t> result) {
+    ASSERT_FALSE(result);
+    reader_error = result.error();
+  });
+  ASSERT_TRUE(reader_write_cb);
+
+  std::array<uint8_t, 8> plaintext{'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'};
+  iovec write_iovec{.iov_base = plaintext.data(), .iov_len = plaintext.size()};
+  sock.AsyncWriteSome(&write_iovec, 1, [&](io::Result<size_t> result) {
+    ASSERT_FALSE(result);
+    writer_error = result.error();
+  });
+
+  reader_write_cb(nonstd::make_unexpected(std::make_error_code(std::errc::connection_reset)));
+
+  ASSERT_TRUE(reader_error);
+  ASSERT_TRUE(writer_error);
+  EXPECT_EQ(*reader_error, std::errc::connection_reset);
+  EXPECT_EQ(*writer_error, std::errc::connection_reset);
 }
 
 // Verifies the logical flow of Handshake followed by Write.
