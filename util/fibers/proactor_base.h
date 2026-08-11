@@ -148,7 +148,6 @@ class ProactorBase {
     return fb;
   }
 
-
   using OnIdleTask = std::function<int32_t()>;
   using PeriodicTask = std::function<void()>;
 
@@ -412,22 +411,22 @@ template <typename Func> void ProactorBase::DispatchLocalBrief(Func&& brief) {
   }
 }
 
-template <typename Func> auto ProactorBase::AwaitBrief(Func&& f) -> decltype(f()) {
+template <typename Func> auto ProactorBase::AwaitBrief(Func&& brief) -> decltype(brief()) {
   if (InMyThread()) {
-    return f();
+    return brief();
   }
 
   if (IsProactorThread()) {
     // TODO:
   }
 
-  using ResultType = decltype(f());
+  using ResultType = decltype(brief());
   util::detail::ResultMover<ResultType> mover;
   Done done;
 
   // Store done-ptr by value to increase the refcount while lambda is running.
-  DispatchBrief([&mover, f = std::forward<Func>(f), done]() mutable {
-    mover.Apply(f);
+  DispatchBrief([&mover, brief = std::forward<Func>(brief), done]() mutable {
+    mover.Apply(brief);
     done.Notify();
   });
 
