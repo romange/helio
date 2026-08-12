@@ -375,8 +375,13 @@ void TlsAsyncIo::RunPending() {
   }
 
   if (blocked->role_ == TlsAsyncReq::WRITER) {
-    auto current = std::move(async_write_req_);
-    AsyncWriteSome(current->vec_, current->len_, std::move(current->caller_completion_cb_));
+    // The request is stateful: it may have already pushed data to the engine.
+    // Continue it rather than starting a new request with the original plaintext.
+    if (EngineOutputPending() > 0) {
+      blocked->MaybeSendOutputAsync();
+      return;
+    }
+    blocked->AsyncRoleBasedAction();
     return;
   }
   auto current = std::move(async_read_req_);
