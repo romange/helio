@@ -5,6 +5,7 @@
 #include "util/fibers/fibers.h"
 
 #include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
 #include <gmock/gmock.h>
 
 #include <atomic>
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <thread>
 
+#include "base/flags.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
@@ -25,6 +27,12 @@
 #include "util/fibers/pool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/fibers/synchronization.h"
+
+#if defined(__linux__) || defined(__FreeBSD__)
+#include <sched.h>
+
+ABSL_DECLARE_FLAG(std::string, proactor_irq_cpus);
+#endif
 
 #ifdef __linux__
 #include <sys/epoll.h>
@@ -1470,6 +1478,131 @@ TEST_F(FiberTest, PersistentWaiterStarvationDCheck) {
       "causes starvation");
 }
 #endif
+
+#if defined(__linux__) || defined(__FreeBSD__)
+
+// Returns the list of cpus this process is allowed to run on.
+static vector<unsigned> OnlineCpuList() {
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  CHECK_EQ(0, sched_getaffinity(0, sizeof(allowed), &allowed));
+  vector<unsigned> online;
+  for (unsigned c = 0; c < CPU_SETSIZE; ++c) {
+    if (CPU_ISSET(c, &allowed))
+      online.push_back(c);
+  }
+  return online;
+}
+
+// Parameterized over backend kind ("epoll" / "uring"), mirroring the ProactorTest pattern above
+// but for tests that need a full Pool rather than a single ProactorThread.
+class ProactorPoolCpuTest : public testing::TestWithParam<string_view> {
+ protected:
+  static unique_ptr<Pool> NewPool(size_t pool_size) {
+    string_view backend = GetParam();
+    if (backend == "epoll") {
+      return unique_ptr<Pool>(Pool::Epoll(pool_size));
+    }
+#ifdef __linux__
+    if (backend == "uring") {
+      return unique_ptr<Pool>(Pool::IOUring(kRingDepth, pool_size));
+    }
+#endif
+    LOG(FATAL) << "Unknown backend: " << backend;
+    return nullptr;
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(Engines, ProactorPoolCpuTest,
+                         testing::Values("epoll"
+#ifdef __linux__
+                                         ,
+                                         "uring"
+#endif
+                                         ),
+                         [](const auto& info) { return string(info.param); });
+
+// Verifies that proactor_irq_cpus pins the listed cpu(s) to the highest thread indices,
+// and every other online cpu to the lower indices, in ascending order.
+TEST_P(ProactorPoolCpuTest, IrqCpus) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 2) {
+    GTEST_SKIP() << "Needs at least 2 online cpus";
+  }
+
+  // Mark the first online cpu as the irq cpu: it should end up pinned to the *last*
+  // thread index, with every other cpu shifted up to fill the lower indices in ascending order.
+  unsigned irq_cpu = online.front();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrCat(irq_cpu));
+
+  unique_ptr<Pool> pool = NewPool(online.size());
+  pool->Run();
+
+  vector<int> actual_cpu(online.size(), -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  for (unsigned i = 0; i + 1 < online.size(); ++i) {
+    EXPECT_EQ(int(online[i + 1]), actual_cpu[i]) << "thread " << i;
+  }
+  EXPECT_EQ(int(irq_cpu), actual_cpu[online.size() - 1]);
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+}
+
+// Verifies irq cpu placement when the pool is *smaller* than the online cpu count: the irq cpu
+// must still land on the last thread index, not just whatever a naive i % total_online_cpus
+// modulo would happen to pick (the bug this test guards against).
+TEST_P(ProactorPoolCpuTest, IrqCpusSmallPool) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 3) {
+    GTEST_SKIP() << "Needs at least 3 online cpus";
+  }
+
+  unsigned irq_cpu = online.front();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrCat(irq_cpu));
+
+  constexpr unsigned kPoolSize = 2;  // deliberately smaller than online.size().
+  unique_ptr<Pool> pool = NewPool(kPoolSize);
+  pool->Run();
+
+  vector<int> actual_cpu(kPoolSize, -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  // non_irq_count = kPoolSize - 1 = 1: thread 0 gets the first non-irq cpu, thread 1 (the last
+  // index) gets the irq cpu.
+  EXPECT_EQ(int(online[1]), actual_cpu[0]);
+  EXPECT_EQ(int(irq_cpu), actual_cpu[1]);
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+}
+
+// Verifies that specifying more irq cpus than the pool has threads is non-fatal: the flag is
+// ignored (logged, not CHECK-failed) and pinning falls back to the default ascending spread.
+TEST_P(ProactorPoolCpuTest, IrqCpusMismatchFallsBack) {
+  vector<unsigned> online = OnlineCpuList();
+  if (online.size() < 3) {
+    GTEST_SKIP() << "Needs at least 3 online cpus";
+  }
+
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrJoin(online, ","));
+
+  unique_ptr<Pool> pool = NewPool(2);  // pool smaller than the irq cpu list.
+  pool->Run();
+
+  vector<int> actual_cpu(2, -1);
+  pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
+
+  for (unsigned i = 0; i < 2; ++i) {
+    EXPECT_EQ(int(online[i % online.size()]), actual_cpu[i]) << "thread " << i;
+  }
+
+  pool->Stop();
+  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+}
+
+#endif  // defined(__linux__) || defined(__FreeBSD__)
 
 }  // namespace fb2
 }  // namespace util

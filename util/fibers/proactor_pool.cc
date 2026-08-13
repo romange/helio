@@ -4,6 +4,12 @@
 
 #include "util/proactor_pool.h"
 
+#include <absl/container/flat_hash_set.h>
+#include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+#include <absl/strings/str_split.h>
+
 #include <vector>
 
 #include "base/flags.h"
@@ -22,6 +28,11 @@ using namespace std;
 
 ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
 ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
+ABSL_FLAG(string, proactor_irq_cpus, "",
+          "Explicit list of cpu ids/ranges handling irqs, e.g. \"1,4,6,7\" or \"0-47\". These "
+          "cpus are pinned to the highest proactor thread indices; every other online cpu is "
+          "pinned to the lower indices. Does not affect pool size. Ignored (with a logged error) "
+          "if it names an offline cpu or more cpus than the pool has threads.");
 
 namespace util {
 
@@ -105,6 +116,32 @@ static cpu_set_t OnlineCpus() {
 static unsigned NumOnlineCpus() {
   cpu_set_t cpus = OnlineCpus();
   return CPU_COUNT(&cpus);
+}
+
+// Parses a comma-separated list of cpu ids and/or inclusive ranges, e.g.
+// "1,4,6,7" or "48-95,0-47". Order is preserved (ranges expand in the order given),
+// duplicates are allowed as-is.
+vector<unsigned> ParseCpuList(string_view str) {
+  vector<unsigned> res;
+  for (string_view part : absl::StrSplit(str, ',', absl::SkipEmpty())) {
+    size_t dash = part.find('-');
+    if (dash == string_view::npos) {
+      unsigned v = 0;
+      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_irq_cpus: " << part;
+      res.push_back(v);
+    } else {
+      unsigned lo = 0, hi = 0;
+      CHECK(absl::SimpleAtoi(part.substr(0, dash), &lo))
+          << "Invalid cpu range in proactor_irq_cpus: " << part;
+      CHECK(absl::SimpleAtoi(part.substr(dash + 1), &hi))
+          << "Invalid cpu range in proactor_irq_cpus: " << part;
+      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_irq_cpus: " << part;
+      for (unsigned v = lo; v <= hi; ++v) {
+        res.push_back(v);
+      }
+    }
+  }
+  return res;
 }
 
 }  // namespace
@@ -246,11 +283,56 @@ void ProactorPool::SetupProactors() {
   CHECK_EQ(rel_cpu_index, num_online_cpus) << "Such beast is not supported";
   cpu_threads_.resize(abs_cpu_index + 1);
 
-  cpu_set_t cps;
-  CPU_ZERO(&cps);
+  // irq_cpus are pinned to the last irq_cpus.size() thread indices; every other online cpu
+  // (the "complement") is pinned to the remaining, lower indices, cycling in ascending order if
+  // there are more such indices than complement cpus. A mismatch (offline cpu, more irq cpus
+  // than pool threads, or no complement cpu left to fill the non-irq indices) is not fatal: it's
+  // logged and the flag is ignored entirely, falling back to the default spread below.
+  vector<unsigned> irq_cpus = ParseCpuList(absl::GetFlag(FLAGS_proactor_irq_cpus));
+  vector<unsigned> complement;
+  bool use_irq_cpus = false;
+  if (!irq_cpus.empty()) {
+    bool valid = true;
+    for (unsigned cpu : irq_cpus) {
+      if (cpu >= cpu_threads_.size() || !CPU_ISSET(cpu, &online_cpus)) {
+        LOG(ERROR) << "proactor_irq_cpus: cpu " << cpu
+                   << " is not online/allowed for this process; ignoring proactor_irq_cpus.";
+        valid = false;
+        break;
+      }
+    }
+    if (valid && irq_cpus.size() > pool_size_) {
+      LOG(ERROR) << "proactor_irq_cpus: specifies " << irq_cpus.size()
+                 << " cpus, more than the pool size (" << pool_size_
+                 << "); ignoring proactor_irq_cpus.";
+      valid = false;
+    }
+    absl::flat_hash_set<unsigned> irq_set(irq_cpus.begin(), irq_cpus.end());
+    if (valid && irq_set.size() != irq_cpus.size()) {
+      LOG(ERROR) << "proactor_irq_cpus: contains a duplicate cpu id; ignoring proactor_irq_cpus.";
+      valid = false;
+    }
+    if (valid) {
+      for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
+        if (CPU_ISSET(cpu, &online_cpus) && !irq_set.contains(cpu)) {
+          complement.push_back(cpu);
+        }
+      }
+      if (pool_size_ > irq_cpus.size() && complement.empty()) {
+        LOG(ERROR) << "proactor_irq_cpus: no cpu left to assign to the non-irq threads; "
+                      "ignoring proactor_irq_cpus.";
+        valid = false;
+      }
+    }
+    use_irq_cpus = valid;
+  }
+  // Number of thread indices [0, non_irq_count) assigned to complement cpus; the remaining
+  // [non_irq_count, pool_size_) indices are assigned to irq_cpus, one each.
+  unsigned non_irq_count = use_irq_cpus ? pool_size_ - irq_cpus.size() : 0;
 
   bool set_affinity = (mode == AffinityMode::ON) ||
-                      (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2);
+                      (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2) ||
+                      use_irq_cpus;
 
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
@@ -261,29 +343,44 @@ void ProactorPool::SetupProactors() {
       proactor_[i]->Run();
     };
 
-    pthread_t tid = base::StartThread(buf, std::move(cb));
 #if defined(__linux__) || defined(__FreeBSD__)
+    int cpu_affinity = -1;
     if (set_affinity) {
-      // Spread proactor threads across online CPUs.
-      int rel_indx = i % num_online_cpus;
-      unsigned abs_cpu = rel_to_abs_cpu[rel_indx];
-      CHECK_LT(abs_cpu, cpu_threads_.size());
-      CPU_SET(abs_cpu, &cps);
-
-      int rc = pthread_setaffinity_np(tid, sizeof(cpu_set_t), &cps);
-      if (rc == 0) {
-        VLOG(1) << "Setting affinity of thread " << i << " on cpu " << abs_cpu;
-        cpu_threads_[abs_cpu].push_back(i);
+      unsigned abs_cpu;
+      if (use_irq_cpus) {
+        abs_cpu =
+            i < non_irq_count ? complement[i % complement.size()] : irq_cpus[i - non_irq_count];
       } else {
-        LOG(WARNING) << "Error calling pthread_setaffinity_np: " << strerror(rc) << "\n";
+        unsigned rel_indx = i % num_online_cpus;
+        abs_cpu = rel_to_abs_cpu[rel_indx];
       }
+      CHECK_LT(abs_cpu, cpu_threads_.size());
+      cpu_affinity = static_cast<int>(abs_cpu);
+    }
 
-      CPU_CLR(abs_cpu, &cps);
+    // Pin the thread's affinity before it starts running (via pthread_attr_setaffinity_np),
+    // rather than after via pthread_setaffinity_np: setting it after only migrates the
+    // thread's *execution*, not memory it may have already first-touched (see
+    // base::StartThread's doc comment for the full rationale).
+    base::StartThread(buf, std::move(cb), cpu_affinity);
+    if (cpu_affinity >= 0) {
+      VLOG(1) << "Pinned thread " << i << " to cpu " << cpu_affinity;
+      cpu_threads_[cpu_affinity].push_back(i);
     }
 #else
-    (void)tid;
+    base::StartThread(buf, std::move(cb));
     (void)set_affinity;
 #endif
+  }
+
+  if (use_irq_cpus) {
+    string mapping;
+    for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
+      if (!cpu_threads_[cpu].empty()) {
+        absl::StrAppend(&mapping, " cpu", cpu, "={", absl::StrJoin(cpu_threads_[cpu], ","), "}");
+      }
+    }
+    LOG(INFO) << "Proactor thread->cpu mapping:" << mapping;
   }
 
   state_ = RUN;
