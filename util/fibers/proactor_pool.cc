@@ -28,11 +28,12 @@ using namespace std;
 
 ABSL_FLAG(uint32_t, proactor_threads, 0, "Number of io threads in the pool");
 ABSL_FLAG(string, proactor_affinity_mode, "on", "can be on, off or auto");
-ABSL_FLAG(string, proactor_irq_cpus, "",
-          "Explicit list of cpu ids/ranges handling irqs, e.g. \"1,4,6,7\" or \"0-47\". These "
-          "cpus are pinned to the highest proactor thread indices; every other online cpu is "
-          "pinned to the lower indices. Does not affect pool size. Ignored (with a logged error) "
-          "if it names an offline cpu or more cpus than the pool has threads.");
+ABSL_FLAG(string, proactor_tail_cpus, "",
+          "Explicit list of cpu ids/ranges to pin at the end of the thread list, e.g. "
+          "\"1,4,6,7\" or \"0-47\". These cpus are pinned to the highest proactor thread "
+          "indices; every other online cpu is pinned to the lower indices. Does not affect "
+          "pool size. Ignored (with a logged error) if it names an offline cpu or more cpus "
+          "than the pool has threads.");
 
 namespace util {
 
@@ -127,15 +128,15 @@ vector<unsigned> ParseCpuList(string_view str) {
     size_t dash = part.find('-');
     if (dash == string_view::npos) {
       unsigned v = 0;
-      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_irq_cpus: " << part;
+      CHECK(absl::SimpleAtoi(part, &v)) << "Invalid cpu id in proactor_tail_cpus: " << part;
       res.push_back(v);
     } else {
       unsigned lo = 0, hi = 0;
       CHECK(absl::SimpleAtoi(part.substr(0, dash), &lo))
-          << "Invalid cpu range in proactor_irq_cpus: " << part;
+          << "Invalid cpu range in proactor_tail_cpus: " << part;
       CHECK(absl::SimpleAtoi(part.substr(dash + 1), &hi))
-          << "Invalid cpu range in proactor_irq_cpus: " << part;
-      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_irq_cpus: " << part;
+          << "Invalid cpu range in proactor_tail_cpus: " << part;
+      CHECK_LE(lo, hi) << "Invalid cpu range in proactor_tail_cpus: " << part;
       for (unsigned v = lo; v <= hi; ++v) {
         res.push_back(v);
       }
@@ -283,56 +284,57 @@ void ProactorPool::SetupProactors() {
   CHECK_EQ(rel_cpu_index, num_online_cpus) << "Such beast is not supported";
   cpu_threads_.resize(abs_cpu_index + 1);
 
-  // irq_cpus are pinned to the last irq_cpus.size() thread indices; every other online cpu
+  // tail_cpus are pinned to the last tail_cpus.size() thread indices; every other online cpu
   // (the "complement") is pinned to the remaining, lower indices, cycling in ascending order if
-  // there are more such indices than complement cpus. A mismatch (offline cpu, more irq cpus
-  // than pool threads, or no complement cpu left to fill the non-irq indices) is not fatal: it's
+  // there are more such indices than complement cpus. A mismatch (offline cpu, more tail cpus
+  // than pool threads, or no complement cpu left to fill the non-tail indices) is not fatal: it's
   // logged and the flag is ignored entirely, falling back to the default spread below.
-  vector<unsigned> irq_cpus = ParseCpuList(absl::GetFlag(FLAGS_proactor_irq_cpus));
+  vector<unsigned> tail_cpus = ParseCpuList(absl::GetFlag(FLAGS_proactor_tail_cpus));
   vector<unsigned> complement;
-  bool use_irq_cpus = false;
-  if (!irq_cpus.empty()) {
+  bool use_tail_cpus = false;
+  if (!tail_cpus.empty()) {
     bool valid = true;
-    for (unsigned cpu : irq_cpus) {
+    for (unsigned cpu : tail_cpus) {
       if (cpu >= cpu_threads_.size() || !CPU_ISSET(cpu, &online_cpus)) {
-        LOG(ERROR) << "proactor_irq_cpus: cpu " << cpu
-                   << " is not online/allowed for this process; ignoring proactor_irq_cpus.";
+        LOG(ERROR) << "proactor_tail_cpus: cpu " << cpu
+                   << " is not online/allowed for this process; ignoring proactor_tail_cpus.";
         valid = false;
         break;
       }
     }
-    if (valid && irq_cpus.size() > pool_size_) {
-      LOG(ERROR) << "proactor_irq_cpus: specifies " << irq_cpus.size()
+    if (valid && tail_cpus.size() > pool_size_) {
+      LOG(ERROR) << "proactor_tail_cpus: specifies " << tail_cpus.size()
                  << " cpus, more than the pool size (" << pool_size_
-                 << "); ignoring proactor_irq_cpus.";
+                 << "); ignoring proactor_tail_cpus.";
       valid = false;
     }
-    absl::flat_hash_set<unsigned> irq_set(irq_cpus.begin(), irq_cpus.end());
-    if (valid && irq_set.size() != irq_cpus.size()) {
-      LOG(ERROR) << "proactor_irq_cpus: contains a duplicate cpu id; ignoring proactor_irq_cpus.";
+    absl::flat_hash_set<unsigned> tail_set(tail_cpus.begin(), tail_cpus.end());
+    if (valid && tail_set.size() != tail_cpus.size()) {
+      LOG(ERROR) << "proactor_tail_cpus: contains a duplicate cpu id; ignoring "
+                    "proactor_tail_cpus.";
       valid = false;
     }
     if (valid) {
       for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
-        if (CPU_ISSET(cpu, &online_cpus) && !irq_set.contains(cpu)) {
+        if (CPU_ISSET(cpu, &online_cpus) && !tail_set.contains(cpu)) {
           complement.push_back(cpu);
         }
       }
-      if (pool_size_ > irq_cpus.size() && complement.empty()) {
-        LOG(ERROR) << "proactor_irq_cpus: no cpu left to assign to the non-irq threads; "
-                      "ignoring proactor_irq_cpus.";
+      if (pool_size_ > tail_cpus.size() && complement.empty()) {
+        LOG(ERROR) << "proactor_tail_cpus: no cpu left to assign to the non-tail threads; "
+                      "ignoring proactor_tail_cpus.";
         valid = false;
       }
     }
-    use_irq_cpus = valid;
+    use_tail_cpus = valid;
   }
-  // Number of thread indices [0, non_irq_count) assigned to complement cpus; the remaining
-  // [non_irq_count, pool_size_) indices are assigned to irq_cpus, one each.
-  unsigned non_irq_count = use_irq_cpus ? pool_size_ - irq_cpus.size() : 0;
+  // Number of thread indices [0, non_tail_count) assigned to complement cpus; the remaining
+  // [non_tail_count, pool_size_) indices are assigned to tail_cpus, one each.
+  unsigned non_tail_count = use_tail_cpus ? pool_size_ - tail_cpus.size() : 0;
 
   bool set_affinity = (mode == AffinityMode::ON) ||
                       (mode == AffinityMode::AUTO && pool_size_ > num_online_cpus / 2) ||
-                      use_irq_cpus;
+                      use_tail_cpus;
 
   for (unsigned i = 0; i < pool_size_; ++i) {
     snprintf(buf, sizeof(buf), "Proactor%u", i);
@@ -347,9 +349,9 @@ void ProactorPool::SetupProactors() {
     int cpu_affinity = -1;
     if (set_affinity) {
       unsigned abs_cpu;
-      if (use_irq_cpus) {
+      if (use_tail_cpus) {
         abs_cpu =
-            i < non_irq_count ? complement[i % complement.size()] : irq_cpus[i - non_irq_count];
+            i < non_tail_count ? complement[i % complement.size()] : tail_cpus[i - non_tail_count];
       } else {
         unsigned rel_indx = i % num_online_cpus;
         abs_cpu = rel_to_abs_cpu[rel_indx];
@@ -373,7 +375,7 @@ void ProactorPool::SetupProactors() {
 #endif
   }
 
-  if (use_irq_cpus) {
+  if (use_tail_cpus) {
     string mapping;
     for (unsigned cpu = 0; cpu < cpu_threads_.size(); ++cpu) {
       if (!cpu_threads_[cpu].empty()) {
