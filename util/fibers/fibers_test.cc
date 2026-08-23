@@ -55,6 +55,8 @@ using namespace std;
 using absl::StrCat;
 using namespace testing;
 
+ABSL_DECLARE_FLAG(uint32_t, proactor_busy_poll_usec);
+
 namespace util {
 namespace fb2 {
 
@@ -778,6 +780,45 @@ TEST_P(ProactorTest, Sleep) {
         LOG(INFO) << "After Sleep";
       },
       Fiber::Opts{.name = "test_sleep"});
+}
+
+TEST_P(ProactorTest, IdleSleepRespectsBusyPollFlag) {
+  if (GetProactorType() != "uring") {
+    GTEST_SKIP() << "the idle-sleep wakeup tax is specific to the uring proactor's timer path";
+  }
+
+  // On an otherwise idle proactor, SleepFor() for a short duration (in us) enters a blocking
+  // wait syscall and can cost close to ~1ms.
+  // Raising the busy-poll indow past the requested sleep lets the sleeping fiber's expired deadline
+  // be discovered by the cheap non-blocking completion peek instead, avoiding that syscall
+  // entirely.
+  uint32_t saved = absl::GetFlag(FLAGS_proactor_busy_poll_usec);
+  absl::SetFlag(&FLAGS_proactor_busy_poll_usec, 500);
+  auto busy_poll_proactor = CreateProactorThread();
+  absl::SetFlag(&FLAGS_proactor_busy_poll_usec, saved);
+
+  constexpr int kIterations = 2000;
+  constexpr auto kRequestedSleep = 40us;
+
+  chrono::steady_clock::duration actual_total{};
+  busy_poll_proactor->get()->Await([&] {
+    for (int i = 0; i < kIterations; ++i) {
+      auto call_start = chrono::steady_clock::now();
+      ThisFiber::SleepFor(kRequestedSleep);
+      actual_total += chrono::steady_clock::now() - call_start;
+    }
+  });
+
+  double requested_avg_us = chrono::duration<double, std::micro>(kRequestedSleep).count();
+  double actual_avg_us = chrono::duration<double, std::micro>(actual_total).count() / kIterations;
+
+  LOG(INFO) << "[" << GetParam().ToString() << "] idle sleep: requested_avg_us=" << requested_avg_us
+            << " actual_avg_us=" << actual_avg_us
+            << " amplification=" << (actual_avg_us / requested_avg_us) << "x";
+
+  // With the busy-poll window wide enough to cover the requested sleep, we must not pay
+  // anything close to the ~1ms blocking-wait wakeup tax measured with the default 20us window.
+  EXPECT_LT(actual_avg_us, 1000);
 }
 
 TEST_P(ProactorTest, LocalCond) {
