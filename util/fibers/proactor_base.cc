@@ -9,14 +9,6 @@
 #include <signal.h>
 
 #include "base/cycle_clock.h"
-#include "base/flags.h"
-
-// For more info: ProactorTest::IdleSleepRespectsBusyPollFlag
-ABSL_FLAG(uint32_t, proactor_busy_poll_usec, 20,
-          "How long a proactor busy-polls for completions before falling back to a "
-          "blocking wait. Raising this trades CPU for wakeup latency: a sleeping "
-          "fiber whose deadline falls inside this window is discovered by the cheap "
-          "non-blocking completion peek instead of paying the full blocking syscall.");
 
 #if __linux__
 #include <sys/eventfd.h>
@@ -124,7 +116,7 @@ ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
   call_once(module_init, &ModuleInit);
 
-  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(absl::GetFlag(FLAGS_proactor_busy_poll_usec));
+  busy_poll_cycle_limit_ = base::CycleClock::FromUsec(20);
 
 #ifdef __linux__
   wake_fd_ = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
