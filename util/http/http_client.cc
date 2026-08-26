@@ -82,6 +82,7 @@ std::error_code Client::Reconnect() {
     return berr;
 
   FiberSocketBase* sock = proactor_->CreateSocket();
+  sock->set_timeout(op_timeout_ms_);
 
   socket_.reset(sock);
   FiberSocketBase::endpoint_type ep{address, port_};
