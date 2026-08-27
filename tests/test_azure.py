@@ -81,6 +81,14 @@ def azurite():
     proc.wait(timeout=5)
 
 
+@pytest.fixture(autouse=True)
+def azurite_alive(azurite):
+    """Fail loudly if Azurite died mid-session instead of drowning in connection errors."""
+    if not _azurite_running():
+        pytest.fail(f"Azurite is not listening on port {AZURITE_PORT} - the emulator died")
+    yield
+
+
 @pytest.fixture(scope="module")
 def gcs_demo(azurite) -> Path:
     binary = _find_gcs_demo()
