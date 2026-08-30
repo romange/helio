@@ -149,7 +149,10 @@ jobs:
         curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
         chmod +x /tmp/minio
         mkdir -p /tmp/minio-data/ci-test-bucket
-        MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin /tmp/minio server /tmp/minio-data &
+        # Redirect the output to a file: the runner closes this step's stdout pipe once the
+        # step finishes, and a background server that keeps logging into it gets EPIPE.
+        MINIO_ROOT_USER=minioadmin MINIO_ROOT_PASSWORD=minioadmin \
+          nohup /tmp/minio server /tmp/minio-data > /tmp/minio.log 2>&1 &
         for i in $(seq 1 20); do
           curl -sf http://localhost:9000/minio/health/live && break || sleep 1
         done
@@ -164,7 +167,10 @@ jobs:
         curl -fsSL https://nodejs.org/dist/v22.16.0/node-v22.16.0-linux-x64.tar.xz | tar -xJ -C /tmp
         export PATH=/tmp/node-v22.16.0-linux-x64/bin:$PATH
         npm install -g azurite
-        azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck &
+        # Azurite must not inherit this step's stdout: the runner closes that pipe when the
+        # step ends, and the next access-log line azurite writes fails with EPIPE, which is
+        # an uncaught exception in node and kills the emulator in the middle of the tests.
+        nohup azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck > /tmp/azurite.log 2>&1 &
         ready=0
         for i in $(seq 1 20); do
           if curl -sf http://localhost:10000/ 2>/dev/null || \
@@ -204,6 +210,14 @@ jobs:
           export LSAN_OPTIONS=suppressions=$(pwd)/asan_suppressions.txt
           cd tests
           python3 -m pytest -q -s
+    - name: Emulator logs on failure
+      if: failure() && matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
+      run: |
+        echo "----- azurite -----"
+        tail -n 100 /tmp/azurite.log || true
+        echo "----- minio -----"
+        tail -n 100 /tmp/minio.log || true
+
     - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
