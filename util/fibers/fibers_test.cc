@@ -31,7 +31,7 @@
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sched.h>
 
-ABSL_DECLARE_FLAG(std::string, proactor_irq_cpus);
+ABSL_DECLARE_FLAG(std::string, proactor_tail_cpus);
 #endif
 
 #ifdef __linux__
@@ -1563,18 +1563,18 @@ INSTANTIATE_TEST_SUITE_P(Engines, ProactorPoolCpuTest,
                                          ),
                          [](const auto& info) { return string(info.param); });
 
-// Verifies that proactor_irq_cpus pins the listed cpu(s) to the highest thread indices,
+// Verifies that proactor_tail_cpus pins the listed cpu(s) to the highest thread indices,
 // and every other online cpu to the lower indices, in ascending order.
-TEST_P(ProactorPoolCpuTest, IrqCpus) {
+TEST_P(ProactorPoolCpuTest, TailCpus) {
   vector<unsigned> online = OnlineCpuList();
   if (online.size() < 2) {
     GTEST_SKIP() << "Needs at least 2 online cpus";
   }
 
-  // Mark the first online cpu as the irq cpu: it should end up pinned to the *last*
+  // Mark the first online cpu as the tail cpu: it should end up pinned to the *last*
   // thread index, with every other cpu shifted up to fill the lower indices in ascending order.
-  unsigned irq_cpu = online.front();
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrCat(irq_cpu));
+  unsigned tail_cpu = online.front();
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, absl::StrCat(tail_cpu));
 
   unique_ptr<Pool> pool = NewPool(online.size());
   pool->Run();
@@ -1585,23 +1585,23 @@ TEST_P(ProactorPoolCpuTest, IrqCpus) {
   for (unsigned i = 0; i + 1 < online.size(); ++i) {
     EXPECT_EQ(int(online[i + 1]), actual_cpu[i]) << "thread " << i;
   }
-  EXPECT_EQ(int(irq_cpu), actual_cpu[online.size() - 1]);
+  EXPECT_EQ(int(tail_cpu), actual_cpu[online.size() - 1]);
 
   pool->Stop();
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, "");  // reset - flags are process-global.
 }
 
-// Verifies irq cpu placement when the pool is *smaller* than the online cpu count: the irq cpu
+// Verifies tail cpu placement when the pool is *smaller* than the online cpu count: the tail cpu
 // must still land on the last thread index, not just whatever a naive i % total_online_cpus
 // modulo would happen to pick (the bug this test guards against).
-TEST_P(ProactorPoolCpuTest, IrqCpusSmallPool) {
+TEST_P(ProactorPoolCpuTest, TailCpusSmallPool) {
   vector<unsigned> online = OnlineCpuList();
   if (online.size() < 3) {
     GTEST_SKIP() << "Needs at least 3 online cpus";
   }
 
-  unsigned irq_cpu = online.front();
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrCat(irq_cpu));
+  unsigned tail_cpu = online.front();
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, absl::StrCat(tail_cpu));
 
   constexpr unsigned kPoolSize = 2;  // deliberately smaller than online.size().
   unique_ptr<Pool> pool = NewPool(kPoolSize);
@@ -1610,26 +1610,26 @@ TEST_P(ProactorPoolCpuTest, IrqCpusSmallPool) {
   vector<int> actual_cpu(kPoolSize, -1);
   pool->AwaitBrief([&](unsigned index, ProactorBase*) { actual_cpu[index] = sched_getcpu(); });
 
-  // non_irq_count = kPoolSize - 1 = 1: thread 0 gets the first non-irq cpu, thread 1 (the last
-  // index) gets the irq cpu.
+  // non_tail_count = kPoolSize - 1 = 1: thread 0 gets the first non-tail cpu, thread 1 (the last
+  // index) gets the tail cpu.
   EXPECT_EQ(int(online[1]), actual_cpu[0]);
-  EXPECT_EQ(int(irq_cpu), actual_cpu[1]);
+  EXPECT_EQ(int(tail_cpu), actual_cpu[1]);
 
   pool->Stop();
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, "");  // reset - flags are process-global.
 }
 
-// Verifies that specifying more irq cpus than the pool has threads is non-fatal: the flag is
+// Verifies that specifying more tail cpus than the pool has threads is non-fatal: the flag is
 // ignored (logged, not CHECK-failed) and pinning falls back to the default ascending spread.
-TEST_P(ProactorPoolCpuTest, IrqCpusMismatchFallsBack) {
+TEST_P(ProactorPoolCpuTest, TailCpusMismatchFallsBack) {
   vector<unsigned> online = OnlineCpuList();
   if (online.size() < 3) {
     GTEST_SKIP() << "Needs at least 3 online cpus";
   }
 
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, absl::StrJoin(online, ","));
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, absl::StrJoin(online, ","));
 
-  unique_ptr<Pool> pool = NewPool(2);  // pool smaller than the irq cpu list.
+  unique_ptr<Pool> pool = NewPool(2);  // pool smaller than the tail cpu list.
   pool->Run();
 
   vector<int> actual_cpu(2, -1);
@@ -1640,7 +1640,7 @@ TEST_P(ProactorPoolCpuTest, IrqCpusMismatchFallsBack) {
   }
 
   pool->Stop();
-  absl::SetFlag(&FLAGS_proactor_irq_cpus, "");  // reset - flags are process-global.
+  absl::SetFlag(&FLAGS_proactor_tail_cpus, "");  // reset - flags are process-global.
 }
 
 #endif  // defined(__linux__) || defined(__FreeBSD__)
