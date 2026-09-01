@@ -66,6 +66,16 @@ class Client {
     return connect_timeout_ms_;
   }
 
+  void set_timeout_ms(uint32_t ms) {
+    op_timeout_ms_ = ms;
+    if (socket_)
+      socket_->set_timeout(ms);
+  }
+
+  uint32_t timeout_ms() const {
+    return op_timeout_ms_;
+  }
+
   const std::string& host() const {
     return host_;
   }
@@ -74,7 +84,9 @@ class Client {
     on_connect_cb_ = std::move(cb);
   }
 
-  void set_retry_count(uint32_t cnt) { retry_cnt_ = cnt; }
+  void set_retry_count(uint32_t cnt) {
+    retry_cnt_ = cnt;
+  }
 
   auto native_handle() const {
     return socket_->native_handle();
@@ -102,6 +114,8 @@ class Client {
 
   fb2::ProactorBase* proactor_;
   uint32_t connect_timeout_ms_ = 2000;
+  // UINT32_MAX means no timeout
+  uint32_t op_timeout_ms_ = UINT32_MAX;
   uint32_t retry_cnt_ = 1;
   ::boost::beast::flat_buffer tmp_buffer_;
 
