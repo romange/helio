@@ -146,7 +146,16 @@ jobs:
     - name: Start Minio
       if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
       run: |
-        curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
+        # MinIO archived its OSS server and dl.min.io returns HTTP 410 for every build, so
+        # the binary comes from silo, a maintained fork that is CLI- and API-compatible.
+        MINIO_RELEASE=RELEASE.2026-09-03T13-18-01Z
+        MINIO_VERSION=20260903131801.0.0
+        MINIO_SHA256=cbe5c01eac0a97ccb22fa252eafa432e8608bfde7e3ea27a324cb5ed625a1e96
+        curl -fsSL -o /tmp/minio.tar.gz \
+          "https://github.com/pgsty/silo/releases/download/${MINIO_RELEASE}/silo_${MINIO_VERSION}_linux_amd64.tar.gz"
+        echo "${MINIO_SHA256}  /tmp/minio.tar.gz" | sha256sum -c -
+        tar xzf /tmp/minio.tar.gz -C /tmp silo
+        mv /tmp/silo /tmp/minio
         chmod +x /tmp/minio
         mkdir -p /tmp/minio-data/ci-test-bucket
         # Redirect the output to a file: the runner closes this step's stdout pipe once the
