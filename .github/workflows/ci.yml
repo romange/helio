@@ -146,7 +146,13 @@ jobs:
     - name: Start Minio
       if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
       run: |
-        curl -fsSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /tmp/minio
+        # dl.min.io returns HTTP 410 for every OSS build since MinIO archived the project,
+        # so fetch the pinned release asset from GitHub instead.
+        MINIO_RELEASE=RELEASE.2025-09-07T16-13-09Z
+        MINIO_SHA256=7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
+        curl -fsSL -o /tmp/minio \
+          "https://github.com/minio/minio/releases/download/${MINIO_RELEASE}/minio.linux-amd64.${MINIO_RELEASE}"
+        echo "${MINIO_SHA256}  /tmp/minio" | sha256sum -c -
         chmod +x /tmp/minio
         mkdir -p /tmp/minio-data/ci-test-bucket
         # Redirect the output to a file: the runner closes this step's stdout pipe once the
