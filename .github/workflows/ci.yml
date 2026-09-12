@@ -146,13 +146,16 @@ jobs:
     - name: Start Minio
       if: matrix.config.name == 'ubuntu24-gcc' && matrix.os.arch == 'amd64'
       run: |
-        # dl.min.io returns HTTP 410 for every OSS build since MinIO archived the project,
-        # so fetch the pinned release asset from GitHub instead.
-        MINIO_RELEASE=RELEASE.2025-09-07T16-13-09Z
-        MINIO_SHA256=7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f
-        curl -fsSL -o /tmp/minio \
-          "https://github.com/minio/minio/releases/download/${MINIO_RELEASE}/minio.linux-amd64.${MINIO_RELEASE}"
-        echo "${MINIO_SHA256}  /tmp/minio" | sha256sum -c -
+        # MinIO archived its OSS server and dl.min.io returns HTTP 410 for every build, so
+        # the binary comes from silo, a maintained fork that is CLI- and API-compatible.
+        MINIO_RELEASE=RELEASE.2026-09-03T13-18-01Z
+        MINIO_VERSION=20260903131801.0.0
+        MINIO_SHA256=cbe5c01eac0a97ccb22fa252eafa432e8608bfde7e3ea27a324cb5ed625a1e96
+        curl -fsSL -o /tmp/minio.tar.gz \
+          "https://github.com/pgsty/silo/releases/download/${MINIO_RELEASE}/silo_${MINIO_VERSION}_linux_amd64.tar.gz"
+        echo "${MINIO_SHA256}  /tmp/minio.tar.gz" | sha256sum -c -
+        tar xzf /tmp/minio.tar.gz -C /tmp silo
+        mv /tmp/silo /tmp/minio
         chmod +x /tmp/minio
         mkdir -p /tmp/minio-data/ci-test-bucket
         # Redirect the output to a file: the runner closes this step's stdout pipe once the
