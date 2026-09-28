@@ -68,10 +68,18 @@ DispatcherImpl* MakeDispatcher(Scheduler* sched) {
   return new (sp_ptr) DispatcherImpl{std::move(palloc), std::move(salloc), sched};
 }
 
+std::string DispatcherName() {
+  ProactorBase* proactor = ProactorBase::me();
+  if (proactor == nullptr)
+    return "_dispatch";
+
+  return absl::StrCat("_dispatch_p", proactor->GetPoolIndex());
+}
+
 // DispatcherImpl implementation.
 DispatcherImpl::DispatcherImpl(const ctx::preallocated& palloc, ctx::fixedsize_stack&& salloc,
                                detail::Scheduler* sched) noexcept
-    : FiberInterface{DISPATCH, FiberPriority::NORMAL, 0, "_dispatch"} {
+    : FiberInterface{DISPATCH, FiberPriority::NORMAL, 0, DispatcherName()} {
   stack_size_ = palloc.sctx.size;
   entry_ = ctx::fiber(std::allocator_arg, palloc, std::move(salloc),
                       [this](ctx::fiber&& caller) { return Run(std::move(caller)); });
@@ -512,10 +520,9 @@ void Scheduler::PrintAllFiberStackTraces() {
     string state = "suspended";
     bool add_time = true;
     if (fb->list_hook.is_linked()) {
-      if(fb->flags_.load(std::memory_order_relaxed) & FiberInterface::kTerminatedBit) {
+      if (fb->flags_.load(std::memory_order_relaxed) & FiberInterface::kTerminatedBit) {
         state = "terminating";
-      }
-      else {
+      } else {
         state = "ready";
       }
     } else if (active == fb) {
@@ -538,7 +545,8 @@ void Scheduler::PrintAllFiberStackTraces() {
       uint64_t freq_ms = CycleClock::Frequency() / 1000;
       // Last time the fiber got into the ready queue
       uint64_t last_ready = tsc - fb->ready_tsc_;
-      absl::StrAppend(&state, ":last_context_switch=", delta / freq_ms, "ms:last_ready=", last_ready / freq_ms, "ms");
+      absl::StrAppend(&state, ":last_context_switch=", delta / freq_ms,
+                      "ms:last_ready=", last_ready / freq_ms, "ms");
     }
 
     LOG(INFO) << "------------ Fiber " << fb->name_ << " (" << state << ") ------------\n"
