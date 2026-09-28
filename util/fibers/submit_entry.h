@@ -4,9 +4,10 @@
 
 #pragma once
 
-#include <cstdint>
 #include <fcntl.h>
 #include <liburing/io_uring.h>
+
+#include <cstdint>
 
 namespace util {
 namespace fb2 {
@@ -147,16 +148,15 @@ class SubmitEntry {
     sqe_->sync_range_flags = flags;
   }
 
-  void PrepStatX(const char* filepath, struct statx *stat) {
+  void PrepStatX(const char* filepath, struct statx* stat) {
     // AT_FDCWD is ignored when addr is an absolute path
-	  PrepFd(IORING_OP_STATX, AT_FDCWD);
+    PrepFd(IORING_OP_STATX, AT_FDCWD);
     sqe_->off = reinterpret_cast<uint64_t>(stat);
     sqe_->addr = reinterpret_cast<unsigned long>(filepath);
     // mask
     sqe_->len = STATX_BASIC_STATS;
     sqe_->statx_flags = 0;
   }
-
 
   void PrepSend(int fd, const void* buf, size_t len, unsigned flags) {
     PrepFd(IORING_OP_SEND, fd);
@@ -237,7 +237,6 @@ class SubmitEntry {
     return sqe_;
   }
 
-
   // Used only by Proactor.
   explicit SubmitEntry(io_uring_sqe* sqe) : sqe_(sqe) {
   }
@@ -247,7 +246,6 @@ class SubmitEntry {
     sqe_->opcode = op;
     sqe_->fd = fd;
   }
-
 };
 
 }  // namespace fb2

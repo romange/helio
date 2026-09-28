@@ -6,6 +6,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+
 #include <system_error>
 
 #include "base/logging.h"
@@ -475,7 +476,7 @@ std::error_code LinuxFile::FSync(unsigned flags) {
   return {};
 }
 
-std::error_code StatX(const char* filepath, struct statx *stat, int fd) {
+std::error_code StatX(const char* filepath, struct statx* stat, int fd) {
   DCHECK(fd);
   ProactorBase* me = ProactorBase::me();
   DCHECK(me->GetKind() == ProactorBase::IOURING);

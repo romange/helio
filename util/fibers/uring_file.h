@@ -125,9 +125,8 @@ class LinuxFile {
 // Equivalent to open(2) call. "flags" is the OR mask of O_XXX constants.
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode);
 
-
 // Equivalent to statx() call
-std::error_code StatX(const char* filepath, struct statx *stat, int fd);
+std::error_code StatX(const char* filepath, struct statx* stat, int fd);
 
 }  // namespace fb2
 }  // namespace util

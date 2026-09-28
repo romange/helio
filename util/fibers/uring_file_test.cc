@@ -27,6 +27,8 @@ namespace fb2 {
 namespace {
 
 // Issues an async operation via issue_fn and waits for its completion. Returns the io result.
+// Waits without a deadline: the callback references stack state, so returning before it runs
+// is unsafe, and durability calls may block on storage writeback. ctest enforces the timeout.
 template <typename F> int RunAsync(F&& issue_fn) {
   Done done;
   int res = INT_MIN;
@@ -34,7 +36,7 @@ template <typename F> int RunAsync(F&& issue_fn) {
     res = io_res;
     done.Notify();
   });
-  CHECK(done.WaitFor(1s));
+  done.Wait();
   return res;
 }
 
@@ -200,9 +202,7 @@ TEST_F(UringFileTest, FAllocateAndStatX) {
     LinuxFile* wf = (*res).get();
 
     Done done;
-    auto io_cb = [&](int res) {
-      done.Notify();
-    };
+    auto io_cb = [&](int res) { done.Notify(); };
 
     wf->FallocateAsync(FALLOC_FL_KEEP_SIZE, 0, 4096, io_cb);
     ASSERT_TRUE(done.WaitFor(100ms));
@@ -233,9 +233,7 @@ TEST_F(UringFileTest, FSync) {
     LinuxFile* wf = (*res).get();
 
     Done done;
-    auto io_cb = [&](int res) {
-      done.Notify();
-    };
+    auto io_cb = [&](int res) { done.Notify(); };
 
     std::string buf(4096, 'c');
 
