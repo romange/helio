@@ -394,54 +394,51 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
   return io::ApplyExactly(iov, iovcnt, std::move(cb));
 }
 
-void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index,
-                               AsyncCb cb) {
-  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t flags, uint32_t) { cb(res); };
+SubmitEntry LinuxFile::PrepareAsync(AsyncCb cb) {
+  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
+                                       uint32_t, uint32_t) { cb(res); };
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
-  se.PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
+
+  // Prep functions set only the opcode and fd, so the sqe flags set here are preserved.
   if (is_direct_)
     se.sqe()->flags |= IOSQE_FIXED_FILE;
+  return se;
+}
+
+void LinuxFile::ReadFixedAsync(io::MutableBytes dest, off_t offset, unsigned buf_index,
+                               AsyncCb cb) {
+  PrepareAsync(std::move(cb)).PrepReadFixed(fd_, dest.data(), dest.size(), offset, buf_index);
 }
 
 void LinuxFile::ReadAsync(io::MutableBytes dest, off_t offset, AsyncCb cb) {
-  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t flags, uint32_t) { cb(res); };
-
-  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
-  se.PrepRead(fd_, dest.data(), dest.size(), offset);
-  if (is_direct_)
-    se.sqe()->flags |= IOSQE_FIXED_FILE;
+  PrepareAsync(std::move(cb)).PrepRead(fd_, dest.data(), dest.size(), offset);
 }
 
-void LinuxFile::WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb) {
-  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface* current, UringProactor::IoResult res,
-                                       uint32_t, uint32_t) { cb(res); };
-  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
-  se.PrepWriteFixed(fd_, src.data(), src.size(), offset, buf_index);
-  if (is_direct_)
-    se.sqe()->flags |= IOSQE_FIXED_FILE;
+void LinuxFile::WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, unsigned rw_flags,
+                                AsyncCb cb) {
+  PrepareAsync(std::move(cb))
+      .PrepWriteFixed(fd_, src.data(), src.size(), offset, buf_index, rw_flags);
 }
 
-void LinuxFile::WriteAsync(io::Bytes src, off_t offset, AsyncCb cb) {
-  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                       uint32_t, uint32_t) { cb(res); };
-  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
-
-  se.PrepWrite(fd_, src.data(), src.size(), offset);
-  if (is_direct_)
-    se.sqe()->flags |= IOSQE_FIXED_FILE;
+void LinuxFile::WriteAsync(io::Bytes src, off_t offset, unsigned rw_flags, AsyncCb cb) {
+  PrepareAsync(std::move(cb)).PrepWrite(fd_, src.data(), src.size(), offset, rw_flags);
 }
 
 void LinuxFile::FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb) {
-  auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                       uint32_t, uint32_t) { cb(res); };
-  SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
+  PrepareAsync(std::move(cb)).PrepFallocate(fd_, mode, offset, len);
+}
 
-  se.PrepFallocate(fd_, mode, offset, len);
-  if (is_direct_)
-    se.sqe()->flags |= IOSQE_FIXED_FILE;
+void LinuxFile::FSyncAsync(unsigned flags, AsyncCb cb) {
+  PrepareAsync(std::move(cb)).PrepFSync(fd_, flags);
+}
+
+void LinuxFile::SyncFileRangeAsync(off_t offset, uint32_t len, unsigned flags, AsyncCb cb) {
+  PrepareAsync(std::move(cb)).PrepSyncFileRange(fd_, offset, len, flags);
+}
+
+void LinuxFile::FadviseAsync(off_t offset, uint32_t len, int advice, AsyncCb cb) {
+  PrepareAsync(std::move(cb)).PrepFadvise(fd_, offset, len, advice);
 }
 
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode) {
@@ -464,21 +461,16 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
 }
 
 std::error_code LinuxFile::FSync(unsigned flags) {
-  DCHECK(fd_);
-  ProactorBase* me = ProactorBase::me();
-  DCHECK(me->GetKind() == ProactorBase::IOURING);
+  DCHECK_GE(fd_, 0);
 
-  Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
-  FiberCall::IoResult io_res;
+  FiberCall fc(proactor_);
+  fc->PrepFSync(fd_, flags);
+  if (is_direct_)
+    fc->sqe()->flags |= IOSQE_FIXED_FILE;
 
-  {
-    FiberCall fc(p);
-    fc->PrepFSync(fd_, flags);
-    io_res = fc.Get();
-
-    if (io_res < 0) {
-      return {-io_res, system_category()};
-    }
+  FiberCall::IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    return {-io_res, system_category()};
   }
   return {};
 }

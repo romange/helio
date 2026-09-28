@@ -85,8 +85,7 @@ class SubmitEntry {
     sqe_->buf_index = buf_index;
   }
 
-  void PrepReadV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
-                 unsigned flags = 0) {
+  void PrepReadV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset, unsigned flags) {
     PrepFd(IORING_OP_READV, fd);
     sqe_->addr = (__u64)vec;
     sqe_->len = nr_vecs;
@@ -94,23 +93,26 @@ class SubmitEntry {
     sqe_->rw_flags = flags;
   }
 
-  void PrepWrite(int fd, const void* buf, unsigned size, size_t offset) {
+  void PrepWrite(int fd, const void* buf, unsigned size, size_t offset, unsigned flags) {
     PrepFd(IORING_OP_WRITE, fd);
     sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
+    sqe_->rw_flags = flags;
   }
 
-  void PrepWriteFixed(int fd, const void* buf, unsigned size, size_t offset, uint16_t buf_index) {
+  void PrepWriteFixed(int fd, const void* buf, unsigned size, size_t offset, uint16_t buf_index,
+                      unsigned flags) {
     PrepFd(IORING_OP_WRITE_FIXED, fd);
     sqe_->addr = (__u64)buf;
     sqe_->len = size;
     sqe_->off = offset;
     sqe_->buf_index = buf_index;
+    sqe_->rw_flags = flags;
   }
 
   void PrepWriteV(int fd, const struct iovec* vec, unsigned nr_vecs, size_t offset,
-                  unsigned flags = 0) {
+                  unsigned flags) {
     PrepFd(IORING_OP_WRITEV, fd);
     sqe_->addr = (__u64)vec;
     sqe_->len = nr_vecs;
@@ -135,6 +137,14 @@ class SubmitEntry {
   void PrepFSync(int fd, unsigned flags) {
     PrepFd(IORING_OP_FSYNC, fd);
     sqe_->fsync_flags = flags;
+  }
+
+  // flags is a bit-OR of SYNC_FILE_RANGE_XXX constants.
+  void PrepSyncFileRange(int fd, off_t offset, unsigned len, unsigned flags) {
+    PrepFd(IORING_OP_SYNC_FILE_RANGE, fd);
+    sqe_->off = offset;
+    sqe_->len = len;
+    sqe_->sync_range_flags = flags;
   }
 
   void PrepStatX(const char* filepath, struct statx *stat) {
@@ -173,7 +183,7 @@ class SubmitEntry {
     PrepFd(IORING_OP_CLOSE, fd);
   }
 
-  void PrepTimeout(const timespec* ts, bool is_abs = true) {
+  void PrepTimeout(const timespec* ts, bool is_abs) {
     PrepFd(IORING_OP_TIMEOUT, -1);
     sqe_->addr = (__u64)ts;
     sqe_->len = 1;
