@@ -8,6 +8,7 @@
 #include <absl/strings/str_join.h>
 #include <gmock/gmock.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
@@ -84,6 +85,7 @@ class FiberTest : public testing::Test {
 struct ProactorThread {
   std::unique_ptr<ProactorBase> proactor;
   std::thread proactor_thread;
+  Done init_done;
 
   ProactorThread(unsigned index, ProactorBase::Kind kind);
 
@@ -125,8 +127,11 @@ ProactorThread::ProactorThread(unsigned index, ProactorBase::Kind kind) {
         break;
     }
 
+    init_done.Notify();
     proactor->Run();
   }};
+
+  init_done.Wait();
 }
 
 // Struct to combine proactor type and IP version parameters
@@ -227,6 +232,35 @@ TEST_F(FiberTest, SListSafe) {
   queue.push_front(m1);
   ASSERT_FALSE(queue.empty());
   queue.pop_front();
+}
+
+// Each proactor owns a main and dispatcher fiber. Verify that their names include the pool index
+// so while debugging we can distinguish easily - otherwise identical fibers across proactor
+// threads. Also ensure the legacy unqualified names are not used on proactor threads.
+TEST_F(FiberTest, FiberNamesIncludeProactorIndex) {
+  constexpr unsigned kNumProactors = 4;
+  vector<unique_ptr<ProactorThread>> proactor_threads;
+  vector<string> fiber_names;
+  proactor_threads.reserve(kNumProactors);
+
+  for (unsigned index = 0; index < kNumProactors; ++index) {
+    proactor_threads.emplace_back(make_unique<ProactorThread>(index, ProactorBase::Kind::EPOLL));
+  }
+
+  for (const auto& proactor_thread : proactor_threads) {
+    proactor_thread->get()->Await([&] {
+      detail::ExecuteOnAllFiberStacks(
+          [&](detail::FiberInterface* fiber) { fiber_names.emplace_back(fiber->name()); });
+    });
+  }
+
+  for (unsigned index = 0; index < kNumProactors; ++index) {
+    EXPECT_EQ(1, std::count(fiber_names.begin(), fiber_names.end(), StrCat("main_p", index)));
+    EXPECT_EQ(1, std::count(fiber_names.begin(), fiber_names.end(), StrCat("_dispatch_p", index)));
+  }
+
+  EXPECT_EQ(0, std::count(fiber_names.begin(), fiber_names.end(), "main"));
+  EXPECT_EQ(0, std::count(fiber_names.begin(), fiber_names.end(), "_dispatch"));
 }
 
 TEST_F(FiberTest, Basic) {

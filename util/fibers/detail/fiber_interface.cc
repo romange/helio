@@ -5,6 +5,7 @@
 
 #include <absl/debugging/stacktrace.h>
 #include <absl/debugging/symbolize.h>
+#include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/proactor_base.h"
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
 #include <sanitizer/asan_interface.h>
@@ -105,11 +107,19 @@ inline void CpuPause() {
 #endif
 }
 
+std::string MainFiberName() {
+  ProactorBase* proactor = ProactorBase::me();
+  if (proactor == nullptr)
+    return "main";
+
+  return absl::StrCat("main_p", proactor->GetPoolIndex());
+}
+
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
 class MainFiberImpl final : public FiberInterface {
  public:
-  MainFiberImpl() noexcept : FiberInterface{MAIN, FiberPriority::NORMAL, 1, "main"} {
+  MainFiberImpl() noexcept : FiberInterface{MAIN, FiberPriority::NORMAL, 1, MainFiberName()} {
   }
 
   ~MainFiberImpl() {
