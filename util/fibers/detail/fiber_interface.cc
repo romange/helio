@@ -5,6 +5,7 @@
 
 #include <absl/debugging/stacktrace.h>
 #include <absl/debugging/symbolize.h>
+#include <absl/strings/str_cat.h>
 #include <absl/time/clock.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/detail/scheduler.h"
+#include "util/fibers/proactor_base.h"
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
 #include <sanitizer/asan_interface.h>
@@ -83,11 +85,19 @@ inline void CpuPause() {
 #endif
 }
 
+std::string MainFiberName() {
+  ProactorBase* proactor = ProactorBase::me();
+  if (proactor == nullptr)
+    return "main";
+
+  return absl::StrCat("main_p", proactor->GetPoolIndex());
+}
+
 // Serves as a stub Fiber since it does not allocate any stack.
 // It's used as a main fiber of the thread.
 class MainFiberImpl final : public FiberInterface {
  public:
-  MainFiberImpl() noexcept : FiberInterface{MAIN, FiberPriority::NORMAL, 1, "main"} {
+  MainFiberImpl() noexcept : FiberInterface{MAIN, FiberPriority::NORMAL, 1, MainFiberName()} {
   }
 
   ~MainFiberImpl() {
@@ -144,7 +154,7 @@ __attribute__((no_instrument_function)) static void PrintTopStackTraces() {
     }
 
     fprintf(stderr, "[%u] Fiber: %s, Min Margin: %zu bytes\n", index++, rec.fiber_name.data(),
-           rec.min_margin);
+            rec.min_margin);
     for (int j = 0; j < rec.num_frames; ++j) {
       const char* symbol = "(unknown)";
       if (absl::Symbolize(rec.frames[j], symbol_buf.data(), symbol_buf.size())) {
@@ -441,7 +451,8 @@ ctx::fiber_context FiberInterface::SwitchTo() {
   __sanitizer_start_switch_fiber(&fake_stack_save, stack_bottom_, stack_size_);
 #endif
 
-  return std::move(entry_).resume_with([prev, resume_hook, fake_stack_save](ctx::fiber_context&& c) {
+  return std::move(entry_).resume_with([prev, resume_hook,
+                                        fake_stack_save](ctx::fiber_context&& c) {
     DCHECK(!prev->entry_);
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -706,7 +717,6 @@ __attribute__((no_instrument_function)) void __cyg_profile_func_enter(void* this
       record.fiber_name[record.fiber_name.size() - 1] = '\0';
       record.num_frames =
           absl::GetStackTrace(record.frames, sizeof(record.frames) / sizeof(void*), 1);
-
 
       // If the record is smaller than the safety margin, log the stack trace immediately.
       if (margin < absl::GetFlag(FLAGS_fiber_safety_margin)) {
