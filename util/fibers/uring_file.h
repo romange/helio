@@ -4,16 +4,23 @@
 
 #pragma once
 
+#include <sys/stat.h>   // statx
 #include <sys/types.h>  // for mode_t
-#include <sys/stat.h> // statx
+#include <sys/uio.h>    // RWF_XXX
 
 #include "io/file.h"
+
+// Uncached buffered IO, supported since Linux 6.14. Not all libc headers define it yet.
+#ifndef RWF_DONTCACHE
+#define RWF_DONTCACHE 0x00000080
+#endif
 
 namespace util {
 
 namespace fb2 {
 
 class UringProactor;
+class SubmitEntry;
 
 // The following functions must be called in the context of Proactor thread.
 // The objects should be accessed and used in the context of the same thread where
@@ -73,13 +80,37 @@ class LinuxFile {
 
   // io_uring fixed version - src must point within the region, contained by the fixed buffer that
   // is specified by buf_index. See io_uring_prep_write_fixed(3) for more details.
-  void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb);
-  void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb);
+  // rw_flags is a bit-OR of RWF_XXX flags, see pwritev2(2), for example RWF_DONTCACHE.
+  // Kernels or filesystems that do not support a flag fail the write with -EOPNOTSUPP.
+  void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, unsigned rw_flags,
+                       AsyncCb cb);
+  void WriteFixedAsync(io::Bytes src, off_t offset, unsigned buf_index, AsyncCb cb) {
+    WriteFixedAsync(src, offset, buf_index, 0, std::move(cb));
+  }
+
+  void WriteAsync(io::Bytes src, off_t offset, unsigned rw_flags, AsyncCb cb);
+  void WriteAsync(io::Bytes src, off_t offset, AsyncCb cb) {
+    WriteAsync(src, offset, 0, std::move(cb));
+  }
+
   void FallocateAsync(int mode, off_t offset, off_t len, AsyncCb cb);
 
-  std::error_code FSync(unsigned flags = 0 /* full sync */);
+  // flags: 0 for fsync(2) or IORING_FSYNC_DATASYNC for fdatasync(2).
+  std::error_code FSync(unsigned flags);
+  void FSyncAsync(unsigned flags, AsyncCb cb);
+
+  // See sync_file_range(2). flags is a bit-OR of SYNC_FILE_RANGE_XXX constants.
+  // len == 0 means syncing until the end of the file.
+  void SyncFileRangeAsync(off_t offset, uint32_t len, unsigned flags, AsyncCb cb);
+
+  // See posix_fadvise(2). advice is one of POSIX_FADV_XXX constants.
+  // len == 0 means until the end of the file.
+  void FadviseAsync(off_t offset, uint32_t len, int advice, AsyncCb cb);
 
  protected:
+  // Returns a submit entry that runs cb upon completion and is set up to use the file descriptor.
+  SubmitEntry PrepareAsync(AsyncCb cb);
+
   int fd_ = -1;
   union {
     unsigned flags_ : 1;
@@ -94,9 +125,8 @@ class LinuxFile {
 // Equivalent to open(2) call. "flags" is the OR mask of O_XXX constants.
 io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flags, mode_t mode);
 
-
 // Equivalent to statx() call
-std::error_code StatX(const char* filepath, struct statx *stat, int fd);
+std::error_code StatX(const char* filepath, struct statx* stat, int fd);
 
 }  // namespace fb2
 }  // namespace util

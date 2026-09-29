@@ -36,7 +36,7 @@
 | **Build All** | `cd build-dbg && ninja -j4 base/all io/all util/all` |
 | **Run Tests (CI)** | `GLOG_logtostderr=1 ctest -V -L CI` |
 | **Run Specific Test** | `./fiber_test --logtostderr` (in build dir) |
-| **Format Code** | `clang-format -i <file>` |
+| **Format Code** | `pre-commit run --files <file>...` (see [Pre-commit](#-pre-commit)) |
 
 ## 📂 Key Directories
 
@@ -57,6 +57,22 @@
 Before configuring or running tests under `tests/`, read and follow
 [`tests/README.md`](tests/README.md). It documents required binaries, Python dependencies, and the
 local Azurite setup used by the Azure integration tests.
+
+## ✅ Pre-commit
+
+CI runs `pre-commit run --from-ref <base> --to-ref <head>`, which applies the hooks in
+`.pre-commit-config.yaml` (clang-format v22 from `mirrors-clang-format`, trailing whitespace,
+end of file) to **every file touched by the PR, in full**, not just the changed lines.
+
+*   **Do not** rely on the system `clang-format` or `git clang-format`: the version differs from
+    CI, and `git clang-format` formats only changed lines, leaving pre-existing violations in
+    touched files that CI then rejects.
+*   Before committing, run `pre-commit run --files <changed files>` and rebuild if it modified
+    anything. Before pushing, verify with `pre-commit run --from-ref origin/master --to-ref HEAD`.
+*   Setup: `uv tool install --force pre-commit`, then `pre-commit install` in the repo root so the
+    hook runs on every `git commit`. If `pre-commit` fails with `No module named virtualenv`, it
+    was installed with `pip --user` without its dependencies; reinstall it with `uv`. When
+    `pre-commit` is not installed, `uvx pre-commit ...` works as a drop-in.
 
 ## 📝 Git Commit Guidelines
 
