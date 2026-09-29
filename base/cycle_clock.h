@@ -67,7 +67,7 @@ class RealTimeAggregator {
   }
 
   unsigned Usec10ms() const {
-    uint64_t usec = CycleClock::ToUsec(cycles_1ms_);
+    uint64_t usec = CycleClock::ToUsec(cycles_10ms_);
     return usec > 10000u ? 10000u : usec;
   }
 
