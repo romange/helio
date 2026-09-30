@@ -4,6 +4,8 @@
 
 #include "util/listener_interface.h"
 
+#include <absl/strings/str_cat.h>
+
 #include <signal.h>
 #include <sys/resource.h>
 
@@ -94,7 +96,7 @@ auto __attribute__((noinline)) ListenerInterface::GetSafeTlsConnMap() -> Listene
 
 // Runs in a dedicated fiber for each listener.
 void ListenerInterface::RunAcceptLoop() {
-  ThisFiber::SetName("AcceptLoop");
+  ThisFiber::SetName(absl::StrCat("AcceptLoop_p", sock_->proactor()->GetPoolIndex()));
   FiberSocketBase::endpoint_type ep;
 
   if (!sock_->IsUDS()) {
