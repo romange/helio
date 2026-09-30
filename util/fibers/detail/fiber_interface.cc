@@ -2,6 +2,7 @@
 // See LICENSE for licensing terms.
 //
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/fibers.h"
 
 #include <absl/debugging/stacktrace.h>
 #include <absl/debugging/symbolize.h>
@@ -48,7 +49,11 @@
 // it unconditionally -> null-deref in Worker::ProcessFiberLeave -> the viewer/capture SEGFAULTS.
 // Enter uses NoticeThread() (auto-creates ThreadData) and guards its "close previous span" on a
 // non-null fiber, so Enter-only is crash-safe and complete for both live and on-demand capture.
-#define HELIO_TRACY_FIBER_ENTER(nm) TracyFiberEnter(nm)
+#define HELIO_TRACY_FIBER_ENTER(nm)                                    \
+  do {                                                                  \
+    if (::util::fb2::IsTracyFiberSelected(nm))                          \
+      TracyFiberEnter(nm);                                              \
+  } while (0)
 #else
 #define HELIO_TRACY_FIBER_ENTER(nm) (void)0
 #endif
@@ -66,6 +71,19 @@ namespace util {
 namespace fb2 {
 using namespace std;
 using base::CycleClock;
+
+namespace {
+std::atomic<TracyFiberFilter> tracy_fiber_filter{nullptr};
+}
+
+void SetTracyFiberFilter(TracyFiberFilter filter) noexcept {
+  tracy_fiber_filter.store(filter, std::memory_order_release);
+}
+
+bool IsTracyFiberSelected(std::string_view name) noexcept {
+  TracyFiberFilter filter = tracy_fiber_filter.load(std::memory_order_acquire);
+  return filter == nullptr || filter(name);
+}
 
 namespace detail {
 namespace ctx = boost::context;

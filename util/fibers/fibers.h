@@ -132,6 +132,12 @@ uint64_t FiberLongRunCnt() noexcept;
 uint64_t FiberLongRunSumUsec() noexcept;
 uint32_t GetFiberRunSeq() noexcept;
 
+// Installs a process-wide predicate for Tracy fiber-lane registration. The filter must remain
+// valid for the process lifetime and is called from the fiber context-switch path.
+using TracyFiberFilter = bool (*)(std::string_view);
+void SetTracyFiberFilter(TracyFiberFilter filter) noexcept;
+bool IsTracyFiberSelected(std::string_view name) noexcept;
+
 // Returns last K names of fibers that were running in this thread since it became active.
 std::vector<std::string> GetPastFiberNames() noexcept;
 
