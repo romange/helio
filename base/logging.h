@@ -6,13 +6,14 @@
 
 #ifdef USE_ABSL_LOG
 
-#include <vector>
-#include <string>
 #include <absl/log/absl_check.h>
 #include <absl/log/absl_log.h>
 #include <absl/log/globals.h>
 #include <absl/log/log_sink_registry.h>
 #include <absl/log/vlog_is_on.h>
+
+#include <string>
+#include <vector>
 
 #define CHECK ABSL_CHECK
 #define CHECK_GT ABSL_CHECK_GT
@@ -56,6 +57,9 @@ class ConsoleLogSink : public absl::LogSink {
 };
 
 std::vector<std::string> GetLoggingDirectories();
+
+// Apply legacy GLOG_* defaults before parsing command-line flags.
+void InitLoggingFlagsFromEnv();
 
 }  // namespace base
 
