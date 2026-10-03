@@ -9,6 +9,11 @@
 #include <cstdlib>
 #include <iostream>
 
+#ifdef USE_ABSL_LOG
+#include <absl/flags/reflection.h>
+#include <absl/strings/str_cat.h>
+#endif
+
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -76,6 +81,23 @@ string MyUserName() {
 }
 
 #ifdef USE_ABSL_LOG
+
+void InitLoggingFlagsFromEnv() {
+  for (const char* name : {"alsologtostderr", "logtostderr", "vmodule"}) {
+    const string env_name = absl::StrCat("GLOG_", name);
+    const char* value = std::getenv(env_name.c_str());
+    if (!value)
+      continue;
+
+    auto* flag = absl::FindCommandLineFlag(name);
+    CHECK(flag) << "Missing logging flag: " << name;
+    string error;
+    if (!flag->ParseFrom(value, &error)) {
+      fprintf(stderr, "Invalid %s: %s\n", env_name.c_str(), error.c_str());
+      std::exit(EXIT_FAILURE);
+    }
+  }
+}
 
 void ConsoleLogSink::Send(const absl::LogEntry& entry) {
   std::cout << entry.text_message() << std::endl;

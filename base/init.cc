@@ -122,6 +122,9 @@ MainInitGuard::MainInitGuard(int* argc, char*** argv, uint32_t flags) {
   if (main_init_guard_count.fetch_add(1))
     return;
 
+#ifdef USE_ABSL_LOG
+  base::InitLoggingFlagsFromEnv();
+#endif
   absl::ParseCommandLine(*argc, *argv);
 
 #ifdef USE_ABSL_LOG
