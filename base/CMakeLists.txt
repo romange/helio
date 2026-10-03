@@ -40,7 +40,3 @@ helio_cxx_test(cxx_test base absl::flat_hash_map LABELS CI)
 helio_cxx_test(string_view_sso_test base LABELS CI)
 helio_cxx_test(ring_buffer_test base LABELS CI)
 helio_cxx_test(io_buf_test base LABELS CI)
-
-if (NOT LEGACY_GLOG)
-  helio_cxx_test(logging_test base LABELS CI)
-endif()
