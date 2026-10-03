@@ -26,6 +26,8 @@ class EpollSocket : public LinuxSocketBase {
                                           std::function<void(int)> on_pre_connect) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
 
+  error_code CancelInFlightOps() final;
+
   // Really need here expected.
   Result<size_t> WriteSome(const iovec* ptr, uint32_t len) override;
 
