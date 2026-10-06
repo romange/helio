@@ -116,6 +116,7 @@ ABSL_FLAG(uint32_t, max_log_size, 200,
 
 // Backward compatibility flags from glog.
 ABSL_FLAG(bool, logtostderr, false, "log messages go to stderr instead of logfiles");
+ABSL_FLAG(bool, alsologtostderr, false, "also log messages to stderr in addition to logfiles");
 
 namespace base {
 
@@ -197,6 +198,10 @@ void FileLogSink::LogFile::ResetFlushThresholds() {
 }
 
 void FileLogSink::Init() {
+  if (absl::GetFlag(FLAGS_alsologtostderr)) {
+    absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfo);
+  }
+
   // Check backward compatibility flags from glog.
   // logtostderr means no file logging (only stderr).
   if (absl::GetFlag(FLAGS_logtostderr)) {

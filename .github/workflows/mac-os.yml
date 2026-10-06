@@ -17,7 +17,7 @@ env:
 
 jobs:
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 40  # ✨✨✨✨
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
         run: |
           cd ${{github.workspace}}/build
           cat CMakeCache.txt
-          
+
           ninja gperf_project || cat third_party/src/gperf_project-stamp/gperf_project-install-*.log
           ninja cares_project || cat third_party/src/cares_project-stamp/cares_project-build-*.log
           ninja -k 5 base/all io/all strings/all util/all echo_server ping_iouring_server \
