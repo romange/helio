@@ -3,12 +3,16 @@
 //
 #include <absl/container/flat_hash_set.h>
 
+#include <chrono>
+#include <thread>
+
+#include "base/cpu_features.h"
+#include "base/cycle_clock.h"
 #include "base/gtest.h"
 #include "base/iterator.h"
 #include "base/logging.h"
 #include "base/random.h"
 #include "base/string_view_sso.h"
-#include "base/cpu_features.h"
 #include "iterator.h"
 
 using namespace std;
@@ -175,6 +179,18 @@ TEST_F(CxxTest, Iterator) {
 TEST_F(CxxTest, CPUFeatures) {
   CpuFeatures features = GetCpuFeatures();
   (void)features;
+}
+
+TEST_F(CxxTest, CycleClock) {
+  const auto start = chrono::steady_clock::now();
+  const uint64_t start_cycles = CycleClock::Now();
+  this_thread::sleep_for(100ms);
+  const uint64_t cycle_usec = CycleClock::ToUsec(CycleClock::Now() - start_cycles);
+  const auto real_usec =
+      chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+
+  // CycleClock durations must match real time in every build mode.
+  EXPECT_NEAR(cycle_usec, real_usec, real_usec / 5);
 }
 
 }  // namespace base

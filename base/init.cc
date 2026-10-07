@@ -12,6 +12,7 @@
 #endif
 
 #include <absl/base/internal/cycleclock.h>
+#include <absl/base/internal/sysinfo.h>
 #include <absl/debugging/failure_signal_handler.h>
 #include <absl/debugging/symbolize.h>
 #include <absl/flags/parse.h>
@@ -71,6 +72,10 @@ void CycleClock::InitOnce() {
   uint64_t res;
   __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(res));
   frequency_ = res;
+#elif defined(__x86_64__)
+  // Now() reads the raw TSC. absl::base_internal::CycleClock::Frequency() is scaled down by
+  // kCycleClockShift (2x with NDEBUG, 4x without), which would inflate ToUsec() accordingly.
+  frequency_ = absl::base_internal::NominalCPUFrequency();
 #else
   frequency_ = absl::base_internal::CycleClock::Frequency();
 #endif
