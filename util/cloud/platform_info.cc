@@ -42,7 +42,7 @@ CloudProvider DetectCloud(const io::DmiInfo& dmi) {
 
   if (absl::StartsWith(vendor, "Amazon") || absl::StrContains(bios, "amazon"))
     return CloudProvider::kAws;
-  if (absl::StartsWith(vendor, "Google") || product == "Google Compute Engine")
+  if (product == "Google Compute Engine")
     return CloudProvider::kGcp;
   if (asset_tag == "7783-7084-3265-9085-8269-3286-77")
     return CloudProvider::kAzure;
@@ -55,8 +55,6 @@ CloudProvider DetectCloud(const io::DmiInfo& dmi) {
 
   if (getenv("AWS_EXECUTION_ENV") || getenv("ECS_CONTAINER_METADATA_URI_V4"))
     return CloudProvider::kAws;
-  if (getenv("K_SERVICE"))
-    return CloudProvider::kGcp;
   if (getenv("CONTAINER_APP_NAME"))
     return CloudProvider::kAzure;
   return CloudProvider::kUnknown;
@@ -69,7 +67,8 @@ Virtualization DetectVirtualization(const io::DmiInfo& dmi, const io::Result<io:
     return Virtualization::kVmware;
   if (vendor == "QEMU" || absl::StrContains(product, "KVM"))
     return Virtualization::kKvm;
-  if (absl::StartsWith(vendor, "Microsoft"))
+  if (absl::StartsWith(vendor, "Microsoft") && cpu &&
+      cpu->hypervisor == io::HypervisorStatus::kPresent)
     return Virtualization::kHyperV;
   if (vendor == "Xen")
     return Virtualization::kXen;

@@ -86,12 +86,13 @@ TEST_F(PlatformInfoTest, DmiCloudAndHypervisorClassification) {
   const Case cases[] = {
       {"Amazon EC2", "", "", "", CloudProvider::kAws, Virtualization::kUnknown},
       {"Xen", "", "", "AMAZON EC2", CloudProvider::kAws, Virtualization::kXen},
-      {"Google", "", "", "", CloudProvider::kGcp, Virtualization::kUnknown},
+      {"Google", "Eve", "", "", CloudProvider::kUnknown, Virtualization::kUnknown},
       {"", "Google Compute Engine", "", "", CloudProvider::kGcp, Virtualization::kUnknown},
+      {"Google", "Google Compute Engine", "", "", CloudProvider::kGcp, Virtualization::kUnknown},
       {"Microsoft Corporation", "", "7783-7084-3265-9085-8269-3286-77", "", CloudProvider::kAzure,
-       Virtualization::kHyperV},
+       Virtualization::kUnknown},
       {"Microsoft Corporation", "", "not-azure", "", CloudProvider::kUnknown,
-       Virtualization::kHyperV},
+       Virtualization::kUnknown},
       {"", "", "OracleCloud.com", "", CloudProvider::kOracle, Virtualization::kUnknown},
       {"Hetzner", "", "", "", CloudProvider::kHetzner, Virtualization::kUnknown},
       {"", "OpenStack Nova", "", "", CloudProvider::kOpenStack, Virtualization::kUnknown},
@@ -117,7 +118,7 @@ TEST_F(PlatformInfoTest, MissingAzureTagDoesNotImplyAzure) {
   ASSERT_TRUE(io::Delete(root_ + "/sys/class/dmi/id/chassis_asset_tag"));
   auto info = PlatformInfo::Create(root_);
   EXPECT_EQ(info.cloud, CloudProvider::kUnknown);
-  EXPECT_EQ(info.virtualization, Virtualization::kHyperV);
+  EXPECT_EQ(info.virtualization, Virtualization::kUnknown);
   ASSERT_FALSE(info.dmi.chassis_asset_tag);
   EXPECT_EQ(info.dmi.chassis_asset_tag.error(), (std::error_code{ENOENT, std::system_category()}));
 }
@@ -141,7 +142,6 @@ TEST_F(PlatformInfoTest, CloudEnvironmentFallbacks) {
       {"RAILWAY_ENVIRONMENT", CloudProvider::kRailway},
       {"AWS_EXECUTION_ENV", CloudProvider::kAws},
       {"ECS_CONTAINER_METADATA_URI_V4", CloudProvider::kAws},
-      {"K_SERVICE", CloudProvider::kGcp},
       {"CONTAINER_APP_NAME", CloudProvider::kAzure},
   };
   for (const auto& [name, cloud] : cases) {
@@ -154,12 +154,26 @@ TEST_F(PlatformInfoTest, CloudEnvironmentFallbacks) {
   }
 }
 
+TEST_F(PlatformInfoTest, KnativeEnvironmentDoesNotImplyGcp) {
+  ASSERT_EQ(setenv("K_SERVICE", "test", 1), 0);
+  EXPECT_EQ(PlatformInfo::Create(root_).cloud, CloudProvider::kUnknown);
+}
+
 TEST_F(PlatformInfoTest, CloudEvidencePrecedence) {
   WriteDmi("Amazon EC2");
-  ASSERT_EQ(setenv("K_SERVICE", "test", 1), 0);
+  ASSERT_EQ(setenv("CONTAINER_APP_NAME", "test", 1), 0);
   EXPECT_EQ(PlatformInfo::Create(root_).cloud, CloudProvider::kAws);
   ASSERT_EQ(setenv("RAILWAY_ENVIRONMENT", "test", 1), 0);
   EXPECT_EQ(PlatformInfo::Create(root_).cloud, CloudProvider::kRailway);
+}
+
+TEST_F(PlatformInfoTest, HyperVRequiresHypervisorCpuFlag) {
+  WriteDmi("Microsoft Corporation", "Surface Laptop");
+  WriteCpu("flags : fpu\n");
+  EXPECT_EQ(PlatformInfo::Create(root_).virtualization, Virtualization::kUnknown);
+
+  WriteCpu("flags : fpu hypervisor\n");
+  EXPECT_EQ(PlatformInfo::Create(root_).virtualization, Virtualization::kHyperV);
 }
 
 TEST_F(PlatformInfoTest, VirtualizationEvidenceAndUnknown) {
