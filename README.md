@@ -90,6 +90,14 @@ flag does not prove that the machine is bare metal.
 attribute's `io::Result`, so callers can inspect missing or unreadable attributes
 independently. Both readers accept an alternate path for mounted system trees.
 
+`util/cloud/platform_info.h` provides `util::cloud::PlatformInfo::Create()` for
+local cloud, hypervisor, and deployment classification, keeping these heuristics
+out of the I/O layer. The result retains each source's `io::Result` alongside the
+classification enums. Detection uses DMI, CPU flags, environment variables, and
+runtime marker files, without contacting metadata services. A file-root prefix
+can be passed to inspect a mounted system tree; environment markers still
+describe the current process. Consumers map enums to application-specific labels.
+
 ## Conventions
 Third_party packages have `TRDP::` prefix in `CMakeLists.txt`. absl libraries have prefix
 `absl::...`.
