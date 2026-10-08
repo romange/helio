@@ -38,6 +38,8 @@ class PlatformInfoTest : public testing::Test {
 
     root_ = base::GetTestTempPath(testing::UnitTest::GetInstance()->current_test_info()->name());
     std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+    ASSERT_FALSE(ec) << ec;
     std::filesystem::create_directories(root_ + "/proc", ec);
     ASSERT_FALSE(ec) << ec;
     std::filesystem::create_directories(root_ + "/sys/class/dmi/id", ec);
