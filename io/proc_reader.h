@@ -4,8 +4,13 @@
 
 #pragma once
 
-#include <vector>
 #include <sys/types.h>
+
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <vector>
+
 #include "io/io.h"
 
 namespace io {
@@ -51,6 +56,25 @@ Result<SelfStat> ReadSelfStat();
 using DistributionInfo = std::vector<std::pair<std::string, std::string>>;
 
 Result<DistributionInfo> ReadDistributionInfo();
+
+enum class HypervisorStatus { kUnknown, kAbsent, kPresent };
+
+struct CpuInfo {
+  // The first nonempty x86-style flags record. kAbsent does not prove bare metal.
+  HypervisorStatus hypervisor = HypervisorStatus::kUnknown;
+};
+
+ABSL_MUST_USE_RESULT Result<CpuInfo> ReadCpuInfo(std::string_view path = "/proc/cpuinfo");
+
+struct DmiInfo {
+  Result<std::string> sys_vendor;
+  Result<std::string> product_name;
+  Result<std::string> chassis_asset_tag;
+  Result<std::string> bios_version;
+};
+
+// Values are whitespace-trimmed. Each attribute retains its own read error.
+ABSL_MUST_USE_RESULT DmiInfo ReadDmiInfo(std::string_view directory = "/sys/class/dmi/id");
 
 struct TcpInfo {
   bool is_ipv6 = false;

@@ -5,3 +5,4 @@ add_library(file ALIAS io)
 
 helio_cxx_test(io_test io LABELS CI)
 helio_cxx_test(file_test io DATA testdata/ids.txt.zst LABELS CI)
+helio_cxx_test(proc_reader_test io LABELS CI)
