@@ -136,10 +136,6 @@ SizeOrError PosixReadFile::Read(size_t offset, const iovec* v, uint32_t len) {
   if (len == 0)
     return 0;
 
-  if (offset > file_size_) {
-    return make_unexpected(make_error_code(errc::argument_out_of_domain));
-  }
-
   ssize_t r = ReadAllPosix(fd_, offset, v, len);
   if (r < 0) {
     return make_unexpected(StatusFileError());

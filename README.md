@@ -79,6 +79,17 @@ Unfortunately, Google's version has some bugs, which I fixed (waiting for review
 ## Tests
 ASYNC uses a googletest+gmock unit-test environment.
 
+## Linux system information
+
+`io/proc_reader.h` provides `ReadCpuInfo()` for `/proc/cpuinfo`, `ReadDmiInfo()` for
+whitespace-trimmed sysfs DMI attributes, and the existing process and memory
+readers. CPU hypervisor status is explicitly unknown, absent, or present; an absent
+flag does not prove that the machine is bare metal.
+
+`ReadCpuInfo()` returns `io::Result<CpuInfo>`. `ReadDmiInfo()` retains each
+attribute's `io::Result`, so callers can inspect missing or unreadable attributes
+independently. Both readers accept an alternate path for mounted system trees.
+
 ## Conventions
 Third_party packages have `TRDP::` prefix in `CMakeLists.txt`. absl libraries have prefix
 `absl::...`.

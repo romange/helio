@@ -9,9 +9,9 @@
 #include <string_view>
 #include <system_error>
 
-#include "nonstd/expected.hpp"
 #include "base/integral_types.h"
 #include "io/io.h"
+#include "nonstd/expected.hpp"
 
 namespace io {
 
@@ -43,7 +43,7 @@ class ReadonlyFile {
 
   virtual ~ReadonlyFile();
 
-  /// Reads range.size() bytes into dest. if EOF has been reached, returns 0.
+  /// Reads range.size() bytes into dest. If EOF has been reached or offset is past EOF, returns 0.
   /// range must be non-empty.
   ABSL_MUST_USE_RESULT Result<size_t> Read(size_t offset, const MutableBytes& dest) {
     iovec v{.iov_base = dest.data(), .iov_len = dest.size()};

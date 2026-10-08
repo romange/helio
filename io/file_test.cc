@@ -4,8 +4,8 @@
 
 #include "io/file.h"
 
-#include <gmock/gmock.h>
 #include <absl/strings/numbers.h>
+#include <gmock/gmock.h>
 
 #include "base/gtest.h"
 #include "base/logging.h"
@@ -39,6 +39,34 @@ TEST_F(FileTest, Util) {
   EXPECT_EQ(res2.value(), "foo");
 }
 
+TEST_F(FileTest, ReadPastEndReturnsEof) {
+  string path = base::GetTestTempPath("read-past-end.txt");
+  WriteStringToFileOrDie("foo", path);
+
+  auto res = OpenRead(path, ReadonlyFile::Options{});
+  ASSERT_TRUE(res);
+  unique_ptr<ReadonlyFile> file(*res);
+
+  char buf;
+  auto read_res = file->Read(4, ReadonlyFile::MutableBytes{reinterpret_cast<uint8_t*>(&buf), 1});
+  ASSERT_TRUE(read_res);
+  EXPECT_EQ(*read_res, 0);
+}
+
+#ifdef __linux__
+TEST_F(FileTest, ReadProcFileAtNonzeroOffset) {
+  auto res = OpenRead("/proc/self/status", ReadonlyFile::Options{});
+  ASSERT_TRUE(res);
+  unique_ptr<ReadonlyFile> file(*res);
+  ASSERT_EQ(file->Size(), 0);
+
+  char buf;
+  auto read_res = file->Read(1, ReadonlyFile::MutableBytes{reinterpret_cast<uint8_t*>(&buf), 1});
+  ASSERT_TRUE(read_res);
+  EXPECT_EQ(*read_res, 1);
+}
+#endif
+
 TEST_F(FileTest, LineReader) {
   string path = base::ProgramRunfile("testdata/ids.txt.zst");
   Result<Source*> src = OpenUncompressed(path);
@@ -71,6 +99,5 @@ TEST_F(FileTest, Direct) {
   ec = file->Close();
   ASSERT_FALSE(ec);
 }
-
 
 }  // namespace io

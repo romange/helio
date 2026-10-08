@@ -4,15 +4,18 @@
 
 #include "io/proc_reader.h"
 
+#include <absl/base/internal/endian.h>
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/numbers.h>
+#include <absl/strings/str_cat.h>
 #include <absl/strings/str_split.h>
 #include <absl/strings/strip.h>
-#include <absl/base/internal/endian.h>
 #include <fcntl.h>
 #include <unistd.h>
 
 #include "base/io_buf.h"
 #include "base/logging.h"
+#include "io/file_util.h"
 
 namespace io {
 
@@ -24,24 +27,44 @@ namespace {
 
 // Reads proc files like /proc/self/status  or /proc/meminfo
 // passes to cb: (key, value)
-error_code ReadProcFile(const char* name, char c, function<void(string_view, string_view)> cb, bool skip_header = false) {
+error_code ReadProcFile(const char* name, char c, function<void(string_view, string_view)> cb,
+                        bool skip_header = false) {
   int fd = open(name, O_RDONLY | O_CLOEXEC);
   if (fd == -1)
     return error_code{errno, system_category()};
+  absl::Cleanup close_fd = [fd] { close(fd); };
 
   base::IoBuf buf{512};
   bool header_skipped = !skip_header;
+  auto process_line = [&](string_view line) {
+    if (!header_skipped) {
+      header_skipped = true;
+      return;
+    }
+
+    size_t pos = line.find(c);
+    if (pos == string_view::npos)
+      return;
+
+    string_view key = absl::StripAsciiWhitespace(line.substr(0, pos));
+    string_view value = absl::StripLeadingAsciiWhitespace(line.substr(pos + 1));
+    cb(key, value);
+  };
 
   while (true) {
     auto dest = buf.AppendBuffer();
 
-    int res = read(fd, dest.data(), dest.size());
+    ssize_t res = read(fd, dest.data(), dest.size());
     if (res == -1) {
-      close(fd);
+      if (errno == EINTR)
+        continue;
       return error_code{errno, system_category()};
     }
 
     if (res == 0) {
+      auto input = buf.InputBuffer();
+      if (!input.empty())
+        process_line(string_view(reinterpret_cast<const char*>(input.data()), input.size()));
       break;
     }
 
@@ -59,27 +82,19 @@ error_code ReadProcFile(const char* name, char c, function<void(string_view, str
       }
 
       string_view line(reinterpret_cast<char*>(input.data()), eol - input.data());
-      
-      if (!header_skipped) {
-        header_skipped = true;
-        buf.ConsumeInput(line.size() + 1);
-        continue;
-      }
-      
-      size_t pos = line.find(c);
-      if (pos == string_view::npos)
-        break;
-      string_view key = line.substr(0, pos);
-      string_view value = absl::StripLeadingAsciiWhitespace(line.substr(pos + 1));
-
-      cb(key, value);
-
+      process_line(line);
       buf.ConsumeInput(line.size() + 1);
     }
   }
-  close(fd);
 
   return error_code{};
+}
+
+Result<string> ReadDmiAttribute(string_view directory, string_view attribute) {
+  auto content = ReadFileToString(absl::StrCat(directory, "/", attribute));
+  if (content)
+    absl::StripAsciiWhitespace(&*content);
+  return content;
 }
 
 inline void ParseKb(string_view num, size_t* dest) {
@@ -324,9 +339,7 @@ Result<SelfStat> ReadSelfStat() {
 
 Result<DistributionInfo> ReadDistributionInfo() {
   DistributionInfo result;
-  auto cb = [&result](string_view key, string_view value) {
-    result.emplace_back(key, value);
-  };
+  auto cb = [&result](string_view key, string_view value) { result.emplace_back(key, value); };
 
   error_code ec = ReadProcFile("/etc/os-release", '=', std::move(cb));
   if (ec)
@@ -334,21 +347,61 @@ Result<DistributionInfo> ReadDistributionInfo() {
   return result;
 }
 
+Result<CpuInfo> ReadCpuInfo(string_view path) {
+  CpuInfo info;
+  auto cb = [&info](string_view key, string_view value) {
+    if (key != "flags" || info.hypervisor != HypervisorStatus::kUnknown)
+      return;
+
+    bool found_flags = false;
+    bool hypervisor = false;
+    for (string_view flag : absl::StrSplit(value, absl::ByAnyChar(" \t\r"), absl::SkipEmpty())) {
+      found_flags = true;
+      hypervisor |= flag == "hypervisor";
+    }
+    if (found_flags)
+      info.hypervisor = hypervisor ? HypervisorStatus::kPresent : HypervisorStatus::kAbsent;
+  };
+
+  error_code ec = ReadProcFile(string(path).c_str(), ':', std::move(cb));
+  if (ec)
+    return make_unexpected(ec);
+  return info;
+}
+
+DmiInfo ReadDmiInfo(string_view directory) {
+  return {ReadDmiAttribute(directory, "sys_vendor"), ReadDmiAttribute(directory, "product_name"),
+          ReadDmiAttribute(directory, "chassis_asset_tag"),
+          ReadDmiAttribute(directory, "bios_version")};
+}
+
 // Converts numeric TCP state to human-readable string
 std::string TcpStateToString(unsigned state) {
   switch (state) {
-    case 0x01: return "ESTABLISHED";
-    case 0x02: return "SYN_SENT";
-    case 0x03: return "SYN_RECV";
-    case 0x04: return "FIN_WAIT1";
-    case 0x05: return "FIN_WAIT2";
-    case 0x06: return "TIME_WAIT";
-    case 0x07: return "CLOSE";
-    case 0x08: return "CLOSE_WAIT";
-    case 0x09: return "LAST_ACK";
-    case 0x0A: return "LISTEN";
-    case 0x0B: return "CLOSING";
-    default: return "UNKNOWN";
+    case 0x01:
+      return "ESTABLISHED";
+    case 0x02:
+      return "SYN_SENT";
+    case 0x03:
+      return "SYN_RECV";
+    case 0x04:
+      return "FIN_WAIT1";
+    case 0x05:
+      return "FIN_WAIT2";
+    case 0x06:
+      return "TIME_WAIT";
+    case 0x07:
+      return "CLOSE";
+    case 0x08:
+      return "CLOSE_WAIT";
+    case 0x09:
+      return "LAST_ACK";
+    case 0x0A:
+      return "LISTEN";
+    case 0x0B:
+      return "CLOSING";
+    default:
+      return "UNKNOWN";
   }
 }
 
