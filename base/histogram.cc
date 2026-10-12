@@ -88,7 +88,7 @@ constexpr auto kBucketLimit = [] {
 }();
 
 // Lookup table for small values which cover typical latencies in usec. Avoids the division.
-constexpr unsigned kSmallValues = 1024;
+constexpr unsigned kSmallValues = 512;
 constexpr auto kSmallBucket = [] {
   std::array<uint8_t, kSmallValues> res{};
   for (unsigned v = 0; v < res.size(); ++v)
