@@ -51,7 +51,8 @@ constexpr auto kTwoDigitOffset = [] {
 
 // Exact floor(log10(v)) for v > 0.
 constexpr unsigned Log10Floor(uint64_t v) {
-  unsigned t = ((64 - __builtin_clzll(v)) * 1233) >> 12;  // floor(log10(2^bits)) approximation
+  unsigned bit_width = 64 - __builtin_clzll(v);
+  unsigned t = ((bit_width * 1233) >> 12);  // floor(log10(2^bits)) approximation
   return t - (v < kPow10[t]);
 }
 
@@ -64,6 +65,27 @@ constexpr unsigned ComputeBucketIndex(uint64_t v) {
   return 10 + kBucketsPerDecade * (d - 1) + kTwoDigitOffset[v / kPow10[d - 1]];
 }
 
+// Upper limit of the last bucket, which catches everything >= 9e9.
+constexpr double kLastLimit = 1e200;
+
+// Exclusive upper limits of the buckets: 1..10, then kDecadeLimits and 100 scaled to each decade.
+constexpr auto kBucketLimit = [] {
+  std::array<double, kNumBucketsTotal> res{};
+  unsigned b = 0;
+  for (unsigned v = 1; v <= 10; ++v)
+    res[b++] = v;
+  for (unsigned d = 1; b + 1 < res.size(); ++d) {
+    for (uint8_t limit : kDecadeLimits) {
+      if (b + 1 < res.size())
+        res[b++] = limit * double(kPow10[d - 1]);
+    }
+    if (b + 1 < res.size())
+      res[b++] = 100 * double(kPow10[d - 1]);
+  }
+  res[b] = kLastLimit;
+  return res;
+}();
+
 // Lookup table for small values which cover typical latencies in usec. Avoids the division.
 constexpr unsigned kSmallValues = 1024;
 constexpr auto kSmallBucket = [] {
@@ -75,164 +97,8 @@ constexpr auto kSmallBucket = [] {
 
 }  // namespace
 
-const double Histogram::kBucketLimit[kNumBuckets] = {
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    12,
-    14,
-    16,
-    18,
-    20,
-    25,
-    30,
-    35,
-    40,
-    45,
-    50,
-    60,
-    70,
-    80,
-    90,
-    100,
-    120,
-    140,
-    160,
-    180,
-    200,
-    250,
-    300,
-    350,
-    400,
-    450,
-    500,
-    600,
-    700,
-    800,
-    900,
-    1000,
-    1200,
-    1400,
-    1600,
-    1800,
-    2000,
-    2500,
-    3000,
-    3500,
-    4000,
-    4500,
-    5000,
-    6000,
-    7000,
-    8000,
-    9000,
-    10000,
-    12000,
-    14000,
-    16000,
-    18000,
-    20000,
-    25000,
-    30000,
-    35000,
-    40000,
-    45000,
-    50000,
-    60000,
-    70000,
-    80000,
-    90000,
-    100000,
-    120000,
-    140000,
-    160000,
-    180000,
-    200000,
-    250000,
-    300000,
-    350000,
-    400000,
-    450000,
-    500000,
-    600000,
-    700000,
-    800000,
-    900000,
-    1000000,
-    1200000,
-    1400000,
-    1600000,
-    1800000,
-    2000000,
-    2500000,
-    3000000,
-    3500000,
-    4000000,
-    4500000,
-    5000000,
-    6000000,
-    7000000,
-    8000000,
-    9000000,
-    10000000,
-    12000000,
-    14000000,
-    16000000,
-    18000000,
-    20000000,
-    25000000,
-    30000000,
-    35000000,
-    40000000,
-    45000000,
-    50000000,
-    60000000,
-    70000000,
-    80000000,
-    90000000,
-    100000000,
-    120000000,
-    140000000,
-    160000000,
-    180000000,
-    200000000,
-    250000000,
-    300000000,
-    350000000,
-    400000000,
-    450000000,
-    500000000,
-    600000000,
-    700000000,
-    800000000,
-    900000000,
-    1000000000,
-    1200000000,
-    1400000000,
-    1600000000,
-    1800000000,
-    2000000000,
-    2500000000.0,
-    3000000000.0,
-    3500000000.0,
-    4000000000.0,
-    4500000000.0,
-    5000000000.0,
-    6000000000.0,
-    7000000000.0,
-    8000000000.0,
-    9000000000.0,
-    1e200,
-};
-
 static_assert(Histogram::kNumBuckets == kNumBucketsTotal);
+static_assert(kBucketLimit[152] == 9e9);
 static_assert(ComputeBucketIndex(9'000'000'000) == kNumBucketsTotal - 1);
 static_assert(ComputeBucketIndex(8'999'999'999) == kNumBucketsTotal - 2);
 
@@ -249,6 +115,10 @@ unsigned Histogram::BucketIndex(double value) {
   return ComputeBucketIndex(static_cast<uint64_t>(value));
 }
 
+double Histogram::BucketLimit(unsigned b) {
+  return kBucketLimit[b];
+}
+
 inline pair<double, double> Histogram::BucketLimits(unsigned b) {
   double low = (b == 0) ? 0.0 : kBucketLimit[b - 1];
   return pair<double, double>(low, kBucketLimit[b]);
@@ -262,7 +132,7 @@ Histogram::~Histogram() {
 }
 
 void Histogram::Clear() {
-  min_ = kBucketLimit[kNumBuckets - 1];
+  min_ = kLastLimit;
   max_ = 0;
   num_ = 0;
   sum_ = 0;

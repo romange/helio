@@ -17,15 +17,28 @@ using namespace std;
 
 namespace {
 
+// The original hand-written bucket limits. Kept here as an independent reference for the
+// limits and the index that the histogram computes.
+// clang-format off
+constexpr double kReferenceLimits[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100,
+    120, 140, 160, 180, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000,
+    1.2e3, 1.4e3, 1.6e3, 1.8e3, 2e3, 2.5e3, 3e3, 3.5e3, 4e3, 4.5e3, 5e3, 6e3, 7e3, 8e3, 9e3, 1e4,
+    1.2e4, 1.4e4, 1.6e4, 1.8e4, 2e4, 2.5e4, 3e4, 3.5e4, 4e4, 4.5e4, 5e4, 6e4, 7e4, 8e4, 9e4, 1e5,
+    1.2e5, 1.4e5, 1.6e5, 1.8e5, 2e5, 2.5e5, 3e5, 3.5e5, 4e5, 4.5e5, 5e5, 6e5, 7e5, 8e5, 9e5, 1e6,
+    1.2e6, 1.4e6, 1.6e6, 1.8e6, 2e6, 2.5e6, 3e6, 3.5e6, 4e6, 4.5e6, 5e6, 6e6, 7e6, 8e6, 9e6, 1e7,
+    1.2e7, 1.4e7, 1.6e7, 1.8e7, 2e7, 2.5e7, 3e7, 3.5e7, 4e7, 4.5e7, 5e7, 6e7, 7e7, 8e7, 9e7, 1e8,
+    1.2e8, 1.4e8, 1.6e8, 1.8e8, 2e8, 2.5e8, 3e8, 3.5e8, 4e8, 4.5e8, 5e8, 6e8, 7e8, 8e8, 9e8, 1e9,
+    1.2e9, 1.4e9, 1.6e9, 1.8e9, 2e9, 2.5e9, 3e9, 3.5e9, 4e9, 4.5e9, 5e9, 6e9, 7e9, 8e9, 9e9, 1e200,
+};
+// clang-format on
+static_assert(size(kReferenceLimits) == Histogram::kNumBuckets);
+
 // The original bucket lookup, used as the reference for BucketIndex().
 unsigned UpperBoundIndex(double value) {
-  static const auto limits = [] {
-    array<double, Histogram::kNumBuckets> res;
-    for (unsigned b = 0; b < res.size(); ++b)
-      res[b] = Histogram::BucketLimit(b);
-    return res;
-  }();
-  return upper_bound(limits.begin(), limits.end() - 1, value) - limits.begin();
+  return upper_bound(begin(kReferenceLimits), end(kReferenceLimits) - 1, value) -
+         begin(kReferenceLimits);
 }
 
 }  // namespace
@@ -113,6 +126,12 @@ TEST_F(HistogramTest, Decay) {
   EXPECT_NE(string::npos, str.find(") 0.00390625 ")) << str;
 }
 
+TEST_F(HistogramTest, BucketLimits) {
+  for (unsigned b = 0; b < Histogram::kNumBuckets; ++b) {
+    EXPECT_EQ(kReferenceLimits[b], Histogram::BucketLimit(b)) << b;
+  }
+}
+
 TEST_F(HistogramTest, BucketIndex) {
   // Exhaustive over small integers, which covers the lookup table and the first decades.
   for (uint64_t v = 0; v < 2'000'000; ++v) {
@@ -121,7 +140,7 @@ TEST_F(HistogramTest, BucketIndex) {
 
   // Around each bucket limit.
   for (unsigned b = 0; b + 1 < Histogram::kNumBuckets; ++b) {
-    double limit = Histogram::BucketLimit(b);
+    double limit = kReferenceLimits[b];
     for (double v : {limit - 1, limit - 0.5, nextafter(limit, 0.0), limit, nextafter(limit, 1e300),
                      limit + 0.5, limit + 1}) {
       ASSERT_EQ(UpperBoundIndex(v), Histogram::BucketIndex(v)) << v;

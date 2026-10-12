@@ -82,9 +82,7 @@ class Histogram {
   static unsigned BucketIndex(double value);
 
   // Exclusive upper limit of bucket `b`, b < kNumBuckets.
-  static double BucketLimit(unsigned b) {
-    return kBucketLimit[b];
-  }
+  static double BucketLimit(unsigned b);
 
  private:
   // Bucket counts and num_ are stored in fixed point with kFracBits fractional bits.
@@ -106,8 +104,6 @@ class Histogram {
   double max_;
   double sum_;
   uint64_t num_;  // in fixed point, see kFracBits.
-
-  static const double kBucketLimit[kNumBuckets];
 
   std::vector<uint64_t> buckets_;  // in fixed point, see kFracBits.
 };
