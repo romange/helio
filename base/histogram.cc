@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "absl/base/optimization.h"
 #include "base/bits.h"
 #include "base/logging.h"
 
@@ -60,7 +61,7 @@ constexpr unsigned ComputeBucketIndex(uint64_t v) {
   if (v < 10)
     return v;
   unsigned d = Log10Floor(v);
-  if (d >= 10)
+  if (ABSL_PREDICT_FALSE(d >= 10))
     return kNumBucketsTotal - 1;
   return 10 + kBucketsPerDecade * (d - 1) + kTwoDigitOffset[v / kPow10[d - 1]];
 }
