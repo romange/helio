@@ -254,11 +254,6 @@ inline pair<double, double> Histogram::BucketLimits(unsigned b) {
   return pair<double, double>(low, kBucketLimit[b]);
 }
 
-inline double Histogram::BucketAverage(unsigned b) {
-  auto limits = BucketLimits(b);
-  return (limits.first + limits.second) / 2;
-}
-
 Histogram::Histogram() {
   Clear();
 }
@@ -387,12 +382,16 @@ string Histogram::ToString() const {
   // Weights become fractional after Decay(). Print them exactly so that bucket weights
   // add up to the total, and keep the integer format for the common undecayed case.
   auto format_weight = [](uint64_t w) {
-    char buf[32];
-    if (w % kOne == 0)
-      snprintf(buf, sizeof(buf), "%" PRIu64, w >> kFracBits);
-    else
-      snprintf(buf, sizeof(buf), "%.2f", double(w) / kOne);
-    return string(buf);
+    static_assert(kFracBits == 8, "fraction digits below assume 1/256 = 0.00390625");
+    char buf[48];
+    int len = snprintf(buf, sizeof(buf), "%" PRIu64, w >> kFracBits);
+    if (uint64_t frac = w % kOne; frac != 0) {
+      // k/256 always has exactly 8 decimal digits: k * 0.00390625.
+      len += snprintf(buf + len, sizeof(buf) - len, ".%08" PRIu64, frac * 390625);
+      while (buf[len - 1] == '0')
+        --len;
+    }
+    return string(buf, len);
   };
 
   string r;

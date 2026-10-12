@@ -101,7 +101,6 @@ class Histogram {
   double InterpolateVal(unsigned bucket, uint64_t position) const;
 
   static std::pair<double, double> BucketLimits(unsigned bucket);
-  static double BucketAverage(unsigned b);
 
   double min_;
   double max_;

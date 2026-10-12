@@ -103,7 +103,14 @@ TEST_F(HistogramTest, Decay) {
   // Decayed weights are printed exactly, so bucket weights add up to the total.
   string str = h2.ToString();
   EXPECT_NE(string::npos, str.find("Count: 1 ")) << str;
-  EXPECT_NE(string::npos, str.find(") 0.50 ")) << str;
+  EXPECT_NE(string::npos, str.find(") 0.5 ")) << str;
+
+  // The smallest weight, 1/256, is still printed rather than rounded to zero.
+  for (unsigned i = 0; i < 7; ++i)
+    h2.Decay();
+  str = h2.ToString();
+  EXPECT_NE(string::npos, str.find("Count: 0.0078125 ")) << str;
+  EXPECT_NE(string::npos, str.find(") 0.00390625 ")) << str;
 }
 
 TEST_F(HistogramTest, BucketIndex) {
