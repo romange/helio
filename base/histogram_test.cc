@@ -99,6 +99,11 @@ TEST_F(HistogramTest, Decay) {
   h2.Decay();
   EXPECT_EQ(1u, h2.count());
   EXPECT_EQ(100, h2.Percentile(100));
+
+  // Decayed weights are printed exactly, so bucket weights add up to the total.
+  string str = h2.ToString();
+  EXPECT_NE(string::npos, str.find("Count: 1 ")) << str;
+  EXPECT_NE(string::npos, str.find(") 0.50 ")) << str;
 }
 
 TEST_F(HistogramTest, BucketIndex) {

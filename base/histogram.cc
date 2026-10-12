@@ -275,6 +275,7 @@ void Histogram::Clear() {
 }
 
 void Histogram::Add(double value, uint64_t count) {
+  DCHECK_LT(count, uint64_t(1) << (64 - kFracBits)) << "count overflows fixed point";
   unsigned b = BucketIndex(value);
   if (buckets_.size() <= b) {
     buckets_.resize(b + 1);
@@ -383,9 +384,20 @@ void Histogram::Decay() {
 }
 
 string Histogram::ToString() const {
+  // Weights become fractional after Decay(). Print them exactly so that bucket weights
+  // add up to the total, and keep the integer format for the common undecayed case.
+  auto format_weight = [](uint64_t w) {
+    char buf[32];
+    if (w % kOne == 0)
+      snprintf(buf, sizeof(buf), "%" PRIu64, w >> kFracBits);
+    else
+      snprintf(buf, sizeof(buf), "%.2f", double(w) / kOne);
+    return string(buf);
+  };
+
   string r;
   char buf[300];
-  snprintf(buf, sizeof(buf), "Count: %" PRIu64 " Average: %.4f\n", count(), Average());
+  snprintf(buf, sizeof(buf), "Count: %s Average: %.4f\n", format_weight(num_).c_str(), Average());
   r.append(buf);
   snprintf(buf, sizeof(buf), "Min: %.4f  Median: %.4f  Max: %.4f\n", (num_ == 0 ? 0.0 : min_),
            Median(), max_);
@@ -405,12 +417,12 @@ string Histogram::ToString() const {
     } else {
       snprintf(to_buf, sizeof(to_buf), "%7.0f", kBucketLimit[b]);
     }
-    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %" PRIu64 " %7.3f%% %7.3f%% ",
-             from,                                   // left
-             to_buf,                                 // right
-             (buckets_[b] + kOne / 2) >> kFracBits,  // count
-             mult * buckets_[b],                     // percentage
-             mult * sum);                            // cumulative percentage
+    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %s %7.3f%% %7.3f%% ",
+             from,                                // left
+             to_buf,                              // right
+             format_weight(buckets_[b]).c_str(),  // count
+             mult * buckets_[b],                  // percentage
+             mult * sum);                         // cumulative percentage
     r.append(buf);
 
     // Add hash marks based on percentage; 20 marks for 100%.
