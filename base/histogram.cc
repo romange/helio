@@ -7,10 +7,12 @@
 #include "base/histogram.h"
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
 
+#include "absl/base/optimization.h"
 #include "base/bits.h"
 #include "base/logging.h"
 
@@ -18,171 +20,109 @@ namespace base {
 
 using namespace std;
 
-const double Histogram::kBucketLimit[kNumBuckets] = {
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    12,
-    14,
-    16,
-    18,
-    20,
-    25,
-    30,
-    35,
-    40,
-    45,
-    50,
-    60,
-    70,
-    80,
-    90,
-    100,
-    120,
-    140,
-    160,
-    180,
-    200,
-    250,
-    300,
-    350,
-    400,
-    450,
-    500,
-    600,
-    700,
-    800,
-    900,
-    1000,
-    1200,
-    1400,
-    1600,
-    1800,
-    2000,
-    2500,
-    3000,
-    3500,
-    4000,
-    4500,
-    5000,
-    6000,
-    7000,
-    8000,
-    9000,
-    10000,
-    12000,
-    14000,
-    16000,
-    18000,
-    20000,
-    25000,
-    30000,
-    35000,
-    40000,
-    45000,
-    50000,
-    60000,
-    70000,
-    80000,
-    90000,
-    100000,
-    120000,
-    140000,
-    160000,
-    180000,
-    200000,
-    250000,
-    300000,
-    350000,
-    400000,
-    450000,
-    500000,
-    600000,
-    700000,
-    800000,
-    900000,
-    1000000,
-    1200000,
-    1400000,
-    1600000,
-    1800000,
-    2000000,
-    2500000,
-    3000000,
-    3500000,
-    4000000,
-    4500000,
-    5000000,
-    6000000,
-    7000000,
-    8000000,
-    9000000,
-    10000000,
-    12000000,
-    14000000,
-    16000000,
-    18000000,
-    20000000,
-    25000000,
-    30000000,
-    35000000,
-    40000000,
-    45000000,
-    50000000,
-    60000000,
-    70000000,
-    80000000,
-    90000000,
-    100000000,
-    120000000,
-    140000000,
-    160000000,
-    180000000,
-    200000000,
-    250000000,
-    300000000,
-    350000000,
-    400000000,
-    450000000,
-    500000000,
-    600000000,
-    700000000,
-    800000000,
-    900000000,
-    1000000000,
-    1200000000,
-    1400000000,
-    1600000000,
-    1800000000,
-    2000000000,
-    2500000000.0,
-    3000000000.0,
-    3500000000.0,
-    4000000000.0,
-    4500000000.0,
-    5000000000.0,
-    6000000000.0,
-    7000000000.0,
-    8000000000.0,
-    9000000000.0,
-    1e200,
-};
+namespace {
+
+// Above 10, every decade [10^d, 10^(d+1)) is split by the same 16 limits:
+// 10^(d-1) * {12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100}.
+// Since all limits are integers and multiples of 10^(d-1), the bucket of v is determined by its
+// two leading digits p = v / 10^(d-1), which lets us compute the index instead of searching.
+constexpr unsigned kBucketsPerDecade = 16;
+constexpr unsigned kNumBucketsTotal = 154;
+constexpr uint8_t kDecadeLimits[] = {12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90};
+
+constexpr auto kPow10 = [] {
+  std::array<uint64_t, 20> res{};
+  uint64_t p = 1;
+  for (auto& v : res) {
+    v = p;
+    p *= 10;  // wraps after the last element, which is fine for unsigned
+  }
+  return res;
+}();
+
+// kTwoDigitOffset[p] is the number of kDecadeLimits that are <= p, for p in [10, 99].
+constexpr auto kTwoDigitOffset = [] {
+  std::array<uint8_t, 100> res{};
+  for (unsigned p = 0; p < res.size(); ++p) {
+    for (uint8_t limit : kDecadeLimits)
+      res[p] += (limit <= p);
+  }
+  return res;
+}();
+
+// Exact floor(log10(v)) for v > 0.
+constexpr unsigned Log10Floor(uint64_t v) {
+  unsigned bit_width = 64 - __builtin_clzll(v);
+  unsigned t = ((bit_width * 1233) >> 12);  // floor(log10(2^bits)) approximation
+  return t - (v < kPow10[t]);
+}
+
+constexpr unsigned ComputeBucketIndex(uint64_t v) {
+  if (v < 10)
+    return v;
+  unsigned d = Log10Floor(v);
+  if (ABSL_PREDICT_FALSE(d >= 10))
+    return kNumBucketsTotal - 1;
+  return 10 + kBucketsPerDecade * (d - 1) + kTwoDigitOffset[v / kPow10[d - 1]];
+}
+
+// Upper limit of the last bucket, which catches everything >= 9e9.
+constexpr double kLastLimit = 1e200;
+
+// Exclusive upper limits of the buckets: 1..10, then kDecadeLimits and 100 scaled to each decade.
+constexpr auto kBucketLimit = [] {
+  std::array<double, kNumBucketsTotal> res{};
+  unsigned b = 0;
+  for (unsigned v = 1; v <= 10; ++v)
+    res[b++] = v;
+  for (unsigned d = 1; b + 1 < res.size(); ++d) {
+    for (uint8_t limit : kDecadeLimits) {
+      if (b + 1 < res.size())
+        res[b++] = limit * double(kPow10[d - 1]);
+    }
+    if (b + 1 < res.size())
+      res[b++] = 100 * double(kPow10[d - 1]);
+  }
+  res[b] = kLastLimit;
+  return res;
+}();
+
+// Lookup table for small values which cover typical latencies in usec. Avoids the division.
+constexpr unsigned kSmallValues = 512;
+constexpr auto kSmallBucket = [] {
+  std::array<uint8_t, kSmallValues> res{};
+  for (unsigned v = 0; v < res.size(); ++v)
+    res[v] = ComputeBucketIndex(v);
+  return res;
+}();
+
+}  // namespace
+
+static_assert(Histogram::kNumBuckets == kNumBucketsTotal);
+static_assert(kBucketLimit[152] == 9e9);
+static_assert(ComputeBucketIndex(9'000'000'000) == kNumBucketsTotal - 1);
+static_assert(ComputeBucketIndex(8'999'999'999) == kNumBucketsTotal - 2);
+
+unsigned Histogram::BucketIndex(double value) {
+  if (value >= 0 && value < kSmallValues)
+    return kSmallBucket[static_cast<unsigned>(value)];
+  if (value < 0)
+    return 0;
+  // Negated so that NaN lands in the last bucket, same as upper_bound would place it.
+  if (!(value < 1e10))
+    return kNumBuckets - 1;
+
+  // All limits are integers, so truncation does not change the bucket.
+  return ComputeBucketIndex(static_cast<uint64_t>(value));
+}
+
+double Histogram::BucketLimit(unsigned b) {
+  return kBucketLimit[b];
+}
 
 inline pair<double, double> Histogram::BucketLimits(unsigned b) {
   double low = (b == 0) ? 0.0 : kBucketLimit[b - 1];
   return pair<double, double>(low, kBucketLimit[b]);
-}
-
-inline double Histogram::BucketAverage(unsigned b) {
-  auto limits = BucketLimits(b);
-  return (limits.first + limits.second) / 2;
 }
 
 Histogram::Histogram() {
@@ -193,7 +133,7 @@ Histogram::~Histogram() {
 }
 
 void Histogram::Clear() {
-  min_ = kBucketLimit[kNumBuckets - 1];
+  min_ = kLastLimit;
   max_ = 0;
   num_ = 0;
   sum_ = 0;
@@ -201,8 +141,8 @@ void Histogram::Clear() {
 }
 
 void Histogram::Add(double value, uint64_t count) {
-  auto it = upper_bound(kBucketLimit, kBucketLimit + kNumBuckets - 1, value);
-  size_t b = it - kBucketLimit;
+  DCHECK_LT(count, uint64_t(1) << (64 - kFracBits)) << "count overflows fixed point";
+  unsigned b = BucketIndex(value);
   if (buckets_.size() <= b) {
     buckets_.resize(b + 1);
     if (buckets_.capacity() > kNumBuckets) {
@@ -210,12 +150,12 @@ void Histogram::Add(double value, uint64_t count) {
     }
   }
 
-  buckets_[b] += count;
+  buckets_[b] += count << kFracBits;
   if (min_ > value)
     min_ = value;
   if (max_ < value)
     max_ = value;
-  num_ += count;
+  num_ += count << kFracBits;
   sum_ += value * count;
 }
 
@@ -262,7 +202,11 @@ std::array<double, N> Histogram::PercentilesImpl(const std::array<double, N>& pe
 
     // Process all percentiles whose threshold falls in the accumulated sum
     while (next_idx < N) {
-      uint64_t threshold = num_ * (percentiles[next_idx] / 100.0);
+      // Rank of the percentile, rounded up and clamped to [1, num_] so that it always falls
+      // inside a non-empty bucket. Multiply first: num_ * p is exact for integral p.
+      // Clamp in double: converting an out-of-range double (or NaN) to uint64_t is undefined.
+      double rank = std::ceil(double(num_) * percentiles[next_idx] / 100.0);
+      uint64_t threshold = !(rank >= 1) ? 1 : rank >= double(num_) ? num_ : uint64_t(rank);
 
       if (sum >= threshold) {
         uint64_t left_sum = sum - buckets_[b];
@@ -293,7 +237,7 @@ template std::array<double, 5> Histogram::PercentilesImpl(const std::array<doubl
 double Histogram::Average() const {
   if (num_ == 0)
     return 0;
-  return sum_ / num_;
+  return sum_ * kOne / num_;
 }
 
 void Histogram::Decay() {
@@ -307,9 +251,24 @@ void Histogram::Decay() {
 }
 
 string Histogram::ToString() const {
+  // Weights become fractional after Decay(). Print them exactly so that bucket weights
+  // add up to the total, and keep the integer format for the common undecayed case.
+  auto format_weight = [](uint64_t w) {
+    static_assert(kFracBits == 8, "fraction digits below assume 1/256 = 0.00390625");
+    char buf[48];
+    int len = snprintf(buf, sizeof(buf), "%" PRIu64, w >> kFracBits);
+    if (uint64_t frac = w % kOne; frac != 0) {
+      // k/256 always has exactly 8 decimal digits: k * 0.00390625.
+      len += snprintf(buf + len, sizeof(buf) - len, ".%08" PRIu64, frac * 390625);
+      while (buf[len - 1] == '0')
+        --len;
+    }
+    return string(buf, len);
+  };
+
   string r;
   char buf[300];
-  snprintf(buf, sizeof(buf), "Count: %" PRIu64 " Average: %.4f\n", num_, Average());
+  snprintf(buf, sizeof(buf), "Count: %s Average: %.4f\n", format_weight(num_).c_str(), Average());
   r.append(buf);
   snprintf(buf, sizeof(buf), "Min: %.4f  Median: %.4f  Max: %.4f\n", (num_ == 0 ? 0.0 : min_),
            Median(), max_);
@@ -320,7 +279,7 @@ string Histogram::ToString() const {
 
   char to_buf[100];
   for (unsigned b = 0; b < buckets_.size(); b++) {
-    if (buckets_[b] <= 0.01)
+    if (buckets_[b] == 0)
       continue;
     sum += buckets_[b];
     double from = (b == 0) ? 0.0 : kBucketLimit[b - 1];
@@ -329,12 +288,12 @@ string Histogram::ToString() const {
     } else {
       snprintf(to_buf, sizeof(to_buf), "%7.0f", kBucketLimit[b]);
     }
-    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %" PRIu64 " %7.3f%% %7.3f%% ",
-             from,                // left
-             to_buf,              // right
-             buckets_[b],         // count
-             mult * buckets_[b],  // percentage
-             mult * sum);         // cumulative percentage
+    snprintf(buf, sizeof(buf), "[ %7.0f, %s ) %s %7.3f%% %7.3f%% ",
+             from,                                // left
+             to_buf,                              // right
+             format_weight(buckets_[b]).c_str(),  // count
+             mult * buckets_[b],                  // percentage
+             mult * sum);                         // cumulative percentage
     r.append(buf);
 
     // Add hash marks based on percentage; 20 marks for 100%.
@@ -350,7 +309,8 @@ double Histogram::InterpolateVal(unsigned bucket, uint64_t position) const {
 
   // We divide by n+1 according to
   // http://en.wikipedia.org/wiki/Uniform_distribution_(continuous)#Order_statistics
-  double pos = double(position) / double(buckets_[bucket] + 1);
+  // position and buckets_ are in fixed point, hence kOne instead of 1.
+  double pos = double(position) / double(buckets_[bucket] + kOne);
   double r = limits.first + (limits.second - limits.first) * pos;
   if (r < min_)
     r = min_;

@@ -15,6 +15,8 @@ namespace base {
 
 class Histogram {
  public:
+  enum { kNumBuckets = 154 };
+
   Histogram();
   ~Histogram();
 
@@ -31,8 +33,9 @@ class Histogram {
 
   std::string ToString() const;
 
+  // Number of samples, rounded down. After Decay() this is the decayed weight.
   uint64_t count() const {
-    return num_;
+    return num_ >> kFracBits;
   }
 
   double Median() const {
@@ -59,6 +62,8 @@ class Histogram {
   // Halve all bucket counts, num, and sum to implement a simple exponential
   // decay. Call periodically to give more weight to recent observations.
   // min/max are left unchanged as they track the observed range, not weights.
+  // Counts are kept in fixed point, so sparse buckets (typically the tail) keep their
+  // relative weight instead of being rounded down to zero.
   void Decay();
 
   double sum() const {
@@ -72,7 +77,18 @@ class Histogram {
     return min_;
   }
 
+  // Returns the index of the bucket that holds `value`: the first bucket whose upper limit is
+  // greater than `value`. Runs in O(1).
+  static unsigned BucketIndex(double value);
+
+  // Exclusive upper limit of bucket `b`, b < kNumBuckets.
+  static double BucketLimit(unsigned b);
+
  private:
+  // Bucket counts and num_ are stored in fixed point with kFracBits fractional bits.
+  static constexpr unsigned kFracBits = 8;
+  static constexpr uint64_t kOne = uint64_t(1) << kFracBits;
+
   // Implementation for Percentiles() - computes multiple percentiles in one pass.
   template <size_t N>
   std::array<double, N> PercentilesImpl(const std::array<double, N>& percentiles) const;
@@ -83,17 +99,13 @@ class Histogram {
   double InterpolateVal(unsigned bucket, uint64_t position) const;
 
   static std::pair<double, double> BucketLimits(unsigned bucket);
-  static double BucketAverage(unsigned b);
 
   double min_;
   double max_;
   double sum_;
-  uint64_t num_;
+  uint64_t num_;  // in fixed point, see kFracBits.
 
-  enum { kNumBuckets = 154 };
-  static const double kBucketLimit[kNumBuckets];
-
-  std::vector<uint64_t> buckets_;
+  std::vector<uint64_t> buckets_;  // in fixed point, see kFracBits.
 };
 
 }  // namespace base
