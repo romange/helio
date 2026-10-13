@@ -169,6 +169,15 @@ TEST_F(HistogramTest, PercentileRank) {
   EXPECT_NEAR(1000, hist_.Percentile(50), 200);
   EXPECT_NEAR(1, hist_.Percentile(0), 0.01);
   EXPECT_EQ(1000000, hist_.Percentile(100));
+
+  // Out-of-range percentiles clamp to the observed range.
+  EXPECT_NEAR(1, hist_.Percentile(-5), 0.01);
+  EXPECT_EQ(1000000, hist_.Percentile(150));
+
+  // num_ close to 2^64: double(num_) rounds up to 2^64, which must not reach the conversion.
+  Histogram big;
+  big.Add(1, (uint64_t(1) << 56) - 1);
+  EXPECT_EQ(1, big.Percentile(100));
 }
 
 TEST_F(HistogramTest, DecayKeepsTail) {

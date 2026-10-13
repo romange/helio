@@ -202,10 +202,11 @@ std::array<double, N> Histogram::PercentilesImpl(const std::array<double, N>& pe
 
     // Process all percentiles whose threshold falls in the accumulated sum
     while (next_idx < N) {
-      // Rank of the percentile, rounded up and at least 1 so that it always falls inside
-      // a non-empty bucket. Multiply first: num_ * p is exact for integral p.
-      uint64_t threshold =
-          std::max<uint64_t>(1, std::ceil(double(num_) * percentiles[next_idx] / 100.0));
+      // Rank of the percentile, rounded up and clamped to [1, num_] so that it always falls
+      // inside a non-empty bucket. Multiply first: num_ * p is exact for integral p.
+      // Clamp in double: converting an out-of-range double (or NaN) to uint64_t is undefined.
+      double rank = std::ceil(double(num_) * percentiles[next_idx] / 100.0);
+      uint64_t threshold = !(rank >= 1) ? 1 : rank >= double(num_) ? num_ : uint64_t(rank);
 
       if (sum >= threshold) {
         uint64_t left_sum = sum - buckets_[b];
