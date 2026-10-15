@@ -64,6 +64,8 @@ static std::atomic<int> main_init_guard_count{0};
 namespace base {
 
 uint64_t CycleClock::frequency_ = 0;
+uint64_t CycleClock::cycles_to_usec_ = 0;
+uint64_t CycleClock::usec_to_cycles_ = 0;
 static uint64_t freq_ms = 0;
 
 void CycleClock::InitOnce() {
@@ -80,6 +82,12 @@ void CycleClock::InitOnce() {
   frequency_ = absl::base_internal::CycleClock::Frequency();
 #endif
   freq_ms = frequency_ / 1000;
+
+  // The cycles_to_usec_ multiplier fits into 64 bits only above 62.5kHz.
+  DCHECK_GT(frequency_, 62'500u);
+  using u128 = unsigned __int128;
+  cycles_to_usec_ = ((static_cast<u128>(1000'000) << 60) + frequency_ - 1) / frequency_;
+  usec_to_cycles_ = ((static_cast<u128>(frequency_) << 32) + 999'999) / 1000'000;
 }
 
 // We bound our measurements since number of cycles should not overflow 1ms or 10ms.

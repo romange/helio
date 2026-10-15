@@ -40,18 +40,22 @@ class CycleClock {
     return frequency_;
   }
 
-  // Translates usec to cpu cycles.
+  // Translates usec to cpu cycles. Saturates when the result does not fit into 64 bits.
   static uint64_t FromUsec(uint64_t usec) {
-    return (usec * frequency_) / 1000'000ULL;
+    unsigned __int128 cycles = (static_cast<unsigned __int128>(usec) * usec_to_cycles_) >> 32;
+    return cycles > UINT64_MAX ? UINT64_MAX : cycles;
   }
 
-  // Converts cycles to microseconds.
+  // Converts cycles to microseconds with a fixed-point multiply: no intermediate overflow for
+  // any 64-bit input, never below the exact value and at most 1 + cycles / 2^60 usec above it.
   static uint64_t ToUsec(uint64_t cycles) {
-    return (cycles * 1000'000ULL) / frequency_;
+    return (static_cast<unsigned __int128>(cycles) * cycles_to_usec_) >> 60;
   }
 
  private:
   static uint64_t frequency_;
+  static uint64_t cycles_to_usec_;  // ceil(1e6 * 2^60 / frequency_)
+  static uint64_t usec_to_cycles_;  // ceil(frequency_ * 2^32 / 1e6)
 };
 
 // The following class aggregates cycle measurements over a short period of time.
