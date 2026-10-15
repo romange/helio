@@ -193,4 +193,42 @@ TEST_F(CxxTest, CycleClock) {
   EXPECT_NEAR(cycle_usec, real_usec, real_usec / 5);
 }
 
+TEST_F(CxxTest, CycleClockConversionRange) {
+  const uint64_t freq = CycleClock::Frequency();
+  ASSERT_GT(freq, 62'500u);
+  auto ref_to_usec = [freq](uint64_t c) {
+    return uint64_t((static_cast<unsigned __int128>(c) * 1000'000u) / freq);
+  };
+  auto ref_from_usec = [freq](uint64_t u) {
+    return (static_cast<unsigned __int128>(u) * freq) / 1000'000u;
+  };
+
+  // First cycle count whose product with 1e6 does not fit into 64 bits.
+  constexpr uint64_t kBoundary = UINT64_MAX / 1000'000ULL + 1;
+  for (uint64_t c : {uint64_t(0), uint64_t(1), freq, kBoundary - 1, kBoundary, kBoundary + 1,
+                     kBoundary + freq, UINT64_MAX / 2, UINT64_MAX}) {
+    const uint64_t ref = ref_to_usec(c), res = CycleClock::ToUsec(c);
+    EXPECT_GE(res, ref) << c;
+    EXPECT_LE(res - ref, 1 + (c >> 60)) << c;
+  }
+  EXPECT_EQ(CycleClock::ToUsec(freq), 1000'000u);
+  EXPECT_EQ(CycleClock::ToUsec(freq * 3600), uint64_t(3600) * 1000'000);
+  EXPECT_GT(CycleClock::ToUsec(kBoundary), 0u);
+  for (uint64_t c = kBoundary - 10; c <= kBoundary + 10; ++c) {
+    EXPECT_GE(CycleClock::ToUsec(c + 1), CycleClock::ToUsec(c)) << c;
+  }
+
+  for (uint64_t u : {uint64_t(0), uint64_t(1), uint64_t(999'999), uint64_t(1000'000),
+                     uint64_t(36000) * 1000'000, UINT64_MAX / freq}) {
+    const uint64_t ref = uint64_t(ref_from_usec(u)), res = CycleClock::FromUsec(u);
+    EXPECT_GE(res, ref) << u;
+    EXPECT_LE(res - ref, 1 + (u >> 32)) << u;
+  }
+  EXPECT_EQ(CycleClock::FromUsec(1000'000), freq);
+  if (freq > 1000'000) {
+    EXPECT_EQ(CycleClock::FromUsec(UINT64_MAX), UINT64_MAX);
+  }
+  EXPECT_EQ(CycleClock::ToUsec(CycleClock::FromUsec(1000'000)), 1000'000u);
+}
+
 }  // namespace base
