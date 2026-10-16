@@ -176,6 +176,11 @@ ParsedHttpUrl ParseHttpUrl(string_view uri) {
 
 error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* req,
                               SenderResult* result) {
+  return Send(num_iterations, req, 0, result);  // 0 matches no HTTP status.
+}
+
+error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* req,
+                              unsigned accepted_status, SenderResult* result) {
   error_code ec;
   auto refreshed = provider_->RefreshIfExpiring();
   if (!refreshed) {
@@ -231,7 +236,7 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
         result->reuse_connection = false;
       }
 
-      if (IsResponseOK(msg.result())) {
+      if (IsResponseOK(msg.result()) || msg.result_int() == accepted_status) {
         return {};
       }
     }

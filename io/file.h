@@ -79,6 +79,13 @@ class WriteFile : public Sink {
    */
   virtual std::error_code Close() = 0;
 
+  // Discards the written data instead of publishing it, e.g. aborts a cloud upload.
+  // Call it instead of Close() or after Close() fails. Files that cannot discard written data
+  // return operation_not_supported.
+  ABSL_MUST_USE_RESULT virtual std::error_code Abort() {
+    return std::make_error_code(std::errc::operation_not_supported);
+  }
+
   using Sink::Write;
 
   ABSL_MUST_USE_RESULT std::error_code Write(const uint8_t* buffer, size_t length) {
