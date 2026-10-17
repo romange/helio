@@ -3,8 +3,8 @@
 
 #include "util/cloud/aws/s3_storage.h"
 
-#include <absl/strings/ascii.h>
 #include <absl/functional/function_ref.h>
+#include <absl/strings/ascii.h>
 #include <absl/strings/match.h>
 #include <absl/strings/numbers.h>
 #include <absl/strings/str_cat.h>
@@ -36,7 +36,7 @@ namespace {
 constexpr unsigned kSendRetries = 3;
 
 struct BucketAddressing {
-  string endpoint;     // host[:port] used for connect + Host header.
+  string endpoint;      // host[:port] used for connect + Host header.
   bool virtual_hosted;  // true => bucket.endpoint, false => endpoint/bucket/...
 };
 
@@ -59,8 +59,7 @@ bool SupportsVirtualHostedStyle(string_view endpoint) {
   }
 
   string host_lc = absl::AsciiStrToLower(string(host));
-  return absl::EndsWith(host_lc, ".amazonaws.com") ||
-         absl::EndsWith(host_lc, ".amazonaws.com.cn");
+  return absl::EndsWith(host_lc, ".amazonaws.com") || absl::EndsWith(host_lc, ".amazonaws.com.cn");
 }
 
 BucketAddressing ResolveBucketAddressing(CredentialsProvider* provider, string_view bucket) {
@@ -299,14 +298,12 @@ class WriteFile : public detail::AbstractStorageFile {
  public:
   WriteFile(string bucket, string key, WriteFileOptions opts, string upload_id,
             unique_ptr<http::ClientPool> pool)
-      : detail::AbstractStorageFile(key, kS3DefaultPartSize),
-        bucket_(std::move(bucket)),
-        upload_id_(std::move(upload_id)),
-        opts_(opts),
-        pool_(std::move(pool)) {
+      : detail::AbstractStorageFile(key, kS3DefaultPartSize), bucket_(std::move(bucket)),
+        upload_id_(std::move(upload_id)), opts_(opts), pool_(std::move(pool)) {
   }
 
   error_code Close() override;
+  ABSL_MUST_USE_RESULT error_code Abort() override;
 
  private:
   error_code Upload() override;
@@ -358,8 +355,7 @@ error_code WriteFile::Close() {
   // Build CompleteMultipartUpload XML body.
   string xml = "<CompleteMultipartUpload>";
   for (const auto& [num, etag] : parts_) {
-    absl::StrAppend(&xml, "<Part><PartNumber>", num, "</PartNumber><ETag>", etag,
-                    "</ETag></Part>");
+    absl::StrAppend(&xml, "<Part><PartNumber>", num, "</PartNumber><ETag>", etag, "</ETag></Part>");
   }
   xml += "</CompleteMultipartUpload>";
 
@@ -389,6 +385,23 @@ error_code WriteFile::Close() {
   RETURN_ERROR(send_res.client_handle->Recv(&resp));
   VLOG(1) << "aws: CompleteMultipartUpload: " << resp.get().body();
   return {};
+}
+
+error_code WriteFile::Abort() {
+  BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
+  string url = BucketObjectPath(addressing, bucket_, create_file_name());
+  absl::StrAppend(&url, "?uploadId=");
+  strings::AppendUrlEncoded(upload_id_, &url);
+
+  detail::EmptyRequestImpl req(h2::verb::delete_, url);
+  req.SetHeader(h2::field::host, addressing.endpoint);
+  opts_.creds_provider->Sign(&req);
+
+  RobustSender sender(pool_.get(), opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(kSendRetries, &req, 204, &send_res));  // 204 means it was aborted.
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  return send_res.client_handle->Recv(&resp);
 }
 
 }  // namespace

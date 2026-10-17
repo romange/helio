@@ -3,14 +3,13 @@
 
 #pragma once
 
-#include <string_view>
-
 #include <absl/functional/function_ref.h>
 
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/parser.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <string_view>
 
 #include "io/file.h"
 #include "util/http/http_client.h"
@@ -233,7 +232,13 @@ class RobustSender {
   // In case of failure, returns the error of the last retry attempt or a unrecoverable error.
   // If succeeds, returns an empty error code and fills result with the response parser
   // and client handle.
-  std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req, SenderResult* result);
+  ABSL_MUST_USE_RESULT std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req,
+                                            SenderResult* result);
+
+  // Same as above, but also treats `accepted_status` as success,
+  // e.g. 204 for S3 AbortMultipartUpload.
+  ABSL_MUST_USE_RESULT std::error_code Send(unsigned num_iterations, detail::HttpRequestBase* req,
+                                            unsigned accepted_status, SenderResult* result);
 
  private:
   http::ClientPool* pool_;
