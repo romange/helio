@@ -9,6 +9,7 @@
 #include <boost/intrusive/list.hpp>
 #include <boost/intrusive/set.hpp>
 #include <chrono>
+#include <string>
 #include <utility>
 
 #include "base/cycle_clock.h"
@@ -32,7 +33,7 @@ enum class Launch {
 enum class FiberPriority : uint8_t {
   NORMAL = 0,      // default priority
   BACKGROUND = 1,  // background priority, runs when no NORMAL fibers are ready.
-  HIGH = 2,       // High priority, activated earlier than other fibers.
+  HIGH = 2,        // High priority, activated earlier than other fibers.
 };
 
 enum class FiberSwitchHookEvent : uint8_t {
@@ -209,8 +210,7 @@ class FiberInterface {
   // setting a stub.next field since the stub is not properly initialized.
   __attribute__((no_sanitize("undefined")))
 #endif
-  friend void
-  MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
+  friend void MPSC_intrusive_store_next(FiberInterface* dest, FiberInterface* next_node) {
     dest->remote_next_.store(next_node, std::memory_order_relaxed);
   }
 
@@ -291,6 +291,7 @@ class FiberInterface {
   void SetCpuStart() {
     cpu_tsc_ = base::CycleClock::Now();
   }
+
  protected:
   static constexpr uint16_t kTerminatedBit = 0x1;
   static constexpr uint16_t kBusyBit = 0x2;
@@ -311,9 +312,9 @@ class FiberInterface {
     TRACE_TERMINATE,
     TRACE_READY
   } trace_ = TRACE_NONE;
-  #define FIBER_TRACE(fi, state) (fi)->trace_ = (FiberInterface::state)
+#define FIBER_TRACE(fi, state) (fi)->trace_ = (FiberInterface::state)
 #else
-  #define FIBER_TRACE(fi, state) (void)0
+#define FIBER_TRACE(fi, state) (void)0
 #endif
   Type type_;
 
@@ -434,9 +435,12 @@ static WorkerFiberImpl<Fn, Arg...>* MakeWorkerFiberImpl(std::string_view name, F
 
   // placement new of context on top of fiber's stack.
   // note, that obj_ptr is not real top of the stack, because boost places more records below it.
-  WorkerImpl* fctx =
-      new (obj_ptr) WorkerImpl{name, prio, std::move(palloc), std::forward<StackAlloc>(salloc),
-                               std::forward<Fn>(fn), std::forward<Arg>(arg)...};
+  WorkerImpl* fctx = new (obj_ptr) WorkerImpl{name,
+                                              prio,
+                                              std::move(palloc),
+                                              std::forward<StackAlloc>(salloc),
+                                              std::forward<Fn>(fn),
+                                              std::forward<Arg>(arg)...};
   return fctx;
 }
 
@@ -448,6 +452,36 @@ bool IsFiberAtomicSection() noexcept;
 
 void PrintAllFiberStackTraces();
 void ResetFiberRunSeq();
+
+// Per-thread idle callback totals for the current dispatcher runtime interval.
+struct OnIdleRunStats {
+  uint64_t calls = 0;
+  uint64_t cycles = 0;
+  uint64_t max_cycles = 0;
+  uint64_t slow_calls = 0;
+  std::string worst_task;
+
+  void Add(uint64_t task_cycles, uint64_t slow_warn_cycles, const std::string* task_name) {
+    ++calls;
+    cycles += task_cycles;
+    slow_calls += task_cycles >= slow_warn_cycles;
+
+    if (task_cycles > max_cycles) {
+      max_cycles = task_cycles;
+      if (!task_name)
+        worst_task.clear();
+      else if (task_cycles >= slow_warn_cycles)
+        worst_task = *task_name;
+    }
+  }
+
+  void Reset() {
+    calls = cycles = max_cycles = slow_calls = 0;
+    worst_task.clear();
+  }
+};
+
+OnIdleRunStats& GetOnIdleRunStats();
 
 // Runs fn on all fibers in the thread. See FiberInterface::ExecuteOnFiberStack for details.
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn);

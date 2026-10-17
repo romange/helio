@@ -296,6 +296,23 @@ TEST_F(FiberTest, Basic) {
 
 namespace {
 
+class OnIdleTestProactor : public EpollProactor {
+ public:
+  using ProactorBase::IdleEnd;
+  using ProactorBase::RunOnIdleTasks;
+
+  size_t OnIdleCapacity() const {
+    return on_idle_arr_.capacity();
+  }
+};
+
+void SpinForUsec(uint64_t usec) {
+  uint64_t start = base::CycleClock::Now();
+  uint64_t cycles = base::CycleClock::FromUsec(usec);
+  while (base::CycleClock::Now() - start < cycles) {
+  }
+}
+
 std::vector<FiberSwitchHookEvent> switch_hook_events;
 
 void RecordSwitchHookEvent(FiberSwitchHookEvent event) noexcept {
@@ -321,6 +338,189 @@ TEST_F(FiberTest, SwitchHook) {
   ASSERT_EQ(2u, switch_hook_events.size());
   EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, switch_hook_events[0]);
   EXPECT_EQ(FiberSwitchHookEvent::RESUME, switch_hook_events[1]);
+}
+
+TEST_F(FiberTest, OnIdleRunStatsAccumulateUntilUnregistered) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      unsigned calls = 0;
+      string task_name(80, 'x');
+      proactor.AddOnIdleTask(
+          [&] {
+            if (++calls == 3) {
+              SpinForUsec(2000);
+              return -1;
+            }
+            return int(ProactorBase::kOnIdleMaxLevel);
+          },
+          task_name);
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      const auto& stats = detail::GetOnIdleRunStats();
+      EXPECT_EQ(2, stats.calls);
+      EXPECT_EQ(stats.slow_calls == 0, stats.worst_task.empty());
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+
+      EXPECT_EQ(3, stats.calls);
+      EXPECT_GE(stats.slow_calls, 1);
+      EXPECT_GE(stats.max_cycles, base::CycleClock::FromUsec(2000));
+      EXPECT_GE(stats.cycles, stats.max_cycles);
+      EXPECT_EQ(task_name, stats.worst_task);
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+TEST_F(FiberTest, OnIdleRunStatsResetWithDispatchRuntime) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      proactor.AddOnIdleTask(
+          [] {
+            SpinForUsec(2000);
+            return int(ProactorBase::kOnIdleMaxLevel);
+          },
+          "repeated-idle");
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(2, detail::GetOnIdleRunStats().calls);
+
+      Fiber(Launch::dispatch, "idle-stats-worker", [] {
+        EXPECT_EQ(2, detail::GetOnIdleRunStats().calls);
+      }).Join();
+
+      const auto& stats = detail::GetOnIdleRunStats();
+      EXPECT_EQ(0, stats.calls);
+      EXPECT_EQ(0, stats.cycles);
+      EXPECT_EQ(0, stats.max_cycles);
+      EXPECT_EQ(0, stats.slow_calls);
+      EXPECT_TRUE(stats.worst_task.empty());
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(1, stats.calls);
+      proactor.IdleEnd(base::CycleClock::Now());
+      EXPECT_EQ(0, stats.calls);
+      EXPECT_EQ(0, stats.cycles);
+      EXPECT_EQ(0, stats.max_cycles);
+      EXPECT_EQ(0, stats.slow_calls);
+      EXPECT_TRUE(stats.worst_task.empty());
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(1, stats.calls);
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(0));
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+TEST_F(FiberTest, OnIdleCallbackCanGrowRegistry) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      vector<uint32_t> added;
+      string task_name(80, 'g');
+      uint32_t id = proactor.AddOnIdleTask(
+          [&] {
+            auto* current = &proactor;
+            auto* ids = &added;
+            size_t capacity = current->OnIdleCapacity();
+            for (size_t i = 0; i < capacity; ++i) {
+              ids->push_back(current->AddOnIdleTask([] { return -1; }));
+            }
+            SpinForUsec(2000);
+            return int(ProactorBase::kOnIdleMaxLevel);
+          },
+          task_name);
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(1, detail::GetOnIdleRunStats().calls);
+      EXPECT_EQ(task_name, detail::GetOnIdleRunStats().worst_task);
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(id));
+      for (uint32_t added_id : added)
+        EXPECT_TRUE(proactor.RemoveOnIdleTask(added_id));
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+TEST_F(FiberTest, OnIdleCallbackCanRemoveItself) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      proactor.AddOnIdleTask(
+          [&] {
+            auto* current = &proactor;
+            SpinForUsec(2000);
+            EXPECT_TRUE(current->RemoveOnIdleTask(0));
+            return int(ProactorBase::kOnIdleMaxLevel);
+          },
+          string(80, 'r'));
+
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      const auto& stats = detail::GetOnIdleRunStats();
+      EXPECT_EQ(1, stats.calls);
+      EXPECT_EQ(1, stats.slow_calls);
+      EXPECT_GE(stats.max_cycles, base::CycleClock::FromUsec(2000));
+      EXPECT_TRUE(stats.worst_task.empty());
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+TEST_F(FiberTest, OnIdleCallbackRemovalPreservesReplacement) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      unsigned replacement_calls = 0;
+      uint32_t replacement_id = UINT32_MAX;
+      proactor.AddOnIdleTask(
+          [&] {
+            auto* current = &proactor;
+            auto* calls = &replacement_calls;
+            auto* id = &replacement_id;
+            SpinForUsec(2000);
+            EXPECT_TRUE(current->RemoveOnIdleTask(0));
+            *id = current->AddOnIdleTask([calls] {
+              ++*calls;
+              return -1;
+            });
+            return -1;
+          },
+          string(80, 'o'));
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(0, replacement_id);
+      EXPECT_EQ(0, replacement_calls);
+      EXPECT_EQ(1, detail::GetOnIdleRunStats().calls);
+      EXPECT_TRUE(detail::GetOnIdleRunStats().worst_task.empty());
+
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(1, replacement_calls);
+      EXPECT_EQ(2, detail::GetOnIdleRunStats().calls);
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
 }
 
 TEST_F(FiberTest, Stack) {
