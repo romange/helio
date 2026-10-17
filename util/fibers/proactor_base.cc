@@ -168,8 +168,10 @@ uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f, string name) {
   DCHECK(InMyThread());
 
   uint32_t res = on_idle_arr_.size();
-  on_idle_arr_.push_back(
-      OnIdleWrapper{.task = std::move(f), .task_name = std::move(name), .next_ts = 0});
+  on_idle_arr_.push_back(OnIdleWrapper{.task = std::move(f),
+                                       .task_name = std::move(name),
+                                       .next_ts = 0,
+                                       .generation = on_idle_generation_++});
 
   return res;
 }
@@ -187,17 +189,39 @@ bool ProactorBase::RunOnIdleTasks() {
   static const uint64_t kSlowWarnCycles = base::CycleClock::FromUsec(1500);  // 1.5 ms
   static const uint64_t kIdleMaxCycles = base::CycleClock::FromUsec(kIdleCycleMaxMicros);
 
-  DCHECK_LT(on_idle_next_, on_idle_arr_.size());
+  if (on_idle_next_ >= on_idle_arr_.size())
+    on_idle_next_ = 0;
 
   // Perform round robin with on_idle_next_ saving the position between runs.
   do {
-    OnIdleWrapper& on_idle = on_idle_arr_[on_idle_next_];
+    OnIdleWrapper* on_idle = &on_idle_arr_[on_idle_next_];
 
-    if (on_idle.task && on_idle.next_ts <= curr_ts) {
-      int32_t level = on_idle.task();  // run the task
+    if (on_idle->task && on_idle->next_ts <= curr_ts) {
+      uint32_t current_gen = on_idle->generation;
+      uint64_t task_start = base::CycleClock::Now();
+
+      int32_t level = on_idle->task();  // run the task
+
+      uint64_t task_end = base::CycleClock::Now();
+
+      // The callback may reallocate the vector, remove itself, or reuse its slot.
+      on_idle =
+          on_idle_next_ < on_idle_arr_.size() && on_idle_arr_[on_idle_next_].IsValid(current_gen)
+              ? &on_idle_arr_[on_idle_next_]
+              : nullptr;
+
+      uint64_t task_cycles = task_end > task_start ? task_end - task_start : 0;
+      auto& run_stats = detail::GetOnIdleRunStats();
+      run_stats.Add(task_cycles, kSlowWarnCycles, on_idle ? &on_idle->task_name : nullptr);
+
+      if (!on_idle) {
+        // Do not log through task_name: it may refer to another invalidated entry.
+        on_idle_next_ = 0;
+        return !on_idle_arr_.empty();
+      }
 
       if (level < 0) {
-        on_idle.task = {};
+        on_idle->task = {};
         task_name = nullptr;
         if (on_idle_next_ + 1 == on_idle_arr_.size()) {
           do {
@@ -207,16 +231,16 @@ bool ProactorBase::RunOnIdleTasks() {
           break;  // do/while loop
         }
       } else {  // level >= 0
-        curr_ts = base::CycleClock::Now();
+        curr_ts = task_end;
 
         if (unsigned(level) >= kOnIdleMaxLevel) {
           level = kOnIdleMaxLevel;
           should_spin = true;
         } else if (on_idle_next_ <
                    on_idle_arr_.size()) {  // check if the array has not been shrunk.
-          on_idle.next_ts = curr_ts + (kIdleMaxCycles >> level);
+          on_idle->next_ts = curr_ts + (kIdleMaxCycles >> level);
         }
-        task_name = &on_idle.task_name;
+        task_name = &on_idle->task_name;
       }
     }
 

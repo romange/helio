@@ -112,6 +112,13 @@ class MainFiberImpl final : public FiberInterface {
 uint64_t g_tsc_cycles_per_ms = 0, g_ts_cycles_warn_threshold = -1;
 std::once_flag g_tsc_init_flag;
 
+std::string DescribeOnIdleRun(const OnIdleRunStats& stats) {
+  return absl::StrCat(
+      " on_idle_calls=", stats.calls, " on_idle_us=", CycleClock::ToUsec(stats.cycles),
+      " max_on_idle_us=", CycleClock::ToUsec(stats.max_cycles),
+      " on_idle_slow_calls=", stats.slow_calls, " worst_task=\"", stats.worst_task, "\"");
+}
+
 }  // namespace
 
 #if HELIO_INSTRUMENT_STACK
@@ -197,6 +204,7 @@ struct TL_FiberInitializer {
   // Tracks fiber runtimes that took longer than 1ms.
   uint64_t long_runtime_cnt = 0;
   uint64_t long_runtime_usec = 0;
+  OnIdleRunStats on_idle_run_stats;
 
   uint32_t atomic_section = 0;
   uint32_t fiber_run_seq = 0;
@@ -565,7 +573,10 @@ FiberInterface* FiberInterface::SwitchSetup() {
       fb_initializer.long_runtime_usec += run_usec;
       if (run_cycles >= g_ts_cycles_warn_threshold && to_suspend->type() != MAIN) {
         LOG_EVERY_T(WARNING, 1) << "Fiber " << to_suspend->name() << " ran for " << run_usec
-                                << " us";
+                                << " us"
+                                << (to_suspend->type() == DISPATCH
+                                        ? DescribeOnIdleRun(fb_initializer.on_idle_run_stats)
+                                        : "");
       }
     }
   }
@@ -574,6 +585,8 @@ FiberInterface* FiberInterface::SwitchSetup() {
   to_suspend->preempt_cnt_++;
 
   cpu_tsc_ = tsc;  // mark when this fiber started running.
+  if (type() == DISPATCH)
+    fb_initializer.on_idle_run_stats.Reset();
   return to_suspend;
 }
 
@@ -601,6 +614,11 @@ void ResetFiberRunSeq() {
   auto& fb = FbInitializer();
   fb.fiber_run_seq = 0;
   fb.active->SetCpuStart();  // reset start time for dispatch fiber once I/O wait finishes.
+  fb.on_idle_run_stats.Reset();
+}
+
+OnIdleRunStats& GetOnIdleRunStats() {
+  return FbInitializer().on_idle_run_stats;
 }
 
 void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
