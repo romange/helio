@@ -314,10 +314,16 @@ class ProactorBase {
     OnIdleTask task;
     std::string task_name;
     uint64_t next_ts;  // when to run the next time in cycles.
+    uint32_t generation;
+
+    bool IsValid(uint64_t curr_gen) const {
+      return task && generation == curr_gen;
+    }
   };
 
   std::vector<OnIdleWrapper> on_idle_arr_;
   uint32_t on_idle_next_ = 0;
+  uint32_t on_idle_generation_ = 0;
 
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
   uint64_t busy_poll_start_cycle_ = 0;
