@@ -246,6 +246,12 @@ class WriteFile : public detail::AbstractStorageFile {
   // will not be uploaded unless Close is called.
   error_code Close() override;
 
+  // Azure has no request to discard staged blocks. Uncommitted blocks are garbage collected
+  // after a week, but a failed Close() may have committed them already.
+  ABSL_MUST_USE_RESULT error_code Abort() override {
+    return commit_attempted_ ? make_error_code(errc::operation_not_supported) : error_code{};
+  }
+
  private:
   error_code Upload() override;
 
@@ -258,6 +264,7 @@ class WriteFile : public detail::AbstractStorageFile {
   unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
   string target_;
   unsigned block_id_ = 1;
+  bool commit_attempted_ = false;
   WriteFileOptions opts_;
 };
 
@@ -356,6 +363,7 @@ error_code WriteFile::Close() {
   error_code res;
   RobustSender sender(pool_.get(), opts_.creds_provider);
   RobustSender::SenderResult send_res;
+  commit_attempted_ = true;
   RETURN_ERROR(sender.Send(3, req.get(), &send_res));
 
   auto parser_ptr = std::move(send_res.eb_parser);

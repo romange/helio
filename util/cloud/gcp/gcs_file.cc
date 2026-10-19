@@ -79,6 +79,7 @@ class GcsWriteFile : public detail::AbstractStorageFile {
   // Closes the object and completes the multipart upload. Therefore the object
   // will not be uploaded unless Close is called.
   error_code Close() override;
+  ABSL_MUST_USE_RESULT error_code Abort() override;
 
   GcsWriteFile(const string_view key, string_view upload_id, const GcsWriteFileOptions& opts);
   ~GcsWriteFile();
@@ -191,6 +192,20 @@ error_code GcsWriteFile::Close() {
   VLOG(1) << "Closed file " << req->GetHeaders() << "\n" << body;
 
   return {};
+}
+
+error_code GcsWriteFile::Abort() {
+  // Cancels the resumable upload session, see
+  // https://cloud.google.com/storage/docs/performing-resumable-uploads#cancel-upload
+  detail::EmptyRequestImpl req(h2::verb::delete_, upload_id_);
+  req.SetHeader(h2::field::host, opts_.creds_provider->ServiceEndpoint());
+  req.SetHeader(h2::field::content_length, "0");
+
+  RobustSender sender(opts_.pool, opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, &req, 499, &send_res));  // 499 means the upload was cancelled.
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  return send_res.client_handle->Recv(&resp);
 }
 
 error_code GcsWriteFile::Upload() {
