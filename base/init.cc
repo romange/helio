@@ -66,7 +66,6 @@ namespace base {
 uint64_t CycleClock::frequency_ = 0;
 uint64_t CycleClock::cycles_to_usec_ = 0;
 uint64_t CycleClock::usec_to_cycles_ = 0;
-static uint64_t freq_ms = 0;
 
 void CycleClock::InitOnce() {
 #ifdef __aarch64__
@@ -81,8 +80,6 @@ void CycleClock::InitOnce() {
 #else
   frequency_ = absl::base_internal::CycleClock::Frequency();
 #endif
-  freq_ms = frequency_ / 1000;
-
   // The cycles_to_usec_ multiplier fits into 64 bits only above 62.5kHz.
   DCHECK_GT(frequency_, 62'500u);
   using u128 = unsigned __int128;
@@ -95,8 +92,8 @@ void CycleClock::InitOnce() {
 // kHighCycleBound which should actually be larger than 100% cpu time in 10ms.
 constexpr uint64_t kHighCycleBound = 1 << 31UL;
 
-void RealTimeAggregator::Add(uint64_t start, uint64_t now) {
-  uint32_t now_ms = static_cast<uint32_t>(now / freq_ms);
+void CycleBucketAggregator::Add(uint64_t start, uint64_t now) {
+  uint64_t now_ms = Milliseconds(now);
 
   const uint64_t cycles = now - start;
 
@@ -107,7 +104,7 @@ void RealTimeAggregator::Add(uint64_t start, uint64_t now) {
     cycles_1ms_ = std::min(cycles, kHighCycleBound);
     measurement_start_1ms_ = now_ms;
 
-    const uint32_t current_10ms_bucket_start = (now_ms / 10) * 10;
+    const uint64_t current_10ms_bucket_start = (now_ms / 10) * 10;
     if (measurement_start_10ms_ == current_10ms_bucket_start) {
       cycles_10ms_ = std::min(cycles_10ms_ + cycles, kHighCycleBound);
     } else {

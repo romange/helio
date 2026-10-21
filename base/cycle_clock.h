@@ -60,48 +60,81 @@ class CycleClock {
 
 // The following class aggregates cycle measurements over a short period of time.
 // If periods change, the timer is reset automatically otherwise it continues to accumulate cycles.
-class RealTimeAggregator {
+class CycleBucketAggregator {
  public:
   void Add(uint64_t start, uint64_t now);
 
-  // Returns usec measured in the last 1ms period.
+  // Returns usec accumulated in the current 1ms period.
   unsigned Usec1ms() const {
+    return Usec1ms(CycleClock::Now());
+  }
+
+  // Returns usec accumulated in the 1ms period containing now.
+  unsigned Usec1ms(uint64_t now) const {
+    if (measurement_start_1ms_ != Milliseconds(now)) {
+      return 0;
+    }
+
     uint64_t usec = CycleClock::ToUsec(cycles_1ms_);
     return usec > 1000u ? 1000u : usec;
   }
 
+  // Returns usec accumulated in the current 10ms period.
   unsigned Usec10ms() const {
+    return Usec10ms(CycleClock::Now());
+  }
+
+  // Returns usec accumulated in the 10ms period containing now.
+  unsigned Usec10ms(uint64_t now) const {
+    const uint64_t current_bucket_start = (Milliseconds(now) / 10) * 10;
+    if (measurement_start_10ms_ != current_bucket_start) {
+      return 0;
+    }
+
     uint64_t usec = CycleClock::ToUsec(cycles_10ms_);
     return usec > 10000u ? 10000u : usec;
   }
 
   // Returns true if any of the measurements in the current period crossed the ratio threshold.
   bool IsOverloaded(float cpu_ratio) const {
-    // If we have more than 1000 usec in the last 1ms, we consider it overloaded.
-    return Usec1ms() >= 1000u * cpu_ratio || Usec10ms() >= 10000u * cpu_ratio;
+    const uint64_t now = CycleClock::Now();
+    return Usec1ms(now) >= 1000u * cpu_ratio || Usec10ms(now) >= 10000u * cpu_ratio;
   }
 
  private:
-  uint32_t measurement_start_1ms_ = 0;
-  uint32_t measurement_start_10ms_ = 0;
+  static uint64_t Milliseconds(uint64_t cycles) {
+    return CycleClock::ToUsec(cycles) / 1000;
+  }
+
+  uint64_t measurement_start_1ms_ = 0;
+  uint64_t measurement_start_10ms_ = 0;
 
   uint32_t cycles_1ms_ = 0, cycles_10ms_ = 0;
 };
 
-class CpuTimeGuard {
+using RealTimeAggregator = CycleBucketAggregator;
+
+class ScopedCycleTimer {
  public:
-  explicit CpuTimeGuard(RealTimeAggregator* val) : val_(val) {
+  explicit ScopedCycleTimer(CycleBucketAggregator* val) : val_(val) {
     start_ = CycleClock::Now();
   }
 
-  ~CpuTimeGuard() {
+  ScopedCycleTimer(const ScopedCycleTimer&) = delete;
+  ScopedCycleTimer& operator=(const ScopedCycleTimer&) = delete;
+  ScopedCycleTimer(ScopedCycleTimer&&) = delete;
+  ScopedCycleTimer& operator=(ScopedCycleTimer&&) = delete;
+
+  ~ScopedCycleTimer() {
     uint64_t now = CycleClock::Now();
     val_->Add(start_, now);
   }
 
  private:
-  RealTimeAggregator* val_;
+  CycleBucketAggregator* val_;
   uint64_t start_;
 };
+
+using CpuTimeGuard = ScopedCycleTimer;
 
 }  // namespace base
