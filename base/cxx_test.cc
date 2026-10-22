@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <thread>
+#include <type_traits>
 
 #include "base/cpu_features.h"
 #include "base/cycle_clock.h"
@@ -230,5 +231,33 @@ TEST_F(CxxTest, CycleClockConversionRange) {
   }
   EXPECT_EQ(CycleClock::ToUsec(CycleClock::FromUsec(1000'000)), 1000'000u);
 }
+
+TEST_F(CxxTest, CycleBucketAggregatorTracksCurrentBuckets) {
+  CycleBucketAggregator aggregator;
+  const uint64_t duration1 = CycleClock::FromUsec(200);
+  const uint64_t duration2 = CycleClock::FromUsec(300);
+  const uint64_t duration3 = CycleClock::FromUsec(400);
+  const uint64_t now1 = CycleClock::FromUsec(101'500);
+  const uint64_t now2 = CycleClock::FromUsec(103'500);
+  const uint64_t now3 = CycleClock::FromUsec(105'500);
+
+  aggregator.Add(now1 - duration1, now1);
+  aggregator.Add(now2 - duration2, now2);
+  aggregator.Add(now3 - duration3, now3);
+
+  EXPECT_EQ(aggregator.Usec1ms(now3), CycleClock::ToUsec(duration3));
+  EXPECT_EQ(aggregator.Usec10ms(now3), CycleClock::ToUsec(duration1 + duration2 + duration3));
+
+  const uint64_t future = CycleClock::FromUsec(120'000);
+  EXPECT_EQ(aggregator.Usec1ms(future), 0u);
+  EXPECT_EQ(aggregator.Usec10ms(future), 0u);
+}
+
+static_assert(!std::is_copy_constructible_v<ScopedCycleTimer>);
+static_assert(!std::is_copy_assignable_v<ScopedCycleTimer>);
+static_assert(!std::is_move_constructible_v<ScopedCycleTimer>);
+static_assert(!std::is_move_assignable_v<ScopedCycleTimer>);
+static_assert(std::is_same_v<RealTimeAggregator, CycleBucketAggregator>);
+static_assert(std::is_same_v<CpuTimeGuard, ScopedCycleTimer>);
 
 }  // namespace base
