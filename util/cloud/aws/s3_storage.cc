@@ -90,13 +90,17 @@ auto UnexpectedError(errc code) {
 }
 
 unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx, fb2::ProactorBase* pb,
-                                        unsigned connect_ms) {
+                                        unsigned connect_ms, uint64_t max_pacing_rate = 0) {
   CHECK(pb);
   unique_ptr<http::ClientPool> pool(new http::ClientPool(endpoint, ctx, pb));
   pool->set_connect_timeout(connect_ms);
-  pool->SetOnConnect([](int fd) {
+  pool->SetOnConnect([max_pacing_rate](int fd) {
     auto ec = detail::EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
+    if (max_pacing_rate) {
+      ec = detail::SetMaxPacingRate(fd, max_pacing_rate);
+      LOG_IF(WARNING, ec) << "Error setting pacing rate " << ec.message() << " " << fd;
+    }
   });
   return pool;
 }
@@ -491,7 +495,7 @@ io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::s
   DCHECK(opts.creds_provider);
   BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
   auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
-                         opts.creds_provider->connect_ms());
+                         opts.creds_provider->connect_ms(), opts.max_pacing_rate);
 
   // Initiate multipart upload.
   string url = BucketObjectPath(addressing, bucket, key);

@@ -157,6 +157,11 @@ class DynamicBodyRequestImpl : public HttpRequestBase {
 
 std::error_code EnableKeepAlive(int fd);
 
+// Caps the egress rate of the socket to `bytes_per_sec` using kernel TCP pacing
+// (SO_MAX_PACING_RATE). Smooths out bursts on bandwidth-limited links (e.g. cloud instance
+// network allowances). 0 means unlimited. No-op on platforms without SO_MAX_PACING_RATE.
+std::error_code SetMaxPacingRate(int fd, uint64_t bytes_per_sec);
+
 // File handle that writes to cloud storage.
 //
 // This uses multipart uploads, where it will buffer upto the configured part
