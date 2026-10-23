@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string_view>
@@ -69,7 +70,16 @@ struct ReadFileOptions {
   SSL_CTX* ssl_cntx = nullptr;
 };
 
-using WriteFileOptions = ReadFileOptions;
+struct WriteFileOptions {
+  AwsCredsProvider* creds_provider = nullptr;
+  SSL_CTX* ssl_cntx = nullptr;
+
+  // Best-effort Linux SO_MARK for upload connections, including retries and control requests.
+  // Assign the same mark to uploads sharing an externally configured tc bandwidth class.
+  // Zero leaves sockets unmarked and does not require marking privileges.
+  // Marking failures are logged and do not prevent connecting.
+  uint32_t traffic_mark = 0;
+};
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,
                                            const ReadFileOptions& opts);

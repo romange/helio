@@ -76,6 +76,7 @@ end of file) to **every file touched by the PR, in full**, not just the changed 
 
 ## 📝 Git Commit Guidelines
 
+*   **Branch:** Always create and switch to a feature branch before committing. Never commit directly to `master`.
 *   **Commit Title:** Maximum 70 characters. Use format: `Component: brief description`
     *   Examples: `Histogram: migrate to uint64_t and add batch percentiles`
     *   Avoid generic titles like "Fix bug" or "Update code"
