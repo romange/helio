@@ -47,6 +47,7 @@ ABSL_FLAG(bool, https, false, "Whether to use HTTPS");
 ABSL_FLAG(bool, epoll, false, "Whether to use epoll instead of io_uring");
 ABSL_FLAG(unsigned, connect_ms, 2000, "AWS connection timeout in milliseconds");
 ABSL_FLAG(unsigned, list_max_results, 1000, "Max keys per List page");
+ABSL_FLAG(uint64_t, max_pacing_rate, 0, "Upload socket pacing rate in bytes/sec, 0 = unlimited");
 
 #ifdef WITH_AWS
 std::shared_ptr<Aws::S3::S3Client> OpenS3Client() {
@@ -77,14 +78,16 @@ bool InitAws(util::cloud::aws::AwsCredsProvider* creds, SSL_CTX** ssl_ctx) {
 void ListBuckets() {
   util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
-  if (!InitAws(&creds_provider, &ssl_ctx)) return;
-  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
-
-  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
-                                      util::fb2::ProactorBase::me());
-  auto ec = storage.ListBuckets([](std::string_view name) {
-    std::cout << "* " << name << std::endl;
+  if (!InitAws(&creds_provider, &ssl_ctx))
+    return;
+  absl::Cleanup free_ctx([ssl_ctx] {
+    if (ssl_ctx)
+      util::http::TlsClient::FreeContext(ssl_ctx);
   });
+
+  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx, util::fb2::ProactorBase::me());
+  auto ec =
+      storage.ListBuckets([](std::string_view name) { std::cout << "* " << name << std::endl; });
   if (ec) {
     LOG(ERROR) << "failed to list buckets: " << ec.message();
   }
@@ -98,12 +101,15 @@ void ListObjects(const std::string& bucket, const std::string& prefix) {
 
   util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
-  if (!InitAws(&creds_provider, &ssl_ctx)) return;
-  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
+  if (!InitAws(&creds_provider, &ssl_ctx))
+    return;
+  absl::Cleanup free_ctx([ssl_ctx] {
+    if (ssl_ctx)
+      util::http::TlsClient::FreeContext(ssl_ctx);
+  });
 
   bool recursive = prefix.empty();
-  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx,
-                                      util::fb2::ProactorBase::me());
+  util::cloud::aws::S3Storage storage(&creds_provider, ssl_ctx, util::fb2::ProactorBase::me());
   auto print_item = [](const util::cloud::aws::S3Storage::ListItem& item) {
     std::cout << "* " << item.key << std::endl;
   };
@@ -129,8 +135,12 @@ void GetObject(const std::string& bucket, const std::string& key) {
 
   util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
-  if (!InitAws(&creds_provider, &ssl_ctx)) return;
-  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
+  if (!InitAws(&creds_provider, &ssl_ctx))
+    return;
+  absl::Cleanup free_ctx([ssl_ctx] {
+    if (ssl_ctx)
+      util::http::TlsClient::FreeContext(ssl_ctx);
+  });
 
   util::cloud::aws::ReadFileOptions opts{&creds_provider, ssl_ctx};
   auto res = util::cloud::aws::OpenReadFile(bucket, key, opts);
@@ -236,10 +246,17 @@ void PutObject(const std::string& bucket, const std::string& key) {
 
   util::cloud::aws::AwsCredsProvider creds_provider({}, absl::GetFlag(FLAGS_endpoint));
   SSL_CTX* ssl_ctx;
-  if (!InitAws(&creds_provider, &ssl_ctx)) return;
-  absl::Cleanup free_ctx([ssl_ctx] { if (ssl_ctx) util::http::TlsClient::FreeContext(ssl_ctx); });
+  if (!InitAws(&creds_provider, &ssl_ctx))
+    return;
+  absl::Cleanup free_ctx([ssl_ctx] {
+    if (ssl_ctx)
+      util::http::TlsClient::FreeContext(ssl_ctx);
+  });
 
-  util::cloud::aws::WriteFileOptions opts{&creds_provider, ssl_ctx};
+  util::cloud::aws::WriteFileOptions opts;
+  opts.creds_provider = &creds_provider;
+  opts.ssl_cntx = ssl_ctx;
+  opts.max_pacing_rate = absl::GetFlag(FLAGS_max_pacing_rate);
   auto res = util::cloud::aws::OpenWriteFile(bucket, key, opts);
   if (!res) {
     LOG(ERROR) << "failed to open s3 write file: " << res.error().message();

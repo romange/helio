@@ -79,6 +79,10 @@ struct WriteFileOptions {
   // Zero leaves sockets unmarked and does not require marking privileges.
   // Marking failures are logged and do not prevent connecting.
   uint32_t traffic_mark = 0;
+
+  // Max egress rate in bytes/sec for each upload connection, enforced via socket pacing.
+  // Parts are sent as single large PUTs; without pacing they leave at line rate. 0 = unlimited.
+  uint64_t max_pacing_rate = 0;
 };
 
 io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std::string& key,

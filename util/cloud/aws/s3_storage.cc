@@ -91,12 +91,27 @@ auto UnexpectedError(errc code) {
   return nonstd::make_unexpected(make_error_code(code));
 }
 
+// Per-connection socket options for pools created via CreatePool
+struct PoolConnectOptions {
+  unsigned connect_ms = 0;
+
+  // Best-effort Linux SO_MARK for upload connections, including retries and control requests.
+  // Assign the same mark to uploads sharing an externally configured tc bandwidth class.
+  // Zero leaves sockets unmarked and does not require marking privileges.
+  uint32_t traffic_mark = 0;
+
+  // Max egress rate in bytes/sec for each connection, enforced via socket pacing
+  // (SO_MAX_PACING_RATE). 0 = unlimited.
+  uint64_t max_pacing_rate = 0;
+};
+
 unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx, fb2::ProactorBase* pb,
-                                        unsigned connect_ms, uint32_t traffic_mark) {
+                                        const PoolConnectOptions& opts) {
   CHECK(pb);
   unique_ptr<http::ClientPool> pool(new http::ClientPool(endpoint, ctx, pb));
-  pool->set_connect_timeout(connect_ms);
-  pool->SetOnConnect([traffic_mark](int fd) {
+  pool->set_connect_timeout(opts.connect_ms);
+  pool->SetOnConnect([traffic_mark = opts.traffic_mark,
+                      max_pacing_rate = opts.max_pacing_rate](int fd) {
     auto ec = detail::EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
     if (traffic_mark) {
@@ -110,6 +125,19 @@ unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx, fb
       LOG(WARNING) << "aws: upload traffic marks require Linux; continuing without a traffic mark";
 #endif
     }
+#ifdef SO_MAX_PACING_RATE
+    if (max_pacing_rate) {
+      // The kernel treats UINT32_MAX as unlimited; clamp finite rates at or above it to the
+      // largest representable finite rate instead of silently disabling the cap.
+      uint32_t val =
+          max_pacing_rate < UINT32_MAX ? static_cast<uint32_t>(max_pacing_rate) : UINT32_MAX - 1;
+      if (setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE, &val, sizeof(val)) < 0) {
+        ec = error_code(errno, system_category());
+        LOG(WARNING) << "aws: failed setting pacing rate " << max_pacing_rate << " on socket " << fd
+                     << ": " << ec.message();
+      }
+    }
+#endif
   });
   return pool;
 }
@@ -421,7 +449,7 @@ error_code WriteFile::Abort() {
 
 S3Storage::S3Storage(AwsCredsProvider* creds, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
     : creds_(creds), ssl_cntx_(ssl_cntx), pb_(pb) {
-  pool_ = CreatePool(creds_->ServiceEndpoint(), ssl_cntx_, pb, creds_->connect_ms(), 0);
+  pool_ = CreatePool(creds_->ServiceEndpoint(), ssl_cntx_, pb, {creds_->connect_ms()});
 }
 
 S3Storage::~S3Storage() = default;
@@ -462,7 +490,7 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
   DCHECK(continuation_token);
 
   BucketAddressing addressing = ResolveBucketAddressing(creds_, bucket);
-  auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, creds_->connect_ms(), 0);
+  auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, {creds_->connect_ms()});
 
   string query = absl::StrCat("list-type=2&max-keys=", max_results);
   if (!prefix.empty()) {
@@ -503,8 +531,9 @@ io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::s
                                          const WriteFileOptions& opts) {
   DCHECK(opts.creds_provider);
   BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
-  auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
-                         opts.creds_provider->connect_ms(), opts.traffic_mark);
+  auto pool =
+      CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
+                 {opts.creds_provider->connect_ms(), opts.traffic_mark, opts.max_pacing_rate});
 
   // Initiate multipart upload.
   string url = BucketObjectPath(addressing, bucket, key);
@@ -536,7 +565,7 @@ io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std:
   DCHECK(opts.creds_provider);
   BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
   auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
-                         opts.creds_provider->connect_ms(), 0);
+                         {opts.creds_provider->connect_ms()});
   auto file = std::make_unique<ReadFile>(bucket, key, opts, std::move(pool));
   if (auto ec = file->InitRead(); ec)
     return nonstd::make_unexpected(ec);
