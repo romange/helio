@@ -100,6 +100,19 @@ error_code EnableKeepAlive(int fd) {
   return std::error_code{};
 }
 
+error_code SetMaxPacingRate(int fd, uint64_t bytes_per_sec) {
+#ifdef SO_MAX_PACING_RATE
+  // The kernel treats UINT32_MAX as unlimited. Use the u32 form, accepted by all kernels.
+  uint32_t val = UINT32_MAX;
+  if (bytes_per_sec > 0 && bytes_per_sec < UINT32_MAX)
+    val = bytes_per_sec;
+  if (setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE, &val, sizeof(val)) < 0) {
+    return std::error_code(errno, std::system_category());
+  }
+#endif
+  return std::error_code{};
+}
+
 io::Result<size_t> AbstractStorageFile::WriteSome(const iovec* v, uint32_t len) {
   size_t total = 0;
   for (uint32_t i = 0; i < len; ++i) {
