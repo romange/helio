@@ -11,11 +11,13 @@
 #include <absl/strings/strip.h>
 #include <absl/time/clock.h>
 #include <absl/time/time.h>
+#include <sys/socket.h>
 
 #include <boost/asio/buffer.hpp>
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <cerrno>
 #include <optional>
 #include <pugixml.hpp>
 
@@ -90,13 +92,24 @@ auto UnexpectedError(errc code) {
 }
 
 unique_ptr<http::ClientPool> CreatePool(const string& endpoint, SSL_CTX* ctx, fb2::ProactorBase* pb,
-                                        unsigned connect_ms) {
+                                        unsigned connect_ms, uint32_t traffic_mark) {
   CHECK(pb);
   unique_ptr<http::ClientPool> pool(new http::ClientPool(endpoint, ctx, pb));
   pool->set_connect_timeout(connect_ms);
-  pool->SetOnConnect([](int fd) {
+  pool->SetOnConnect([traffic_mark](int fd) {
     auto ec = detail::EnableKeepAlive(fd);
     LOG_IF(WARNING, ec) << "Error setting keep alive " << ec.message() << " " << fd;
+    if (traffic_mark) {
+#ifdef __linux__
+      if (setsockopt(fd, SOL_SOCKET, SO_MARK, &traffic_mark, sizeof(traffic_mark)) < 0) {
+        ec = error_code(errno, system_category());
+        LOG(WARNING) << "aws: failed setting SO_MARK=" << traffic_mark << " on socket " << fd
+                     << ": " << ec.message() << "; continuing without the configured traffic mark";
+      }
+#else
+      LOG(WARNING) << "aws: upload traffic marks require Linux; continuing without a traffic mark";
+#endif
+    }
   });
   return pool;
 }
@@ -408,7 +421,7 @@ error_code WriteFile::Abort() {
 
 S3Storage::S3Storage(AwsCredsProvider* creds, SSL_CTX* ssl_cntx, fb2::ProactorBase* pb)
     : creds_(creds), ssl_cntx_(ssl_cntx), pb_(pb) {
-  pool_ = CreatePool(creds_->ServiceEndpoint(), ssl_cntx_, pb, creds_->connect_ms());
+  pool_ = CreatePool(creds_->ServiceEndpoint(), ssl_cntx_, pb, creds_->connect_ms(), 0);
 }
 
 S3Storage::~S3Storage() = default;
@@ -449,7 +462,7 @@ error_code S3Storage::List(string_view bucket, string_view prefix, bool recursiv
   DCHECK(continuation_token);
 
   BucketAddressing addressing = ResolveBucketAddressing(creds_, bucket);
-  auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, creds_->connect_ms());
+  auto pool = CreatePool(addressing.endpoint, ssl_cntx_, pb_, creds_->connect_ms(), 0);
 
   string query = absl::StrCat("list-type=2&max-keys=", max_results);
   if (!prefix.empty()) {
@@ -491,7 +504,7 @@ io::Result<io::WriteFile*> OpenWriteFile(const std::string& bucket, const std::s
   DCHECK(opts.creds_provider);
   BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
   auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
-                         opts.creds_provider->connect_ms());
+                         opts.creds_provider->connect_ms(), opts.traffic_mark);
 
   // Initiate multipart upload.
   string url = BucketObjectPath(addressing, bucket, key);
@@ -523,7 +536,7 @@ io::Result<io::ReadonlyFile*> OpenReadFile(const std::string& bucket, const std:
   DCHECK(opts.creds_provider);
   BucketAddressing addressing = ResolveBucketAddressing(opts.creds_provider, bucket);
   auto pool = CreatePool(addressing.endpoint, opts.ssl_cntx, fb2::ProactorBase::me(),
-                         opts.creds_provider->connect_ms());
+                         opts.creds_provider->connect_ms(), 0);
   auto file = std::make_unique<ReadFile>(bucket, key, opts, std::move(pool));
   if (auto ec = file->InitRead(); ec)
     return nonstd::make_unexpected(ec);
