@@ -175,6 +175,18 @@ class ProactorBase {
 
   bool RemoveOnIdleTask(uint32_t id);
 
+  /**
+   * @brief Caps the CPU duty cycle of on-idle tasks that request spinning (kOnIdleMaxLevel).
+   *        Once spinning tasks of a proactor accumulate max_burst_usec of run time, all of
+   *        them are deferred for backoff_usec. The resulting duty cycle is roughly
+   *        max_burst_usec / (max_burst_usec + backoff_usec). A burst also ends when spinning
+   *        tasks rest for at least backoff_usec on their own. max_burst_usec == 0 or
+   *        backoff_usec == 0 disables the cap (the default). Must be called from the proactor
+   *        thread. Supported only by UringProactor: the epoll loop does not wake up when a
+   *        cooldown ends.
+   */
+  void SetOnIdleSpinLimits(uint64_t max_burst_usec, uint64_t backoff_usec);
+
   // Migrates the calling fibers to the destination proactor.
   // Calling fiber must belong to this proactor.
   void Migrate(ProactorBase* dest);
@@ -201,6 +213,9 @@ class ProactorBase {
     // Number of times we called io_uring_submit_and_get_events(),
     // and number of SQES submitted.
     uint64_t uring_submit_calls = 0, uring_submit_sqes = 0;
+
+    // Number of times spinning on-idle tasks were throttled. See SetOnIdleSpinLimits().
+    uint64_t on_idle_spin_throttles = 0;
     Stats& operator+=(const Stats& other);
   };
 
@@ -253,6 +268,11 @@ class ProactorBase {
   //       We should fix it by returning the next call time and handle it in the loop
   //       accordingly.
   bool RunOnIdleTasks();
+
+  // Returns nanoseconds until throttled on-idle tasks may spin again, or 0 if none are throttled.
+  // Returns 1 if the cooldown expired but RunOnIdleTasks() did not run since then.
+  // The proactor must not block on I/O for longer than that.
+  uint64_t OnIdleSpinCooldownNanos() const;
 
   static void Pause(unsigned strength);
   static void ModuleInit();
@@ -315,6 +335,10 @@ class ProactorBase {
     std::string task_name;
     uint64_t next_ts;  // when to run the next time in cycles.
     uint32_t generation;
+    // Whether the last run returned kOnIdleMaxLevel. Cooldowns are applied per task through
+    // next_ts rather than by pausing all on-idle tasks, so that only spinning tasks are
+    // throttled and the others keep running at their own frequency.
+    bool spinning;
 
     bool IsValid(uint64_t curr_gen) const {
       return task && generation == curr_gen;
@@ -324,6 +348,16 @@ class ProactorBase {
   std::vector<OnIdleWrapper> on_idle_arr_;
   uint32_t on_idle_next_ = 0;
   uint32_t on_idle_generation_ = 0;
+
+  // Throttling of spinning on-idle tasks. See SetOnIdleSpinLimits().
+  uint64_t spin_burst_budget_cycles_ = 0;  // run time allowed per burst, 0 disables the cap.
+  uint64_t spin_cooldown_cycles_ = 0;      // how long spinning tasks are deferred.
+  uint64_t spin_burst_used_cycles_ = 0;    // run time spent in the current burst.
+  uint64_t spin_last_run_end_ts_ = 0;      // when the last spinning task run ended.
+
+  // When the current cooldown ends. 0 if not throttled; reset by the first RunOnIdleTasks()
+  // pass after the deadline.
+  uint64_t spin_cooldown_end_ts_ = 0;
 
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
   uint64_t busy_poll_start_cycle_ = 0;
@@ -343,6 +377,10 @@ class ProactorBase {
     }
     return false;
   }
+
+  // Returns true if a task that requested spinning should be deferred until
+  // spin_cooldown_end_ts_. When a cooldown starts, defers all spinning tasks.
+  bool ShouldThrottleSpin(uint64_t task_cycles, uint64_t task_end);
 
   uint64_t last_level2_cycle_ = 0;
   uint64_t cpu_measure_cycle_start_ = 0, cpu_idle_cycles_ = 0;
