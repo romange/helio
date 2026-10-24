@@ -250,7 +250,8 @@ HttpListenerBase::HttpListenerBase() {
   resource_prefix_ = "https://cdn.jsdelivr.net/gh/romange/helio/util/http";
 }
 
-bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx) const {
+bool HttpListenerBase::HandleRoot(const RequestType& request, std::string_view path,
+                                  const QueryArgs& args, HttpContext* cntx) const {
   std::string_view target = ToStd(request.target());
   if (target == "/favicon.ico") {
     h2::response<h2::string_body> resp = MakeStringResponse(h2::status::moved_permanently);
@@ -261,10 +262,6 @@ bool HttpListenerBase::HandleRoot(const RequestType& request, HttpContext* cntx)
     cntx->Invoke(std::move(resp));
     return true;
   }
-
-  std::string_view path, query;
-  tie(path, query) = ParseQuery(target);
-  auto args = SplitQuery(query);
 
   if (path == "/") {
     if (root_response_.empty()) {
@@ -383,8 +380,8 @@ void HttpConnection::HandleRequests() {
       << "Http error " << ec.message();
 }
 
-bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpContext* cntx,
-                                               std::string_view path) {
+bool HttpConnection::CheckRequestAuthorization(const RequestType& req, std::string_view path,
+                                               const QueryArgs& args, HttpContext* cntx) {
   CHECK(owner_);
 
   if (!owner_->auth_functor_)
@@ -406,7 +403,7 @@ bool HttpConnection::CheckRequestAuthorization(const RequestType& req, HttpConte
     }
   }
 
-  if (owner_->auth_functor_(path, username, password)) {
+  if (owner_->auth_functor_(path, args, username, password)) {
     return true;
   }
 
@@ -426,10 +423,12 @@ __attribute__((noinline)) void HttpConnection::HandleSingleRequest(RequestType&&
   std::string target{ToStd(req.target())};
   auto [path, query] = ParseQuery(target);
 
-  if (!CheckRequestAuthorization(req, cntx, path))
+  auto args = SplitQuery(query);
+
+  if (!CheckRequestAuthorization(req, path, args, cntx))
     return;
 
-  if (owner_->HandleRoot(req, cntx)) {
+  if (owner_->HandleRoot(req, path, args, cntx)) {
     return;
   }
   VLOG(2) << "Searching for " << path;
@@ -439,7 +438,6 @@ __attribute__((noinline)) void HttpConnection::HandleSingleRequest(RequestType&&
     h2::response<h2::string_body> resp(h2::status::unauthorized, req.version());
     return cntx->Invoke(std::move(resp));
   }
-  auto args = SplitQuery(query);
   if (std::holds_alternative<HttpListenerBase::RequestCb>(it->second)) {
     std::get<HttpListenerBase::RequestCb>(it->second)(args, cntx);
   } else {

@@ -68,6 +68,22 @@ HTTP handler is implemented using [Boost.Beast](https://www.boost.org/doc/libs/1
 Please see [http_main.cc](https://github.com/romange/async/blob/master/util/http/http_main.cc), for example. HTTP also provides support for backend monitoring (Varz status page) and for an extensible debugging interface. With monitoring C++ backend returns JSON object that is formatted inside status page in the browser. To check how it looks, please go to [localhost:8080](http://localhost:8080) while `echo_server` is running.
 
 
+### Query-aware authorization
+
+`HttpListenerBase::SetAuthFunctorWithQuery` accepts a callback with the signature
+`bool(std::string_view path, const http::QueryArgs& args, std::string_view username,
+std::string_view password)`. It runs before built-in and registered handlers. Return
+`false` to reject a request with HTTP 401. The existing three-argument callback is
+also supported via `SetAuthFunctor`. Passing an empty callback to either setter
+disables authorization checks; `SetAuthFunctor(nullptr)` and `SetAuthFunctor({})`
+remain supported.
+
+Query arguments are parsed once and shared with the handler. They retain duplicate
+parameters and are not URL-decoded; their string views must not outlive the callback.
+For example, an application can deny `/flagz` requests containing a nonempty `flag`
+parameter to prevent flag mutation while retaining flag listing. A `flag` parameter
+without a `value` still attempts to write an empty value.
+
 ### Self-profiling
 Every http-powered backend has integrated CPU profiling capabilities using [gperf-tools](https://github.com/gperftools/gperftools) and [pprof](https://github.com/google/pprof)
 Profiling can be triggered in prod using magic-url commands. Enabled profiling usually has a very minimal impact on CPU performance of the running backend.
