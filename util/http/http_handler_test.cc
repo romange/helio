@@ -87,6 +87,8 @@ TEST_F(HttpHandlerTest, QueryPolicyPreventsFlagMutation) {
 
 TEST_F(HttpHandlerTest, QueryAndCredentialsMatchHandler) {
   const http::QueryArgs* authorized_args = nullptr;
+  bool reject = false;
+  unsigned handler_calls = 0;
   listener_->SetAuthFunctorWithQuery([&](std::string_view path, const http::QueryArgs& args,
                                          std::string_view username, std::string_view password) {
     EXPECT_EQ(path, "/echo");
@@ -94,14 +96,21 @@ TEST_F(HttpHandlerTest, QueryAndCredentialsMatchHandler) {
     EXPECT_EQ(password, "secret");
     EXPECT_EQ(args, (http::QueryArgs{{"value", "one"}, {"value", "%74wo"}, {"empty", ""}}));
     authorized_args = &args;
-    return true;
+    return !reject;
   });
   listener_->RegisterCb("/echo", [&](const http::QueryArgs& args, HttpContext* context) {
+    ++handler_calls;
     EXPECT_EQ(&args, authorized_args);
     context->Invoke(http::MakeStringResponse());
   });
   server_->Run();
   EXPECT_EQ(Get("/echo?value=one&value=%74wo&empty", true).result(), h2::status::ok);
+  pool_->at(0)->Await([&] {
+    EXPECT_EQ(handler_calls, 1u);
+    reject = true;
+  });
+  EXPECT_EQ(Get("/echo?value=one&value=%74wo&empty", true).result(), h2::status::unauthorized);
+  pool_->at(0)->Await([&] { EXPECT_EQ(handler_calls, 1u); });
 }
 
 TEST_F(HttpHandlerTest, LegacyCallback) {
