@@ -24,8 +24,9 @@ class HttpHandlerTest : public testing::Test {
     pool_.reset(fb2::Pool::Epoll(1));
     pool_->Run();
     server_ = std::make_unique<AcceptServer>(pool_.get());
-    listener_ = new HttpListener<>;
-    port_ = server_->AddListener(0, listener_);
+    auto listener = std::make_unique<HttpListener<>>();
+    listener_ = listener.get();
+    port_ = server_->AddListener(0, listener.release());
     absl::SetFlag(&FLAGS_http_auth_test_value, "initial");
   }
 
@@ -61,7 +62,7 @@ class HttpHandlerTest : public testing::Test {
 };
 
 TEST_F(HttpHandlerTest, QueryPolicyPreventsFlagMutation) {
-  listener_->SetAuthFunctor(
+  listener_->SetAuthFunctorWithQuery(
       [](std::string_view path, const http::QueryArgs& args, std::string_view, std::string_view) {
         if (path == "/flagz") {
           for (const auto& [key, value] : args) {
@@ -86,8 +87,8 @@ TEST_F(HttpHandlerTest, QueryPolicyPreventsFlagMutation) {
 
 TEST_F(HttpHandlerTest, QueryAndCredentialsMatchHandler) {
   const http::QueryArgs* authorized_args = nullptr;
-  listener_->SetAuthFunctor([&](std::string_view path, const http::QueryArgs& args,
-                                std::string_view username, std::string_view password) {
+  listener_->SetAuthFunctorWithQuery([&](std::string_view path, const http::QueryArgs& args,
+                                         std::string_view username, std::string_view password) {
     EXPECT_EQ(path, "/echo");
     EXPECT_EQ(username, "default");
     EXPECT_EQ(password, "secret");
@@ -111,6 +112,37 @@ TEST_F(HttpHandlerTest, LegacyCallback) {
   server_->Run();
   EXPECT_EQ(Get("/").result(), h2::status::unauthorized);
   EXPECT_EQ(Get("/", true).result(), h2::status::ok);
+}
+
+TEST_F(HttpHandlerTest, ClearAuthorization) {
+  server_->Run();
+
+  // Each clearing form must remove a previously installed policy, not wrap an empty function.
+  for (unsigned form = 0; form < 4; ++form) {
+    pool_->at(0)->Await([&] {
+      listener_->SetAuthFunctorWithQuery([](std::string_view, const http::QueryArgs&,
+                                            std::string_view, std::string_view) { return false; });
+    });
+    EXPECT_EQ(Get("/").result(), h2::status::unauthorized);
+    pool_->at(0)->Await([&] {
+      switch (form) {
+        case 0:
+          listener_->SetAuthFunctor(nullptr);
+          break;
+        case 1:
+          listener_->SetAuthFunctor({});
+          break;
+        case 2:
+          listener_->SetAuthFunctor(
+              std::function<bool(std::string_view, std::string_view, std::string_view)>{});
+          break;
+        case 3:
+          listener_->SetAuthFunctorWithQuery({});
+          break;
+      }
+    });
+    EXPECT_EQ(Get("/").result(), h2::status::ok) << "Clearing form " << form;
+  }
 }
 
 }  // namespace
