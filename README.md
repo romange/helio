@@ -70,11 +70,13 @@ Please see [http_main.cc](https://github.com/romange/async/blob/master/util/http
 
 ### Query-aware authorization
 
-`HttpListenerBase::SetAuthFunctor` accepts a callback with the signature
+`HttpListenerBase::SetAuthFunctorWithQuery` accepts a callback with the signature
 `bool(std::string_view path, const http::QueryArgs& args, std::string_view username,
 std::string_view password)`. It runs before built-in and registered handlers. Return
 `false` to reject a request with HTTP 401. The existing three-argument callback is
-also supported.
+also supported via `SetAuthFunctor`. Passing an empty callback to either setter
+disables authorization checks; `SetAuthFunctor(nullptr)` and `SetAuthFunctor({})`
+remain supported.
 
 Query arguments are parsed once and shared with the handler. They retain duplicate
 parameters and are not URL-decoded; their string views must not outlive the callback.

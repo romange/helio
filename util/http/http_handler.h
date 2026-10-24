@@ -106,11 +106,13 @@ class HttpListenerBase : public ListenerInterface {
   using AuthFunctor = std::function<bool(std::string_view path, const http::QueryArgs& args,
                                          std::string_view username, std::string_view password)>;
 
-  void SetAuthFunctor(AuthFunctor func) {
+  // Installs a query-aware policy before request dispatch. An empty callback disables checks.
+  void SetAuthFunctorWithQuery(AuthFunctor func) {
     auth_functor_ = std::move(func);
   }
 
-  // Compatibility overload for authentication policies that do not inspect the query.
+  // Installs a policy that receives the path and credentials; false rejects with HTTP 401.
+  // Passing nullptr or an empty callback disables authorization checks.
   void SetAuthFunctor(std::function<bool(std::string_view path, std::string_view username,
                                          std::string_view password)>
                           func) {
