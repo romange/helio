@@ -24,6 +24,7 @@ class HttpContext {
 
   AsioStreamAdapter<>& asa_;
   void* user_data_ = nullptr;
+
  public:
   explicit HttpContext(AsioStreamAdapter<>& asa) : asa_(asa) {
   }
@@ -73,7 +74,7 @@ class HttpListenerBase : public ListenerInterface {
   typedef std::function<void(const http::QueryArgs&, HttpContext*)> RequestCb;
 
   // Extended callback that allows to pass the request object.
-  typedef std::function<void(const http::QueryArgs&, RequestType&&,  HttpContext*)> RequestCbExt;
+  typedef std::function<void(const http::QueryArgs&, RequestType&&, HttpContext*)> RequestCbExt;
 
   HttpListenerBase();
 
@@ -100,15 +101,34 @@ class HttpListenerBase : public ListenerInterface {
     root_response_ = response;
   }
 
-  // Functor that's used to setup authentication
-  void SetAuthFunctor(std::function<bool(std::string_view path, std::string_view username,
-                                         std::string_view password)>
-                          func) {
+  // Query views are valid only during the callback. Arguments use the same parsing as handlers
+  // (including duplicate parameters, without URL decoding). Return false to reject the request.
+  using AuthFunctor = std::function<bool(std::string_view path, const http::QueryArgs& args,
+                                         std::string_view username, std::string_view password)>;
+
+  // Installs a query-aware policy before request dispatch. An empty callback disables checks.
+  void SetAuthFunctorWithQuery(AuthFunctor func) {
     auth_functor_ = std::move(func);
   }
 
+  // Installs a policy that receives the path and credentials; false rejects with HTTP 401.
+  // Passing nullptr or an empty callback disables authorization checks.
+  void SetAuthFunctor(std::function<bool(std::string_view path, std::string_view username,
+                                         std::string_view password)>
+                          func) {
+    if (!func) {
+      auth_functor_ = {};
+      return;
+    }
+    auth_functor_ = [func = std::move(func)](std::string_view path, const http::QueryArgs&,
+                                             std::string_view username, std::string_view password) {
+      return func(path, username, password);
+    };
+  }
+
  private:
-  bool HandleRoot(const RequestType& rt, HttpContext* cntx) const;
+  bool HandleRoot(const RequestType& rt, std::string_view path, const http::QueryArgs& args,
+                  HttpContext* cntx) const;
 
   using CbInfo = std::variant<RequestCb, RequestCbExt>;
 
@@ -119,8 +139,7 @@ class HttpListenerBase : public ListenerInterface {
   std::string root_response_;
   bool enable_metrics_ = false;
 
-  std::function<bool(std::string_view path, std::string_view username, std::string_view password)>
-      auth_functor_;
+  AuthFunctor auth_functor_;
 };
 
 class HttpConnection : public Connection {
@@ -140,11 +159,13 @@ class HttpConnection : public Connection {
   void set_user_data(void* ud) {
     user_data_ = ud;
   }
+
  protected:
   void HandleSingleRequest(RequestType&& req, HttpContext* cntx);
 
   // Check request authorization and return whether we can proceed.
-  bool CheckRequestAuthorization(const RequestType& req, HttpContext* cntx, std::string_view path);
+  bool CheckRequestAuthorization(const RequestType& req, std::string_view path,
+                                 const http::QueryArgs& args, HttpContext* cntx);
 
  private:
   const HttpListenerBase* owner_;
