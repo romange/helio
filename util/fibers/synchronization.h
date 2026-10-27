@@ -316,6 +316,8 @@ class FiberBlockingCounter {
 };
 static_assert(sizeof(FiberBlockingCounter) == 8);
 
+// Fiber-aware, non-recursive reader-writer mutex that prefers readers: lock_shared() blocks only
+// while a writer holds the mutex, so sustained reader traffic can starve writers.
 class ABSL_LOCKABLE SharedMutex {
  public:
   bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
@@ -341,12 +343,12 @@ class ABSL_LOCKABLE SharedMutex {
   }
 
   void unlock() ABSL_UNLOCK_FUNCTION() {
-    state_.fetch_and(~(WRITER), std::memory_order_relaxed);
+    state_.fetch_and(~(WRITER), std::memory_order_release);
     ec_.notifyAll();
   }
 
   void unlock_shared() ABSL_UNLOCK_FUNCTION() {
-    state_.fetch_add(-READER, std::memory_order_relaxed);
+    state_.fetch_add(-READER, std::memory_order_release);
     ec_.notifyAll();
   }
 
@@ -497,6 +499,59 @@ struct NoOpLock {
   bool try_lock() {
     return true;
   }
+};
+
+// Fiber-aware, non-recursive reader-writer mutex for fibers of a single thread. Not thread-safe.
+// Prefers readers: lock_shared() blocks only while a writer holds the mutex, even if writers are
+// waiting, so a reader never waits for a pending writer. Sustained reader traffic can starve
+// writers.
+class ABSL_LOCKABLE LocalSharedMutex {
+ public:
+  LocalSharedMutex() = default;
+
+  LocalSharedMutex(const LocalSharedMutex&) = delete;
+  LocalSharedMutex& operator=(const LocalSharedMutex&) = delete;
+
+  bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
+    if (writer_ || readers_)
+      return false;
+    writer_ = true;
+    return true;
+  }
+
+  void lock() ABSL_EXCLUSIVE_LOCK_FUNCTION() {
+    NoOpLock lk;
+    cv_.wait(lk, [this] { return try_lock(); });
+  }
+
+  bool try_lock_shared() ABSL_SHARED_TRYLOCK_FUNCTION(true) {
+    if (writer_)
+      return false;
+    ++readers_;
+    return true;
+  }
+
+  void lock_shared() ABSL_SHARED_LOCK_FUNCTION() {
+    NoOpLock lk;
+    cv_.wait(lk, [this] { return try_lock_shared(); });
+  }
+
+  void unlock() ABSL_UNLOCK_FUNCTION() {
+    assert(writer_);
+    writer_ = false;
+    cv_.notify_all();
+  }
+
+  void unlock_shared() ABSL_UNLOCK_FUNCTION() {
+    assert(readers_ > 0);
+    if (--readers_ == 0)
+      cv_.notify_all();  // Only writers can be waiting here.
+  }
+
+ private:
+  CondVarAny cv_;
+  uint32_t readers_ = 0;
+  bool writer_ = false;
 };
 
 class Barrier {
