@@ -80,8 +80,14 @@ void CycleClock::InitOnce() {
 #else
   frequency_ = absl::base_internal::CycleClock::Frequency();
 #endif
+
   // The cycles_to_usec_ multiplier fits into 64 bits only above 62.5kHz.
-  DCHECK_GT(frequency_, 62'500u);
+  // This should not happen on real devices but may happen on virtual devices or emulators like
+  // faketime.
+  if (frequency_ < 63'000u) {
+    frequency_ = 63'000u;
+  }
+
   using u128 = unsigned __int128;
   cycles_to_usec_ = ((static_cast<u128>(1000'000) << 60) + frequency_ - 1) / frequency_;
   usec_to_cycles_ = ((static_cast<u128>(frequency_) << 32) + 999'999) / 1000'000;
