@@ -13,6 +13,7 @@
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 
 #include "base/flags.h"
@@ -688,6 +689,141 @@ TEST_F(FiberTest, EventCountMT) {
     th.join();
   }
   LOG(INFO) << "Preempts: " << preempts;
+}
+
+// Readers enter while a writer waits, so the writer runs only after all readers leave.
+template <typename SharedMutexT> void TestReaderPreference() {
+  SharedMutexT mu;
+  vector<unsigned> order;
+  mu.lock_shared();
+
+  Fiber writer(Launch::dispatch, "writer", [&] {
+    lock_guard lk(mu);
+    order.push_back(1);
+  });
+  Fiber reader(Launch::dispatch, "reader", [&] {
+    shared_lock lk(mu);
+    order.push_back(2);
+  });
+  EXPECT_THAT(order, ElementsAre(2));
+  {
+    shared_lock lk(mu, try_to_lock);
+    EXPECT_TRUE(lk.owns_lock());
+  }
+
+  mu.unlock_shared();
+  writer.Join();
+  reader.Join();
+  EXPECT_THAT(order, ElementsAre(2, 1));
+}
+
+// An active writer blocks readers, and readers that hold the mutex block a writer.
+template <typename SharedMutexT> void TestWriterBlocksReaders() {
+  SharedMutexT mu;
+  EventCount ec;
+  bool release_readers = false;
+  unsigned entered = 0;
+  bool writer_entered = false;
+  auto read = [&] {
+    shared_lock lk(mu);
+    ++entered;
+    ec.await([&] { return release_readers; });
+  };
+
+  mu.lock();
+  Fiber reader1(Launch::dispatch, "reader1", read);
+  Fiber reader2(Launch::dispatch, "reader2", read);
+  EXPECT_EQ(entered, 0u);
+  {
+    shared_lock lk(mu, try_to_lock);
+    EXPECT_FALSE(lk.owns_lock());
+  }
+
+  mu.unlock();
+  ThisFiber::Yield();
+  EXPECT_EQ(entered, 2u);
+
+  Fiber writer(Launch::dispatch, "writer", [&] {
+    lock_guard lk(mu);
+    writer_entered = true;
+  });
+  EXPECT_FALSE(writer_entered);
+
+  release_readers = true;
+  ec.notifyAll();
+  reader1.Join();
+  reader2.Join();
+  writer.Join();
+  EXPECT_TRUE(writer_entered);
+}
+
+// Runs readers and writers concurrently on `num_threads` threads, or on the calling thread if 0.
+template <typename SharedMutexT> void TestSharedMutexStress(unsigned num_threads) {
+  SharedMutexT mu;
+  unsigned counter = 0;
+  unsigned complement = ~counter;
+  constexpr unsigned kIterations = 1000;
+  constexpr unsigned kPairs = 4;
+
+  auto run_pair = [&](Launch launch) {
+    Fiber writer(launch, "writer", [&] {
+      for (unsigned i = 0; i < kIterations; ++i) {
+        lock_guard lk(mu);
+        ++counter;
+        ThisFiber::Yield();
+        complement = ~counter;
+      }
+    });
+    Fiber reader(launch, "reader", [&] {
+      for (unsigned i = 0; i < kIterations; ++i) {
+        shared_lock lk(mu);
+        unsigned value = counter;
+        ThisFiber::Yield();
+        EXPECT_EQ(counter, value);
+        EXPECT_EQ(complement, ~value);
+      }
+    });
+    return pair{std::move(writer), std::move(reader)};
+  };
+
+  if (num_threads == 0) {
+    vector<pair<Fiber, Fiber>> fibers;
+    for (unsigned i = 0; i < kPairs; ++i) {
+      fibers.push_back(run_pair(Launch::post));
+    }
+    for (auto& [writer, reader] : fibers) {
+      writer.Join();
+      reader.Join();
+    }
+    EXPECT_EQ(counter, kPairs * kIterations);
+    return;
+  }
+
+  vector<thread> threads(num_threads);
+  for (auto& th : threads) {
+    th = thread([&] {
+      auto [writer, reader] = run_pair(Launch::post);
+      writer.Join();
+      reader.Join();
+    });
+  }
+  for (auto& th : threads) {
+    th.join();
+  }
+  EXPECT_EQ(counter, num_threads * kIterations);
+}
+
+TEST_F(FiberTest, SharedMutex) {
+  TestReaderPreference<SharedMutex>();
+  TestWriterBlocksReaders<SharedMutex>();
+  TestSharedMutexStress<SharedMutex>(0);
+  TestSharedMutexStress<SharedMutex>(4);
+}
+
+TEST_F(FiberTest, LocalSharedMutex) {
+  TestReaderPreference<LocalSharedMutex>();
+  TestWriterBlocksReaders<LocalSharedMutex>();
+  TestSharedMutexStress<LocalSharedMutex>(0);
 }
 
 TEST_F(FiberTest, Future) {
