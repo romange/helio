@@ -78,6 +78,19 @@ unsigned my_gettid() {
 #endif
 
 constexpr uint32_t kRingDepth = 16;
+
+// Death-test children are re-executed and filtered to one test, so the style must be set before
+// any test runs. Otherwise a child may not see the style set by its parent and fork again.
+class ThreadsafeDeathTestEnv : public testing::Environment {
+ public:
+  void SetUp() final {
+    testing::FLAGS_gtest_death_test_style = "threadsafe";
+  }
+};
+
+testing::Environment* const kThreadsafeDeathTestEnv =
+    testing::AddGlobalTestEnvironment(new ThreadsafeDeathTestEnv);
+
 class FiberTest : public testing::Test {
  public:
 };
@@ -171,10 +184,6 @@ class ProactorTest : public testing::TestWithParam<TestParams> {
 
   void TearDown() final {
     proactor_th_.reset();
-  }
-
-  static void SetUpTestCase() {
-    testing::FLAGS_gtest_death_test_style = "threadsafe";
   }
 
   ProactorBase* proactor() {
@@ -775,7 +784,6 @@ TEST_F(FiberTest, RegisteredBuffers) {
   });
 }
 
-#if 0
 TEST_F(FiberTest, CleanExit) {
   ASSERT_EXIT(
       {
@@ -784,7 +792,6 @@ TEST_F(FiberTest, CleanExit) {
       },
       ::testing::ExitedWithCode(42), "");
 }
-#endif
 
 #endif
 
@@ -907,15 +914,12 @@ TEST_F(FiberTest, HighPriority) {
   // EXPECT_THAT(run_order, testing::ElementsAre("high", "normal", "bg"));
 }
 
-// EXPECT_DEATH does not work well with freebsd, also it does not work well with gtest_repeat.
-#if 0
 TEST_F(FiberTest, AtomicGuard) {
   FiberAtomicGuard guard;
 #ifndef NDEBUG
   EXPECT_DEATH(ThisFiber::Yield(), "Preempting inside");
 #endif
 }
-#endif
 
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(ProactorBase::IsProactorThread());
@@ -1191,8 +1195,6 @@ TEST_P(ProactorTest, NotifyRemote) {
   fb2.Join();
 }
 
-// Disable EXPECT_DEATH because it messes up with info logs.
-#if 0
 TEST_P(ProactorTest, BriefDontBlock) {
   Done done;
 
@@ -1202,7 +1204,6 @@ TEST_P(ProactorTest, BriefDontBlock) {
 #endif
   });
 }
-#endif
 
 TEST_P(ProactorTest, Timeout) {
   EventCount ec;
@@ -1685,8 +1686,6 @@ TEST_F(FiberTest, PersistentWaiterReuse) {
 // waiter with other waiters queued behind it.
 #ifndef NDEBUG
 TEST_F(FiberTest, PersistentWaiterStarvationDCheck) {
-  testing::FLAGS_gtest_death_test_style = "threadsafe";
-
   EXPECT_DEATH(
       {
         EventCount ec;

@@ -7,10 +7,9 @@
 #include <array>
 #include <cstdint>
 #include <ctime>
-#include <memory>
 #include <utility>
 
-#include "util/proactor_pool.h"
+#include "util/proactor_pool.h"  // Kept for users that rely on it transitively.
 
 namespace util {
 
@@ -22,19 +21,6 @@ struct SecondsClock {
     return static_cast<uint64_t>(time(nullptr));
   }
 };
-
-namespace detail {
-
-class SlidingCounterBase {
- protected:
-  void InitInternal(ProactorPool* pp);
-  void CheckInit() const;
-  unsigned ProactorThreadIndex() const;
-
-  ProactorPool* pp_ = nullptr;
-};
-
-}  // namespace detail
 
 /**
  * @brief Sliding window data structure that can aggregate moving statistics.
@@ -48,8 +34,7 @@ class SlidingCounterBase {
  * @tparam T     counter value type.
  * @tparam Clock policy with `uint64_t operator()() const` returning the current slot index.
  */
-template <unsigned NUM, typename T = int32_t, typename Clock = SecondsClock>
-class SlidingCounter {
+template <unsigned NUM, typename T = int32_t, typename Clock = SecondsClock> class SlidingCounter {
   static_assert(NUM > 1, "Invalid window size");
 
   mutable std::array<T, NUM> count_;
@@ -105,55 +90,6 @@ class SlidingCounter {
   Clock clock_;
   mutable T total_ = 0;
   mutable uint64_t last_ts_ = 0;
-};
-
-// Requires proactor_pool initialize all the proactors.
-template <unsigned NUM> class SlidingCounterDist : protected detail::SlidingCounterBase {
-  using Counter = SlidingCounter<NUM>;
-
- public:
-  enum { WIN_SIZE = NUM };
-
-  SlidingCounterDist() = default;
-
-  void Init(ProactorPool* pp) {
-    InitInternal(pp);
-    sc_thread_map_.reset(new Counter[pp_->size()]);
-  }
-
-  void Shutdown() {
-    sc_thread_map_.reset();
-    pp_ = nullptr;
-  }
-
-  void Inc() {
-    sc_thread_map_[ProactorThreadIndex()].Inc();
-  }
-
-  uint32_t Sum() const {
-    CheckInit();
-
-    std::atomic_uint32_t res{0};
-    pp_->AwaitBrief([&](unsigned i, auto*) {
-      res.fetch_add(sc_thread_map_[i].Sum(), std::memory_order_relaxed);
-    });
-
-    return res.load(std::memory_order_acquire);
-  }
-
-  uint32_t SumTail() const {
-    CheckInit();
-
-    std::atomic_uint32_t res{0};
-    pp_->AwaitBrief([&](unsigned i, auto*) {
-      res.fetch_add(sc_thread_map_[i].SumTail(), std::memory_order_relaxed);
-    });
-
-    return res.load(std::memory_order_acquire);
-  }
-
- private:
-  std::unique_ptr<Counter[]> sc_thread_map_;
 };
 
 /*********************************************

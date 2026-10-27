@@ -13,14 +13,12 @@
 #include "absl/strings/escaping.h"
 #include "base/logging.h"
 #include "util/http/http_common.h"
-#include "util/metrics/family.h"
 
 namespace util {
 
 using namespace http;
 using namespace std;
 namespace h2 = boost::beast::http;
-using metrics::MetricType;
 namespace fs = std::filesystem;
 
 namespace {
@@ -163,64 +161,6 @@ __attribute__((noinline)) void FilezHandler(const QueryArgs& args, HttpContext* 
   return SendFileResp(std::move(fresp), send);
 }
 
-/*# HELP go_gc_duration_seconds A summary of the pause duration of garbage collection cycles.
-# TYPE go_gc_duration_seconds summary
-go_gc_duration_seconds{quantile="0"} 0
-go_gc_duration_seconds{quantile="0.25"} 0
-go_gc_duration_seconds{quantile="0.5"} 0
-go_gc_duration_seconds{quantile="0.75"} 0
-go_gc_duration_seconds{quantile="1"} 0
-go_gc_duration_seconds_sum 0
-go_gc_duration_seconds_count 0
-*/
-
-const char* MetricTypeName(MetricType type) {
-  switch (type) {
-    case MetricType::COUNTER:
-      return "counter";
-    case MetricType::GAUGE:
-      return "gauge";
-    case MetricType::SUMMARY:
-      return "summary";
-    case MetricType::HISTOGRAM:
-      return "histogram";
-  }
-  return "unknown";
-}
-
-void AppendLabelTupple(absl::Span<const metrics::Label> label_names,
-                       absl::Span<const string_view> label_values, string* dest) {
-  if (label_names.empty())
-    return;
-
-  for (size_t i = 0; i < label_names.size(); ++i) {
-    absl::StrAppend(dest, label_names[i].name(), "=\"", label_values[i], "\",");
-  }
-  dest->pop_back();
-}
-
-void AppendObservation(const metrics::ObservationDescriptor& od, absl::Span<const double> vals,
-                       StringResponse* resp) {
-  absl::StrAppend(&resp->body(), "# HELP ", od.metric_name, " ", od.metric_help, "\n");
-  absl::StrAppend(&resp->body(), "# TYPE ", od.metric_name, " ", MetricTypeName(od.type), "\n");
-
-  if (od.adjustments.empty()) {
-    for (size_t i = 0; i < od.label_values.size(); ++i) {
-      absl::StrAppend(&resp->body(), od.metric_name, "{");
-      AppendLabelTupple(od.label_names, {od.label_values[i], od.label_names.size()}, &resp->body());
-      absl::StrAppend(&resp->body(), "} ", vals[i], "\n");
-    }
-  }
-};
-
-__attribute__((noinline)) void MetricsHandler(const QueryArgs&, HttpContext* send) {
-  StringResponse res = MakeStringResponse();
-  SetMime(kTextMime, &res);
-  metrics::Iterate(
-      [&res](const auto& od, auto vals) { AppendObservation(od, std::move(vals), &res); });
-  return send->Invoke(std::move(res));
-}
-
 using ParserType = ::boost::beast::http::parser<true, HttpConnection::RequestType::body_type>;
 
 __attribute__((noinline)) bool ReadHttpRequest(AsioStreamAdapter<>& asa,
@@ -290,10 +230,6 @@ bool HttpListenerBase::HandleRoot(const RequestType& request, std::string_view p
     return true;
   }
 
-  if (enable_metrics_ && path == "/metrics") {
-    MetricsHandler(args, cntx);
-    return true;
-  }
   return false;
 }
 

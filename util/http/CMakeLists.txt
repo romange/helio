@@ -5,8 +5,8 @@ add_library(http_utils encoding.cc http_common.cc)
 cxx_link(http_utils base http_beast_prebuilt)
 
 add_library(http_server_lib status_page.cc profilez_handler.cc http_handler.cc)
-cxx_link(http_server_lib absl::strings absl::time base http_beast_prebuilt http_utils
-         metrics TRDP::gperf)
+cxx_link(http_server_lib absl::strings absl::time base fibers2 http_beast_prebuilt http_utils
+         TRDP::gperf)
 
 add_executable(http_main http_main.cc)
 

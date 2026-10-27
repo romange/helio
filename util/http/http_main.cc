@@ -15,9 +15,6 @@
 #include "util/html/sorted_table.h"
 #include "util/http/http_common.h"
 #include "util/http/http_handler.h"
-#include "util/metrics/metrics.h"
-#include "util/varz.h"
-
 
 using namespace std;
 using namespace util;
@@ -29,9 +26,6 @@ ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses incoming cpu of a socket in order to distribute incoming connections");
 ABSL_FLAG(string, password, "", "Protect the web interface with this password.");
 ABSL_FLAG(string, root_resp, "", "If set, overrides root page response");
-
-VarzQps http_qps("bar-qps");
-metrics::CounterFamily http_req("http_requests_total", "Number of served http requests");
 
 namespace {
 class MyListener : public HttpListener<> {
@@ -63,7 +57,6 @@ ProactorBase* MyListener::PickConnectionProactor(FiberSocketBase* sock) {
 
 void ServerRun(ProactorPool* pool) {
   AcceptServer server(pool);
-  http_req.Init(pool, {"type", "handle"});
 
   HttpListener<>* listener = new MyListener;
   std::string pass = GetFlag(FLAGS_password);
@@ -81,8 +74,6 @@ void ServerRun(ProactorPool* pool) {
 
     http::SetMime(http::kTextMime, &resp);
     resp.set(h2::field::server, "http_main");
-    http_qps.Inc();
-    http_req.IncBy({"get", "foo"}, 1);
 
     return send->Invoke(std::move(resp));
   };
@@ -115,7 +106,6 @@ void ServerRun(ProactorPool* pool) {
       SortedTable::Row({cell(1, i), cell(2, i), cell(3, i), cell(4, i)}, &resp.body());
     }
     SortedTable::EndTable(&resp.body());
-    http_req.IncBy({"get", "table"}, 1);
     return send->Invoke(std::move(resp));
   };
   listener->RegisterCb("/table", table_cb);
@@ -130,14 +120,11 @@ void ServerRun(ProactorPool* pool) {
 
     http::SetMime(http::kTextMime, &resp);
     resp.set(h2::field::server, "http_main");
-    http_qps.Inc();
-    http_req.IncBy({"post", "post"}, 1);
 
     return send->Invoke(std::move(resp));
   };
   listener->RegisterCb("/post", post_cb);
 
-  listener->enable_metrics();
   listener->set_root_response(GetFlag(FLAGS_root_resp));
 
   uint16_t port = server.AddListener(GetFlag(FLAGS_port), listener);
@@ -146,30 +133,6 @@ void ServerRun(ProactorPool* pool) {
   server.Run();
   server.Wait();
 }
-
-string LabelTuple(const metrics::ObservationDescriptor& od, unsigned label_index,
-                  unsigned observ_index) {
-  string res;
-  for (size_t i = 0; i < od.label_names.size(); ++i) {
-    absl::StrAppend(&res, od.label_names[i].name(), "=", od.label_values[label_index][i], ", ");
-  }
-
-  if (observ_index < od.adjustments.size()) {
-    const auto& a = od.adjustments[observ_index];
-    if (!a.label.first.name().empty()) {
-      absl::StrAppend(&res, a.label.first.name(), "=", a.label.second);
-    }
-  }
-  return res;
-}
-
-void PrintObservation(const metrics::ObservationDescriptor& od, absl::Span<const double> vals) {
-  if (od.adjustments.empty()) {
-    for (size_t i = 0; i < od.label_values.size(); ++i) {
-      LOG(INFO) << od.metric_name << " [" << LabelTuple(od, i, 0) << "] " << vals[i];
-    }
-  }
-};
 
 bool HelpshortFlags(std::string_view f) {
   return absl::EndsWith(f, "proactor_pool.cc") || absl::EndsWith(f, "http_main.cc");
@@ -203,11 +166,8 @@ int main(int argc, char** argv) {
 #endif
 
   pool->Run();
-  http_qps.Init(pool.get());
   ServerRun(pool.get());
 
-  metrics::Iterate(PrintObservation);
-  http_qps.Shutdown();
   pool->Stop();
 
   LOG(INFO) << "Exiting server...";
