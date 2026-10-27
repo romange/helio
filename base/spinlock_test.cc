@@ -15,7 +15,8 @@
 namespace base {
 namespace {
 
-TEST(RWSpinLockTest, SharedAndExclusiveExclusion) {
+// Clang cannot track acquisitions through standard guards or GoogleTest assertions.
+TEST(RWSpinLockTest, SharedAndExclusiveExclusion) ABSL_NO_THREAD_SAFETY_ANALYSIS {
   RWSpinLock lock;
   {
     std::shared_lock first(lock);
@@ -39,7 +40,8 @@ TEST(RWSpinLockTest, SharedAndExclusiveExclusion) {
   lock.unlock_shared();
 }
 
-TEST(RWSpinLockTest, WaitingWriterBlocksNewReaders) {
+// Probing reader admission while retaining a shared lock is intentional.
+TEST(RWSpinLockTest, WaitingWriterBlocksNewReaders) ABSL_NO_THREAD_SAFETY_ANALYSIS {
   RWSpinLock lock;
   int value = 0;
   lock.lock_shared();
