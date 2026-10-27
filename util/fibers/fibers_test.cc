@@ -826,6 +826,191 @@ TEST_F(FiberTest, LocalSharedMutex) {
   TestSharedMutexStress<LocalSharedMutex>(0);
 }
 
+TEST_F(FiberTest, FairSharedMutex) {
+  TestWriterBlocksReaders<FairSharedMutex>();
+  TestSharedMutexStress<FairSharedMutex>(0);
+  TestSharedMutexStress<FairSharedMutex>(4);
+}
+
+// Readers that queue behind a writer enter before the next queued writer, and readers that arrive
+// while writers wait do not enter ahead of them.
+TEST_F(FiberTest, FairSharedMutexPhases) {
+  FairSharedMutex mu;
+  vector<string> order;
+  mu.lock_shared();
+
+  Fiber writer1(Launch::dispatch, "writer1", [&] {
+    lock_guard lk(mu);
+    EXPECT_TRUE(mu.IsLockedExclusive());
+    EXPECT_EQ(mu.ReaderCount(), 0u);
+    order.push_back("w1");
+  });
+  Fiber reader(Launch::dispatch, "reader", [&] {
+    shared_lock lk(mu);
+    order.push_back("r");
+  });
+  Fiber writer2(Launch::dispatch, "writer2", [&] {
+    lock_guard lk(mu);
+    order.push_back("w2");
+  });
+
+  EXPECT_TRUE(order.empty());
+  {
+    shared_lock lk(mu, try_to_lock);
+    EXPECT_FALSE(lk.owns_lock());
+  }
+  mu.unlock_shared();
+  {
+    unique_lock lk(mu, try_to_lock);
+    EXPECT_FALSE(lk.owns_lock());
+  }
+
+  writer1.Join();
+  reader.Join();
+  writer2.Join();
+  EXPECT_THAT(order, ElementsAre("w1", "r", "w2"));
+}
+
+TEST_F(FiberTest, FairSharedMutexLastReaderWakesWriter) {
+  FairSharedMutex mu;
+  Done release_reader;
+  bool writer_entered = false;
+  mu.lock_shared();
+
+  Fiber reader(Launch::dispatch, "reader", [&] {
+    shared_lock lk(mu);
+    release_reader.Wait();
+  });
+  EXPECT_EQ(mu.ReaderCount(), 2u);
+
+  Fiber writer(Launch::dispatch, "writer", [&] {
+    lock_guard lk(mu);
+    writer_entered = true;
+  });
+  mu.unlock_shared();
+  ThisFiber::Yield();
+  EXPECT_FALSE(writer_entered);
+
+  release_reader.Notify();
+  reader.Join();
+  writer.Join();
+  EXPECT_TRUE(writer_entered);
+}
+
+// Writer unlock hands the mutex to waiting readers before they run.
+TEST_F(FiberTest, FairSharedMutexHandoff) {
+  FairSharedMutex mu;
+  EventCount ec;
+  bool release_readers = false;
+  unsigned entered = 0;
+  auto read = [&] {
+    shared_lock lk(mu);
+    ++entered;
+    ec.await([&] { return release_readers; });
+  };
+  mu.lock();
+  Fiber reader1(Launch::dispatch, "reader1", read);
+  Fiber reader2(Launch::dispatch, "reader2", read);
+  Fiber writer(Launch::dispatch, "writer", [&] { lock_guard lk(mu); });
+
+  mu.unlock();
+  EXPECT_EQ(mu.ReaderCount(), 2u);
+  EXPECT_FALSE(mu.IsLockedExclusive());
+  EXPECT_EQ(entered, 0u);
+  ThisFiber::Yield();
+  EXPECT_EQ(entered, 2u);
+
+  release_readers = true;
+  ec.notifyAll();
+  reader1.Join();
+  reader2.Join();
+  writer.Join();
+}
+
+TEST_F(FiberTest, FairSharedMutexQuiescentMove) {
+  auto exercise = [](FairSharedMutex& mu) {
+    bool entered = false;
+    mu.lock();
+    Fiber reader(Launch::dispatch, "reader", [&] {
+      shared_lock lk(mu);
+      entered = true;
+    });
+    EXPECT_FALSE(entered);
+    mu.unlock();
+    reader.Join();
+    EXPECT_TRUE(entered);
+  };
+
+  FairSharedMutex source;
+  exercise(source);
+  FairSharedMutex moved(std::move(source));
+  exercise(moved);
+  exercise(source);
+
+  FairSharedMutex assigned;
+  exercise(assigned);
+  assigned = std::move(moved);
+  exercise(assigned);
+  exercise(moved);
+}
+
+TEST_F(FiberTest, FairSharedMutexExclusiveSourceMove) {
+  FairSharedMutex source;
+  unique_lock source_guard(source);
+  FairSharedMutex moved(std::move(source));
+  EXPECT_TRUE(source.IsLockedExclusive());
+  {
+    unique_lock lk(moved, try_to_lock);
+    EXPECT_TRUE(lk.owns_lock());
+  }
+  source_guard.unlock();
+
+  unique_lock moved_guard(moved);
+  source = std::move(moved);
+  EXPECT_TRUE(moved.IsLockedExclusive());
+  {
+    shared_lock lk(source, try_to_lock);
+    EXPECT_TRUE(lk.owns_lock());
+  }
+  moved_guard.unlock();
+}
+
+#ifndef NDEBUG
+TEST_F(FiberTest, FairSharedMutexMovePreconditions) {
+  EXPECT_DEATH(
+      {
+        FairSharedMutex source;
+        source.lock_shared();
+        FairSharedMutex moved(std::move(source));
+      },
+      "state_");
+  EXPECT_DEATH(
+      {
+        FairSharedMutex source;
+        FairSharedMutex destination;
+        source.lock_shared();
+        destination = std::move(source);
+      },
+      "state_");
+  EXPECT_DEATH(
+      {
+        FairSharedMutex source;
+        FairSharedMutex destination;
+        destination.lock();
+        destination = std::move(source);
+      },
+      "state_");
+  EXPECT_DEATH(
+      {
+        FairSharedMutex source;
+        source.lock();
+        Fiber writer(Launch::dispatch, "writer", [&] { lock_guard lk(source); });
+        FairSharedMutex moved(std::move(source));
+      },
+      "state_");
+}
+#endif
+
 TEST_F(FiberTest, Future) {
   Future<int> fut;
 

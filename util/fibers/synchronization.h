@@ -318,6 +318,7 @@ static_assert(sizeof(FiberBlockingCounter) == 8);
 
 // Fiber-aware, non-recursive reader-writer mutex that prefers readers: lock_shared() blocks only
 // while a writer holds the mutex, so sustained reader traffic can starve writers.
+// See FairSharedMutex for bounded waiting on both sides.
 class ABSL_LOCKABLE SharedMutex {
  public:
   bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
@@ -356,6 +357,148 @@ class ABSL_LOCKABLE SharedMutex {
   enum : int32_t { READER = 4, WRITER = 1 };
   EventCount ec_;
   std::atomic_uint32_t state_{0};
+};
+
+// Fiber-aware, non-recursive, phase-fair reader-writer mutex: neither readers nor writers starve.
+// Once a writer queues, new readers wait. When a writer unlocks, it hands the mutex to all readers
+// that were waiting at that moment, even if more writers are queued, and the last of those readers
+// lets the next writer in. A reader therefore waits for at most one write phase and a writer for at
+// most one read phase per writer ahead of it. Writers are not FIFO among themselves.
+//
+// Moves leave synchronization at its original address: the source retains its lock state, and the
+// destination is unlocked. The source must be unlocked or exclusively held by the calling fiber;
+// the destination of move assignment must be unlocked. Neither mutex may have waiters or concurrent
+// operations, including unlock notifications still in flight. External synchronization must exclude
+// other users during relocation. Existing guards and references still refer to their original mutex
+// and must not outlive it. Both objects remain usable. Debug assertions check the lock state, but
+// cannot verify ownership, absence of waiting readers, or external synchronization.
+class ABSL_LOCKABLE FairSharedMutex {
+ public:
+  FairSharedMutex() = default;
+
+  FairSharedMutex(FairSharedMutex&& other) noexcept {
+    assert((other.state_.load(std::memory_order_relaxed) & ~(kWriterBit | kPhaseBit)) == 0);
+    (void)other;
+  }
+
+  FairSharedMutex& operator=(FairSharedMutex&& other) noexcept {
+    assert((state_.load(std::memory_order_relaxed) & ~kPhaseBit) == 0);
+    assert((other.state_.load(std::memory_order_relaxed) & ~(kWriterBit | kPhaseBit)) == 0);
+    (void)other;
+    return *this;
+  }
+
+  FairSharedMutex(const FairSharedMutex&) = delete;
+  FairSharedMutex& operator=(const FairSharedMutex&) = delete;
+
+  bool try_lock() noexcept ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
+    uint64_t s = state_.load(std::memory_order_relaxed);
+    while ((s & ~kPhaseBit) == 0) {
+      if (state_.compare_exchange_weak(s, s | kWriterBit, std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void lock() noexcept ABSL_EXCLUSIVE_LOCK_FUNCTION() {
+    if (try_lock()) {
+      return;
+    }
+    state_.fetch_add(kWaitingWriterStep, std::memory_order_relaxed);
+    ec_.await([this] {
+      uint64_t s = state_.load(std::memory_order_relaxed);
+      while ((s & (kWriterBit | kReadersMask)) == 0) {
+        assert((s & kWaitingWritersMask) >= kWaitingWriterStep);
+        uint64_t desired = (s - kWaitingWriterStep) | kWriterBit;
+        if (state_.compare_exchange_weak(s, desired, std::memory_order_acquire,
+                                         std::memory_order_relaxed)) {
+          return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  bool try_lock_shared() noexcept ABSL_SHARED_TRYLOCK_FUNCTION(true) {
+    uint64_t s = state_.load(std::memory_order_relaxed);
+    while ((s & (kWriterBit | kWaitingWritersMask)) == 0) {
+      if (state_.compare_exchange_weak(s, s + kReaderStep, std::memory_order_acquire,
+                                       std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void lock_shared() noexcept ABSL_SHARED_LOCK_FUNCTION() {
+    uint64_t s = state_.load(std::memory_order_relaxed);
+    while (true) {
+      if ((s & (kWriterBit | kWaitingWritersMask)) == 0) {
+        if (state_.compare_exchange_weak(s, s + kReaderStep, std::memory_order_acquire,
+                                         std::memory_order_relaxed)) {
+          return;
+        }
+      } else if (state_.compare_exchange_weak(s, s + kWaitingReaderStep,
+                                              std::memory_order_relaxed)) {
+        break;
+      }
+    }
+
+    // The next writer unlock counts us as an active reader and flips the phase. No later flip can
+    // happen before we unlock, because a writer cannot enter while we are counted as a reader.
+    const uint64_t phase = s & kPhaseBit;
+    ec_.await(
+        [this, phase] { return (state_.load(std::memory_order_acquire) & kPhaseBit) != phase; });
+  }
+
+  void unlock() noexcept ABSL_UNLOCK_FUNCTION() {
+    uint64_t s = state_.load(std::memory_order_relaxed);
+    uint64_t desired;
+    do {
+      assert((s & kWriterBit) != 0);
+      desired = s & ~kWriterBit;
+      uint64_t waiting_readers = (s & kWaitingReadersMask) / kWaitingReaderStep;
+      if (waiting_readers) {  // Hand the mutex to the readers that queued behind this writer.
+        desired = ((desired & ~kWaitingReadersMask) + waiting_readers * kReaderStep) ^ kPhaseBit;
+      }
+    } while (!state_.compare_exchange_weak(s, desired, std::memory_order_release,
+                                           std::memory_order_relaxed));
+    ec_.notifyAll();
+  }
+
+  void unlock_shared() noexcept ABSL_UNLOCK_FUNCTION() {
+    uint64_t prev = state_.fetch_sub(kReaderStep, std::memory_order_release);
+    assert((prev & kReadersMask) >= kReaderStep);
+    if ((prev & kReadersMask) == kReaderStep && (prev & kWaitingWritersMask) != 0) {
+      ec_.notifyAll();
+    }
+  }
+
+  // Observational snapshots only: these do not acquire the mutex or identify its owner.
+  bool IsLockedExclusive() const noexcept {
+    return (state_.load(std::memory_order_relaxed) & kWriterBit) != 0;
+  }
+
+  uint32_t ReaderCount() const noexcept {
+    return static_cast<uint32_t>(state_.load(std::memory_order_relaxed) / kReaderStep);
+  }
+
+ private:
+  // Bit 0: active writer; bit 1: phase, flipped on each handoff to waiting readers;
+  // bits 2..21: waiting writers; bits 22..41: waiting readers; bits 42..63: active readers.
+  static constexpr uint64_t kWriterBit = 1ULL;
+  static constexpr uint64_t kPhaseBit = 1ULL << 1;
+  static constexpr uint64_t kWaitingWriterStep = 1ULL << 2;
+  static constexpr uint64_t kWaitingWritersMask = ((1ULL << 20) - 1) << 2;
+  static constexpr uint64_t kWaitingReaderStep = 1ULL << 22;
+  static constexpr uint64_t kWaitingReadersMask = ((1ULL << 20) - 1) << 22;
+  static constexpr uint64_t kReaderStep = 1ULL << 42;
+  static constexpr uint64_t kReadersMask = ~((1ULL << 42) - 1);
+
+  EventCount ec_;
+  std::atomic<uint64_t> state_{0};
 };
 
 inline bool EventCount::NotifyInternal(
