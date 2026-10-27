@@ -4,6 +4,7 @@
 
 #include <absl/strings/ascii.h>
 #include <absl/strings/str_cat.h>
+
 #include "base/init.h"
 #include "base/io_buf.h"
 #include "examples/pingserver/resp_parser.h"
@@ -13,7 +14,6 @@
 #include "util/fibers/pool.h"
 #include "util/http/http_handler.h"
 #include "util/tls/tls_socket.h"
-#include "util/varz.h"
 
 using namespace boost;
 using namespace std;
@@ -36,8 +36,6 @@ ABSL_FLAG(string, tls_cert, "", "");
 ABSL_FLAG(string, tls_key, "", "");
 ABSL_FLAG(string, unixsocket, "", "");
 ABSL_FLAG(bool, ipv6, false, "If true, use ipv6 for server");
-
-VarzQps ping_qps("ping-qps");
 
 inline void ToUpper(const RespParser::Buffer* val) {
   for (auto& c : *val) {
@@ -109,7 +107,6 @@ void PingConnection::HandleRequests() {
       ToUpper(&args[0]);
       std::string_view cmd = ToAbsl(args.front());
       if (cmd == "PING") {
-        ping_qps.Inc();
         const char kReply[] = "+PONG\r\n";
         auto b = boost::asio::buffer(kReply, sizeof(kReply) - 1);
 
@@ -242,7 +239,6 @@ int main(int argc, char* argv[]) {
 #endif
 
   pp->Run();
-  ping_qps.Init(pp.get());
 
   AcceptServer acceptor(pp.get());
   PingListener* listener = new PingListener(ctx);
@@ -261,7 +257,6 @@ int main(int argc, char* argv[]) {
     error_code ec = acceptor.AddUDSListener(uds.c_str(), 0700, listener);
     CHECK(!ec) << ec;
   }
-
 
   int http_port = GetFlag(FLAGS_http_port);
   if (http_port >= 0) {

@@ -11,7 +11,7 @@ add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
             accept_server.cc
             fiber_socket_base.cc listener_interface.cc
             prebuilt_asio.cc proactor_pool.cc stacktrace.cc
-            sliding_counter.cc varz.cc fiberqueue_threadpool.cc dns_resolve.cc
+            varz.cc fiberqueue_threadpool.cc dns_resolve.cc
             ${FB_LINUX_SRCS})
 
 if(HELIO_INSTRUMENT_STACK)
@@ -23,4 +23,3 @@ cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::ca
 
 helio_cxx_test(fibers_test fibers2 LABELS CI)
 helio_cxx_test(fiber_socket_test fibers2 LABELS CI)
-

@@ -12,6 +12,7 @@
 
 #include <absl/strings/escaping.h>
 #include <absl/strings/str_cat.h>
+
 #include <boost/asio/read.hpp>
 
 #include "base/histogram.h"
@@ -22,7 +23,6 @@
 #include "util/fibers/pool.h"
 #include "util/fibers/synchronization.h"
 #include "util/http/http_handler.h"
-#include "util/varz.h"
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
@@ -62,9 +62,6 @@ ABSL_FLAG(uint16_t, bufring_size, 8192, "Size of the buffer ring for iouring soc
 ABSL_FLAG(bool, use_incoming_cpu, false,
           "If true uses SO_INCOMING_CPU in order to distribute incoming connections");
 ABSL_FLAG(bool, ipv6, false, "If true, use ipv6 for server");
-
-VarzQps ping_qps("ping-qps");
-VarzCount connections("connections");
 
 const char kMaxConnectionsError[] = "max connections reached\r\n";
 constexpr size_t kBufLen = 64;
@@ -128,7 +125,6 @@ void EchoConnection::HandleRequests() {
     static_cast<fb2::UringSocket*>(socket_.get())->EnableRecvMultishot();
   }
 #endif
-  connections.IncBy(1);
 
   auto ep = socket_->RemoteEndpoint();
 
@@ -210,7 +206,6 @@ void EchoConnection::HandleRequests() {
       break;
     }
     CHECK(!ec_) << ec_;
-    ping_qps.Inc();
 
     state.vec[0].iov_base = buf;
     state.vec[0].iov_len = 4;
@@ -227,7 +222,6 @@ void EchoConnection::HandleRequests() {
 
   socket_->ResetOnRecvHook();
   VLOG(1) << "Connection ended " << ep;
-  connections.IncBy(-1);
 }
 
 bool EchoConnection::ProcessSingleBuffer(SendMsgState* state) {
@@ -351,9 +345,6 @@ ProactorBase* EchoListener::PickConnectionProactor(FiberSocketBase* sock) {
 }
 
 void RunServer(ProactorPool* pp) {
-  ping_qps.Init(pp);
-  connections.Init(pp);
-
   AcceptServer acceptor(pp);
   acceptor.set_back_log(GetFlag(FLAGS_backlog));
 

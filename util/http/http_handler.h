@@ -92,10 +92,6 @@ class HttpListenerBase : public ListenerInterface {
     favicon_url_ = url;
   }
 
-  void enable_metrics() {
-    enable_metrics_ = true;
-  }
-
   // Overrides the http response send by the backend.
   void set_root_response(const std::string& response) {
     root_response_ = response;
@@ -137,7 +133,6 @@ class HttpListenerBase : public ListenerInterface {
   std::string favicon_url_;
   std::string resource_prefix_;
   std::string root_response_;
-  bool enable_metrics_ = false;
 
   AuthFunctor auth_functor_;
 };
