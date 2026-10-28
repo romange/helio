@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <condition_variable>  // for cv_status
+#include <mutex>
 #include <optional>
 
 #include "base/spinlock.h"
@@ -108,6 +109,16 @@ class EventCount {
    * condition() throws. Returns true if had to preempt using wait_queue.
    */
   template <typename Condition> bool await(Condition condition);
+
+  // Wait with an already-owned lock. Evaluates condition while locked; prepares the event wait
+  // before unlocking, then reacquires the lock before rechecking. All changes to the condition's
+  // state must use the same mutex and notify this EventCount. Returns with the lock held, also
+  // if condition throws. A satisfied condition does not unlock or register a waiter.
+  // Returns true if the event wait suspended (not counting suspension while reacquiring the lock).
+  // The caller must hold no other lock or fiber-atomic scope that prohibits suspension.
+  template <typename Mutex, typename Condition>
+  bool await(std::unique_lock<Mutex>& lock, Condition condition);
+
   template <typename Condition>
   cv_status await_until(Condition condition, const std::chrono::steady_clock::time_point& tp);
 
