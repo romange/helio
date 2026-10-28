@@ -346,7 +346,8 @@ class WriteFile : public detail::AbstractStorageFile {
   }
 
   ~WriteFile() override {
-    std::ignore = WaitInflight();
+    error_code ec = WaitInflight();
+    LOG_IF(WARNING, ec) << "aws: UploadPart failed: " << ec.message();
   }
 
   // Reports a failed background part upload on the next write, not only at part boundaries.
@@ -378,8 +379,7 @@ class WriteFile : public detail::AbstractStorageFile {
 };
 
 error_code WriteFile::WaitInflight() {
-  if (inflight_.IsJoinable())
-    inflight_.Join();
+  inflight_.JoinIfNeeded();
   return upload_ec_;
 }
 
@@ -402,8 +402,9 @@ error_code WriteFile::Upload() {
   opts_.creds_provider->Sign(&req);
 
   // Dispatch so the upload starts before the writer buffers the next part.
+  unsigned part_num = part_num_++;
   inflight_ = fb2::Fiber(fb2::Launch::dispatch, "s3_upload_part",
-                         [this, req = std::move(req), part_num = part_num_++, body_size]() mutable {
+                         [this, req = std::move(req), part_num, body_size]() mutable {
                            upload_ec_ = SendPart(&req, part_num, body_size);
                          });
   return {};
