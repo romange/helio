@@ -3,9 +3,21 @@ repos:
   - repo: local
     hooks:
       - id: conventional-commits
-        name: Conventional Commit Minder
-        entry: contrib/scripts/conventional-commits
-        language: script
+        name: "Commit title must use Component: summary"
+        entry: '\A(?![A-Za-z][A-Za-z0-9_.()/ -]*!?: \S)'
+        language: pygrep
+        args: [--multiline]
+        stages: [commit-msg]
+      - id: commit-title-length
+        name: Commit title must not exceed 70 characters
+        entry: '\A[^\r\n]{71}'
+        language: pygrep
+        args: [--multiline]
+        stages: [commit-msg]
+      - id: commit-message-line-length
+        name: Commit message lines must not exceed 100 characters
+        entry: '^.{101}'
+        language: pygrep
         stages: [commit-msg]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks

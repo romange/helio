@@ -440,6 +440,24 @@ template <typename Condition> bool EventCount::await(Condition condition) {
   return preempt;
 }
 
+template <typename Mutex, typename Condition>
+bool EventCount::await(std::unique_lock<Mutex>& lock, Condition condition) {
+  assert(lock.owns_lock());
+  bool preempt = false;
+  while (!condition()) {
+    {
+      // Drop the waiter registration before relocking, so notifiers do not see a waiter while
+      // we block on the caller's mutex. The condition is rechecked under the lock anyway.
+      Key key = prepareWait();
+      lock.unlock();
+      preempt |= wait(key.epoch());
+    }
+    lock.lock();
+  }
+  // No acquire fence needed: the condition is evaluated under the caller's mutex.
+  return preempt;
+}
+
 template <typename Condition>
 std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Condition condition,
                                                                  detail::Waiter* w) {

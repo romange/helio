@@ -1,7 +1,20 @@
 - id: conventional-commits
-  name: Conventional Commits Minder
-  entry: contrib/scripts/conventional-commits
-  language: script
-  description: Conventional Commits Enforcement at the `git commit` client-side level
+  name: "Commit title must use Component: summary"
+  entry: '\A(?![A-Za-z][A-Za-z0-9_.()/ -]*!?: \S)'
+  language: pygrep
+  args: [--multiline]
+  always_run: true
+  stages: [commit-msg]
+- id: commit-title-length
+  name: Commit title must not exceed 70 characters
+  entry: '\A[^\r\n]{71}'
+  language: pygrep
+  args: [--multiline]
+  always_run: true
+  stages: [commit-msg]
+- id: commit-message-line-length
+  name: Commit message lines must not exceed 100 characters
+  entry: '^.{101}'
+  language: pygrep
   always_run: true
   stages: [commit-msg]

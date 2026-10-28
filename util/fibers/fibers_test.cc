@@ -652,6 +652,160 @@ TEST_F(FiberTest, EventCount) {
   fb3.Join();
 }
 
+TEST_F(FiberTest, EventCountWithLockFastPath) {
+  struct CountingSpinLock : base::SpinLock {
+    void unlock() {
+      ++unlocks;
+      base::SpinLock::unlock();
+    }
+    unsigned unlocks = 0;
+  } mu;
+  EventCount ec;
+  unique_lock lk(mu);
+  unsigned checks = 0;
+  EXPECT_FALSE(ec.await(lk, [&] {
+    EXPECT_TRUE(lk.owns_lock());
+    ++checks;
+    return true;
+  }));
+  EXPECT_TRUE(lk.owns_lock());
+  EXPECT_EQ(checks, 1u);
+  EXPECT_EQ(mu.unlocks, 0u);
+}
+
+TEST_F(FiberTest, EventCountWithLockParksAndRechecks) {
+  base::SpinLock mu;
+  EventCount ec;
+  bool ready = false, finished = false;
+  unsigned checks = 0;
+  Fiber waiter(Launch::dispatch, "waiter", [&] {
+    unique_lock lk(mu);
+    EXPECT_TRUE(ec.await(lk, [&] {
+      EXPECT_TRUE(lk.owns_lock());
+      ++checks;
+      return ready;
+    }));
+    EXPECT_TRUE(lk.owns_lock());
+    finished = true;
+  });
+  EXPECT_FALSE(finished);
+  ec.notify();
+  ThisFiber::Yield();
+  EXPECT_FALSE(finished);
+  EXPECT_GE(checks, 2u);
+  {
+    lock_guard lk(mu);
+    ready = true;
+    ec.notify();
+  }
+  waiter.Join();
+  EXPECT_TRUE(finished);
+}
+
+TEST_F(FiberTest, EventCountWithLockNotificationBeforeWait) {
+  struct NotifyingSpinLock : base::SpinLock {
+    explicit NotifyingSpinLock(EventCount* event) : event(event) {
+    }
+    void unlock() {
+      base::SpinLock::unlock();
+      if (!ready) {
+        // Simulate a producer running after unlock but before EventCount::wait().
+        lock_guard lk(static_cast<base::SpinLock&>(*this));
+        ready = true;
+        event->notify();
+      }
+    }
+    EventCount* event;
+    bool ready = false;
+  };
+  EventCount ec;
+  NotifyingSpinLock mu(&ec);
+  unique_lock lk(mu);
+  EXPECT_FALSE(ec.await(lk, [&] {
+    EXPECT_TRUE(lk.owns_lock());
+    return mu.ready;
+  }));
+  EXPECT_TRUE(lk.owns_lock());
+  EXPECT_TRUE(mu.ready);
+}
+
+TEST_F(FiberTest, EventCountWithLockThrowingCondition) {
+  Mutex mu;
+  EventCount ec;
+  bool ready = false;
+  Fiber producer(Launch::post, "producer", [&] {
+    lock_guard lk(mu);
+    ready = true;
+    ec.notify();
+  });
+  {
+    unique_lock lk(mu);
+    EXPECT_THROW(ec.await(lk,
+                          [&]() -> bool {
+                            EXPECT_TRUE(lk.owns_lock());
+                            if (ready) {
+                              throw 42;
+                            }
+                            return false;
+                          }),
+                 int);
+    EXPECT_TRUE(lk.owns_lock());
+    EXPECT_FALSE(ec.notify());
+    EXPECT_FALSE(ec.await(lk, [&] { return ready; }));
+  }
+  producer.Join();
+}
+
+// Producers on other threads take turns handing items to a consumer that waits under a shared
+// spinlock. Each item is produced only after the previous one is consumed, so every notification
+// is needed and a lost wakeup hangs the test. Producers spin on the lock to race with the
+// consumer's unlock-to-wait window.
+TEST_F(FiberTest, EventCountWithLockMT) {
+  constexpr unsigned kNumProducers = 2, kNumItems = 20000;
+  base::SpinLock mu;
+  EventCount ec;
+  unsigned produced = 0, consumed = 0;  // guarded by mu
+
+  array<thread, kNumProducers> producers;
+  for (unsigned p = 0; p < kNumProducers; ++p) {
+    producers[p] = thread([&, p] {
+      Fiber fb("producer", [&] {
+        for (unsigned i = p; i < kNumItems; i += kNumProducers) {
+          unique_lock lk(mu);
+          while (consumed != i) {
+            lk.unlock();
+            lk.lock();
+          }
+          produced = i + 1;
+          // Alternate between notifying under the lock and after releasing it.
+          if (i % 2)
+            lk.unlock();
+          ec.notify();
+        }
+      });
+      fb.Join();
+    });
+  }
+
+  unsigned preempts = 0;
+  {
+    unique_lock lk(mu);
+    for (unsigned i = 0; i < kNumItems; ++i) {
+      preempts += ec.await(lk, [&] {
+        EXPECT_TRUE(lk.owns_lock());
+        return produced == i + 1;
+      });
+      consumed = i + 1;
+    }
+  }
+
+  for (auto& th : producers) {
+    th.join();
+  }
+  EXPECT_EQ(produced, kNumItems);
+  LOG(INFO) << "Preempts: " << preempts;
+}
+
 TEST_F(FiberTest, EventCountMT) {
   EventCount ec1, ec2;
   atomic_uint32_t cnt{0}, gate{0};
