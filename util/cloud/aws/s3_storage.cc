@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <optional>
 #include <pugixml.hpp>
+#include <tuple>
 
 #include "base/logging.h"
 #include "strings/escaping.h"
@@ -345,7 +346,14 @@ class WriteFile : public detail::AbstractStorageFile {
   }
 
   ~WriteFile() override {
-    WaitInflight();
+    std::ignore = WaitInflight();
+  }
+
+  // Reports a failed background part upload on the next write, not only at part boundaries.
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override {
+    if (upload_ec_)
+      return nonstd::make_unexpected(upload_ec_);
+    return AbstractStorageFile::WriteSome(v, len);
   }
 
   error_code Close() override;
@@ -355,8 +363,9 @@ class WriteFile : public detail::AbstractStorageFile {
   // Starts uploading the buffered part in the background. At most one part is in flight,
   // so the next part can be accumulated while the previous one is being sent.
   error_code Upload() override;
-  error_code SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num, size_t body_size);
-  error_code WaitInflight();
+  ABSL_MUST_USE_RESULT error_code SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num,
+                                           size_t body_size);
+  ABSL_MUST_USE_RESULT error_code WaitInflight();
 
   const string bucket_;
   const string upload_id_;
@@ -392,7 +401,8 @@ error_code WriteFile::Upload() {
   req.Finalize();
   opts_.creds_provider->Sign(&req);
 
-  inflight_ = fb2::Fiber("s3_upload_part",
+  // Dispatch so the upload starts before the writer buffers the next part.
+  inflight_ = fb2::Fiber(fb2::Launch::dispatch, "s3_upload_part",
                          [this, req = std::move(req), part_num = part_num_++, body_size]() mutable {
                            upload_ec_ = SendPart(&req, part_num, body_size);
                          });
@@ -458,7 +468,7 @@ error_code WriteFile::Close() {
 }
 
 error_code WriteFile::Abort() {
-  WaitInflight();  // The part outcome is irrelevant, the whole upload is aborted.
+  std::ignore = WaitInflight();  // The part outcome is irrelevant, the whole upload is aborted.
 
   BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
   string url = BucketObjectPath(addressing, bucket_, create_file_name());
