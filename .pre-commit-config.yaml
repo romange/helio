@@ -10,14 +10,15 @@ repos:
         stages: [commit-msg]
       - id: commit-title-length
         name: Commit title must not exceed 70 characters
-        entry: '\A[^\r\n]{71}'
+        entry: '\A(?:[^\r\n\x80-\xBF][\x80-\xBF]*){71}'
         language: pygrep
         args: [--multiline]
         stages: [commit-msg]
       - id: commit-message-line-length
         name: Commit message lines must not exceed 100 characters
-        entry: '^.{101}'
+        entry: '\A(?:(?!# -{24} >8 -{24}\n)[^\n]*\n)*?(?!#)(?:[^\r\n\x80-\xBF][\x80-\xBF]*){101}'
         language: pygrep
+        args: [--multiline]
         stages: [commit-msg]
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
