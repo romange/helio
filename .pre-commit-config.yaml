@@ -16,7 +16,7 @@ repos:
         stages: [commit-msg]
       - id: commit-message-line-length
         name: Commit message lines must not exceed 100 characters
-        entry: '\A(?:(?!# -{24} >8 -{24}\n)[^\n]*\n)*?(?!#)(?:[^\r\n\x80-\xBF][\x80-\xBF]*){101}'
+        entry: '\A(?:(?!# -{24} >8 -{24}\r?\n)[^\n]*\n)*?(?!#)(?:[^\r\n\x80-\xBF][\x80-\xBF]*){101}'
         language: pygrep
         args: [--multiline]
         stages: [commit-msg]
