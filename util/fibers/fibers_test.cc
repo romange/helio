@@ -1266,6 +1266,49 @@ TEST_P(ProactorTest, AwaitBrief) {
   EXPECT_EQ(15, j);
 }
 
+TEST_P(ProactorTest, AdaptivePoll) {
+  if (GetProactorType() != "uring") {
+    GTEST_SKIP() << "Only UringProactor implements adaptive polling";
+  }
+
+  constexpr uint32_t kMaxUsec = 10'000;
+  proactor()->AwaitBrief([&] { proactor()->SetAdaptivePollMaxUsec(kMaxUsec); });
+  auto window = [&] {
+    return proactor()->AwaitBrief([&] { return proactor()->AdaptivePollUsec(); });
+  };
+
+  // Wakes from another thread that end a sleep soon after the proactor went idle grow the window.
+  uint64_t max_window = 0;
+  for (unsigned i = 0; i < 20; ++i) {
+    usleep(500);
+    max_window = std::max(max_window, window());
+  }
+  EXPECT_GT(max_window, 0u);
+
+  // Once grown, the window catches such wakes by polling instead of stalling in the kernel.
+  auto stalls = [&] {
+    return proactor()->AwaitBrief([&] { return proactor()->stats().num_stalls; });
+  };
+  uint64_t stalls_before = stalls();
+  for (unsigned i = 0; i < 20; ++i) {
+    usleep(500);
+    window();
+  }
+  EXPECT_LT(stalls() - stalls_before, 10u);
+
+  // Each idle period longer than the maximum halves it, down to zero.
+  uint64_t last_window = max_window;
+  for (unsigned i = 0; i < 12; ++i) {
+    usleep(kMaxUsec * 3);
+    last_window = window();
+  }
+  EXPECT_EQ(0u, last_window);
+
+  auto stats = proactor()->AwaitBrief([&] { return proactor()->adaptive_poll_stats(); });
+  EXPECT_GT(stats.grows, 0u);
+  EXPECT_GT(stats.shrinks, 0u);
+}
+
 TEST_P(ProactorTest, DispatchTest) {
   CondVarAny cnd1, cnd2;
   Mutex mu;
