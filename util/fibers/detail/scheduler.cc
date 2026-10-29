@@ -330,9 +330,12 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // it must not be accessed after Push().
     DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
-    if (custom_policy_) {
+    if (DispatchPolicy* policy = custom_policy_) {
       remote_ready_queue_.Push(cntx);
-      custom_policy_->Notify();
+
+      // Unlike the default dispatcher, nothing here keeps `policy` alive if this thread runs
+      // `cntx` and exits. Proactor threads must outlive the remote wakers that target them.
+      policy->Notify();
     } else {
       // A thread with the default dispatcher may exit as soon as `cntx` runs. Push under the
       // dispatcher mutex, which the exiting thread takes before destroying the dispatcher.
