@@ -878,6 +878,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       // We notify second time to avoid deadlocks.
       // Without it ProactorTest.AsyncCall blocks.
       task_queue_avail_.notifyAll();
+      ResetBusyPoll();
     }
 
     scheduler->ProcessRemoteReady(nullptr);
@@ -894,11 +895,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       ResetBusyPoll();
     }
 
-    if (scheduler->Run(FiberPriority::NORMAL) == RunFiberResult::HAS_ACTIVE) {
+    // Run() returns EXHAUSTED once the last ready fiber blocks, so check for work beforehand.
+    bool had_ready = scheduler->HasAnyReady();
+    RunFiberResult run_res = scheduler->Run(FiberPriority::NORMAL);
+    if (had_ready) {
+      ResetBusyPoll();
+    }
+    if (run_res == RunFiberResult::HAS_ACTIVE) {
       // all our ready fibers have been processed. Lets try to submit more sqes.
       jump_from = JUMP_FROM_READY;
-      ResetBusyPoll();
-
       continue;
     }
 
@@ -908,7 +913,12 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       continue;
     }
 
-    if (scheduler->Run(FiberPriority::BACKGROUND) == RunFiberResult::HAS_ACTIVE) {
+    had_ready = scheduler->HasReady(FiberPriority::BACKGROUND);
+    run_res = scheduler->Run(FiberPriority::BACKGROUND);
+    if (had_ready) {
+      ResetBusyPoll();
+    }
+    if (run_res == RunFiberResult::HAS_ACTIVE) {
       jump_from = JUMP_FROM_READY;
       continue;
     }
@@ -953,7 +963,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     // Lets spin a bit to make a system a bit more responsive.
     // Important to spin a bit, otherwise we put too much pressure on  eventfd_write.
     // and we enter too often into kernel space.
-    bool should_poll = GetCurrentBusyCycles() < busy_poll_cycle_limit_;
+    bool should_poll = ShouldBusyPoll();
     if (!ring_busy && should_poll) {
       Pause(3);
 
@@ -1008,9 +1018,12 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       DCHECK(!scheduler->HasAnyReady());
 
       VPRO(2) << "wait_for_cqe " << stats_.loop_cnt;
+      uint64_t idle_start_cycle = busy_poll_start_cycle_;
       uint64_t start_cycle = base::CycleClock::Now();
       wait_for_cqe(&ring_, 1, ts_arg);
+      bool remote_wake = tq_seq_.load(memory_order_relaxed) != WAIT_SECTION_STATE;
       IdleEnd(start_cycle);
+      AdaptPollWindow(io_wait_end_cycle_ - idle_start_cycle, remote_wake);
       VPRO(2) << "Woke up after wait_for_cqe, tq_seq_: " << tq_seq_.load(memory_order_relaxed)
               << " tasks:" << stats_.num_task_runs << " " << stats_.loop_cnt;
 

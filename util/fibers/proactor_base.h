@@ -220,6 +220,26 @@ class ProactorBase {
   void SetBusyPollUsec(uint32_t usec) {
   }
 
+  // Adaptive idle polling, disabled when `max_usec` is 0 (the default). An idle loop also polls
+  // while the time since its last useful work is below an adaptive window. When a wake from another
+  // thread ends a sleep within `max_usec` of going idle, the window doubles (first to 50 usec),
+  // capped at `max_usec`. After any idle period longer than `max_usec` it halves, dropping to 0
+  // below 50 usec. I/O and timer wakes never grow it, so an idle proactor still sleeps.
+  // Only UringProactor implements it. Must be called from the proactor thread.
+  void SetAdaptivePollMaxUsec(uint32_t max_usec);
+
+  // Returns the current adaptive poll window. Must be called from the proactor thread.
+  uint64_t AdaptivePollUsec() const;
+
+  struct AdaptivePollStats {
+    uint64_t grows = 0, shrinks = 0;
+  };
+
+  // Must be called from the proactor thread.
+  AdaptivePollStats adaptive_poll_stats() const {
+    return adaptive_poll_stats_;
+  }
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -275,6 +295,13 @@ class ProactorBase {
 
   void ResetBusyPoll();
 
+  // Returns true if an idle loop should keep polling instead of sleeping in the kernel.
+  bool ShouldBusyPoll() const;
+
+  // Updates the adaptive poll window after a kernel sleep. `idle_cycles` spans from the last
+  // useful work until the wake; `remote_wake` is true if another thread woke this proactor.
+  void AdaptPollWindow(uint64_t idle_cycles, bool remote_wake);
+
   uint64_t busy_poll_start_cycle() const {
     return busy_poll_start_cycle_;
   }
@@ -328,6 +355,10 @@ class ProactorBase {
   absl::flat_hash_map<uint32_t, PeriodicItem*> periodic_map_;
   uint64_t busy_poll_start_cycle_ = 0;
   uint64_t busy_poll_cycle_limit_ = 0;
+  uint64_t adaptive_poll_cycles_ = 0;
+  uint64_t adaptive_poll_start_cycles_ = 0;
+  uint64_t adaptive_poll_max_cycles_ = 0;
+  AdaptivePollStats adaptive_poll_stats_;
   uint64_t io_wait_end_cycle_ = 0;
   struct TLInfo {
     ProactorBase* owner = nullptr;
