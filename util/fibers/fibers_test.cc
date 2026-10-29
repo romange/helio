@@ -12,6 +12,7 @@
 #include <atomic>
 #include <boost/intrusive/slist.hpp>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
@@ -306,6 +307,13 @@ TEST_F(FiberTest, Basic) {
 
 namespace {
 
+void SpinForUsec(uint64_t usec) {
+  uint64_t start = base::CycleClock::Now();
+  uint64_t cycles = base::CycleClock::FromUsec(usec);
+  while (base::CycleClock::Now() - start < cycles) {
+  }
+}
+
 class OnIdleTestProactor : public EpollProactor {
  public:
   using ProactorBase::IdleEnd;
@@ -314,14 +322,42 @@ class OnIdleTestProactor : public EpollProactor {
   size_t OnIdleCapacity() const {
     return on_idle_arr_.capacity();
   }
-};
 
-void SpinForUsec(uint64_t usec) {
-  uint64_t start = base::CycleClock::Now();
-  uint64_t cycles = base::CycleClock::FromUsec(usec);
-  while (base::CycleClock::Now() - start < cycles) {
+  uint64_t SpinCooldownNanos() const {
+    return OnIdleSpinCooldownNanos();
   }
-}
+
+  uint64_t SpinBurstUsedCycles() const {
+    return spin_burst_used_cycles_;
+  }
+
+  // Adds a task that spins for usec and requests spinning. Returns its call counter.
+  unsigned* AddSpinner(uint64_t usec) {
+    unsigned* calls = &spinner_calls_.emplace_back(0);
+    AddOnIdleTask(
+        [calls, usec] {
+          ++*calls;
+          SpinForUsec(usec);
+          return int(ProactorBase::kOnIdleMaxLevel);
+        },
+        "spinner");
+    return calls;
+  }
+
+  // Runs on-idle passes until spinning is throttled. Returns false if it was never throttled.
+  bool RunUntilThrottled(unsigned max_passes) {
+    uint64_t throttles = stats().on_idle_spin_throttles;
+    for (unsigned i = 0; i < max_passes; ++i) {
+      RunOnIdleTasks();
+      if (stats().on_idle_spin_throttles > throttles)
+        return true;
+    }
+    return false;
+  }
+
+ private:
+  deque<unsigned> spinner_calls_;  // stable addresses for the spinner counters.
+};
 
 std::vector<FiberSwitchHookEvent> switch_hook_events;
 
@@ -424,6 +460,91 @@ TEST_F(FiberTest, OnIdleRunStatsResetWithDispatchRuntime) {
 
       EXPECT_TRUE(proactor.RunOnIdleTasks());
       EXPECT_EQ(1, stats.calls);
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(0));
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+// Spinners run for 100us against a 1ms budget, so a throttle is expected after 5 to 10 calls.
+// The wide range tolerates preemption and callback overhead.
+TEST_F(FiberTest, OnIdleSpinThrottle) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      proactor.SetOnIdleSpinLimits(1000, 2000);
+      unsigned* calls = proactor.AddSpinner(100);
+      EXPECT_EQ(0, proactor.SpinCooldownNanos());
+
+      EXPECT_TRUE(proactor.RunUntilThrottled(20));
+      EXPECT_EQ(1, proactor.stats().on_idle_spin_throttles);
+      EXPECT_GE(*calls, 5);
+      EXPECT_LE(*calls, 10);
+      EXPECT_GT(proactor.SpinCooldownNanos(), 0);
+      EXPECT_LE(proactor.SpinCooldownNanos(), 2'100'000);
+
+      // The task does not run during the cooldown.
+      unsigned throttled_calls = *calls;
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(throttled_calls, *calls);
+
+      // The cooldown expired, but the deferred spinner did not run yet. The I/O loop must not
+      // treat that as "no cooldown" and block indefinitely.
+      SpinForUsec(2500);
+      EXPECT_GT(proactor.SpinCooldownNanos(), 0);
+
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(throttled_calls + 1, *calls);
+      EXPECT_EQ(0, proactor.SpinCooldownNanos());
+
+      // Resting at least a cooldown long starts a new burst.
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_GE(proactor.SpinBurstUsedCycles(), base::CycleClock::FromUsec(300));
+      SpinForUsec(2500);
+      EXPECT_TRUE(proactor.RunOnIdleTasks());
+      EXPECT_LT(proactor.SpinBurstUsedCycles(), base::CycleClock::FromUsec(300));
+
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(0));
+      proactor.Stop();
+    });
+    proactor.Run();
+  });
+  runner.join();
+}
+
+TEST_F(FiberTest, OnIdleSpinThrottleWithMultipleTasks) {
+  OnIdleTestProactor proactor;
+  thread runner([&] {
+    proactor.Init(0);
+    proactor.DispatchBrief([&] {
+      proactor.SetOnIdleSpinLimits(1000, 100'000);
+      unsigned* calls0 = proactor.AddSpinner(100);
+      unsigned* calls1 = proactor.AddSpinner(100);
+
+      // Each pass runs a single spinner since it exceeds the pass budget, so passes that start
+      // at this rarely running task end without spinning. That must not reset the burst.
+      proactor.AddOnIdleTask([] { return 0; }, "lazy");
+
+      EXPECT_TRUE(proactor.RunUntilThrottled(40));
+      EXPECT_GE(*calls0, 1);
+      EXPECT_GE(*calls1, 1);
+      EXPECT_GE(*calls0 + *calls1, 5);
+      EXPECT_LE(*calls0 + *calls1, 10);
+
+      // The spinner that did not exhaust the budget must not run during the cooldown either.
+      unsigned throttled_calls0 = *calls0;
+      unsigned throttled_calls1 = *calls1;
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      EXPECT_FALSE(proactor.RunOnIdleTasks());
+      EXPECT_EQ(throttled_calls0, *calls0);
+      EXPECT_EQ(throttled_calls1, *calls1);
+
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(2));
+      EXPECT_TRUE(proactor.RemoveOnIdleTask(1));
       EXPECT_TRUE(proactor.RemoveOnIdleTask(0));
       proactor.Stop();
     });
@@ -1296,6 +1417,46 @@ TEST_P(ProactorTest, DispatchTest) {
   }
   LOG(INFO) << "BeforeJoin";
   fb.Join();
+}
+
+TEST_P(ProactorTest, OnIdleSpinDutyCycle) {
+  if (GetProactorType() != "uring") {
+    GTEST_SKIP() << "On-idle spin limits are supported only by io_uring";
+  }
+
+  // ~10% duty cycle: 1ms bursts followed by 9ms of backoff.
+  uint64_t busy_cycles = 0;
+  uint32_t task_id = proactor()->AwaitBrief([&] {
+    proactor()->SetOnIdleSpinLimits(1000, 9000);
+    return proactor()->AddOnIdleTask(
+        [&] {
+          uint64_t start = base::CycleClock::Now();
+          SpinForUsec(50);
+          busy_cycles += base::CycleClock::Now() - start;
+          return int(ProactorBase::kOnIdleMaxLevel);
+        },
+        "spinner");
+  });
+
+  // Nothing else runs on the proactor, so it must wake up on its own after each cooldown.
+  // We sleep on the test thread: a fiber sleeping on the proactor would arm a timer and
+  // wake its loop, hiding a missing cooldown wakeup.
+  auto start = chrono::steady_clock::now();
+  ThisFiber::SleepFor(500ms);
+
+  uint64_t throttles = 0;
+  proactor()->AwaitBrief([&] {
+    EXPECT_TRUE(proactor()->RemoveOnIdleTask(task_id));
+    throttles = proactor()->stats().on_idle_spin_throttles;
+  });
+
+  auto elapsed_usec =
+      chrono::duration_cast<chrono::microseconds>(chrono::steady_clock::now() - start).count();
+  double duty = double(base::CycleClock::ToUsec(busy_cycles)) / elapsed_usec;
+  LOG(INFO) << "duty cycle: " << duty << " throttles: " << throttles;
+  EXPECT_GT(throttles, 20u);
+  EXPECT_GT(duty, 0.03);
+  EXPECT_LT(duty, 0.2);
 }
 
 TEST_P(ProactorTest, Sleep) {

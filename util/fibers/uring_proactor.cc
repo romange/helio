@@ -965,9 +965,9 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
     __kernel_timespec ts{0, 0};
     __kernel_timespec* ts_arg = nullptr;
+    constexpr uint64_t kNsFreq = 1000000000ULL;
 
     if (scheduler->HasSleepingFibers()) {
-      constexpr uint64_t kNsFreq = 1000000000ULL;
       auto tp = scheduler->NextSleepPoint();
       auto now = chrono::steady_clock::now();
       if (now < tp) {
@@ -976,6 +976,15 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
         ts.tv_nsec = ns % kNsFreq;
       }
       ts_arg = &ts;
+    }
+
+    // Wake up when throttled on-idle tasks may spin again.
+    if (uint64_t cooldown_ns = OnIdleSpinCooldownNanos(); cooldown_ns) {
+      if (!ts_arg || cooldown_ns < uint64_t(ts.tv_sec) * kNsFreq + ts.tv_nsec) {
+        ts.tv_sec = cooldown_ns / kNsFreq;
+        ts.tv_nsec = cooldown_ns % kNsFreq;
+        ts_arg = &ts;
+      }
     }
 
     /**

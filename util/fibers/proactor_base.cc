@@ -99,7 +99,7 @@ std::once_flag module_init;
 __thread ProactorBase::TLInfo ProactorBase::tl_info_;
 
 ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
-  static_assert(sizeof(Stats) == 8 * sizeof(uint64_t));
+  static_assert(sizeof(Stats) == 9 * sizeof(uint64_t));
 
   num_stalls += other.num_stalls;
   completions_fetches += other.completions_fetches;
@@ -109,6 +109,7 @@ ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
   num_completions += other.num_completions;
   uring_submit_calls += other.uring_submit_calls;
   uring_submit_sqes += other.uring_submit_sqes;
+  on_idle_spin_throttles += other.on_idle_spin_throttles;
 
   return *this;
 }
@@ -171,16 +172,29 @@ uint32_t ProactorBase::AddOnIdleTask(OnIdleTask f, string name) {
   on_idle_arr_.push_back(OnIdleWrapper{.task = std::move(f),
                                        .task_name = std::move(name),
                                        .next_ts = 0,
-                                       .generation = on_idle_generation_++});
+                                       .generation = on_idle_generation_++,
+                                       .spinning = false});
 
   return res;
 }
 
 bool ProactorBase::RunOnIdleTasks() {
+  uint64_t start = base::CycleClock::Now();
+
+  // The cooldown deadline is kept until a pass runs after it, so that the I/O loop does not
+  // block on an expired deadline before deferred spinners had a chance to run.
+  if (spin_cooldown_end_ts_ && start >= spin_cooldown_end_ts_)
+    spin_cooldown_end_ts_ = 0;
+
+  // The gap is the time since the last spinning run ended, i.e. how long no spinning task ran.
+  // If it is at least a cooldown long, the spinners already rested as much as a forced
+  // cooldown would make them, so start a new burst.
+  if (start - spin_last_run_end_ts_ >= spin_cooldown_cycles_)
+    spin_burst_used_cycles_ = 0;
+
   if (on_idle_arr_.empty())
     return false;
 
-  uint64_t start = base::CycleClock::Now();
   uint64_t curr_ts = start;
   const string* task_name = nullptr;
   bool should_spin = false;
@@ -232,10 +246,15 @@ bool ProactorBase::RunOnIdleTasks() {
         }
       } else {  // level >= 0
         curr_ts = task_end;
+        on_idle->spinning = unsigned(level) >= kOnIdleMaxLevel;
 
-        if (unsigned(level) >= kOnIdleMaxLevel) {
+        if (on_idle->spinning) {
           level = kOnIdleMaxLevel;
-          should_spin = true;
+          if (ShouldThrottleSpin(task_cycles, task_end)) {
+            on_idle->next_ts = spin_cooldown_end_ts_;
+          } else {
+            should_spin = true;
+          }
         } else if (on_idle_next_ <
                    on_idle_arr_.size()) {  // check if the array has not been shrunk.
           on_idle->next_ts = curr_ts + (kIdleMaxCycles >> level);
@@ -257,6 +276,76 @@ bool ProactorBase::RunOnIdleTasks() {
                             << (task_name ? *task_name : "");
   }
   return should_spin;
+}
+
+bool ProactorBase::ShouldThrottleSpin(uint64_t task_cycles, uint64_t task_end) {
+  if (spin_burst_budget_cycles_ == 0)
+    return false;
+
+  // A task that was not spinning when the cooldown started was not deferred, so it may run
+  // and request spinning during the cooldown. Defer it as well instead of starting a new
+  // burst, otherwise it would spin for the rest of the cooldown.
+  if (task_end < spin_cooldown_end_ts_)
+    return true;
+
+  spin_last_run_end_ts_ = task_end;
+  spin_burst_used_cycles_ += task_cycles;
+  if (spin_burst_used_cycles_ < spin_burst_budget_cycles_)
+    return false;
+
+  spin_burst_used_cycles_ = 0;
+  spin_cooldown_end_ts_ = task_end + spin_cooldown_cycles_;
+  ++stats_.on_idle_spin_throttles;
+
+  // Defer the other spinning tasks right away. Otherwise each of them would still run once
+  // before being deferred, and enough of them could fill the whole backoff period.
+  // The loop is O(number of on-idle tasks), but it runs once per cooldown, not per task run,
+  // and proactors have only a handful of on-idle tasks (e.g. a few in Dragonfly).
+  for (OnIdleWrapper& wrapper : on_idle_arr_) {
+    if (wrapper.task && wrapper.spinning)
+      wrapper.next_ts = spin_cooldown_end_ts_;
+  }
+  return true;
+}
+
+uint64_t ProactorBase::OnIdleSpinCooldownNanos() const {
+  if (spin_cooldown_end_ts_ == 0)
+    return 0;
+
+  // The deadline expired but deferred spinners did not run yet. Return the smallest timeout
+  // so that the loop does not block and runs them on its next iteration. Returning 0 would
+  // mean "no cooldown", letting the loop block without a timeout while they are still due.
+  uint64_t now = base::CycleClock::Now();
+  if (now >= spin_cooldown_end_ts_)
+    return 1;
+
+  // Round up so that we do not wake up before the cooldown ends.
+  return (base::CycleClock::ToUsec(spin_cooldown_end_ts_ - now) + 1) * 1000;
+}
+
+void ProactorBase::SetOnIdleSpinLimits(uint64_t max_burst_usec, uint64_t backoff_usec) {
+  DCHECK(InMyThread());
+
+  if (max_burst_usec == 0 || backoff_usec == 0) {
+    spin_burst_budget_cycles_ = 0;
+    spin_cooldown_cycles_ = 0;
+  } else {
+    spin_burst_budget_cycles_ = base::CycleClock::FromUsec(max_burst_usec);
+    spin_cooldown_cycles_ = base::CycleClock::FromUsec(backoff_usec);
+  }
+  spin_burst_used_cycles_ = 0;
+
+  // End an active cooldown so that it does not outlive the limits it was started with.
+  // The deadline and the deferred tasks must be reset together, otherwise the I/O loop
+  // may block without a timeout while the tasks are still deferred.
+  if (spin_cooldown_end_ts_ == 0)
+    return;
+
+  spin_cooldown_end_ts_ = 0;
+  for (OnIdleWrapper& wrapper : on_idle_arr_) {
+    if (wrapper.task && wrapper.spinning)
+      wrapper.next_ts = 0;
+  }
 }
 
 bool ProactorBase::RemoveOnIdleTask(uint32_t id) {
