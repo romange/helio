@@ -6,7 +6,7 @@ if("${CMAKE_SYSTEM_NAME}" STREQUAL "Linux")
 endif()
 
 add_library(fibers2 fibers.cc proactor_base.cc synchronization.cc
-            fiber_file.cc epoll_proactor.cc epoll_socket.cc pool.cc
+            fiber_file.cc epoll_proactor.cc epoll_socket.cc park.cc pool.cc
             detail/scheduler.cc detail/fiber_interface.cc detail/wait_queue.cc
             accept_server.cc
             fiber_socket_base.cc listener_interface.cc
