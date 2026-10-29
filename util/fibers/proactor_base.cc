@@ -416,6 +416,48 @@ void ProactorBase::ResetBusyPoll() {
   busy_poll_start_cycle_ = base::CycleClock::Now();
 }
 
+void ProactorBase::SetAdaptivePollMaxUsec(uint32_t max_usec) {
+  // Same as the initial window of Linux cpuidle-haltpoll (guest_halt_poll_grow_start).
+  constexpr uint32_t kStartUsec = 50;
+  adaptive_poll_max_cycles_ = base::CycleClock::FromUsec(max_usec);
+  adaptive_poll_start_cycles_ =
+      std::min(base::CycleClock::FromUsec(kStartUsec), adaptive_poll_max_cycles_);
+  adaptive_poll_cycles_ = 0;
+}
+
+uint64_t ProactorBase::AdaptivePollUsec() const {
+  return adaptive_poll_cycles_ * 10 / cycles_per_10us;
+}
+
+bool ProactorBase::ShouldBusyPoll() const {
+  if (GetCurrentBusyCycles() < busy_poll_cycle_limit_) {
+    return true;
+  }
+  return adaptive_poll_cycles_ > 0 &&
+         base::CycleClock::Now() - busy_poll_start_cycle_ < adaptive_poll_cycles_;
+}
+
+void ProactorBase::AdaptPollWindow(uint64_t idle_cycles, bool remote_wake) {
+  if (adaptive_poll_max_cycles_ == 0) {
+    return;
+  }
+  if (idle_cycles > adaptive_poll_max_cycles_) {
+    if (adaptive_poll_cycles_ > 0) {
+      adaptive_poll_cycles_ /= 2;
+      if (adaptive_poll_cycles_ < adaptive_poll_start_cycles_) {
+        adaptive_poll_cycles_ = 0;
+      }
+      ++adaptive_poll_stats_.shrinks;
+    }
+  } else if (remote_wake && adaptive_poll_cycles_ < adaptive_poll_max_cycles_) {
+    // Polling for `idle_cycles` would have caught this wake without a kernel round trip.
+    adaptive_poll_cycles_ = adaptive_poll_cycles_ == 0
+                                ? adaptive_poll_start_cycles_
+                                : std::min(adaptive_poll_cycles_ * 2, adaptive_poll_max_cycles_);
+    ++adaptive_poll_stats_.grows;
+  }
+}
+
 void ProactorBase::Pause(unsigned count) {
   auto pc = pause_amplifier;
 
