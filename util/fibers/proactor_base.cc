@@ -26,8 +26,6 @@ constexpr int kNumSig = _NSIG;
 constexpr int kNumSig = NSIG;
 #endif  // __linux__
 
-#include <mutex>  // once_flag
-
 #include "base/logging.h"
 
 using namespace std;
@@ -65,33 +63,6 @@ void SigAction(int signal, siginfo_t*, void*) {
   }
 }
 
-#if defined(__aarch64__)
-// ARM architecture pause implementation
-static inline void arm_arch_pause(void) {
-#if defined(__linux__)
-  static int use_spin_delay_sb = -1;
-
-  if (use_spin_delay_sb == 1) {
-    asm volatile(".inst 0xd50330ff");  // SB instruction encoding
-  } else if (use_spin_delay_sb == 0) {
-    asm volatile("isb");
-  } else {
-    // Initialize variable and check if SB is supported
-    if (getauxval(AT_HWCAP) & HWCAP_SB)
-      use_spin_delay_sb = 1;
-    else
-      use_spin_delay_sb = 0;
-  }
-#else
-  asm volatile("isb");
-#endif  // __linux__
-}
-#endif  // __aarch64__
-
-unsigned pause_amplifier = 50;
-uint64_t cycles_per_10us = 1000000;  // correctly defined inside ModuleInit.
-std::once_flag module_init;
-
 }  // namespace
 
 // Apparently __thread is more efficient than thread_local when a variable is referenced
@@ -114,8 +85,6 @@ ProactorBase::Stats& ProactorBase::Stats::operator+=(const Stats& other) {
 }
 
 ProactorBase::ProactorBase() : task_queue_(kTaskQueueLen) {
-  call_once(module_init, &ModuleInit);
-
   busy_poll_cycle_limit_ = base::CycleClock::FromUsec(20);
 
 #ifdef __linux__
@@ -368,7 +337,7 @@ uint64_t ProactorBase::GetCurrentBusyCycles() const {
 // The threshold is set to ~2.5ms.
 bool ProactorBase::ShouldPollL2Tasks() const {
   uint64_t now = base::CycleClock::Now();
-  return now > last_level2_cycle_ + 256 * cycles_per_10us;
+  return now > last_level2_cycle_ + base::CycleClock::FromUsec(2560);
 }
 
 bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
@@ -380,11 +349,11 @@ bool ProactorBase::RunL2Tasks(detail::Scheduler* scheduler) {
     // LOG_FIRST_N - otherwise every adjustment will trigger num-threads messages.
     LOG_FIRST_N(WARNING, 1) << "The cycle clock was adjusted backwards by "
                             << last_level2_cycle_ - now << " cycles";
-    now = last_level2_cycle_ + cycles_per_10us;
+    now = last_level2_cycle_ + base::CycleClock::FromUsec(10);
   }
 
   bool result = false;
-  if (now >= last_level2_cycle_ + cycles_per_10us) {
+  if (now >= last_level2_cycle_ + base::CycleClock::FromUsec(10)) {
     last_level2_cycle_ = now;
     scheduler->DestroyTerminated();
     if (scheduler->HasSleepingFibers()) {
@@ -400,7 +369,7 @@ void ProactorBase::IdleEnd(uint64_t start) {
   io_wait_end_cycle_ = end_cycles;
 
   // Measure load every 5sec.
-  uint64_t kMinCyclePeriod = cycles_per_10us * 500'000ULL;
+  uint64_t kMinCyclePeriod = base::CycleClock::FromUsec(5'000'000);
   cpu_idle_cycles_ += (end_cycles - start);
 
   if (end_cycles > cpu_measure_cycle_start_ + kMinCyclePeriod) {
@@ -426,7 +395,7 @@ void ProactorBase::SetAdaptivePollMaxUsec(uint32_t max_usec) {
 }
 
 uint64_t ProactorBase::AdaptivePollUsec() const {
-  return adaptive_poll_cycles_ * 10 / cycles_per_10us;
+  return base::CycleClock::ToUsec(adaptive_poll_cycles_);
 }
 
 bool ProactorBase::ShouldBusyPoll() const {
@@ -458,34 +427,20 @@ void ProactorBase::AdaptPollWindow(uint64_t idle_cycles, bool remote_wake) {
   }
 }
 
-void ProactorBase::Pause(unsigned count) {
-  auto pc = pause_amplifier;
-
-  for (unsigned i = 0; i < count * pc; ++i) {
+void ProactorBase::Pause() {
 #if defined(__i386__) || defined(__amd64__)
-    __asm__ __volatile__("pause");
+  __asm__ __volatile__("pause");
 #elif defined(__aarch64__)
-    arm_arch_pause();
-#endif
+#if defined(__linux__)
+  // SB (ARMv8.5+) is a lighter spin delay than ISB.
+  static const bool has_sb = getauxval(AT_HWCAP) & HWCAP_SB;
+  if (has_sb) {
+    asm volatile(".inst 0xd50330ff");  // SB instruction encoding
+    return;
   }
-}
-
-void ProactorBase::ModuleInit() {
-  uint64_t delta;
-  cycles_per_10us = base::CycleClock::Frequency() / 100'000;
-
-  while (true) {
-    uint64_t now = GetClockNanos();
-    for (unsigned i = 0; i < 10; ++i) {
-      Pause(kMaxSpinLimit);
-    }
-    delta = GetClockNanos() - now;
-    VLOG(1) << "Running 10 Pause() took " << delta / 1000 << "us";
-
-    if (delta < 2000 || pause_amplifier == 1)  // 2us
-      break;
-    pause_amplifier -= (pause_amplifier + 7) / 8;
-  };
+#endif  // __linux__
+  asm volatile("isb");
+#endif
 }
 
 void ProactorDispatcher::Run(detail::Scheduler* sched) {
