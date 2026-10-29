@@ -127,7 +127,7 @@ class Scheduler {
   }
 
   // Update config field with provided value
-  void UpdateConfig(uint64_t Config::*field, uint64_t value);
+  void UpdateConfig(uint64_t Config::* field, uint64_t value);
 
  private:
   // Run fibers from ready queue with given priority.
@@ -156,8 +156,7 @@ class Scheduler {
     }
   };
 
-  struct RuntimeCounter
-      : public std::array<uint64_t /* runtime cycles */, 2 /* FiberPrioriry */> {
+  struct RuntimeCounter : public std::array<uint64_t /* runtime cycles */, 2 /* FiberPrioriry */> {
     using std::array<uint64_t, 2>::operator[];
 
     uint64_t& operator[](FiberPriority p) {

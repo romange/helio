@@ -37,8 +37,12 @@ class DispatcherImpl final : public FiberInterface {
     return is_terminating_;
   }
 
-  void Notify() {
+  // Runs `publish` and wakes the dispatcher under `mu_`. Once `publish` makes a fiber runnable,
+  // this thread may run it and exit; ~DispatcherImpl() takes `mu_` before destroying it, so the
+  // thread cannot release the dispatcher until the remote caller leaves Notify().
+  template <typename F> void Notify(F&& publish) {
     unique_lock<mutex> lk(mu_);
+    publish();
     wake_suspend_ = true;
     cnd_.notify_one();
   }
@@ -93,6 +97,9 @@ DispatcherImpl::~DispatcherImpl() {
   DVLOG(1) << "~DispatcherImpl";
 
   DCHECK(!entry_);
+
+  // Wait for a remote Notify() that may still hold `mu_`.
+  lock_guard<mutex> lk(mu_);
 }
 
 ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
@@ -319,15 +326,22 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
     // revert the flags.
     cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
   } else {
-    remote_ready_queue_.Push(cntx);
-
+    // Once pushed, `cntx` may run to completion on its own thread before Notify() returns, so
+    // it must not be accessed after Push().
     DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
-    if (custom_policy_) {
-      custom_policy_->Notify();
+    if (DispatchPolicy* policy = custom_policy_) {
+      remote_ready_queue_.Push(cntx);
+
+      // Unlike the default dispatcher, nothing here keeps `policy` alive if this thread runs
+      // `cntx` and exits. Proactor threads must outlive the remote wakers that target them.
+      policy->Notify();
     } else {
-      DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
-      dimpl->Notify();
+      // A thread with the default dispatcher may exit as soon as `cntx` runs. Push under the
+      // dispatcher mutex, which the exiting thread takes before destroying the dispatcher.
+      static_cast<DispatcherImpl*>(dispatch_cntx_.get())->Notify([&] {
+        remote_ready_queue_.Push(cntx);
+      });
     }
   }
 }

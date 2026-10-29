@@ -20,12 +20,14 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
+#include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/detail/wait_queue.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
 #include "util/fibers/future.h"
+#include "util/fibers/park.h"
 #include "util/fibers/pool.h"
 #include "util/fibers/simple_channel.h"
 #include "util/fibers/synchronization.h"
@@ -1483,6 +1485,193 @@ TEST_P(ProactorTest, NotifyRemote) {
   done.Wait();
   keep_run = false;
   fb2.Join();
+}
+
+TEST_F(FiberTest, ParkQueueWakesInFifoOrder) {
+  constexpr unsigned kNumFibers = 3;
+  ParkQueue queue;
+  unsigned parked = 0;
+  vector<unsigned> order;
+  Fiber fbs[kNumFibers];
+
+  for (unsigned i = 0; i < kNumFibers; ++i) {
+    fbs[i] = Fiber(StrCat("parker", i), [&, i] {
+      ParkNode node;
+      queue.Push(&node);
+      ++parked;
+      node.Park();
+      order.push_back(i);
+    });
+  }
+  while (parked < kNumFibers) {
+    ThisFiber::Yield();
+  }
+
+  while (!queue.empty()) {
+    WakeList wakes;
+    EXPECT_TRUE(queue.WakeOne(&wakes));
+    wakes.Wake();
+    ThisFiber::Yield();
+  }
+  WakeList wakes;
+  EXPECT_FALSE(queue.WakeOne(&wakes));
+
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_THAT(order, ElementsAre(0, 1, 2));
+}
+
+// A thread with the default dispatcher may exit right after its parked fiber is woken, while the
+// remote waker is still notifying that thread's dispatcher.
+TEST_F(FiberTest, ParkedThreadExitsRightAfterWake) {
+  for (unsigned i = 0; i < 500; ++i) {
+    atomic<ParkNode*> published{nullptr};
+    thread th([&] {
+      ParkNode node;
+      published.store(&node, memory_order_release);
+      node.Park();
+    });
+
+    ParkNode* node;
+    while ((node = published.load(memory_order_acquire)) == nullptr) {
+      this_thread::yield();
+    }
+    WakeList wakes;
+    wakes.Add(node);
+    wakes.Wake();
+    th.join();
+  }
+}
+
+TEST_P(ProactorTest, ParkWakeArrivesBeforePark) {
+  atomic<ParkNode*> published{nullptr};
+  atomic_bool woken{false};
+
+  Fiber fb = proactor()->LaunchFiber("parker", [&] {
+    ParkNode node;
+    published.store(&node, memory_order_release);
+
+    // Spin without yielding, so the wake is queued before Park() suspends.
+    while (!woken.load(memory_order_acquire)) {
+    }
+    node.Park();
+  });
+
+  ParkNode* node;
+  while ((node = published.load(memory_order_acquire)) == nullptr) {
+    this_thread::yield();
+  }
+  {
+    WakeList wakes;
+    wakes.Add(node);
+  }
+  woken.store(true, memory_order_release);
+  fb.Join();
+}
+
+// Two fibers on different threads pass a turn back and forth. The waker hands the turn over
+// before waking, so the woken fiber proceeds without re-checking under the lock.
+TEST_P(ProactorTest, ParkHandoffPingPong) {
+  constexpr unsigned kRounds = 20000;
+  unique_ptr<ProactorThread> other = CreateProactorThread();
+  base::SpinLock lock;
+  unsigned turn = 0;           // Protected by `lock`.
+  ParkNode* parked = nullptr;  // Protected by `lock`.
+  unsigned passes[2] = {0, 0};
+
+  auto player = [&](unsigned me) {
+    for (unsigned i = 0; i < kRounds; ++i) {
+      std::unique_lock lk(lock);
+      if (turn != me) {
+        ParkNode node;
+        parked = &node;
+        lk.unlock();
+        node.Park();
+        EXPECT_EQ(turn, me);
+      } else {
+        lk.unlock();
+      }
+      ++passes[me];
+
+      WakeList wakes;
+      std::lock_guard guard(lock);
+      turn = 1 - me;
+      if (parked) {
+        wakes.Add(std::exchange(parked, nullptr));
+      }
+    }
+  };
+
+  Fiber fb0 = proactor()->LaunchFiber("player0", [&] { player(0); });
+  Fiber fb1 = other->proactor->LaunchFiber("player1", [&] { player(1); });
+  fb0.Join();
+  fb1.Join();
+
+  EXPECT_EQ(passes[0], kRounds);
+  EXPECT_EQ(passes[1], kRounds);
+  EXPECT_EQ(parked, nullptr);
+}
+
+// Fibers on several threads wait for each generation in a ParkQueue and re-check after waking.
+TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
+  constexpr unsigned kThreads = 4;
+  constexpr unsigned kFibersPerThread = 8;
+  constexpr unsigned kWaiters = kThreads * kFibersPerThread;
+  constexpr unsigned kRounds = 200;
+
+  unique_ptr<ProactorThread> ths[kThreads];
+  for (auto& th : ths) {
+    th = CreateProactorThread();
+  }
+
+  base::SpinLock lock;
+  ParkQueue queue;           // Protected by `lock`.
+  unsigned generation = 0;   // Protected by `lock`.
+  atomic_uint published{0};  // Incremented under `lock` when a node is pushed.
+  atomic_uint arrivals{0};
+  vector<Fiber> fbs;
+
+  for (unsigned i = 0; i < kWaiters; ++i) {
+    ProactorBase* p = ths[i % kThreads]->proactor.get();
+    fbs.push_back(p->LaunchFiber(StrCat("waiter", i), [&] {
+      unsigned seen = 0;
+
+      // Reused across rounds: a woken node must be publishable again.
+      ParkNode node;
+      for (unsigned r = 0; r < kRounds; ++r) {
+        std::unique_lock lk(lock);
+        while (generation == seen) {
+          queue.Push(&node);
+          published.fetch_add(1, memory_order_relaxed);
+          lk.unlock();
+          node.Park();
+          lk.lock();
+        }
+        seen = generation;
+        arrivals.fetch_add(1, memory_order_relaxed);
+      }
+    }));
+  }
+
+  // Wake only after every waiter has parked for this round, so each round exercises WakeAll()
+  // on all nodes and each waiter parks exactly once per round.
+  for (unsigned r = 0; r < kRounds; ++r) {
+    while (published.load(memory_order_relaxed) < (r + 1) * kWaiters) {
+      this_thread::yield();
+    }
+    WakeList wakes;
+    std::lock_guard guard(lock);
+    ++generation;
+    queue.WakeAll(&wakes);
+  }
+
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_EQ(published.load(), kRounds * kWaiters);
+  EXPECT_EQ(arrivals.load(), kRounds * kWaiters);
+  EXPECT_TRUE(queue.empty());
 }
 
 TEST_P(ProactorTest, BriefDontBlock) {

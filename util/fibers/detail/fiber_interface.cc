@@ -429,9 +429,10 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     }
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
-    // Note, that in this case it is assumed that ActivateOther was called by WaitQueue
-    // that is under a lock, and it's guaranteed that `other` is alive during the
-    // ScheduleFromRemote() call.
+    // The caller must guarantee that `other` is alive until ScheduleFromRemote() pushes it,
+    // either by holding the lock that `other` waits on (WaitQueue) or because `other` waits for
+    // exactly this activation (ParkNode). ScheduleFromRemote() does not access `other` after
+    // the push.
     other->scheduler_->ScheduleFromRemote(other);
   }
 }
