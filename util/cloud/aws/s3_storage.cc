@@ -20,10 +20,12 @@
 #include <cerrno>
 #include <optional>
 #include <pugixml.hpp>
+#include <tuple>
 
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/utils.h"
+#include "util/fibers/fibers.h"
 #include "util/fibers/proactor_base.h"
 #include "util/http/https_client_pool.h"
 
@@ -343,11 +345,28 @@ class WriteFile : public detail::AbstractStorageFile {
         upload_id_(std::move(upload_id)), opts_(opts), pool_(std::move(pool)) {
   }
 
+  ~WriteFile() override {
+    error_code ec = WaitInflight();
+    LOG_IF(WARNING, ec) << "aws: UploadPart failed: " << ec.message();
+  }
+
+  // Reports a failed background part upload on the next write, not only at part boundaries.
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override {
+    if (upload_ec_)
+      return nonstd::make_unexpected(upload_ec_);
+    return AbstractStorageFile::WriteSome(v, len);
+  }
+
   error_code Close() override;
   ABSL_MUST_USE_RESULT error_code Abort() override;
 
  private:
+  // Starts uploading the buffered part in the background. At most one part is in flight,
+  // so the next part can be accumulated while the previous one is being sent.
   error_code Upload() override;
+  ABSL_MUST_USE_RESULT error_code SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num,
+                                           size_t body_size);
+  ABSL_MUST_USE_RESULT error_code WaitInflight();
 
   const string bucket_;
   const string upload_id_;
@@ -355,9 +374,18 @@ class WriteFile : public detail::AbstractStorageFile {
   vector<pair<unsigned, string>> parts_;  // (part_num, etag)
   WriteFileOptions opts_;
   unique_ptr<http::ClientPool> pool_;
+  fb2::Fiber inflight_;
+  error_code upload_ec_;  // Sticky error of a background part upload.
 };
 
+error_code WriteFile::WaitInflight() {
+  inflight_.JoinIfNeeded();
+  return upload_ec_;
+}
+
 error_code WriteFile::Upload() {
+  RETURN_ERROR(WaitInflight());
+
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
 
@@ -373,18 +401,29 @@ error_code WriteFile::Upload() {
   req.Finalize();
   opts_.creds_provider->Sign(&req);
 
+  // Dispatch so the upload starts before the writer buffers the next part.
+  unsigned part_num = part_num_++;
+  inflight_ = fb2::Fiber(fb2::Launch::dispatch, "s3_upload_part",
+                         [this, req = std::move(req), part_num, body_size]() mutable {
+                           upload_ec_ = SendPart(&req, part_num, body_size);
+                         });
+  return {};
+}
+
+error_code WriteFile::SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num,
+                               size_t body_size) {
   RobustSender sender(pool_.get(), opts_.creds_provider);
   RobustSender::SenderResult send_res;
-  RETURN_ERROR(sender.Send(kSendRetries, &req, &send_res));
+  RETURN_ERROR(sender.Send(kSendRetries, req, &send_res));
 
   auto it = send_res.eb_parser->get().find(h2::field::etag);
   if (it == send_res.eb_parser->get().end()) {
-    LOG(ERROR) << "aws: UploadPart " << part_num_ << ": missing ETag in response";
+    LOG(ERROR) << "aws: UploadPart " << part_num << ": missing ETag in response";
     return make_error_code(errc::bad_message);
   }
   string etag(detail::FromBoostSV(it->value()));
-  VLOG(1) << "aws: UploadPart " << part_num_ << " size=" << body_size << " etag=" << etag;
-  parts_.emplace_back(part_num_++, std::move(etag));
+  VLOG(1) << "aws: UploadPart " << part_num << " size=" << body_size << " etag=" << etag;
+  parts_.emplace_back(part_num, std::move(etag));
   return {};
 }
 
@@ -392,6 +431,7 @@ error_code WriteFile::Close() {
   if (body_mb_.size() > 0) {
     RETURN_ERROR(Upload());
   }
+  RETURN_ERROR(WaitInflight());
 
   // Build CompleteMultipartUpload XML body.
   string xml = "<CompleteMultipartUpload>";
@@ -429,6 +469,8 @@ error_code WriteFile::Close() {
 }
 
 error_code WriteFile::Abort() {
+  std::ignore = WaitInflight();  // The part outcome is irrelevant, the whole upload is aborted.
+
   BucketAddressing addressing = ResolveBucketAddressing(opts_.creds_provider, bucket_);
   string url = BucketObjectPath(addressing, bucket_, create_file_name());
   absl::StrAppend(&url, "?uploadId=");
