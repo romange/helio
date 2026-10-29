@@ -1635,10 +1635,12 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
     ProactorBase* p = ths[i % kThreads]->proactor.get();
     fbs.push_back(p->LaunchFiber(StrCat("waiter", i), [&] {
       unsigned seen = 0;
+
+      // Reused across rounds: a woken node must be publishable again.
+      ParkNode node;
       for (unsigned r = 0; r < kRounds; ++r) {
         std::unique_lock lk(lock);
         while (generation == seen) {
-          ParkNode node;
           queue.Push(&node);
           lk.unlock();
           node.Park();
