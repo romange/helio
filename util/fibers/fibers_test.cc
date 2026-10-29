@@ -1626,8 +1626,9 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
   }
 
   base::SpinLock lock;
-  ParkQueue queue;          // Protected by `lock`.
-  unsigned generation = 0;  // Protected by `lock`.
+  ParkQueue queue;           // Protected by `lock`.
+  unsigned generation = 0;   // Protected by `lock`.
+  atomic_uint published{0};  // Incremented under `lock` when a node is pushed.
   atomic_uint arrivals{0};
   vector<Fiber> fbs;
 
@@ -1642,6 +1643,7 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
         std::unique_lock lk(lock);
         while (generation == seen) {
           queue.Push(&node);
+          published.fetch_add(1, memory_order_relaxed);
           lk.unlock();
           node.Park();
           lk.lock();
@@ -1652,8 +1654,10 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
     }));
   }
 
+  // Wake only after every waiter has parked for this round, so each round exercises WakeAll()
+  // on all nodes and each waiter parks exactly once per round.
   for (unsigned r = 0; r < kRounds; ++r) {
-    while (arrivals.load(memory_order_relaxed) < r * kWaiters) {
+    while (published.load(memory_order_relaxed) < (r + 1) * kWaiters) {
       this_thread::yield();
     }
     WakeList wakes;
@@ -1665,6 +1669,7 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
   for (auto& fb : fbs) {
     fb.Join();
   }
+  EXPECT_EQ(published.load(), kRounds * kWaiters);
   EXPECT_EQ(arrivals.load(), kRounds * kWaiters);
   EXPECT_TRUE(queue.empty());
 }
