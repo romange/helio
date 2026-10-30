@@ -14,6 +14,7 @@
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <ctime>
+#include <mutex>
 #include <unordered_map>
 
 #include "base/logging.h"
@@ -473,7 +474,7 @@ void Credentials::SetCredentials(CredSource src, AccountInfo info, AuthMode mode
     sas_query_ = std::move(key_or_sas);
   }
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     access_token_.clear();
   }
   expire_time_.store(0, std::memory_order_release);
@@ -496,7 +497,7 @@ void Credentials::SetBearer(AccountInfo info, string token, unsigned ttl) {
   source_ = CredSource::kManagedIdentity;
   auth_mode_ = AuthMode::kBearer;
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     access_token_ = std::move(token);
   }
   const time_t now = time(nullptr);
@@ -541,7 +542,7 @@ void Credentials::Sign(detail::HttpRequestBase* req) const {
     case AuthMode::kBearer: {
       string token;
       {
-        folly::RWSpinLock::ReadHolder lock(lock_);
+        std::lock_guard lock(lock_);
         token = access_token_;
       }
       req->SetHeader("Authorization", absl::StrCat("Bearer ", token));

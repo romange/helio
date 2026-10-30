@@ -3,11 +3,13 @@
 
 #pragma once
 
+#include <absl/base/call_once.h>
+
 #include <atomic>
 #include <utility>
 #include <vector>
 
-#include "base/RWSpinLock.h"
+#include "base/spinlock.h"
 #include "util/cloud/utils.h"
 
 typedef struct ssl_ctx_st SSL_CTX;
@@ -57,7 +59,7 @@ std::vector<std::pair<std::string, std::string>> ContainerCredsHeaders(std::stri
 //
 // Sign() computes AWS Signature Version 4 on every call.
 // RefreshToken() re-fetches from whichever source originally succeeded.
-// Thread-safe: RWSpinLock guards credential and refresh-source state.
+// Thread-safe: SpinLock guards credential and refresh-source state.
 class AwsCredsProvider : public CredentialsProvider {
   AwsCredsProvider(const AwsCredsProvider&) = delete;
   AwsCredsProvider& operator=(const AwsCredsProvider&) = delete;
@@ -114,8 +116,9 @@ class AwsCredsProvider : public CredentialsProvider {
   enum class CredSource { kNone, kEnv, kProfile, kWebIdentity, kContainer, kIMDS };
   CredSource source_ = CredSource::kNone;
 
+  absl::once_flag ssl_ctx_once_;
   SSL_CTX* ssl_ctx_ = nullptr;
-  mutable folly::RWSpinLock lock_;
+  mutable base::SpinLock lock_;
   AwsCredentials creds_;
   std::atomic_bool is_refreshing_ = false;
 };

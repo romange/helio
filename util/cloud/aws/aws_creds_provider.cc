@@ -17,6 +17,7 @@
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <chrono>
+#include <mutex>
 #include <pugixml.hpp>
 
 #include "base/logging.h"
@@ -273,9 +274,7 @@ AwsCredsProvider::~AwsCredsProvider() {
 }
 
 SSL_CTX* AwsCredsProvider::GetSslCtx() {
-  folly::RWSpinLock::WriteHolder lock(lock_);
-  if (!ssl_ctx_)
-    ssl_ctx_ = http::TlsClient::CreateSslContext();
+  absl::call_once(ssl_ctx_once_, [this] { ssl_ctx_ = http::TlsClient::CreateSslContext(); });
   return ssl_ctx_;
 }
 
@@ -351,7 +350,7 @@ error_code AwsCredsProvider::TryEnvironment() {
   }
 
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds_ = std::move(creds);
     source_ = CredSource::kEnv;
   }
@@ -395,7 +394,7 @@ error_code AwsCredsProvider::TryProfileFile() {
   }
 
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds_ = std::move(creds);
     source_ = CredSource::kProfile;
   }
@@ -433,7 +432,7 @@ error_code AwsCredsProvider::TryWebIdentity() {
   RETURN_ERROR(ParseStsXml(*resp, &creds));
 
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds_ = std::move(creds);
     source_ = CredSource::kWebIdentity;
   }
@@ -477,7 +476,7 @@ error_code AwsCredsProvider::TryContainerCreds() {
   RETURN_ERROR(ParseJsonCredentials(*resp, &creds));
 
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds_ = std::move(creds);
     source_ = CredSource::kContainer;
   }
@@ -520,7 +519,7 @@ error_code AwsCredsProvider::TryIMDS() {
   RETURN_ERROR(ParseJsonCredentials(*json, &creds));
 
   {
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds_ = std::move(creds);
     source_ = CredSource::kIMDS;
   }
@@ -551,7 +550,7 @@ error_code AwsCredsProvider::RefreshToken() {
 error_code AwsCredsProvider::RefreshTokenImpl() {
   CredSource source;
   {
-    folly::RWSpinLock::ReadHolder lock(lock_);
+    std::lock_guard lock(lock_);
     source = source_;
   }
 
@@ -588,7 +587,7 @@ string AwsCredsProvider::ServiceEndpoint() const {
 void AwsCredsProvider::Sign(detail::HttpRequestBase* req) const {
   AwsCredentials creds;
   {
-    folly::RWSpinLock::ReadHolder lock(lock_);
+    std::lock_guard lock(lock_);
     creds = creds_;
   }
 
@@ -673,7 +672,7 @@ io::Result<bool> AwsCredsProvider::RefreshIfExpiring() {
   auto deadline = chrono::steady_clock::now() + kRefreshWaitTimeout;
   while (true) {
     {
-      folly::RWSpinLock::ReadHolder creds_lock(lock_);
+      std::lock_guard creds_lock(lock_);
       if (!creds_.IsExpiring())
         return false;
     }
