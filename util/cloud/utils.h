@@ -12,6 +12,7 @@
 #include <string_view>
 
 #include "io/file.h"
+#include "util/fibers/fibers.h"
 #include "util/http/http_client.h"
 #include "util/http/https_client_pool.h"
 
@@ -168,17 +169,45 @@ class AbstractStorageFile : public io::WriteFile {
   }
 
   // Writes bytes to the cloud object. This will either buffer internally or
-  // write a part to the cloud.
+  // write a part to the cloud. Reports a failed background part upload.
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
 
  private:
   std::error_code FillBuf(const uint8_t* buffer, size_t length);
 
+  util::fb2::Fiber inflight_;
+  std::error_code upload_ec_;  // Sticky error of a background part upload.
+
  protected:
+  // Uploads the part buffered in body_mb_, usually via UploadInBackground().
   virtual std::error_code Upload() = 0;
+
+  // Waits for the previous part, then runs `send` on a fiber so the next part can be buffered
+  // while this one is sent. At most one part is in flight, which bounds memory to ~2 parts and
+  // keeps parts ordered. A failure is sticky: later writes, uploads and WaitInflight() return it.
+  template <typename F>
+  ABSL_MUST_USE_RESULT std::error_code UploadInBackground(std::string_view name, F&& send);
+
+  // Waits for the in-flight part and returns the sticky upload error.
+  ABSL_MUST_USE_RESULT std::error_code WaitInflight();
+
+  // Waits for the in-flight part and logs its failure. Subclasses must call it in their
+  // destructor, before releasing what the upload uses, e.g. the connection pool.
+  void FinishInflight();
 
   boost::beast::multi_buffer body_mb_;
 };
+
+template <typename F>
+std::error_code AbstractStorageFile::UploadInBackground(std::string_view name, F&& send) {
+  if (std::error_code ec = WaitInflight())
+    return ec;
+
+  // Dispatch so the upload starts before the writer buffers the next part.
+  inflight_ = fb2::Fiber(fb2::Launch::dispatch, name,
+                         [this, send = std::forward<F>(send)]() mutable { upload_ec_ = send(); });
+  return {};
+}
 
 }  // namespace detail
 

@@ -25,7 +25,6 @@
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/utils.h"
-#include "util/fibers/fibers.h"
 #include "util/fibers/proactor_base.h"
 #include "util/http/https_client_pool.h"
 
@@ -346,27 +345,16 @@ class WriteFile : public detail::AbstractStorageFile {
   }
 
   ~WriteFile() override {
-    error_code ec = WaitInflight();
-    LOG_IF(WARNING, ec) << "aws: UploadPart failed: " << ec.message();
-  }
-
-  // Reports a failed background part upload on the next write, not only at part boundaries.
-  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override {
-    if (upload_ec_)
-      return nonstd::make_unexpected(upload_ec_);
-    return AbstractStorageFile::WriteSome(v, len);
+    FinishInflight();
   }
 
   error_code Close() override;
   ABSL_MUST_USE_RESULT error_code Abort() override;
 
  private:
-  // Starts uploading the buffered part in the background. At most one part is in flight,
-  // so the next part can be accumulated while the previous one is being sent.
   error_code Upload() override;
   ABSL_MUST_USE_RESULT error_code SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num,
                                            size_t body_size);
-  ABSL_MUST_USE_RESULT error_code WaitInflight();
 
   const string bucket_;
   const string upload_id_;
@@ -374,18 +362,9 @@ class WriteFile : public detail::AbstractStorageFile {
   vector<pair<unsigned, string>> parts_;  // (part_num, etag)
   WriteFileOptions opts_;
   unique_ptr<http::ClientPool> pool_;
-  fb2::Fiber inflight_;
-  error_code upload_ec_;  // Sticky error of a background part upload.
 };
 
-error_code WriteFile::WaitInflight() {
-  inflight_.JoinIfNeeded();
-  return upload_ec_;
-}
-
 error_code WriteFile::Upload() {
-  RETURN_ERROR(WaitInflight());
-
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
 
@@ -401,13 +380,11 @@ error_code WriteFile::Upload() {
   req.Finalize();
   opts_.creds_provider->Sign(&req);
 
-  // Dispatch so the upload starts before the writer buffers the next part.
   unsigned part_num = part_num_++;
-  inflight_ = fb2::Fiber(fb2::Launch::dispatch, "s3_upload_part",
-                         [this, req = std::move(req), part_num, body_size]() mutable {
-                           upload_ec_ = SendPart(&req, part_num, body_size);
-                         });
-  return {};
+  return UploadInBackground("s3_upload_part",
+                            [this, req = std::move(req), part_num, body_size]() mutable {
+                              return SendPart(&req, part_num, body_size);
+                            });
 }
 
 error_code WriteFile::SendPart(detail::DynamicBodyRequestImpl* req, unsigned part_num,
