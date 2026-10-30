@@ -13,14 +13,11 @@
 #include <boost/beast/http/write.hpp>  // for operator<<
 #include <tuple>
 
-#include "base/flags.h"
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
 #include "util/http/http_client.h"
 #include "util/http/http_common.h"
-
-ABSL_FLAG(bool, gcs_dry_upload, false, "");
 
 namespace util {
 
@@ -156,46 +153,42 @@ error_code GcsWriteFile::Close() {
   size_t to = uploaded_ + body_mb_.size();
   auto req = PrepareRequest(to, to);
 
-  string body;
-  if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(opts_.pool, opts_.creds_provider);
-
-    RobustSender::SenderResult send_res;
-    error_code ec = sender.Send(3, req.get(), &send_res);
-    if (ec) {
-      LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
-                 << req->GetHeaders() << ", status " << ec.message();
-      return ec;
-    }
-    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
-    RETURN_ERROR(send_res.client_handle->Recv(&resp));
-
-    body = std::move(resp.get().body());
-
-    /*
-      body is in a json reponse with all the metadata of the object
-      {
-          "kind": "storage#object",
-          "id": "mybucket/roman/bar_0/1720889888465538",
-          "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/roman%2Fbar_0",
-          "mediaLink":
-        "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/roman%2Fbar_0?generation=1720889888465538&alt=media",
-          "name": "roman/bar_0",
-          "bucket": "mybucket",
-          "generation": "1720889888465538",
-          "metageneration": "1",
-          "storageClass": "STANDARD",
-          "size": "27270144",
-          "md5Hash": "O/P7e3k8qxRQaomHhn0H9Q==",
-          "crc32c": "8s2ltw==",
-          "etag": "CILF/7O+pIcDEAE=",
-          "timeCreated": "2024-07-13T16:58:08.476Z",
-          "updated": "2024-07-13T16:58:08.476Z",
-          "timeStorageClassUpdated": "2024-07-13T16:58:08.476Z"
-      }
-
-    */
+  RobustSender sender(opts_.pool, opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  error_code ec = sender.Send(3, req.get(), &send_res);
+  if (ec) {
+    LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
+               << req->GetHeaders() << ", status " << ec.message();
+    return ec;
   }
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
+
+  string body = std::move(resp.get().body());
+
+  /*
+    body is in a json reponse with all the metadata of the object
+    {
+        "kind": "storage#object",
+        "id": "mybucket/roman/bar_0/1720889888465538",
+        "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/roman%2Fbar_0",
+        "mediaLink":
+      "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/roman%2Fbar_0?generation=1720889888465538&alt=media",
+        "name": "roman/bar_0",
+        "bucket": "mybucket",
+        "generation": "1720889888465538",
+        "metageneration": "1",
+        "storageClass": "STANDARD",
+        "size": "27270144",
+        "md5Hash": "O/P7e3k8qxRQaomHhn0H9Q==",
+        "crc32c": "8s2ltw==",
+        "etag": "CILF/7O+pIcDEAE=",
+        "timeCreated": "2024-07-13T16:58:08.476Z",
+        "updated": "2024-07-13T16:58:08.476Z",
+        "timeStorageClassUpdated": "2024-07-13T16:58:08.476Z"
+    }
+
+  */
 
   VLOG(1) << "Closed file " << req->GetHeaders() << "\n" << body;
 
@@ -227,9 +220,6 @@ error_code GcsWriteFile::Upload() {
 
   auto req = PrepareRequest(to, -1);
   uploaded_ = to;
-
-  if (absl::GetFlag(FLAGS_gcs_dry_upload))
-    return {};
 
   return UploadInBackground("gcs_upload_chunk", [this, req = std::move(req), to]() mutable {
     return SendChunk(req.get(), to);
