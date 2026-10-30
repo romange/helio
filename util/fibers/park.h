@@ -114,6 +114,8 @@ class WakeList {
   void Wake() noexcept;
 
  private:
+  friend class ParkQueue;
+
   ParkNode* head_ = nullptr;
 };
 
@@ -162,10 +164,16 @@ class ParkQueue {
     return node != nullptr;
   }
 
-  // Detaches every node into `wakes`.
+  // Detaches every node into `wakes` in O(1) by splicing the chain in front of the list's nodes.
+  // Only the tail node is touched, and only if `wakes` is not empty: queued nodes live on other
+  // fibers' stacks, so walking them under the caller's lock would incur a cache miss per node.
   void WakeAll(WakeList* wakes) noexcept {
-    while (ParkNode* node = Pop())
-      wakes->Add(node);
+    if (!head_)
+      return;
+    if (wakes->head_)
+      tail_->next_ = wakes->head_;
+    wakes->head_ = std::exchange(head_, nullptr);
+    tail_ = nullptr;
   }
 
  private:

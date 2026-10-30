@@ -1565,6 +1565,66 @@ TEST_F(FiberTest, ParkQueueWakesInFifoOrder) {
   EXPECT_THAT(order, ElementsAre(0, 1, 2));
 }
 
+TEST_F(FiberTest, ParkQueueWakeAllSplicesIntoList) {
+  constexpr unsigned kNumFibers = 4;
+  ParkQueue queue;
+  ParkNode* single = nullptr;
+  unsigned parked = 0;
+  vector<unsigned> woken;
+  Fiber fbs[kNumFibers];
+
+  {
+    WakeList wakes;
+    queue.WakeAll(&wakes);  // An empty queue leaves the list empty.
+    EXPECT_TRUE(wakes.empty());
+  }
+
+  // Fiber 0 is detached into the list first; the others wait in the queue.
+  for (unsigned i = 0; i < kNumFibers; ++i) {
+    fbs[i] = Fiber(StrCat("parker", i), [&, i] {
+      ParkNode node;
+      if (i == 0) {
+        single = &node;
+      } else {
+        queue.Push(&node);
+      }
+      ++parked;
+      node.Park();
+      woken.push_back(i);
+    });
+  }
+  while (parked < kNumFibers) {
+    ThisFiber::Yield();
+  }
+
+  {
+    WakeList wakes;
+    wakes.Add(single);
+    queue.WakeAll(&wakes);
+    EXPECT_TRUE(queue.empty());
+    queue.WakeAll(&wakes);  // An empty queue leaves the list unchanged.
+  }
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_THAT(woken, UnorderedElementsAre(0, 1, 2, 3));
+
+  // The queue is reusable after WakeAll() detaches its chain.
+  Fiber fb("reparker", [&] {
+    ParkNode node;
+    queue.Push(&node);
+    node.Park();
+  });
+  while (queue.empty()) {
+    ThisFiber::Yield();
+  }
+  WakeList wakes;
+  EXPECT_TRUE(queue.WakeOne(&wakes));
+  EXPECT_TRUE(queue.empty());
+  wakes.Wake();
+  fb.Join();
+}
+
 // A thread with the default dispatcher may exit right after its parked fiber is woken, while the
 // remote waker is still notifying that thread's dispatcher.
 TEST_F(FiberTest, ParkedThreadExitsRightAfterWake) {
