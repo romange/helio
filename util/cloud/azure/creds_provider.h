@@ -5,10 +5,11 @@
 
 #include <atomic>
 #include <ctime>
+#include <mutex>
 #include <string>
 #include <system_error>
 
-#include "base/RWSpinLock.h"
+#include "base/spinlock.h"
 #include "util/cloud/utils.h"
 
 namespace util {
@@ -83,7 +84,7 @@ class Credentials : public CredentialsProvider {
   std::string requested_account_name_;
 
   // Mutable at runtime — protected by lock_ / atomic.
-  mutable folly::RWSpinLock lock_;
+  mutable base::SpinLock lock_;
   std::string access_token_;  // guarded by lock_
   std::atomic<time_t> expire_time_ = 0;
 

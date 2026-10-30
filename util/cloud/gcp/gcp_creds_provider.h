@@ -3,7 +3,9 @@
 
 #pragma once
 
-#include "base/RWSpinLock.h"
+#include <mutex>
+
+#include "base/spinlock.h"
 #include "util/cloud/utils.h"
 
 namespace util {
@@ -42,7 +44,7 @@ class GCPCredsProvider : public CredentialsProvider {
 
   // Thread-safe method to access the token.
   std::string access_token() const {
-    folly::RWSpinLock::ReadHolder lock(lock_);
+    std::lock_guard lock(lock_);
     return access_token_;
   }
 
@@ -59,7 +61,7 @@ class GCPCredsProvider : public CredentialsProvider {
 
   std::string client_id_, client_secret_, refresh_token_;
 
-  mutable folly::RWSpinLock lock_;  // protects access_token_
+  mutable base::SpinLock lock_;  // protects access_token_
   std::string access_token_;
   std::atomic<time_t> expire_time_ = 0;  // seconds since epoch
 };

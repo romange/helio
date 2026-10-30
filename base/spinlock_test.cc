@@ -15,6 +15,36 @@
 namespace base {
 namespace {
 
+// Probing a held lock with try_lock() confuses Clang's lock tracking.
+TEST(TTASSpinLockTest, TryLockExcludes) ABSL_NO_THREAD_SAFETY_ANALYSIS {
+  TTASSpinLock lock;
+  ASSERT_TRUE(lock.try_lock());
+  EXPECT_FALSE(lock.try_lock());
+  lock.unlock();
+  ASSERT_TRUE(lock.try_lock());
+  lock.unlock();
+}
+
+TEST(TTASSpinLockTest, ConcurrentWriters) {
+  TTASSpinLock lock;
+  constexpr unsigned kThreads = 4;
+  constexpr unsigned kIterations = 100000;
+  uint64_t counter = 0;
+  std::vector<std::thread> threads;
+  for (unsigned i = 0; i < kThreads; ++i) {
+    threads.emplace_back([&] {
+      for (unsigned j = 0; j < kIterations; ++j) {
+        std::lock_guard guard(lock);
+        ++counter;
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(counter, kThreads * kIterations);
+}
+
 // Clang cannot track acquisitions through standard guards or GoogleTest assertions.
 TEST(RWSpinLockTest, SharedAndExclusiveExclusion) ABSL_NO_THREAD_SAFETY_ANALYSIS {
   RWSpinLock lock;

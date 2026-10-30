@@ -9,6 +9,7 @@
 
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
+#include <mutex>
 
 #include "base/flags.h"
 #include "base/logging.h"
@@ -234,7 +235,7 @@ error_code GCPCredsProvider::Init(unsigned connect_ms) {
     if (!inject_token.empty()) {
       token_ttl.first = inject_token;
     }
-    folly::RWSpinLock::WriteHolder lock(lock_);
+    std::lock_guard lock(lock_);
     access_token_ = token_ttl.first;
     expire_time_.store(time(nullptr) + token_ttl.second, std::memory_order_release);
   } else {
@@ -302,7 +303,7 @@ error_code GCPCredsProvider::RefreshToken() {
   if (!token)
     return token.error();
 
-  folly::RWSpinLock::WriteHolder lock(lock_);
+  std::lock_guard lock(lock_);
   access_token_ = token->first;
   expire_time_.store(time(nullptr) + token->second, std::memory_order_release);
 
