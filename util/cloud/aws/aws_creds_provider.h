@@ -100,7 +100,7 @@ class AwsCredsProvider : public CredentialsProvider {
   }
 
  private:
-  SSL_CTX* GetSslCtx();  // creates ssl_ctx_ on first call
+  SSL_CTX* GetSslCtx();  // creates ssl_ctx_ once; null if creation failed
 
   std::error_code TryEnvironment();
   std::error_code TryProfileFile();

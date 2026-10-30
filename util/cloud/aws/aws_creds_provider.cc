@@ -422,9 +422,13 @@ error_code AwsCredsProvider::TryWebIdentity() {
   strings::AppendUrlEncoded(token, &body);
   body += "&RoleSessionName=helio&Version=2011-06-15";
 
-  auto resp = FetchUrl(StsEndpoint(region_), "443", "/", h2::verb::post,
-                       {{"content-type", "application/x-www-form-urlencoded"}}, body, connect_ms_,
-                       GetSslCtx());
+  SSL_CTX* ssl_ctx = GetSslCtx();
+  if (!ssl_ctx)
+    return make_error_code(errc::protocol_not_supported);
+
+  auto resp =
+      FetchUrl(StsEndpoint(region_), "443", "/", h2::verb::post,
+               {{"content-type", "application/x-www-form-urlencoded"}}, body, connect_ms_, ssl_ctx);
   if (!resp)
     return resp.error();
 
@@ -467,8 +471,13 @@ error_code AwsCredsProvider::TryContainerCreds() {
   vector<pair<string, string>> headers = ContainerCredsHeaders(auth_token);
 
   auto [host, port, path, is_https] = ParseHttpUrl(uri);
-  auto resp = FetchUrl(host, port, path, h2::verb::get, headers, "", connect_ms_,
-                       is_https ? GetSslCtx() : nullptr);
+  SSL_CTX* ssl_ctx = nullptr;
+  if (is_https) {
+    ssl_ctx = GetSslCtx();
+    if (!ssl_ctx)
+      return make_error_code(errc::protocol_not_supported);
+  }
+  auto resp = FetchUrl(host, port, path, h2::verb::get, headers, "", connect_ms_, ssl_ctx);
   if (!resp)
     return resp.error();
 
