@@ -240,6 +240,9 @@ class ProactorBase {
     return adaptive_poll_stats_;
   }
 
+  // Issues a single CPU spin-wait hint (pause on x86, sb/isb on ARM).
+  static void Pause();
+
  protected:
   enum { WAIT_SECTION_STATE = 1UL << 31 };
   static constexpr unsigned kMaxSpinLimit = 5;
@@ -273,9 +276,6 @@ class ProactorBase {
   //       We should fix it by returning the next call time and handle it in the loop
   //       accordingly.
   bool RunOnIdleTasks();
-
-  static void Pause(unsigned strength);
-  static void ModuleInit();
 
   static uint64_t GetClockNanos() {
     // absl::GetCurrentTimeNanos() might be non-monotonic and sync with the system clock.

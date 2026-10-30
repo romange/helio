@@ -327,7 +327,6 @@ void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
     }
 
     if (!RunOnIdleTasks()) {
-      // Pause(spin_loops);
       ++spin_loops;
       scheduler->DestroyTerminated();
     }

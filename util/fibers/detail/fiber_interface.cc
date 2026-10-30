@@ -23,14 +23,6 @@
 #include <sanitizer/asan_interface.h>
 #endif
 
-#if defined(__aarch64__) && defined(__linux__)
-#include <sys/auxv.h>
-
-#ifndef HWCAP_SB
-#define HWCAP_SB (1 << 29)
-#endif
-#endif  // __aarch64__ __linux__
-
 // #define RECORD_FIBER_NAMES 1
 
 ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
@@ -52,38 +44,7 @@ struct TL_FiberInitializer;
 
 namespace {
 
-#if defined(__aarch64__)
-// ARM architecture pause implementation
-static inline void arm_arch_pause(void) {
-#if defined(__linux__)
-  static int use_spin_delay_sb = -1;
-
-  if (use_spin_delay_sb == 1) {
-    asm volatile(".inst 0xd50330ff");  // SB instruction encoding
-  } else if (use_spin_delay_sb == 0) {
-    asm volatile("isb");
-  } else {
-    // Initialize variable and check if SB is supported
-    if (getauxval(AT_HWCAP) & HWCAP_SB)
-      use_spin_delay_sb = 1;
-    else
-      use_spin_delay_sb = 0;
-  }
-#else
-  asm volatile("isb");
-#endif
-}
-#endif
-
 [[maybe_unused]] size_t kSzFiberInterface = sizeof(FiberInterface);
-
-inline void CpuPause() {
-#if defined(__i386__) || defined(__amd64__)
-  __asm__ __volatile__("pause");
-#elif defined(__aarch64__)
-  arm_arch_pause();
-#endif
-}
 
 std::string MainFiberName() {
   ProactorBase* proactor = ProactorBase::me();
@@ -316,7 +277,7 @@ ctx::fiber_context FiberInterface::Terminate() {
     if ((fprev & kBusyBit) == 0) {  // has been acquired
       break;
     }
-    CpuPause();
+    ProactorBase::Pause();
   }
 
   FIBER_TRACE(this, TRACE_TERMINATE);
@@ -402,7 +363,7 @@ void FiberInterface::Join() {
     if ((fprev & kBusyBit) == 0) {  // Caller became the owner.
       break;
     }
-    CpuPause();
+    ProactorBase::Pause();
   }
 
   Waiter waiter{active->CreateWaiter()};
