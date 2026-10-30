@@ -12,11 +12,13 @@
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <pugixml.hpp>
+#include <tuple>
 
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/azure/creds_provider.h"
 #include "util/cloud/utils.h"
+#include "util/fibers/fibers.h"
 #include "util/http/http_client.h"
 #include "util/http/https_client_pool.h"
 
@@ -242,6 +244,13 @@ class WriteFile : public detail::AbstractStorageFile {
   WriteFile(string_view path_prefix, string_view container, string_view key, WriteFileOptions opts);
   ~WriteFile();
 
+  // Reports a failed background block upload on the next write, not only at block boundaries.
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override {
+    if (upload_ec_)
+      return nonstd::make_unexpected(upload_ec_);
+    return AbstractStorageFile::WriteSome(v, len);
+  }
+
   // Closes the object and completes the multipart upload. Therefore the object
   // will not be uploaded unless Close is called.
   error_code Close() override;
@@ -249,10 +258,13 @@ class WriteFile : public detail::AbstractStorageFile {
   // Azure has no request to discard staged blocks. Uncommitted blocks are garbage collected
   // after a week, but a failed Close() may have committed them already.
   ABSL_MUST_USE_RESULT error_code Abort() override {
+    std::ignore = WaitInflight();  // The block outcome is irrelevant, the upload is abandoned.
     return commit_attempted_ ? make_error_code(errc::operation_not_supported) : error_code{};
   }
 
  private:
+  // Starts uploading the buffered block in the background. At most one block is in flight,
+  // so the next block can be accumulated while the previous one is being sent.
   error_code Upload() override;
 
   using UploadRequest = detail::DynamicBodyRequestImpl;
@@ -260,12 +272,16 @@ class WriteFile : public detail::AbstractStorageFile {
 
   unique_ptr<UploadRequest> PrepareUploadBlockReq();
   unique_ptr<UploadBlockListRequest> PrepareBlockListReq();
+  ABSL_MUST_USE_RESULT error_code SendBlock(UploadRequest* req);
+  ABSL_MUST_USE_RESULT error_code WaitInflight();
 
   unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
   string target_;
   unsigned block_id_ = 1;
   bool commit_attempted_ = false;
   WriteFileOptions opts_;
+  fb2::Fiber inflight_;
+  error_code upload_ec_;  // Sticky error of a background block upload.
 };
 
 ReadFile::~ReadFile() {
@@ -351,12 +367,20 @@ WriteFile::WriteFile(string_view path_prefix, string_view container, string_view
 }
 
 WriteFile::~WriteFile() {
+  error_code ec = WaitInflight();
+  LOG_IF(WARNING, ec) << "azure: block upload failed: " << ec.message();
+}
+
+error_code WriteFile::WaitInflight() {
+  inflight_.JoinIfNeeded();
+  return upload_ec_;
 }
 
 error_code WriteFile::Close() {
   if (body_mb_.size() > 0) {
     RETURN_ERROR(Upload());
   }
+  RETURN_ERROR(WaitInflight());
   DCHECK_EQ(body_mb_.size(), 0u);
   auto req = PrepareBlockListReq();
 
@@ -374,15 +398,24 @@ error_code WriteFile::Close() {
 }
 
 error_code WriteFile::Upload() {
+  RETURN_ERROR(WaitInflight());
+
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
 
   auto req = PrepareUploadBlockReq();
 
-  error_code res;
+  // Dispatch so the upload starts before the writer buffers the next block.
+  inflight_ =
+      fb2::Fiber(fb2::Launch::dispatch, "azure_upload_block",
+                 [this, req = std::move(req)]() mutable { upload_ec_ = SendBlock(req.get()); });
+  return {};
+}
+
+error_code WriteFile::SendBlock(UploadRequest* req) {
   RobustSender sender(pool_.get(), opts_.creds_provider);
   RobustSender::SenderResult send_res;
-  RETURN_ERROR(sender.Send(3, req.get(), &send_res));
+  RETURN_ERROR(sender.Send(3, req, &send_res));
 
   auto parser_ptr = std::move(send_res.eb_parser);
   const auto& resp_msg = parser_ptr->get();

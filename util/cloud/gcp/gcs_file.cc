@@ -11,11 +11,13 @@
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>  // for operator<<
+#include <tuple>
 
 #include "base/flags.h"
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
+#include "util/fibers/fibers.h"
 #include "util/http/http_client.h"
 #include "util/http/http_common.h"
 
@@ -84,15 +86,28 @@ class GcsWriteFile : public detail::AbstractStorageFile {
   GcsWriteFile(const string_view key, string_view upload_id, const GcsWriteFileOptions& opts);
   ~GcsWriteFile();
 
+  // Reports a failed background chunk upload on the next write, not only at chunk boundaries.
+  io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override {
+    if (upload_ec_)
+      return nonstd::make_unexpected(upload_ec_);
+    return AbstractStorageFile::WriteSome(v, len);
+  }
+
  private:
+  // Starts uploading the buffered chunk in the background. Resumable uploads accept chunks
+  // only in order, so at most one chunk is in flight while the next one is accumulated.
   error_code Upload() final;
 
   using UploadRequest = detail::DynamicBodyRequestImpl;
   unique_ptr<UploadRequest> PrepareRequest(size_t to, ssize_t total);
+  ABSL_MUST_USE_RESULT error_code SendChunk(UploadRequest* req, size_t to);
+  ABSL_MUST_USE_RESULT error_code WaitInflight();
 
   string upload_id_;
   size_t uploaded_ = 0;
   GcsWriteFileOptions opts_;
+  fb2::Fiber inflight_;
+  error_code upload_ec_;  // Sticky error of a background chunk upload.
 };
 
 class GcsReadFile final : public io::ReadonlyFile {
@@ -139,12 +154,23 @@ GcsWriteFile::GcsWriteFile(string_view key, string_view upload_id, const GcsWrit
 }
 
 GcsWriteFile::~GcsWriteFile() {
+  // The in-flight chunk uses the pool, so it must finish before the pool is deleted.
+  error_code ec = WaitInflight();
+  LOG_IF(WARNING, ec) << "Uploading GCS chunk failed: " << ec.message();
+
   if (opts_.pool_owned) {
     delete opts_.pool;
   }
 }
 
+error_code GcsWriteFile::WaitInflight() {
+  inflight_.JoinIfNeeded();
+  return upload_ec_;
+}
+
 error_code GcsWriteFile::Close() {
+  RETURN_ERROR(WaitInflight());
+
   size_t to = uploaded_ + body_mb_.size();
   auto req = PrepareRequest(to, to);
 
@@ -195,6 +221,8 @@ error_code GcsWriteFile::Close() {
 }
 
 error_code GcsWriteFile::Abort() {
+  std::ignore = WaitInflight();  // The chunk outcome is irrelevant, the whole upload is cancelled.
+
   // Cancels the resumable upload session, see
   // https://cloud.google.com/storage/docs/performing-resumable-uploads#cancel-upload
   detail::EmptyRequestImpl req(h2::verb::delete_, upload_id_);
@@ -209,6 +237,8 @@ error_code GcsWriteFile::Abort() {
 }
 
 error_code GcsWriteFile::Upload() {
+  RETURN_ERROR(WaitInflight());
+
   size_t body_size = body_mb_.size();
   CHECK_GT(body_size, 0u);
   CHECK_EQ(0u, body_size % (1U << 18)) << body_size;  // Must be multiple of 256KB.
@@ -216,29 +246,36 @@ error_code GcsWriteFile::Upload() {
   size_t to = uploaded_ + body_size;
 
   auto req = PrepareRequest(to, -1);
-
-  error_code res;
-  if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(opts_.pool, opts_.creds_provider);
-    RobustSender::SenderResult send_res;
-    RETURN_ERROR(sender.Send(3, req.get(), &send_res));
-
-    VLOG(1) << "Uploaded range " << uploaded_ << "/" << to << " for " << upload_id_;
-    auto parser_ptr = std::move(send_res.eb_parser);
-    const auto& resp_msg = parser_ptr->get();
-    auto it = resp_msg.find(h2::field::range);
-    CHECK(it != resp_msg.end()) << resp_msg;
-
-    string_view range = detail::FromBoostSV(it->value());
-    CHECK(absl::ConsumePrefix(&range, "bytes="));
-    size_t pos = range.find('-');
-    CHECK_LT(pos, range.size());
-    size_t uploaded_pos = 0;
-    CHECK(absl::SimpleAtoi(range.substr(pos + 1), &uploaded_pos));
-    CHECK_EQ(uploaded_pos + 1, to);
-  }
-
   uploaded_ = to;
+
+  if (absl::GetFlag(FLAGS_gcs_dry_upload))
+    return {};
+
+  // Dispatch so the upload starts before the writer buffers the next chunk.
+  inflight_ = fb2::Fiber(
+      fb2::Launch::dispatch, "gcs_upload_chunk",
+      [this, req = std::move(req), to]() mutable { upload_ec_ = SendChunk(req.get(), to); });
+  return {};
+}
+
+error_code GcsWriteFile::SendChunk(UploadRequest* req, size_t to) {
+  RobustSender sender(opts_.pool, opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, req, &send_res));
+
+  VLOG(1) << "Uploaded range up to " << to << " for " << upload_id_;
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& resp_msg = parser_ptr->get();
+  auto it = resp_msg.find(h2::field::range);
+  CHECK(it != resp_msg.end()) << resp_msg;
+
+  string_view range = detail::FromBoostSV(it->value());
+  CHECK(absl::ConsumePrefix(&range, "bytes="));
+  size_t pos = range.find('-');
+  CHECK_LT(pos, range.size());
+  size_t uploaded_pos = 0;
+  CHECK(absl::SimpleAtoi(range.substr(pos + 1), &uploaded_pos));
+  CHECK_EQ(uploaded_pos + 1, to);
   return {};
 }
 
