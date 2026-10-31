@@ -33,6 +33,13 @@ class Scheduler {
     uint64_t budget_background_fib = 50'000;  // ns, round_robin_run budget for background fibers
     uint64_t background_sleep_prob = 10;      // [0-100]% probability of sleeps when reaching budget
     uint64_t background_warrant_pct = 10;     // % of minimum cpu time background fibers get
+
+    // CycleClock cycles, if > 0, a fiber that switches out at least this long after remotely
+    // woken fibers were last pulled, while more are waiting, switches to the dispatcher ahead of
+    // its turn (see Preempt()). The dispatcher ends the round, pulls them and processes I/O
+    // before it starts the next round. 0 disables it: remotely woken fibers wait for the
+    // dispatcher's turn. Defaults to --scheduler_remote_queue_check_usec.
+    uint64_t remote_check_cycles = 0;
   };
 
   Scheduler(FiberInterface* main);
@@ -194,8 +201,11 @@ class Scheduler {
     uint64_t took_cycles = 0;    // cycles, how much round robin took so far
     uint64_t budget_cycles = 0;  // cycles, budget for running whole round robin
 
-    uint64_t yields = 0;  // number of yields
+    uint32_t yields = 0;     // number of yields
+    bool end_round = false;  // set by Preempt() to end the round early, see remote_check_cycles
   } round_robin_run_;
+
+  uint64_t last_remote_check_cycles_ = 0;  // CycleClock of the last ProcessRemoteReady().
 
   RuntimeCounter runtime_cycles_;  // total running times of fibers in cycles
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
