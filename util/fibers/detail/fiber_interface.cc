@@ -299,17 +299,18 @@ void FiberInterface::CheckStackMargin() {
   return;
 #endif
 
-  uint32_t check_margin = absl::GetFlag(FLAGS_fiber_safety_margin);
-  if (check_margin == 0)
+  if (stack_fill_ == 0)
     return;
 
+  // Only the bottom stack_fill_ bytes were filled, and the check needs no more than that.
   const uint8_t* ptr = stack_bottom_;
-  while (*ptr == 0xAB) {
+  const uint8_t* fill_end = stack_bottom_ + stack_fill_;
+  while (ptr < fill_end && *ptr == 0xAB) {
     ++ptr;
   }
   uint32_t margin = ptr - stack_bottom_;
 
-  CHECK_GE(margin, check_margin) << "Low stack margin for " << name_;
+  CHECK_GE(margin, stack_fill_) << "Low stack margin for " << name_;
 }
 
 uint64_t FiberInterface::GetRunningTimeCycles() const {
@@ -320,8 +321,11 @@ uint64_t FiberInterface::GetRunningTimeCycles() const {
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
   stack_bottom_ = stack_bottom;
 
-  if (absl::GetFlag(FLAGS_fiber_safety_margin) > 0) {
-    memset(stack_bottom_, 0xAB, stack_size);
+  // Fill only the region that the margin check inspects. Filling the whole stack would touch,
+  // and on fresh memory page-fault, every stack page whenever a fiber is created.
+  stack_fill_ = std::min<uint32_t>({absl::GetFlag(FLAGS_fiber_safety_margin), stack_size, 8192u});
+  if (stack_fill_ > 0) {
+    memset(stack_bottom_, 0xAB, stack_fill_);
   }
 }
 

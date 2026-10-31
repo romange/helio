@@ -344,6 +344,9 @@ class FiberInterface {
 
   char name_[24];
   FiberPriority prio_;
+
+  // Number of bytes at the stack bottom filled with a pattern for CheckStackMargin.
+  uint16_t stack_fill_ = 0;
   uint32_t stack_size_ = 0;
   uint8_t* stack_bottom_ = nullptr;
 
