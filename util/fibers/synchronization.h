@@ -61,14 +61,17 @@ class ABSL_LOCKABLE Mutex {
   void unlock() ABSL_UNLOCK_FUNCTION();
 };
 
+// A waiter woken by a notification does not access the condition variable again. But a waiter
+// whose wait_until timed out does, even if it is notified concurrently, so unlike
+// std::condition_variable, CondVarAny must outlive every wait_until call that may time out.
 class CondVarAny {
   // Protects wait_queue_, so that a waiter that timed out can leave the queue without taking
   // the external lock (see PostWaitTimeout).
   base::SpinLock lock_;
   detail::WaitQueue wait_queue_;
 
-  // Must be called without the external lock.
-  std::cv_status PostWaitTimeout(detail::Waiter* waiter, bool timed_out);
+  // Is called after the wait timed out, without the external lock.
+  void PostWaitTimeout(detail::Waiter* waiter);
 
  public:
   CondVarAny() = default;
@@ -635,14 +638,17 @@ std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::t
   lt.unlock();
   bool timed_out = active->WaitUntil(tp);
 
-  // Leave the wait queue before relocking: if lt.lock() suspended while a notification was still
-  // on its way to us, that activation would collide with the one that hands `lt` over to us.
-  std::cv_status status = PostWaitTimeout(&waiter, timed_out);
+  // If we were not woken by the timeout, the notifier unlinked us and its activation woke us.
+  // Otherwise, leave the wait queue before relocking: if lt.lock() suspended while a notification
+  // was still on its way to us, that activation would collide with the one that hands `lt` over to
+  // us.
+  if (timed_out)
+    PostWaitTimeout(&waiter);
   assert(!waiter.IsLinked());
 
   // lock back.
   lt.lock();
-  return status;
+  return timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
 }
 
 inline bool EmbeddedBlockingCounter::Wait() {

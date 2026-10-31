@@ -91,20 +91,17 @@ void Mutex::unlock() {
   wait_queue_.NotifyOne(active);
 }
 
-std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter* waiter, bool timed_out) {
+void CondVarAny::PostWaitTimeout(detail::Waiter* waiter) {
   {
     std::unique_lock lk(lock_);
     if (waiter->IsLinked()) {
-      // We were woken up by timeout, lets remove ourselves from the queue.
       wait_queue_.Unlink(waiter);
-      DCHECK(timed_out);
-      return std::cv_status::timeout;
+      return;
     }
   }
 
   // A remote notifier may have detached us while we were timing out.
   detail::FiberActive()->AwaitRemoteWake();
-  return timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
 }
 
 bool EmbeddedBlockingCounter::WaitUntil(const std::chrono::steady_clock::time_point tp) {
