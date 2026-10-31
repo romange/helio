@@ -23,3 +23,6 @@ cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::ca
 
 helio_cxx_test(fibers_test fibers2 LABELS CI)
 helio_cxx_test(fiber_socket_test fibers2 LABELS CI)
+
+add_executable(park_bench park_bench.cc)
+cxx_link(park_bench base fibers2)
