@@ -62,10 +62,13 @@ class ABSL_LOCKABLE Mutex {
 };
 
 class CondVarAny {
+  // Protects wait_queue_, so that a waiter that timed out can leave the queue without taking
+  // the external lock (see PostWaitTimeout).
+  base::SpinLock lock_;
   detail::WaitQueue wait_queue_;
 
-  std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
-                                 detail::FiberInterface* active);
+  // Must be called without the external lock.
+  std::cv_status PostWaitTimeout(detail::Waiter* waiter, bool timed_out);
 
  public:
   CondVarAny() = default;
@@ -80,15 +83,15 @@ class CondVarAny {
   // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called
   // under the mutex
   void notify_one() noexcept {
-    if (!wait_queue_.empty())
-      wait_queue_.NotifyOne(detail::FiberActive());
+    std::unique_lock lk(lock_);
+    wait_queue_.NotifyOne(detail::FiberActive());
   }
 
   // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called
   // under the mutex
   void notify_all() noexcept {
-    if (!wait_queue_.empty())
-      wait_queue_.NotifyAll(detail::FiberActive());
+    std::unique_lock lk(lock_);
+    wait_queue_.NotifyAll(detail::FiberActive());
   }
 
   template <typename LockType> void wait(LockType& lt);
@@ -603,7 +606,9 @@ template <typename LockType> void CondVarAny::wait(LockType& lt) {
 
   detail::Waiter waiter(active->CreateWaiter());
 
+  lock_.lock();
   wait_queue_.Link(&waiter);
+  lock_.unlock();
   lt.unlock();
 
   active->Suspend();
@@ -622,18 +627,21 @@ std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::t
 
   detail::Waiter waiter(active->CreateWaiter());
 
-  // store this fiber in waiting-queue, we can do it without spinlocks because
-  // lt is already locked.
+  lock_.lock();
   wait_queue_.Link(&waiter);
+  lock_.unlock();
 
   // release the lock suspend this fiber until tp.
   lt.unlock();
   bool timed_out = active->WaitUntil(tp);
 
+  // Leave the wait queue before relocking: if lt.lock() suspended while a notification was still
+  // on its way to us, that activation would collide with the one that hands `lt` over to us.
+  std::cv_status status = PostWaitTimeout(&waiter, timed_out);
+  assert(!waiter.IsLinked());
+
   // lock back.
   lt.lock();
-  std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
-  assert(!waiter.IsLinked());
   return status;
 }
 

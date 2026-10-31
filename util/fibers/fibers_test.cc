@@ -1810,6 +1810,33 @@ TEST_P(ProactorTest, Timeout) {
   producer_fb.Join();
 }
 
+// Like Timeout, but for CondVar: a remote notification that races with the timeout must be
+// consumed before wait_until relocks the mutex, which may suspend.
+TEST_P(ProactorTest, CondVarTimeout) {
+  Mutex mu;
+  CondVar cv;
+
+  auto consumer_fb = proactor()->LaunchFiber("consumer", [&] {
+    unique_lock lk(mu);
+    for (unsigned i = 0; i < 1000; ++i) {
+      cv.wait_until(lk, chrono::steady_clock::now() + 10us);
+    }
+  });
+
+  Fiber producer_fb("producer", [&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      {
+        lock_guard lk(mu);
+        cv.notify_one();
+      }
+      ThisFiber::SleepFor(1us);
+    }
+  });
+
+  consumer_fb.Join();
+  producer_fb.Join();
+}
+
 TEST_P(ProactorTest, Mutex) {
   unique_ptr<ProactorThread> ths[kNumThreads];
   Fiber fbs[kNumThreads];
