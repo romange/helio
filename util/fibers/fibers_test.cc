@@ -565,6 +565,22 @@ TEST_F(FiberTest, Stack) {
   Fiber("test3", [](unique_ptr<int> p) { EXPECT_EQ(42, *p); }, std::move(pass)).Detach();
 }
 
+// With to_front, the woken fiber is queued ahead of a fiber that is already ready.
+TEST_F(FiberTest, ActivateOtherToFront) {
+  detail::FiberInterface* sleeper = nullptr;
+  string order;
+  Fiber fb1(Launch::dispatch, "sleeper", [&] {
+    sleeper = detail::FiberActive();
+    ThisFiber::SleepFor(1h);
+    order += '1';
+  });
+  Fiber fb2("ready", [&] { order += '2'; });
+  detail::FiberActive()->ActivateOther(sleeper, true);
+  fb1.Join();
+  fb2.Join();
+  EXPECT_EQ("12", order);
+}
+
 TEST_F(FiberTest, Remote) {
   Fiber fb1;
   mutex mu;
@@ -1625,6 +1641,32 @@ TEST_F(FiberTest, ParkQueueWakeAllSplicesIntoList) {
   fb.Join();
 }
 
+// A node built with wake_to_front is queued ahead of a fiber that became ready earlier. By
+// default it is queued behind it.
+TEST_F(FiberTest, ParkNodeWakeToFront) {
+  for (bool to_front : {false, true}) {
+    string order;
+    ParkNode* parked = nullptr;
+    Fiber parker("parker", [&] {
+      ParkNode node(to_front);
+      parked = &node;
+      node.Park();
+      order += 'p';
+    });
+    while (!parked) {
+      ThisFiber::Yield();
+    }
+    Fiber ready("ready", [&] { order += 'r'; });
+    {
+      WakeList wakes;
+      wakes.Add(parked);
+    }
+    parker.Join();
+    ready.Join();
+    EXPECT_EQ(to_front ? "pr" : "rp", order) << to_front;
+  }
+}
+
 // A thread with the default dispatcher may exit right after its parked fiber is woken, while the
 // remote waker is still notifying that thread's dispatcher.
 TEST_F(FiberTest, ParkedThreadExitsRightAfterWake) {
@@ -1687,7 +1729,8 @@ TEST_P(ProactorTest, ParkHandoffPingPong) {
     for (unsigned i = 0; i < kRounds; ++i) {
       std::unique_lock lk(lock);
       if (turn != me) {
-        ParkNode node;
+        // Player 0 is woken to the front, so both remote wake paths run.
+        ParkNode node(me == 0);
         parked = &node;
         lk.unlock();
         node.Park();

@@ -375,7 +375,7 @@ void FiberInterface::Join() {
   DCHECK(!waiter.IsLinked());
 }
 
-void FiberInterface::ActivateOther(FiberInterface* other) {
+void FiberInterface::ActivateOther(FiberInterface* other, bool to_front) {
   DCHECK(other->scheduler_);
 
   // Check first if we the fiber belongs to the active thread.
@@ -386,7 +386,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked()) {
-      scheduler_->AddReady(other, other->prio_ == FiberPriority::HIGH /* to_front */);
+      scheduler_->AddReady(other, to_front || other->prio_ == FiberPriority::HIGH);
     }
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
@@ -394,7 +394,7 @@ void FiberInterface::ActivateOther(FiberInterface* other) {
     // either by holding the lock that `other` waits on (WaitQueue) or because `other` waits for
     // exactly this activation (ParkNode). ScheduleFromRemote() does not access `other` after
     // the push.
-    other->scheduler_->ScheduleFromRemote(other);
+    other->scheduler_->ScheduleFromRemote(other, to_front);
   }
 }
 
