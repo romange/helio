@@ -26,7 +26,6 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
     lk.unlock();
 
     bool timed_out = active->WaitUntil(tp);
-    bool clear_remote = true;
 
     // We must protect wait_hook because we modify it in notification thread.
     lk.lock();
@@ -37,18 +36,13 @@ std::cv_status EventCount::wait_until(uint32_t epoch,
       wait_queue_.Unlink(&waiter);
       DCHECK(timed_out);
       status = cv_status::timeout;
-      clear_remote = false;
     } else if (timed_out) {  // we can still reach timeout even if we are not in the wait queue.
       status = cv_status::timeout;
     }
     lk.unlock();
 
-    // We must pull ourselves from the scheduler's remote_ready_queue in case we are there.
-    if (clear_remote) {
-      active->PullMyselfFromRemoteReadyQueue();
-    } else {
-      CHECK(!active->IsScheduledRemotely());
-    }
+    // A remote notifier may have detached us while we were timing out.
+    active->AwaitRemoteWake();
   }
   return status;
 }
@@ -97,27 +91,17 @@ void Mutex::unlock() {
   wait_queue_.NotifyOne(active);
 }
 
-std::cv_status CondVarAny::PostWaitTimeout(detail::Waiter waiter, bool timed_out,
-                                           detail::FiberInterface* active) {
-  std::cv_status status = std::cv_status::no_timeout;
-  bool clear_remote = true;
-
-  // Is called under the external lock so it's safe to access wait_queue_ here.
-  if (waiter.IsLinked()) {
-    wait_queue_.Unlink(&waiter);
-
-    status = std::cv_status::timeout;
-    clear_remote = false;
-  } else if (timed_out) {
-    status = std::cv_status::timeout;
+void CondVarAny::PostWaitTimeout(detail::Waiter* waiter) {
+  {
+    std::unique_lock lk(lock_);
+    if (waiter->IsLinked()) {
+      wait_queue_.Unlink(waiter);
+      return;
+    }
   }
 
-  if (clear_remote) {
-    active->PullMyselfFromRemoteReadyQueue();
-  } else {
-    CHECK(!active->IsScheduledRemotely());
-  }
-  return status;
+  // A remote notifier may have detached us while we were timing out.
+  detail::FiberActive()->AwaitRemoteWake();
 }
 
 bool EmbeddedBlockingCounter::WaitUntil(const std::chrono::steady_clock::time_point tp) {

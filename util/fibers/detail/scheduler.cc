@@ -136,7 +136,7 @@ void DispatcherImpl::DefaultDispatch(Scheduler* sched) {
         break;
     }
 
-    sched->ProcessRemoteReady(nullptr);
+    sched->ProcessRemoteReady();
     if (sched->HasSleepingFibers()) {
       sched->ProcessSleep();
     }
@@ -307,42 +307,33 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // But the fiber belongs to this scheduler.
   DCHECK(cntx->scheduler_ == this);
 
-  // If someone else holds the bit - give up on scheduling by this call.
-  // This should not happen as ScheduleFromRemote should be called under a WaitQueue lock.
+  // kScheduleRemote is held from here until ProcessRemoteReady() pulls `cntx` from the queue, so
+  // `cntx` is never in the queue while the bit is clear. A waiter is detached and activated
+  // exactly once, and a fiber that resumes on its own first waits for the activation it is
+  // owed (see FiberInterface::AwaitRemoteWake), so the bit can not be set here. We still check
+  // it because pushing `cntx` twice would corrupt the intrusive queue.
   if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
        FiberInterface::kScheduleRemote) != 0) {
     LOG(DFATAL) << "Already scheduled remotely " << cntx->name() << " " << cntx->DEBUG_use_count();
     return;
   }
 
-  if (cntx->IsScheduledRemotely()) {
-    // We schedule a fiber remotely only once.
-    // This should not happen in general, because we usually schedule a fiber under
-    // a spinlock when pulling it from the WaitQueue. However, there are ActivateOther calls
-    // that happen due to I/O events that might break this assumption. To see if this happens,
-    // I log the case and will investigate if it happens.
-    LOG(DFATAL) << "Fiber " << cntx->name() << " is already scheduled remotely";
+  // Once pushed, `cntx` may run to completion on its own thread before Notify() returns, so
+  // it must not be accessed after Push().
+  DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
 
-    // revert the flags.
-    cntx->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
+  if (DispatchPolicy* policy = custom_policy_) {
+    remote_ready_queue_.Push(cntx);
+
+    // Unlike the default dispatcher, nothing here keeps `policy` alive if this thread runs
+    // `cntx` and exits. Proactor threads must outlive the remote wakers that target them.
+    policy->Notify();
   } else {
-    // Once pushed, `cntx` may run to completion on its own thread before Notify() returns, so
-    // it must not be accessed after Push().
-    DVLOG(2) << "ScheduleFromRemote " << cntx->name() << " " << cntx->use_count_.load();
-
-    if (DispatchPolicy* policy = custom_policy_) {
+    // A thread with the default dispatcher may exit as soon as `cntx` runs. Push under the
+    // dispatcher mutex, which the exiting thread takes before destroying the dispatcher.
+    static_cast<DispatcherImpl*>(dispatch_cntx_.get())->Notify([&] {
       remote_ready_queue_.Push(cntx);
-
-      // Unlike the default dispatcher, nothing here keeps `policy` alive if this thread runs
-      // `cntx` and exits. Proactor threads must outlive the remote wakers that target them.
-      policy->Notify();
-    } else {
-      // A thread with the default dispatcher may exit as soon as `cntx` runs. Push under the
-      // dispatcher mutex, which the exiting thread takes before destroying the dispatcher.
-      static_cast<DispatcherImpl*>(dispatch_cntx_.get())->Notify([&] {
-        remote_ready_queue_.Push(cntx);
-      });
-    }
+    });
   }
 }
 
@@ -403,35 +394,19 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
-bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
-  bool res = false;
+void Scheduler::ProcessRemoteReady() {
   unsigned iteration = 0;
 
   while (true) {
     auto [fi, qempty] = remote_ready_queue_.PopWeak();
     if (!fi) {
-      if (qempty) {
-        if (active && !res) {
-          // UB state. Try to recover.
-          FiberInterface* next = active->remote_next_.load(std::memory_order_acquire);
-          bool qempty = remote_ready_queue_.Empty();
-          LOG(ERROR) << "Failed to pull active fiber from remote_ready_queue, iteration "
-                     << iteration << " remote_empty: " << qempty << ", next:" << (uint64_t)next;
-          LOG(ERROR) << "Stacktrace: " << GetStacktrace();
-          if (next != (FiberInterface*)FiberInterface::kRemoteFree) {
-            if (iteration < 100) {
-              // Work around the inconsistency by retrying.
-              ++iteration;
-              continue;
-            }
-          }
-        }
+      if (qempty)
         break;
-      } else {  // qempty == false, retry.
-        ++iteration;
-        VLOG(1) << "Retrying " << iteration;
-        continue;
-      }
+
+      // A producer is in the middle of Push(), retry.
+      ++iteration;
+      VLOG(1) << "Retrying " << iteration;
+      continue;
     }
 
     // Marks as free.
@@ -444,30 +419,14 @@ bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
 
     DCHECK(fi->scheduler_ == this);
 
-    if (fi == active)
-      res = true;
-    // Generally, fi should not be in the ready queue if it's still in the remote queue,
-    // because being in the remote queue means fi is still registered in the wait_queue of
-    // some event. However, in case fi is waiting with timeout, ProcessSleep below can not
-    // remove fi from the wait_queue and from the remote queue. In that case fi will be put
-    // into special transitional state by adding it to ready_queue even though it's still
-    // blocked on the wait queue. When fi runs, it first unregisters itself from the
-    // wait queue atomically and pulls itself from the remote queue.
-    // There is a race condition between ProcessSleep and ProcessRemoteReady,
-    // where we can process remote notification before fi run,
-    // but after it was added to ready_queue. It's fine though, all we need to check is that
-    // fi->list_hook is not already linked.
-    //
-    // Another corner-case is that ProcessRemoteReady can be called
-    // by a FiberInterface::PullMyselfFromRemoteReadyQueue
-    // i.e. when fi is already active. In that case we should not add it to the ready queue.
-    if (fi != active && !fi->list_hook.is_linked()) {
+    // We run on the dispatcher, so `fi` is not running. If `fi` waited with a timeout,
+    // ProcessSleep() could have added it to the ready queue already, and this activation is
+    // absorbed. Otherwise `fi` is suspended in its wait or in FiberInterface::AwaitRemoteWake().
+    if (!fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
       AddReady(fi, fi->prio_ == FiberPriority::HIGH /* to_front */);
     }
   }
-
-  return res;
 }
 
 unsigned Scheduler::ProcessSleep() {

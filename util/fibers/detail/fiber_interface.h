@@ -240,7 +240,10 @@ class FiberInterface {
     return blocking_counter_;
   }
 
-  void PullMyselfFromRemoteReadyQueue();
+  // Must be called by a fiber that resumed on its own (e.g. timed out) after a remote waker had
+  // detached it from a wait queue, before the fiber waits again. If the remote activation is
+  // still in the remote queue, suspends until our scheduler pulls it from there.
+  void AwaitRemoteWake();
 
   bool IsScheduledRemotely() const {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
