@@ -25,9 +25,9 @@
 
 // #define RECORD_FIBER_NAMES 1
 
-ABSL_FLAG(uint32_t, fiber_safety_margin, 1024,
+ABSL_FLAG(uint16_t, fiber_safety_margin, 1024,
           "If > 0, ensures the stack each fiber has at least this margin. "
-          "The check is done at fiber destruction time.");
+          "The check is done at fiber destruction time. Values larger than 8192 are clamped.");
 
 ABSL_FLAG(uint32_t, fiber_run_warning_threshold_ms, 0,
           "If greater than 0, will warn if a fiber runs longer than this threshold. ");
