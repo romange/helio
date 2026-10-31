@@ -40,6 +40,8 @@
 ABSL_DECLARE_FLAG(std::string, proactor_tail_cpus);
 #endif
 
+ABSL_DECLARE_FLAG(uint32_t, scheduler_poll_min_usec);
+
 #ifdef __linux__
 #include <sys/epoll.h>
 #include <sys/syscall.h>
@@ -292,7 +294,10 @@ TEST_F(FiberTest, Basic) {
   fb1.Join();
   EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
   fb2.Join();
-  EXPECT_GE(GetFiberRunSeq(), 5);
+
+  // main->dispatcher->fb1->fb2->main: fb2 switches to main directly because the dispatcher would
+  // only start the next round.
+  EXPECT_GE(GetFiberRunSeq(), 4);
 
   // Second join does not preempt because fb2 finished running before.
   EXPECT_EQ(preempt_cnt_start + 1, ThisFiber::GetPreemptCount());
@@ -593,13 +598,13 @@ TEST_F(FiberTest, Remote) {
   t1.join();
 }
 
-// A fiber woken from another thread waits for the dispatcher's turn to be queued. With a remote
-// check interval, the first fiber that switches out after the interval ends the round, so it is
+// A fiber woken from another thread waits for the dispatcher's turn to be queued. With
+// poll_min_cycles, the first fiber that switches out after the interval ends the round, so it is
 // queued ahead of fibers launched later.
 TEST_F(FiberTest, RemoteWakeCheckInterval) {
   for (uint32_t usec : {0u, 1u}) {
-    detail::FiberActive()->scheduler()->UpdateConfig(
-        &detail::Scheduler::Config::remote_check_cycles, base::CycleClock::FromUsec(usec));
+    detail::FiberActive()->scheduler()->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles,
+                                                     base::CycleClock::FromUsec(usec));
     string order;
     detail::FiberInterface* sleeper = nullptr;
     Fiber fb_sleeper("sleeper", [&] {
@@ -631,8 +636,11 @@ TEST_F(FiberTest, RemoteWakeCheckInterval) {
     fb3.Join();
     EXPECT_EQ(usec ? "12s3" : "123s", order) << usec;
   }
-  detail::FiberActive()->scheduler()->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles,
-                                                   0);
+
+  // Restore the default.
+  detail::FiberActive()->scheduler()->UpdateConfig(
+      &detail::Scheduler::Config::poll_min_cycles,
+      base::CycleClock::FromUsec(absl::GetFlag(FLAGS_scheduler_poll_min_usec)));
 }
 
 TEST_F(FiberTest, Dispatch) {

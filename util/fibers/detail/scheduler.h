@@ -34,12 +34,19 @@ class Scheduler {
     uint64_t background_sleep_prob = 10;      // [0-100]% probability of sleeps when reaching budget
     uint64_t background_warrant_pct = 10;     // % of minimum cpu time background fibers get
 
-    // CycleClock cycles, if > 0, a fiber that switches out at least this long after remotely
-    // woken fibers were last pulled, while more are waiting, switches to the dispatcher ahead of
-    // its turn (see Preempt()). The dispatcher ends the round, pulls them and processes I/O
-    // before it starts the next round. 0 disables it: remotely woken fibers wait for the
-    // dispatcher's turn. Defaults to --scheduler_remote_queue_check_usec.
-    uint64_t remote_check_cycles = 0;
+    // The dispatcher polls for remote wakes, tasks and I/O events between rounds, and a round
+    // lasts until every fiber that was ready when it started switches out. A fiber that switches
+    // out at least poll_min_cycles after the last poll switches to the dispatcher ahead of its
+    // turn (see Preempt()), which ends the round and polls, if:
+    //   1. remotely woken fibers or tasks wait, or
+    //   2. at least poll_min_events I/O events wait, or
+    //   3. any I/O event waits and poll_max_cycles passed since the last poll.
+    // I/O events are counted by the dispatch policy, see DispatchPolicy::GetPendingWork().
+    // poll_min_cycles == 0 disables it, so pending work waits for the dispatcher's turn.
+    // Cycles are CycleClock cycles. Default to the --scheduler_poll_* flags.
+    uint64_t poll_min_cycles = 0;
+    uint64_t poll_max_cycles = 0;
+    uint64_t poll_min_events = 0;
   };
 
   Scheduler(FiberInterface* main);
@@ -141,6 +148,9 @@ class Scheduler {
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
+  // Returns true if the dispatcher should end the round and poll, see Config::poll_min_cycles.
+  bool ShouldPollEarly(uint64_t now);
+
   // For HIGH priority fibers, we still use NORMAL(0) queue.
   static constexpr unsigned GetQueueIndex(FiberPriority prio) {
     return prio == FiberPriority::HIGH ? 0 : unsigned(prio);
@@ -202,10 +212,13 @@ class Scheduler {
     uint64_t budget_cycles = 0;  // cycles, budget for running whole round robin
 
     uint32_t yields = 0;     // number of yields
-    bool end_round = false;  // set by Preempt() to end the round early, see remote_check_cycles
+    bool end_round = false;  // set by Preempt() to end the round early, see poll_min_cycles
+
+    // The dispatcher waits for its turn in RunReadyFibersInternal(NORMAL).
+    bool in_normal_round = false;
   } round_robin_run_;
 
-  uint64_t last_remote_check_cycles_ = 0;  // CycleClock of the last ProcessRemoteReady().
+  uint64_t last_poll_cycles_ = 0;  // CycleClock of the last ProcessRemoteReady().
 
   RuntimeCounter runtime_cycles_;  // total running times of fibers in cycles
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
@@ -229,6 +242,17 @@ class DispatchPolicy {
 
   virtual void Run(detail::Scheduler* sched) = 0;
   virtual void Notify() = 0;
+
+  struct PendingWork {
+    bool tasks = false;      // work queued by other threads, such as brief tasks.
+    uint32_t io_events = 0;  // a lower bound on the number of I/O events that wait.
+  };
+
+  // Returns the work that waits for the next poll of the dispatcher. Called by the scheduler
+  // while fibers run, see Scheduler::Config::poll_min_cycles, so it must be cheap.
+  virtual PendingWork GetPendingWork() {
+    return {};
+  }
 };
 
 void SetCustomDispatcher(DispatchPolicy* policy);

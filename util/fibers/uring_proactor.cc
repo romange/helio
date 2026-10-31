@@ -889,6 +889,9 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       ReapCompletions(cqe_count, cqes, dispatcher);
 
+      // TODO: while fibers keep the loop busy, sleeping fibers wake only here, at most once per
+      // 2.5ms and only after completions. Without completions they wait until the loop runs
+      // out of work. Consider expired sleep deadlines in Scheduler::ShouldPollEarly() as well.
       if (ShouldPollL2Tasks()) {
         RunL2Tasks(scheduler);
       }

@@ -16,10 +16,17 @@
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/stacktrace.h"
 
-ABSL_FLAG(uint32_t, scheduler_remote_queue_check_usec, 0,
-          "If greater than 0, a fiber that switches out at least this many usec after remotely "
-          "woken fibers were last pulled, while more are waiting, switches to the dispatcher, "
-          "which ends the round to pull them and process I/O. 0 disables it.");
+ABSL_FLAG(uint32_t, scheduler_poll_min_usec, 50,
+          "If greater than 0, a fiber that switches out at least this many usec after the "
+          "dispatcher last polled switches to the dispatcher, which ends the round and polls, if "
+          "remote wakes or tasks wait, or if enough I/O events wait (see "
+          "scheduler_poll_min_events and scheduler_poll_max_usec). 0 disables it.");
+ABSL_FLAG(uint32_t, scheduler_poll_max_usec, 200,
+          "With scheduler_poll_min_usec, a single I/O event ends the round once this many usec "
+          "passed since the dispatcher last polled.");
+ABSL_FLAG(uint32_t, scheduler_poll_min_events, 16,
+          "With scheduler_poll_min_usec, this many I/O events end the round once "
+          "scheduler_poll_min_usec passed since the dispatcher last polled.");
 
 namespace util {
 namespace fb2 {
@@ -185,9 +192,10 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   fibers_.push_back(*dispatch_cntx_);
   ready_queue_[GetQueueIndex(FiberPriority::NORMAL)].push_back(*dispatch_cntx_);
 
-  // Before CycleClock::InitOnce(), this converts to 0, which disables the check.
-  config_.remote_check_cycles =
-      CycleClock::FromUsec(absl::GetFlag(FLAGS_scheduler_remote_queue_check_usec));
+  // Before CycleClock::InitOnce(), this converts to 0, which disables early polls.
+  config_.poll_min_cycles = CycleClock::FromUsec(absl::GetFlag(FLAGS_scheduler_poll_min_usec));
+  config_.poll_max_cycles = CycleClock::FromUsec(absl::GetFlag(FLAGS_scheduler_poll_max_usec));
+  config_.poll_min_events = absl::GetFlag(FLAGS_scheduler_poll_min_events);
 }
 
 Scheduler::~Scheduler() {
@@ -285,17 +293,31 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
   auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  FiberInterface* dispatcher = dispatch_cntx_.get();
 
-  // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
-  // woken fibers and processes I/O before it starts the next round.
-  if (config_.remote_check_cycles &&
-      round_robin_run_.last_cycles - last_remote_check_cycles_ >= config_.remote_check_cycles &&
-      !remote_ready_queue_.Empty()) {
-    FiberInterface* dispatcher = dispatch_cntx_.get();
-    DCHECK(dispatcher->list_hook.is_linked());
-    rq.erase(rq.iterator_to(*dispatcher));
-    round_robin_run_.end_round = true;
-    return dispatcher->SwitchTo();
+  // The dispatcher waits for its turn in RunReadyFibersInternal(), so the round is ours to end.
+  if (round_robin_run_.in_normal_round) {
+    // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
+    // woken fibers and processes I/O before it starts the next round.
+    if (ShouldPollEarly(round_robin_run_.last_cycles)) {
+      DCHECK(dispatcher->list_hook.is_linked());
+      rq.erase(rq.iterator_to(*dispatcher));
+      round_robin_run_.end_round = true;
+      return dispatcher->SwitchTo();
+    }
+
+    // On its turn, the dispatcher would only start the next round with the fibers that became
+    // ready during this one, see RunReadyFibersInternal(). Start it here instead, which saves
+    // switching to the dispatcher and back.
+    if (&rq.front() == dispatcher && round_robin_run_.yields == 0 &&
+        round_robin_run_.took_cycles <= round_robin_run_.budget_cycles &&
+        std::next(rq.begin()) != rq.end()) {
+      rq.pop_front();
+      FiberInterface* fi = &rq.front();
+      rq.pop_front();
+      AddReady(dispatcher);
+      return fi->SwitchTo();
+    }
   }
 
   FiberInterface* fi = &rq.front();
@@ -421,9 +443,33 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
+bool Scheduler::ShouldPollEarly(uint64_t now) {
+  if (config_.poll_min_cycles == 0)
+    return false;
+
+  uint64_t since_poll = now - last_poll_cycles_;
+  if (since_poll < config_.poll_min_cycles)
+    return false;
+
+  if (!remote_ready_queue_.Empty())
+    return true;
+
+  if (custom_policy_ == nullptr)
+    return false;
+
+  // A poll may enter the kernel and splits batches of I/O events, so a few pending I/O events
+  // wait until poll_max_cycles passed.
+  DispatchPolicy::PendingWork pending = custom_policy_->GetPendingWork();
+  if (pending.tasks)
+    return true;
+
+  return pending.io_events > 0 &&
+         (pending.io_events >= config_.poll_min_events || since_poll >= config_.poll_max_cycles);
+}
+
 void Scheduler::ProcessRemoteReady() {
-  if (config_.remote_check_cycles)
-    last_remote_check_cycles_ = CycleClock::Now();
+  if (config_.poll_min_cycles)
+    last_poll_cycles_ = CycleClock::Now();
   unsigned iteration = 0;
 
   while (true) {
@@ -605,9 +651,11 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
       base::CycleClock::FromUsec((config_.*kBudgets[static_cast<unsigned>(priority)]) / 1000);
   round_robin_run_.yields = 0;
   round_robin_run_.end_round = false;
+  round_robin_run_.in_normal_round = priority == FiberPriority::NORMAL;
 
   // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
   // Yields cause it to stop running even with leftover budget to return to processing io events.
+  // Preempt() starts the next round itself when the loop below would just continue.
   // Background fibers are run until the budget allows it. Yield instructions don't even cause
   // fibers to switch to avoid context switch costs.
   do {
@@ -625,7 +673,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // Switch to fiber, next logic is determined by Preempt()
     fi->SwitchTo();
 
-    // Preempt() switched here ahead of our turn because remotely woken fibers are waiting.
+    // Preempt() switched here ahead of our turn because work waits, see ShouldPollEarly().
     if (round_robin_run_.end_round)
       break;
 
@@ -644,6 +692,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // because otherwise we may end up in a busy loop with a fiber keeps yielding and we never
     // return to the dispatcher.
   } while (HasReady(priority));
+  round_robin_run_.in_normal_round = false;
 
   runtime_cycles_[static_cast<size_t>(priority)] += round_robin_run_.took_cycles;
   if (priority == FiberPriority::NORMAL)
