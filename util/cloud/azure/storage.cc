@@ -12,6 +12,7 @@
 #include <boost/beast/http/buffer_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <pugixml.hpp>
+#include <tuple>
 
 #include "base/logging.h"
 #include "strings/escaping.h"
@@ -249,6 +250,7 @@ class WriteFile : public detail::AbstractStorageFile {
   // Azure has no request to discard staged blocks. Uncommitted blocks are garbage collected
   // after a week, but a failed Close() may have committed them already.
   ABSL_MUST_USE_RESULT error_code Abort() override {
+    std::ignore = WaitInflight();  // The block outcome is irrelevant, the upload is abandoned.
     return commit_attempted_ ? make_error_code(errc::operation_not_supported) : error_code{};
   }
 
@@ -260,6 +262,7 @@ class WriteFile : public detail::AbstractStorageFile {
 
   unique_ptr<UploadRequest> PrepareUploadBlockReq();
   unique_ptr<UploadBlockListRequest> PrepareBlockListReq();
+  ABSL_MUST_USE_RESULT error_code SendBlock(UploadRequest* req);
 
   unique_ptr<http::ClientPool> pool_;  // must be before client_handle_.
   string target_;
@@ -351,12 +354,14 @@ WriteFile::WriteFile(string_view path_prefix, string_view container, string_view
 }
 
 WriteFile::~WriteFile() {
+  FinishInflight();
 }
 
 error_code WriteFile::Close() {
   if (body_mb_.size() > 0) {
     RETURN_ERROR(Upload());
   }
+  RETURN_ERROR(WaitInflight());
   DCHECK_EQ(body_mb_.size(), 0u);
   auto req = PrepareBlockListReq();
 
@@ -379,10 +384,15 @@ error_code WriteFile::Upload() {
 
   auto req = PrepareUploadBlockReq();
 
-  error_code res;
+  return UploadInBackground("azure_upload_block", [this, req = std::move(req)]() mutable {
+    return SendBlock(req.get());
+  });
+}
+
+error_code WriteFile::SendBlock(UploadRequest* req) {
   RobustSender sender(pool_.get(), opts_.creds_provider);
   RobustSender::SenderResult send_res;
-  RETURN_ERROR(sender.Send(3, req.get(), &send_res));
+  RETURN_ERROR(sender.Send(3, req, &send_res));
 
   auto parser_ptr = std::move(send_res.eb_parser);
   const auto& resp_msg = parser_ptr->get();

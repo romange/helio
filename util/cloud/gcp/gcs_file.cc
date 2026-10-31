@@ -11,15 +11,13 @@
 #include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>  // for operator<<
+#include <tuple>
 
-#include "base/flags.h"
 #include "base/logging.h"
 #include "strings/escaping.h"
 #include "util/cloud/gcp/gcp_utils.h"
 #include "util/http/http_client.h"
 #include "util/http/http_common.h"
-
-ABSL_FLAG(bool, gcs_dry_upload, false, "");
 
 namespace util {
 
@@ -85,10 +83,12 @@ class GcsWriteFile : public detail::AbstractStorageFile {
   ~GcsWriteFile();
 
  private:
+  // Resumable uploads accept chunks only in order, which UploadInBackground() preserves.
   error_code Upload() final;
 
   using UploadRequest = detail::DynamicBodyRequestImpl;
   unique_ptr<UploadRequest> PrepareRequest(size_t to, ssize_t total);
+  ABSL_MUST_USE_RESULT error_code SendChunk(UploadRequest* req, size_t to);
 
   string upload_id_;
   size_t uploaded_ = 0;
@@ -139,55 +139,56 @@ GcsWriteFile::GcsWriteFile(string_view key, string_view upload_id, const GcsWrit
 }
 
 GcsWriteFile::~GcsWriteFile() {
+  // The in-flight chunk uses the pool, so it must finish before the pool is deleted.
+  FinishInflight();
+
   if (opts_.pool_owned) {
     delete opts_.pool;
   }
 }
 
 error_code GcsWriteFile::Close() {
+  RETURN_ERROR(WaitInflight());
+
   size_t to = uploaded_ + body_mb_.size();
   auto req = PrepareRequest(to, to);
 
-  string body;
-  if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(opts_.pool, opts_.creds_provider);
-
-    RobustSender::SenderResult send_res;
-    error_code ec = sender.Send(3, req.get(), &send_res);
-    if (ec) {
-      LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
-                 << req->GetHeaders() << ", status " << ec.message();
-      return ec;
-    }
-    h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
-    RETURN_ERROR(send_res.client_handle->Recv(&resp));
-
-    body = std::move(resp.get().body());
-
-    /*
-      body is in a json reponse with all the metadata of the object
-      {
-          "kind": "storage#object",
-          "id": "mybucket/roman/bar_0/1720889888465538",
-          "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/roman%2Fbar_0",
-          "mediaLink":
-        "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/roman%2Fbar_0?generation=1720889888465538&alt=media",
-          "name": "roman/bar_0",
-          "bucket": "mybucket",
-          "generation": "1720889888465538",
-          "metageneration": "1",
-          "storageClass": "STANDARD",
-          "size": "27270144",
-          "md5Hash": "O/P7e3k8qxRQaomHhn0H9Q==",
-          "crc32c": "8s2ltw==",
-          "etag": "CILF/7O+pIcDEAE=",
-          "timeCreated": "2024-07-13T16:58:08.476Z",
-          "updated": "2024-07-13T16:58:08.476Z",
-          "timeStorageClassUpdated": "2024-07-13T16:58:08.476Z"
-      }
-
-    */
+  RobustSender sender(opts_.pool, opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  error_code ec = sender.Send(3, req.get(), &send_res);
+  if (ec) {
+    LOG(ERROR) << "Error closing GCS file " << create_file_name() << " for request: \n"
+               << req->GetHeaders() << ", status " << ec.message();
+    return ec;
   }
+  h2::response_parser<h2::string_body> resp(std::move(*send_res.eb_parser));
+  RETURN_ERROR(send_res.client_handle->Recv(&resp));
+
+  string body = std::move(resp.get().body());
+
+  /*
+    body is in a json reponse with all the metadata of the object
+    {
+        "kind": "storage#object",
+        "id": "mybucket/roman/bar_0/1720889888465538",
+        "selfLink": "https://www.googleapis.com/storage/v1/b/mybucket/o/roman%2Fbar_0",
+        "mediaLink":
+      "https://storage.googleapis.com/download/storage/v1/b/mybucket/o/roman%2Fbar_0?generation=1720889888465538&alt=media",
+        "name": "roman/bar_0",
+        "bucket": "mybucket",
+        "generation": "1720889888465538",
+        "metageneration": "1",
+        "storageClass": "STANDARD",
+        "size": "27270144",
+        "md5Hash": "O/P7e3k8qxRQaomHhn0H9Q==",
+        "crc32c": "8s2ltw==",
+        "etag": "CILF/7O+pIcDEAE=",
+        "timeCreated": "2024-07-13T16:58:08.476Z",
+        "updated": "2024-07-13T16:58:08.476Z",
+        "timeStorageClassUpdated": "2024-07-13T16:58:08.476Z"
+    }
+
+  */
 
   VLOG(1) << "Closed file " << req->GetHeaders() << "\n" << body;
 
@@ -195,6 +196,8 @@ error_code GcsWriteFile::Close() {
 }
 
 error_code GcsWriteFile::Abort() {
+  std::ignore = WaitInflight();  // The chunk outcome is irrelevant, the whole upload is cancelled.
+
   // Cancels the resumable upload session, see
   // https://cloud.google.com/storage/docs/performing-resumable-uploads#cancel-upload
   detail::EmptyRequestImpl req(h2::verb::delete_, upload_id_);
@@ -216,29 +219,31 @@ error_code GcsWriteFile::Upload() {
   size_t to = uploaded_ + body_size;
 
   auto req = PrepareRequest(to, -1);
-
-  error_code res;
-  if (!absl::GetFlag(FLAGS_gcs_dry_upload)) {
-    RobustSender sender(opts_.pool, opts_.creds_provider);
-    RobustSender::SenderResult send_res;
-    RETURN_ERROR(sender.Send(3, req.get(), &send_res));
-
-    VLOG(1) << "Uploaded range " << uploaded_ << "/" << to << " for " << upload_id_;
-    auto parser_ptr = std::move(send_res.eb_parser);
-    const auto& resp_msg = parser_ptr->get();
-    auto it = resp_msg.find(h2::field::range);
-    CHECK(it != resp_msg.end()) << resp_msg;
-
-    string_view range = detail::FromBoostSV(it->value());
-    CHECK(absl::ConsumePrefix(&range, "bytes="));
-    size_t pos = range.find('-');
-    CHECK_LT(pos, range.size());
-    size_t uploaded_pos = 0;
-    CHECK(absl::SimpleAtoi(range.substr(pos + 1), &uploaded_pos));
-    CHECK_EQ(uploaded_pos + 1, to);
-  }
-
   uploaded_ = to;
+
+  return UploadInBackground("gcs_upload_chunk", [this, req = std::move(req), to]() mutable {
+    return SendChunk(req.get(), to);
+  });
+}
+
+error_code GcsWriteFile::SendChunk(UploadRequest* req, size_t to) {
+  RobustSender sender(opts_.pool, opts_.creds_provider);
+  RobustSender::SenderResult send_res;
+  RETURN_ERROR(sender.Send(3, req, &send_res));
+
+  VLOG(1) << "Uploaded range up to " << to << " for " << upload_id_;
+  auto parser_ptr = std::move(send_res.eb_parser);
+  const auto& resp_msg = parser_ptr->get();
+  auto it = resp_msg.find(h2::field::range);
+  CHECK(it != resp_msg.end()) << resp_msg;
+
+  string_view range = detail::FromBoostSV(it->value());
+  CHECK(absl::ConsumePrefix(&range, "bytes="));
+  size_t pos = range.find('-');
+  CHECK_LT(pos, range.size());
+  size_t uploaded_pos = 0;
+  CHECK(absl::SimpleAtoi(range.substr(pos + 1), &uploaded_pos));
+  CHECK_EQ(uploaded_pos + 1, to);
   return {};
 }
 

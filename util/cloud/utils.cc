@@ -101,12 +101,27 @@ error_code EnableKeepAlive(int fd) {
 }
 
 io::Result<size_t> AbstractStorageFile::WriteSome(const iovec* v, uint32_t len) {
+  // Reports a failed background part upload on the next write, not only at part boundaries.
+  if (upload_ec_)
+    return nonstd::make_unexpected(upload_ec_);
+
   size_t total = 0;
   for (uint32_t i = 0; i < len; ++i) {
-    RETURN_UNEXPECTED(FillBuf(reinterpret_cast<const uint8_t*>(v->iov_base), v->iov_len));
-    total += v->iov_len;
+    RETURN_UNEXPECTED(FillBuf(reinterpret_cast<const uint8_t*>(v[i].iov_base), v[i].iov_len));
+    total += v[i].iov_len;
   }
   return total;
+}
+
+error_code AbstractStorageFile::WaitInflight() {
+  inflight_.JoinIfNeeded();
+  return upload_ec_;
+}
+
+void AbstractStorageFile::FinishInflight() {
+  error_code ec = WaitInflight();
+  LOG_IF(WARNING, ec) << "Uploading a part of " << create_file_name()
+                      << " failed: " << ec.message();
 }
 
 error_code AbstractStorageFile::FillBuf(const uint8_t* buffer, size_t length) {
