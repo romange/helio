@@ -1625,6 +1625,65 @@ TEST_F(FiberTest, ParkQueueWakeAllSplicesIntoList) {
   fb.Join();
 }
 
+TEST_F(FiberTest, LocalityParkQueueSingleThread) {
+  constexpr unsigned kNumFibers = 4;
+  LocalityParkQueue queue;
+  unsigned parked = 0;
+  vector<unsigned> order;
+  Fiber fbs[kNumFibers];
+
+  auto park_all = [&] {
+    parked = 0;
+    for (unsigned i = 0; i < kNumFibers; ++i) {
+      fbs[i] = Fiber(StrCat("parker", i), [&, i] {
+        LocalityParkNode node;
+        queue.Push(&node);
+        ++parked;
+        node.Park();
+        order.push_back(i);
+      });
+    }
+    while (parked < kNumFibers) {
+      ThisFiber::Yield();
+    }
+  };
+
+  {
+    WakeList wakes;
+    EXPECT_FALSE(queue.WakeOne(&wakes));
+    EXPECT_FALSE(queue.WakeNear(&wakes));
+    queue.WakeAll(&wakes);
+    EXPECT_TRUE(wakes.empty());
+  }
+
+  // All nodes share the waker's thread, so WakeNear() keeps FIFO order as well.
+  park_all();
+  for (unsigned i = 0; i < kNumFibers; ++i) {
+    WakeList wakes;
+    EXPECT_TRUE(i % 2 ? queue.WakeNear(&wakes) : queue.WakeOne(&wakes));
+    wakes.Wake();
+    ThisFiber::Yield();
+  }
+  EXPECT_TRUE(queue.empty());
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_THAT(order, ElementsAre(0, 1, 2, 3));
+
+  // Nodes can be pushed again after the queue drains, and WakeAll() detaches all of them.
+  order.clear();
+  park_all();
+  {
+    WakeList wakes;
+    queue.WakeAll(&wakes);
+    EXPECT_TRUE(queue.empty());
+  }
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_THAT(order, UnorderedElementsAre(0, 1, 2, 3));
+}
+
 // A thread with the default dispatcher may exit right after its parked fiber is woken, while the
 // remote waker is still notifying that thread's dispatcher.
 TEST_F(FiberTest, ParkedThreadExitsRightAfterWake) {
@@ -1774,6 +1833,140 @@ TEST_P(ProactorTest, ParkQueueWakeAllAcrossThreads) {
   }
   EXPECT_EQ(published.load(), kRounds * kWaiters);
   EXPECT_EQ(arrivals.load(), kRounds * kWaiters);
+  EXPECT_TRUE(queue.empty());
+}
+
+// WakeNear() prefers nodes of the waker's thread over an older node of another thread, within
+// the bypass and wait bounds. Wake() on the main fiber here is the waker.
+TEST_P(ProactorTest, LocalityParkQueuePrefersNearNodes) {
+  constexpr unsigned kLocal = 4;
+  constexpr unsigned kRemote = kLocal;  // Id of the node on the proactor thread.
+
+  struct IdNode : public LocalityParkNode {
+    unsigned id;
+  };
+
+  auto run = [&](uint32_t max_wait_usec, uint32_t max_bypass) {
+    base::SpinLock lock;
+    LocalityParkQueue queue(max_wait_usec, max_bypass);  // Protected by `lock`.
+    atomic_uint parked{0};
+
+    // The remote node is the oldest one.
+    Fiber remote = proactor()->LaunchFiber("remote", [&] {
+      IdNode node;
+      node.id = kRemote;
+      {
+        lock_guard guard(lock);
+        queue.Push(&node);
+      }
+      parked.fetch_add(1, memory_order_release);
+      node.Park();
+    });
+    while (parked.load(memory_order_acquire) < 1) {
+      ThisFiber::SleepFor(1ms);
+    }
+
+    Fiber local[kLocal];
+    for (unsigned i = 0; i < kLocal; ++i) {
+      local[i] = Fiber(StrCat("local", i), [&, i] {
+        IdNode node;
+        node.id = i;
+        {
+          lock_guard guard(lock);
+          queue.Push(&node);
+        }
+        parked.fetch_add(1, memory_order_release);
+        node.Park();
+      });
+    }
+    while (parked.load(memory_order_acquire) < kLocal + 1) {
+      ThisFiber::Yield();
+    }
+
+    vector<unsigned> popped;
+    while (true) {
+      WakeList wakes;
+      lock_guard guard(lock);
+      LocalityParkNode* node = queue.PopNear();
+      if (!node)
+        break;
+      popped.push_back(static_cast<IdNode*>(node)->id);
+      wakes.Add(node);
+    }
+    remote.Join();
+    for (auto& fb : local) {
+      fb.Join();
+    }
+    return popped;
+  };
+
+  // The remote node is taken once it was bypassed twice.
+  EXPECT_THAT(run(1000000, 2), ElementsAre(0, 1, kRemote, 2, 3));
+
+  // The remote node has waited longer than the bound, so it is taken first.
+  EXPECT_THAT(run(0, 2), ElementsAre(kRemote, 0, 1, 2, 3));
+}
+
+// Direct handoff of a token between fibers on several threads, through WakeNear().
+TEST_P(ProactorTest, LocalityParkQueueHandoffAcrossThreads) {
+  constexpr unsigned kThreads = 3;
+  constexpr unsigned kFibersPerThread = 4;
+  constexpr unsigned kRounds = 2000;
+
+  unique_ptr<ProactorThread> ths[kThreads];
+  for (auto& th : ths) {
+    th = CreateProactorThread();
+  }
+
+  base::SpinLock lock;
+  bool held = false;               // Protected by `lock`.
+  LocalityParkQueue queue(20, 4);  // Protected by `lock`.
+  atomic_bool in_section{false};
+  unsigned acquisitions = 0;  // Protected by the token.
+  unsigned handoffs = 0;      // Protected by the token.
+  vector<Fiber> fbs;
+
+  for (unsigned i = 0; i < kThreads * kFibersPerThread; ++i) {
+    ProactorBase* p = ths[i % kThreads]->proactor.get();
+    fbs.push_back(p->LaunchFiber(StrCat("worker", i), [&, i] {
+      for (unsigned r = 0; r < kRounds; ++r) {
+        std::unique_lock lk(lock);
+        bool handed = held;
+        if (held) {
+          LocalityParkNode node;
+          queue.Push(&node);
+          lk.unlock();
+          node.Park();
+        } else {
+          held = true;
+          lk.unlock();
+        }
+
+        EXPECT_FALSE(in_section.exchange(true, memory_order_acq_rel));
+        ++acquisitions;
+        handoffs += handed;
+        in_section.store(false, memory_order_release);
+
+        {
+          WakeList wakes;
+          std::lock_guard guard(lock);
+          if (!queue.WakeNear(&wakes)) {
+            held = false;
+          }
+        }
+        if ((r + i) % 8 == 0) {
+          ThisFiber::Yield();
+        }
+      }
+    }));
+  }
+
+  for (auto& fb : fbs) {
+    fb.Join();
+  }
+  EXPECT_EQ(acquisitions, kThreads * kFibersPerThread * kRounds);
+  EXPECT_GT(handoffs, 0u);
+  EXPECT_FALSE(held);
   EXPECT_TRUE(queue.empty());
 }
 
