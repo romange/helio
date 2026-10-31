@@ -11,9 +11,15 @@
 #include <mutex>
 
 #include "base/cycle_clock.h"
+#include "base/flags.h"
 #include "base/logging.h"
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/stacktrace.h"
+
+
+ABSL_FLAG(uint16_t, scheduler_remote_queue_check_usec, 0,
+          "If greater than 0, will warn if a fiber runs longer than this threshold. ");
+
 
 namespace util {
 namespace fb2 {
@@ -178,6 +184,10 @@ Scheduler::Scheduler(FiberInterface* main_cntx) : main_cntx_(main_cntx) {
   fibers_.push_back(*main_cntx);
   fibers_.push_back(*dispatch_cntx_);
   ready_queue_[GetQueueIndex(FiberPriority::NORMAL)].push_back(*dispatch_cntx_);
+
+  uint32_t check_usec = absl::GetFlag(FLAGS_scheduler_remote_queue_check_usec);
+  if (check_usec)
+    remote_check_cycles_ = base::CycleClock::FromUsec(check_usec);
 }
 
 Scheduler::~Scheduler() {
@@ -275,6 +285,19 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
   auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+
+  // Switch to the dispatcher ahead of its turn, so it moves remotely woken fibers to the ready
+  // queue. It continues the round after that.
+  if (round_robin_run_.last_cycles - last_remote_check_cycles_ >= remote_check_cycles_ &&
+      !remote_ready_queue_.Empty()) {
+    FiberInterface* dispatcher = dispatch_cntx_.get();
+    if (&rq.front() != dispatcher) {
+      DCHECK(dispatcher->list_hook.is_linked());
+      rq.erase(rq.iterator_to(*dispatcher));
+      return dispatcher->SwitchTo();
+    }
+  }
+
   FiberInterface* fi = &rq.front();
   rq.pop_front();
   return fi->SwitchTo();
@@ -405,6 +428,8 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
 
 bool Scheduler::ProcessRemoteReady(FiberInterface* active) {
   bool res = false;
+  if (remote_check_cycles_ != UINT64_MAX)
+    last_remote_check_cycles_ = CycleClock::Now();
   unsigned iteration = 0;
 
   while (true) {
@@ -631,6 +656,10 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
     // Switch to fiber, next logic is determined by Preempt()
     fi->SwitchTo();
+
+    // Preempt() may have switched here early to move remotely woken fibers.
+    if (!remote_ready_queue_.Empty())
+      ProcessRemoteReady(nullptr);
 
     // It could be that we iterate over multiple fibers and meanwhile we postpone the execution of
     // brief tasks or do not handle I/O events. Therefore we limit the time spent in the loop

@@ -16,12 +16,14 @@
 #include <shared_mutex>
 #include <thread>
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/wait_queue.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
@@ -589,6 +591,46 @@ TEST_F(FiberTest, Remote) {
   fb1.Join();
   LOG(INFO) << "fb1 joined";
   t1.join();
+}
+
+// A fiber woken from another thread runs after the fibers ahead of the dispatcher in the ready
+// queue. With a remote check interval, it is queued as soon as a fiber switches out after the
+// interval, ahead of fibers launched later in the round.
+TEST_F(FiberTest, RemoteWakeCheckInterval) {
+  for (uint32_t usec : {0u, 1u}) {
+    detail::Scheduler::SetRemoteCheckInterval(usec);
+    string order;
+    detail::FiberInterface* sleeper = nullptr;
+    Fiber fb_sleeper("sleeper", [&] {
+      sleeper = detail::FiberActive();
+      ThisFiber::SleepFor(1h);
+      order += 's';
+    });
+
+    // Resume from the sleep queue, so the dispatcher starts a round with only this fiber ready
+    // and queues itself behind it. f1 and f2 are then queued behind the dispatcher.
+    ThisFiber::SleepFor(1ms);
+    ASSERT_TRUE(sleeper);
+    Fiber fb3;
+    Fiber fb1("f1", [&] {
+      thread([&] { detail::FiberActive()->ActivateOther(sleeper); }).join();
+      uint64_t start = base::CycleClock::Now();
+      while (base::CycleClock::Now() - start < base::CycleClock::FromUsec(20)) {
+      }
+      order += '1';
+    });
+    Fiber fb2("f2", [&] {
+      order += '2';
+      fb3 = Fiber("f3", [&] { order += '3'; });
+    });
+
+    fb_sleeper.Join();
+    fb1.Join();
+    fb2.Join();
+    fb3.Join();
+    EXPECT_EQ(usec ? "12s3" : "123s", order) << usec;
+  }
+  detail::Scheduler::SetRemoteCheckInterval(0);
 }
 
 TEST_F(FiberTest, Dispatch) {

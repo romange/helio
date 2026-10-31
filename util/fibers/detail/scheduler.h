@@ -196,6 +196,9 @@ class Scheduler {
     uint64_t yields = 0;  // number of yields
   } round_robin_run_;
 
+  uint64_t last_remote_check_cycles_ = 0;  // CycleClock of the last ProcessRemoteReady().
+  uint64_t remote_check_cycles_ = UINT64_MAX;
+
   RuntimeCounter runtime_cycles_;  // total running times of fibers in cycles
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
   SleepQueue sleep_queue_;
