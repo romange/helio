@@ -292,37 +292,45 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     AddReady(active_fiber);
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
-  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
-  FiberInterface* dispatcher = dispatch_cntx_.get();
 
   // The dispatcher waits for its turn in RunReadyFibersInternal(), so the round is ours to end.
   if (round_robin_run_.in_normal_round) {
     // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
     // woken fibers and processes I/O before it starts the next round.
-    if (ShouldPollEarly(round_robin_run_.last_cycles)) {
-      DCHECK(dispatcher->list_hook.is_linked());
-      rq.erase(rq.iterator_to(*dispatcher));
-      round_robin_run_.end_round = true;
-      return dispatcher->SwitchTo();
-    }
-
-    // On its turn, the dispatcher would only start the next round with the fibers that became
-    // ready during this one, see RunReadyFibersInternal(). Start it here instead, which saves
-    // switching to the dispatcher and back.
-    if (&rq.front() == dispatcher && round_robin_run_.yields == 0 &&
-        round_robin_run_.took_cycles <= round_robin_run_.budget_cycles &&
-        std::next(rq.begin()) != rq.end()) {
-      rq.pop_front();
-      FiberInterface* fi = &rq.front();
-      rq.pop_front();
-      AddReady(dispatcher);
-      return fi->SwitchTo();
-    }
+    if (ShouldPollEarly(round_robin_run_.last_cycles))
+      return EndRoundEarly();
+    SkipDispatcherTurn();
   }
 
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
   FiberInterface* fi = &rq.front();
   rq.pop_front();
   return fi->SwitchTo();
+}
+
+// EndRoundEarly() and SkipDispatcherTurn() are separate functions, because Preempt() runs on the
+// stack of every fiber that switches out, and in unoptimized sanitizer builds their code adds
+// hundreds of bytes to its frame.
+ctx::fiber_context Scheduler::EndRoundEarly() {
+  FiberInterface* dispatcher = dispatch_cntx_.get();
+  DCHECK(dispatcher->list_hook.is_linked());
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  rq.erase(rq.iterator_to(*dispatcher));
+  round_robin_run_.end_round = true;
+  return dispatcher->SwitchTo();
+}
+
+// On its turn, the dispatcher would only start the next round with the fibers that became ready
+// during this one, see RunReadyFibersInternal(). Moving it behind them starts that round here,
+// which saves switching to the dispatcher and back.
+void Scheduler::SkipDispatcherTurn() {
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  FiberInterface* dispatcher = dispatch_cntx_.get();
+  if (&rq.front() == dispatcher && &rq.back() != dispatcher && round_robin_run_.yields == 0 &&
+      round_robin_run_.took_cycles <= round_robin_run_.budget_cycles) {
+    rq.pop_front();
+    rq.push_back(*dispatcher);
+  }
 }
 
 void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
