@@ -43,6 +43,14 @@ class EpollProactor : public ProactorBase {
   void DispatchCompletions(const void* cevents, unsigned count);
 
   void MainLoop(detail::Scheduler* sched) final;
+
+  // epoll can not tell whether events are ready without a syscall, so it assumes one is.
+  DispatchPolicy::PendingWork GetPendingWork() const final {
+    DispatchPolicy::PendingWork res = ProactorBase::GetPendingWork();
+    res.io_events = 1;
+    return res;
+  }
+
   LinuxSocketBase* CreateSocket() final;
   void SchedulePeriodic(uint32_t id, PeriodicItem* item) final;
   void CancelPeriodicInternal(PeriodicItem* item) final;
