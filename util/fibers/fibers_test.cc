@@ -7,6 +7,7 @@
 #include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
+#include <arpa/inet.h>
 #include <gmock/gmock.h>
 
 #include <algorithm>
@@ -26,6 +27,7 @@
 #include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "util/fibers/dns_resolve.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
@@ -100,6 +102,24 @@ testing::Environment* const kThreadsafeDeathTestEnv =
 class FiberTest : public testing::Test {
  public:
 };
+
+TEST_F(FiberTest, DnsResolveImmediateCompletion) {
+  static const bool initialized = [] {
+    InitDnsResolver(100);
+    return true;
+  }();
+  (void)initialized;
+
+  char dest_ip[INET6_ADDRSTRLEN] = {};
+  EXPECT_FALSE(DnsResolve("127.0.0.1", dest_ip));
+  EXPECT_STREQ("127.0.0.1", dest_ip);
+  EXPECT_FALSE(DnsResolve("::1", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+
+  // c-ares rejects .onion names synchronously without accessing the network.
+  EXPECT_EQ(make_error_code(errc::address_not_available), DnsResolve("test.onion", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+}
 
 struct ProactorThread {
   std::unique_ptr<ProactorBase> proactor;
