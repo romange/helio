@@ -160,6 +160,10 @@ class Scheduler {
   // ends the round. See Config::poll_min_cycles.
   ::boost::context::fiber_context EndRoundEarly();
 
+  // Called by Preempt(): if the dispatcher is next in the round and other fibers are ready, moves
+  // it behind them so they run without a dispatcher turn in between.
+  void SkipDispatcherTurn();
+
   // For HIGH priority fibers, we still use NORMAL(0) queue.
   static constexpr unsigned GetQueueIndex(FiberPriority prio) {
     return prio == FiberPriority::HIGH ? 0 : unsigned(prio);

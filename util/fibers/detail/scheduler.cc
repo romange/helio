@@ -299,6 +299,7 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     // woken fibers and processes I/O before it starts the next round.
     if (ShouldPollEarly(round_robin_run_.last_cycles))
       return EndRoundEarly();
+    SkipDispatcherTurn();
   }
 
   auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
@@ -307,8 +308,9 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
   return fi->SwitchTo();
 }
 
-// A separate function, because Preempt() runs on the stack of every fiber that switches out,
-// and in unoptimized sanitizer builds this code adds hundreds of bytes to its frame.
+// EndRoundEarly() and SkipDispatcherTurn() are separate functions, because Preempt() runs on the
+// stack of every fiber that switches out, and in unoptimized sanitizer builds their code adds
+// hundreds of bytes to its frame.
 ctx::fiber_context Scheduler::EndRoundEarly() {
   FiberInterface* dispatcher = dispatch_cntx_.get();
   DCHECK(dispatcher->list_hook.is_linked());
@@ -316,6 +318,19 @@ ctx::fiber_context Scheduler::EndRoundEarly() {
   rq.erase(rq.iterator_to(*dispatcher));
   round_robin_run_.end_round = true;
   return dispatcher->SwitchTo();
+}
+
+// On its turn, the dispatcher would only start the next round with the fibers that became ready
+// during this one, see RunReadyFibersInternal(). Moving it behind them starts that round here,
+// which saves switching to the dispatcher and back.
+void Scheduler::SkipDispatcherTurn() {
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  FiberInterface* dispatcher = dispatch_cntx_.get();
+  if (&rq.front() == dispatcher && &rq.back() != dispatcher && round_robin_run_.yields == 0 &&
+      round_robin_run_.took_cycles <= round_robin_run_.budget_cycles) {
+    rq.pop_front();
+    rq.push_back(*dispatcher);
+  }
 }
 
 void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
@@ -653,6 +668,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
   // Normal fibers are run in round robin fashion with the dispatch fiber being among the round.
   // Yields cause it to stop running even with leftover budget to return to processing io events.
+  // Preempt() starts the next round itself when the loop below would just continue.
   // Background fibers are run until the budget allows it. Yield instructions don't even cause
   // fibers to switch to avoid context switch costs.
   do {
