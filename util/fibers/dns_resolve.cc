@@ -2,14 +2,19 @@
 // See LICENSE for licensing terms.
 //
 
+#include <absl/cleanup/cleanup.h>
 #include <ares.h>
 #include <netdb.h>
 #include <sys/socket.h>
+
+#include <optional>
+#include <vector>
 
 #include "base/logging.h"
 #include "base/stl_util.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/proactor_base.h"
+#include "util/fibers/synchronization.h"
 
 #ifdef __linux__
 #include "util/fibers/uring_proactor.h"
@@ -24,9 +29,9 @@ namespace {
 
 struct DnsResolveCallbackArgs {
   char* dest_ip = nullptr;
-  fb2::detail::FiberInterface* cntx = nullptr;
+  optional<Done> completion;
   std::error_code ec;
-  bool done = false;  // Should we use optional<ec> above instead of the additional bool field?
+  bool done = false;
 };
 
 struct AresSocketState {
@@ -114,38 +119,41 @@ void UpdateSocketsCallback(void* arg, ares_socket_t socket_fd, int readable, int
 
 void DnsResolveCallback(void* ares_arg, int status, int timeouts, struct ares_addrinfo* res) {
   auto* cb_args = static_cast<DnsResolveCallbackArgs*>(ares_arg);
-  cb_args->done = true;
+  absl::Cleanup free_result = [res] { ares_freeaddrinfo(res); };
   VLOG(1) << "DnsResolveCallback: " << status << " " << timeouts << " " << (res ? res->name : "");
 
-  if (cb_args->cntx) {
-    fb2::detail::FiberActive()->ActivateOther(cb_args->cntx);
-  }
-
-  if (status != ARES_SUCCESS || res->nodes == nullptr) {
+  if (status != ARES_SUCCESS) {
     cb_args->ec = make_error_code(errc::address_not_available);
-    return;
+  } else {
+    auto* node = res->nodes;
+
+    // If IpV4 is available, prefer it
+    if (node->ai_family == AF_INET6 && node->ai_next != nullptr &&
+        node->ai_next->ai_family == AF_INET)
+      node = node->ai_next;
+
+    switch (node->ai_family) {
+      case AF_INET: {
+        auto* addr_in = reinterpret_cast<sockaddr_in*>(node->ai_addr);
+        ares_inet_ntop(AF_INET, &addr_in->sin_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
+        break;
+      }
+      case AF_INET6: {
+        auto* addr_in6 = reinterpret_cast<sockaddr_in6*>(node->ai_addr);
+        ares_inet_ntop(AF_INET6, &addr_in6->sin6_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
+        break;
+      }
+      default:
+        cb_args->ec = make_error_code(errc::invalid_argument);
+    }
   }
 
-  auto* node = res->nodes;
-
-  // If IpV4 is available, prefer it
-  if (node->ai_family == AF_INET6 && node->ai_next != nullptr &&
-      node->ai_next->ai_family == AF_INET)
-    node = node->ai_next;
-
-  switch (node->ai_family) {
-    case AF_INET: {
-      auto* addr_in = reinterpret_cast<sockaddr_in*>(node->ai_addr);
-      ares_inet_ntop(AF_INET, &addr_in->sin_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
-      break;
-    }
-    case AF_INET6: {
-      auto* addr_in6 = reinterpret_cast<sockaddr_in6*>(node->ai_addr);
-      ares_inet_ntop(AF_INET6, &addr_in6->sin6_addr, cb_args->dest_ip, INET6_ADDRSTRLEN);
-      break;
-    }
-    default:
-      cb_args->ec = make_error_code(errc::invalid_argument);
+  cb_args->done = true;
+  if (cb_args->completion) {
+    // The waiter can return as soon as Notify() publishes completion. Keep the completion
+    // alive locally and never access cb_args or dest_ip after notifying.
+    Done completion = *cb_args->completion;
+    completion.Notify();
   }
 }
 
@@ -174,9 +182,19 @@ void ProcessChannel(ares_channel channel, AresChannelState* state, DnsResolveCal
       state->cond.wait(lk);
     }
 
+    // c-ares may insert sockets and rehash the map while processing a response.
+    vector<ares_socket_t> sockets;
+    sockets.reserve(state->sockets_state.size());
     for (const auto& [socket_fd, socket_state] : state->sockets_state) {
-      int read_fd = HasReads(socket_state.mask) ? socket_fd : ARES_SOCKET_BAD;
-      int write_fd = HasWrites(socket_state.mask) ? socket_fd : ARES_SOCKET_BAD;
+      if (!socket_state.removed)
+        sockets.push_back(socket_fd);
+    }
+    for (ares_socket_t socket_fd : sockets) {
+      auto it = state->sockets_state.find(socket_fd);
+      if (it == state->sockets_state.end() || it->second.removed)
+        continue;
+      int read_fd = HasReads(it->second.mask) ? socket_fd : ARES_SOCKET_BAD;
+      int write_fd = HasWrites(it->second.mask) ? socket_fd : ARES_SOCKET_BAD;
       VLOG(2) << "ares_process_fd: " << read_fd << " " << write_fd;
       ares_process_fd(channel, read_fd, write_fd);
     }
@@ -209,9 +227,9 @@ error_code DnsResolve(const string& host, char dest_ip[]) {
 
   DnsResolveCallbackArgs cb_args;
   cb_args.dest_ip = dest_ip;
-  cb_args.cntx = fb2::detail::FiberActive();
+  cb_args.completion.emplace();
   ares_getaddrinfo(*channel, host.c_str(), NULL, &hints, DnsResolveCallback, &cb_args);
-  fb2::detail::FiberActive()->Suspend();
+  cb_args.completion->Wait();
 
   return cb_args.ec;
 }

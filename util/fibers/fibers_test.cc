@@ -4,8 +4,10 @@
 
 #include "util/fibers/fibers.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
+#include <arpa/inet.h>
 #include <gmock/gmock.h>
 
 #include <algorithm>
@@ -16,13 +18,16 @@
 #include <shared_mutex>
 #include <thread>
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "util/fibers/dns_resolve.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
@@ -97,6 +102,24 @@ testing::Environment* const kThreadsafeDeathTestEnv =
 class FiberTest : public testing::Test {
  public:
 };
+
+TEST_F(FiberTest, DnsResolveImmediateCompletion) {
+  static const bool initialized = [] {
+    InitDnsResolver(100);
+    return true;
+  }();
+  (void)initialized;
+
+  char dest_ip[INET6_ADDRSTRLEN] = {};
+  EXPECT_FALSE(DnsResolve("127.0.0.1", dest_ip));
+  EXPECT_STREQ("127.0.0.1", dest_ip);
+  EXPECT_FALSE(DnsResolve("::1", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+
+  // c-ares rejects .onion names synchronously without accessing the network.
+  EXPECT_EQ(make_error_code(errc::address_not_available), DnsResolve("test.onion", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+}
 
 struct ProactorThread {
   std::unique_ptr<ProactorBase> proactor;
@@ -605,6 +628,51 @@ TEST_F(FiberTest, Remote) {
   fb1.Join();
   LOG(INFO) << "fb1 joined";
   t1.join();
+}
+
+// A fiber woken from another thread waits for the dispatcher's turn to be queued. With a remote
+// check interval, the first fiber that switches out after the interval ends the round, so it is
+// queued ahead of fibers launched later.
+TEST_F(FiberTest, RemoteWakeCheckInterval) {
+  detail::Scheduler* sched = detail::FiberActive()->scheduler();
+  absl::Cleanup restore = [sched, prev = sched->config().remote_check_cycles] {
+    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles, prev);
+  };
+
+  for (uint32_t usec : {0u, 1u}) {
+    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles,
+                        base::CycleClock::FromUsec(usec));
+    string order;
+    detail::FiberInterface* sleeper = nullptr;
+    Fiber fb_sleeper("sleeper", [&] {
+      sleeper = detail::FiberActive();
+      ThisFiber::SleepFor(1h);
+      order += 's';
+    });
+
+    // Resume from the sleep queue, so the dispatcher starts a round with only this fiber ready
+    // and queues itself behind it. f1 and f2 are then queued behind the dispatcher.
+    ThisFiber::SleepFor(1ms);
+    ASSERT_TRUE(sleeper);
+    Fiber fb3;
+    Fiber fb1("f1", [&] {
+      thread([&] { detail::FiberActive()->ActivateOther(sleeper); }).join();
+      uint64_t start = base::CycleClock::Now();
+      while (base::CycleClock::Now() - start < base::CycleClock::FromUsec(20)) {
+      }
+      order += '1';
+    });
+    Fiber fb2("f2", [&] {
+      order += '2';
+      fb3 = Fiber("f3", [&] { order += '3'; });
+    });
+
+    fb_sleeper.Join();
+    fb1.Join();
+    fb2.Join();
+    fb3.Join();
+    EXPECT_EQ(usec ? "12s3" : "123s", order) << usec;
+  }
 }
 
 TEST_F(FiberTest, Dispatch) {
