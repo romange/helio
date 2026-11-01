@@ -99,8 +99,9 @@ class Scheduler {
 
   void DestroyTerminated();
 
-  // Returns whether the active fiber was pulled from the queue and the queue state.
-  bool ProcessRemoteReady(FiberInterface* active);
+  // Moves the fibers activated by remote threads to the ready queue. Must be called by the
+  // dispatcher.
+  void ProcessRemoteReady();
 
   // Returns number of sleeping fibers being activated from sleep.
   unsigned ProcessSleep();

@@ -379,6 +379,29 @@ void FiberInterface::Join() {
   DCHECK(!waiter.IsLinked());
 }
 
+bool FiberInterface::ClaimWaitForNotify(FiberInterface* notifier) {
+  if (notifier->scheduler_ == scheduler_) {
+    // Our timeout is claimed on this thread too, so it can not race with us.
+    if (wait_claim_.load(memory_order_relaxed) != kClaimable)
+      return false;
+    wait_claim_.store(kNotified, memory_order_relaxed);
+    return true;
+  }
+
+  uint8_t expected = kClaimable;
+  return wait_claim_.compare_exchange_strong(expected, kNotified, memory_order_acq_rel);
+}
+
+bool FiberInterface::ClaimWaitForTimeout() {
+  uint8_t state = wait_claim_.load(memory_order_relaxed);
+  if (state == kClaimable)
+    return wait_claim_.compare_exchange_strong(state, kTimedOut, memory_order_acq_rel);
+
+  // A remote notifier claimed our wait, while a local one would have removed us from the sleep
+  // queue already.
+  return state != kNotified;
+}
+
 void FiberInterface::ActivateOther(FiberInterface* other) {
   DCHECK(other->scheduler_);
 
@@ -470,19 +493,13 @@ void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
   DCHECK(!prev->entry_);
 }
 
-void FiberInterface::PullMyselfFromRemoteReadyQueue() {
-  if (!IsScheduledRemotely())
-    return;
-  // We can not just remove ourselves from the middle of the queue.
-  // Therefore we process all the items and since this function is called after the fiber
-  // was pulled from the wait queue, it is guaranteed that other threads won't add this object
-  // back to the remote_ready_queue.
-  bool res = scheduler_->ProcessRemoteReady(this);
-  if (IsScheduledRemotely()) {
-    LOG(FATAL) << "Failed to pull " << name_ << " from remote_ready_queue. res=" << res
-               << " remotenext: " << uint64_t(remote_next_.load(std::memory_order_relaxed))
-               << " remotempty: " << scheduler_->RemoteEmpty();
-  }
+void FiberInterface::AwaitRemoteWake() {
+  // The waker pushed us to the remote queue under the wait queue lock that the caller has
+  // acquired since, so IsScheduledRemotely() is exact here. Only the dispatcher pulls fibers
+  // from the remote queue, and it adds us to the ready queue since we are not there while
+  // suspended. Suspend() asserts that we were pulled.
+  if (IsScheduledRemotely())
+    Suspend();
 }
 
 void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
@@ -592,9 +609,7 @@ void ExecuteOnAllFiberStacks(FiberInterface::PrintFn fn) {
 }
 
 void ActivateSameThread(FiberInterface* active, FiberInterface* other) {
-  if (active->scheduler() != other->scheduler()) {
-    LOG(DFATAL) << "Fibers belong to different schedulers";
-  }
+  DCHECK(active->scheduler() == other->scheduler());
   active->ActivateOther(other);
 }
 

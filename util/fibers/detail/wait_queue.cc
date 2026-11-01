@@ -13,16 +13,21 @@ namespace detail {
 
 [[maybe_unused]] constexpr size_t WakeOtherkSizeOfWaitQ = sizeof(WaitQueue);
 
-void Waiter::Notify(FiberInterface* active) const {
-  visit([this, active](const auto& v) { NotifyImpl(v, active); }, cntx_);
+bool Waiter::Notify(FiberInterface* active) const {
+  return visit([this, active](const auto& v) { return NotifyImpl(v, active); }, cntx_);
 }
 
-void Waiter::NotifyImpl(FiberInterface* suspended, FiberInterface* active) const {
+bool Waiter::NotifyImpl(FiberInterface* suspended, FiberInterface* active) const {
+  if (claimable_ && !suspended->ClaimWaitForNotify(active))
+    return false;
+
   active->ActivateOther(suspended);
+  return true;
 }
 
-void Waiter::NotifyImpl(const Waiter::Callback& cb, FiberInterface* active) const {
+bool Waiter::NotifyImpl(const Waiter::Callback& cb, FiberInterface* active) const {
   cb();
+  return true;
 }
 
 void WaitQueue::Link(Waiter* waiter) {
@@ -32,28 +37,30 @@ void WaitQueue::Link(Waiter* waiter) {
 }
 
 bool WaitQueue::NotifyOne(FiberInterface* active) {
-  if (wait_list_.empty())
-    return false;
+  while (!wait_list_.empty()) {
+    Waiter* waiter = &wait_list_.front();
 
-  Waiter* waiter = &wait_list_.front();
-  DCHECK(waiter) << wait_list_.empty();
+    // A persistent waiter at the front will always be selected by NotifyOne().
+    // If other waiters are queued behind it, they will be starved because the persistent waiter
+    // never leaves the front of the line. Persistent subscriptions are intended for notifyAll()
+    // broadcasts.
+    DCHECK(!waiter->is_persistent() || &wait_list_.front() == &wait_list_.back())
+        << "NotifyOne on a persistent waiter with others queued behind it causes starvation. "
+           "Use notifyAll() with persistent waiters.";
 
-  // A persistent waiter at the front will always be selected by NotifyOne().
-  // If other waiters are queued behind it, they will be starved because the persistent waiter never
-  // leaves the front of the line. Persistent subscriptions are intended for notifyAll() broadcasts.
-  DCHECK(!waiter->is_persistent() || &wait_list_.front() == &wait_list_.back())
-      << "NotifyOne on a persistent waiter with others queued behind it causes starvation. "
-         "Use notifyAll() with persistent waiters.";
+    // If the waiter is one-shot (default), remove it from the list before
+    // notification. If it is persistent, leave it at the front so it can
+    // receive subsequent notifications until explicitly unlinked.
+    if (!waiter->is_persistent()) {
+      wait_list_.pop_front();
+    }
 
-  // If the waiter is one-shot (default), remove it from the list before
-  // notification. If it is persistent, leave it at the front so it can
-  // receive subsequent notifications until explicitly unlinked.
-  if (!waiter->is_persistent()) {
-    wait_list_.pop_front();
+    if (waiter->Notify(active))  // lifetime might end after this call
+      return true;
+
+    // The waiter's wait timed out, so we notify the next one.
   }
-
-  waiter->Notify(active);  // lifetime might end after this call
-  return true;
+  return false;
 }
 
 bool WaitQueue::NotifyAll(FiberInterface* active) {
@@ -72,8 +79,7 @@ bool WaitQueue::NotifyAll(FiberInterface* active) {
     } else {
       it = wait_list_.erase(it);
     }
-    waiter.Notify(active);
-    notified = true;
+    notified |= waiter.Notify(active);
   }
   return notified;
 }

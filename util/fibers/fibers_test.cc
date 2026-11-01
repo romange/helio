@@ -1160,6 +1160,39 @@ TEST_F(FiberTest, WaitFor) {
   }
 }
 
+// A notifier skips a waiter whose wait timed out and notifies the next one. The timed out waiter
+// may be suspended relocking the mutex that the notifier holds, and waking it would collide with
+// the activation that hands the mutex over.
+TEST_F(FiberTest, CondVarSkipsTimedOutWaiter) {
+  Mutex mu;
+  CondVar cv;
+  unsigned num_waiting = 0;
+
+  Fiber timed("timed", [&] {
+    unique_lock lk(mu);
+    ++num_waiting;
+    EXPECT_EQ(cv_status::timeout, cv.wait_for(lk, 1ms));
+  });
+
+  Fiber untimed("untimed", [&] {
+    unique_lock lk(mu);
+    ++num_waiting;
+    EXPECT_EQ(cv_status::no_timeout, cv.wait_for(lk, 1s));
+  });
+
+  while (num_waiting < 2)
+    ThisFiber::Yield();
+
+  {
+    lock_guard lk(mu);
+    ThisFiber::SleepFor(5ms);  // `timed` times out and suspends on `mu`.
+    cv.notify_one();
+  }
+
+  timed.Join();
+  untimed.Join();
+}
+
 TEST_F(FiberTest, StackSize) {
   Fiber fb1(Launch::dispatch, boost::context::fixedsize_stack{8000}, "fb1", [] {
 
@@ -1806,6 +1839,33 @@ TEST_P(ProactorTest, Timeout) {
   });
 
   LOG(INFO) << "Before join ";
+  consumer_fb.Join();
+  producer_fb.Join();
+}
+
+// Like Timeout, but for CondVar: a remote notification that races with the timeout must not wake
+// the consumer once it timed out, since relocking the mutex may suspend it.
+TEST_P(ProactorTest, CondVarTimeout) {
+  Mutex mu;
+  CondVar cv;
+
+  auto consumer_fb = proactor()->LaunchFiber("consumer", [&] {
+    unique_lock lk(mu);
+    for (unsigned i = 0; i < 1000; ++i) {
+      cv.wait_until(lk, chrono::steady_clock::now() + 10us);
+    }
+  });
+
+  Fiber producer_fb("producer", [&] {
+    for (unsigned i = 0; i < 1000; ++i) {
+      {
+        lock_guard lk(mu);
+        cv.notify_one();
+      }
+      ThisFiber::SleepFor(1us);
+    }
+  });
+
   consumer_fb.Join();
   producer_fb.Join();
 }

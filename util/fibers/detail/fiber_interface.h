@@ -232,6 +232,21 @@ class FiberInterface {
     return Waiter{this};
   }
 
+  // Like CreateWaiter(), but for a wait that ends with WaitUntil(): the notifier that pops the
+  // waiter and the timeout race to claim the wait, and only the winner wakes us. So when we time
+  // out, no activation is on its way to us, and a notifier that finds our waiter afterwards skips
+  // it. Must be called before the waiter is linked.
+  Waiter CreateClaimableWaiter() {
+    wait_claim_.store(kClaimable, std::memory_order_relaxed);
+    Waiter res{this};
+    res.claimable_ = true;
+    return res;
+  }
+
+  // Is called by `notifier` for our claimable waiter that it popped from its wait queue. Returns
+  // false if our wait timed out, then `notifier` must not wake us.
+  bool ClaimWaitForNotify(FiberInterface* notifier);
+
   // Embedded, zero-allocation blocking counter reused by every BlockingCounter constructed
   // while this fiber is active (see synchronization.h). Assumes no nested/concurrent
   // rounds on the same fiber - a round must finish (Wait() returns) before the next one
@@ -240,7 +255,10 @@ class FiberInterface {
     return blocking_counter_;
   }
 
-  void PullMyselfFromRemoteReadyQueue();
+  // Must be called by a fiber that resumed on its own (e.g. timed out) after a remote waker had
+  // detached it from a wait queue, before the fiber waits again. If the remote activation is
+  // still in the remote queue, suspends until our scheduler pulls it from there.
+  void AwaitRemoteWake();
 
   bool IsScheduledRemotely() const {
     return uint64_t(remote_next_.load(std::memory_order_relaxed)) != kRemoteFree;
@@ -299,6 +317,13 @@ class FiberInterface {
   // used to set up a critical section when scheduling a fiber from another thread.
   static constexpr uint16_t kScheduleRemote = 0x4;
 
+  // States of wait_claim_.
+  enum WaitClaim : uint8_t { kNoClaim, kClaimable, kNotified, kTimedOut };
+
+  // Is called by the scheduler when our wait timed out. Returns false if a notifier claimed our
+  // wait first, then its activation wakes us.
+  bool ClaimWaitForTimeout();
+
   ::boost::context::fiber_context Terminate();
   void InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size);
 
@@ -317,6 +342,11 @@ class FiberInterface {
 #define FIBER_TRACE(fi, state) (void)0
 #endif
   Type type_;
+
+  // Who claimed our claimable wait (see CreateClaimableWaiter), reset when the wait ends. Unlike
+  // flags_, which other threads modify at any time, only we and the claimants of our wait write it,
+  // so a notifier on our thread needs no read-modify-write.
+  std::atomic<uint8_t> wait_claim_{kNoClaim};
 
   std::atomic<uint16_t> flags_{0};
 
