@@ -16,7 +16,7 @@
 #include "util/fibers/proactor_base.h"
 #include "util/fibers/stacktrace.h"
 
-ABSL_FLAG(uint32_t, scheduler_poll_min_usec, 50,
+ABSL_FLAG(uint32_t, scheduler_poll_min_usec, 0,
           "If greater than 0, a fiber that switches out at least this many usec after the "
           "dispatcher last polled switches to the dispatcher, which ends the round and polls, if "
           "remote wakes or tasks wait, or if enough I/O events wait (see "
