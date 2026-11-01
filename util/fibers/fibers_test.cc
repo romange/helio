@@ -6,6 +6,7 @@
 
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
+#include <arpa/inet.h>
 #include <gmock/gmock.h>
 
 #include <algorithm>
@@ -23,6 +24,7 @@
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
 #include "util/fibers/detail/wait_queue.h"
+#include "util/fibers/dns_resolve.h"
 #include "util/fibers/epoll_proactor.h"
 #include "util/fibers/fiber_file.h"
 #include "util/fibers/fiberqueue_threadpool.h"
@@ -97,6 +99,24 @@ testing::Environment* const kThreadsafeDeathTestEnv =
 class FiberTest : public testing::Test {
  public:
 };
+
+TEST_F(FiberTest, DnsResolveImmediateCompletion) {
+  static const bool initialized = [] {
+    InitDnsResolver(100);
+    return true;
+  }();
+  (void)initialized;
+
+  char dest_ip[INET6_ADDRSTRLEN] = {};
+  EXPECT_FALSE(DnsResolve("127.0.0.1", dest_ip));
+  EXPECT_STREQ("127.0.0.1", dest_ip);
+  EXPECT_FALSE(DnsResolve("::1", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+
+  // c-ares rejects .onion names synchronously without accessing the network.
+  EXPECT_EQ(make_error_code(errc::address_not_available), DnsResolve("test.onion", dest_ip));
+  EXPECT_STREQ("::1", dest_ip);
+}
 
 struct ProactorThread {
   std::unique_ptr<ProactorBase> proactor;
@@ -1129,11 +1149,20 @@ TEST_F(FiberTest, ProactorPoolRunDoesNotRetainMainFiberRef) {
   auto* main_fb = detail::FiberActive();
   const uint32_t base_refs = main_fb->DEBUG_use_count();
 
+  // FiberBlockingCounter::Release() wakes us before it drops its reference to us, so give the
+  // count a moment to settle.
+  auto settled_refs = [&] {
+    for (unsigned i = 0; i < 1000 && main_fb->DEBUG_use_count() != base_refs; ++i) {
+      ThisFiber::SleepFor(1ms);
+    }
+    return main_fb->DEBUG_use_count();
+  };
+
   unique_ptr<Pool> pool{Pool::Epoll(1)};
   pool->Run();
-  EXPECT_EQ(base_refs, main_fb->DEBUG_use_count());
+  EXPECT_EQ(base_refs, settled_refs());
   pool->Stop();
-  EXPECT_EQ(base_refs, main_fb->DEBUG_use_count());
+  EXPECT_EQ(base_refs, settled_refs());
 }
 
 TEST_F(FiberTest, SwitchAndExecute) {
