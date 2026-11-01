@@ -64,9 +64,6 @@ class ABSL_LOCKABLE Mutex {
 class CondVarAny {
   detail::WaitQueue wait_queue_;
 
-  std::cv_status PostWaitTimeout(detail::Waiter waiter, bool clean_remote,
-                                 detail::FiberInterface* active);
-
  public:
   CondVarAny() = default;
 
@@ -77,15 +74,15 @@ class CondVarAny {
   CondVarAny(CondVarAny const&) = delete;
   CondVarAny& operator=(CondVarAny const&) = delete;
 
-  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called
-  // under the mutex
+  // Unlike std::condition_variable::notify_one(), is not thread-safe: hold the mutex if the waiters
+  // may run on other threads.
   void notify_one() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyOne(detail::FiberActive());
   }
 
-  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called
-  // under the mutex
+  // Unlike std::condition_variable::notify_all(), is not thread-safe: hold the mutex if the waiters
+  // may run on other threads.
   void notify_all() noexcept {
     if (!wait_queue_.empty())
       wait_queue_.NotifyAll(detail::FiberActive());
@@ -133,14 +130,14 @@ class CondVar {
   CondVar(CondVar const&) = delete;
   CondVar& operator=(CondVar const&) = delete;
 
-  // in contrast to std::condition_variable::notify_one() isn't thread-safe and should be called
-  // under the mutex
+  // Unlike std::condition_variable::notify_one(), is not thread-safe: hold the mutex if the waiters
+  // may run on other threads.
   void notify_one() noexcept {
     cnd_.notify_one();
   }
 
-  // in contrast to std::condition_variable::notify_all() isn't thread-safe and should be called
-  // under the mutex
+  // Unlike std::condition_variable::notify_all(), is not thread-safe: hold the mutex if the waiters
+  // may run on other threads.
   void notify_all() noexcept {
     cnd_.notify_all();
   }
@@ -620,7 +617,7 @@ template <typename LockType>
 std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::time_point tp) {
   detail::FiberInterface* active = detail::FiberActive();
 
-  detail::Waiter waiter(active->CreateWaiter());
+  detail::Waiter waiter(active->CreateClaimableWaiter());
 
   // store this fiber in waiting-queue, we can do it without spinlocks because
   // lt is already locked.
@@ -628,13 +625,21 @@ std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::t
 
   // release the lock suspend this fiber until tp.
   lt.unlock();
+
+  // Either a notifier or the timeout wakes us, whichever claims the wait first. So when we time
+  // out, no activation is on its way to us that could collide with the one that hands `lt` over to
+  // us if lt.lock() suspends.
   bool timed_out = active->WaitUntil(tp);
 
   // lock back.
   lt.lock();
-  std::cv_status status = PostWaitTimeout(std::move(waiter), timed_out, active);
-  assert(!waiter.IsLinked());
-  return status;
+
+  // A notifier that found us timed out skipped us, but unlinked us from the queue.
+  if (waiter.IsLinked()) {
+    assert(timed_out);
+    wait_queue_.Unlink(&waiter);
+  }
+  return timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
 }
 
 inline bool EmbeddedBlockingCounter::Wait() {

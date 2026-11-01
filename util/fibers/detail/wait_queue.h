@@ -45,7 +45,8 @@ class Waiter {
 
   // For some boost versions/distributions, the default move c'tor does not work well,
   // so we implement it explicitly.
-  Waiter(Waiter&& o) : cntx_{std::move(o.cntx_)}, persistent_{o.persistent_} {
+  Waiter(Waiter&& o)
+      : cntx_{std::move(o.cntx_)}, persistent_{o.persistent_}, claimable_{o.claimable_} {
     // it does not work well for slist because its reference is used by slist members
     // (probably when caching last).
     o.wait_hook.swap_nodes(wait_hook);
@@ -71,16 +72,19 @@ class Waiter {
     persistent_ = v;
   }
 
-  void Notify(FiberInterface* active) const;
+  // Returns false if the waiter was not notified because its wait already timed out (see
+  // FiberInterface::CreateClaimableWaiter).
+  bool Notify(FiberInterface* active) const;
 
   ListHookType wait_hook;
 
  private:
-  void NotifyImpl(FiberInterface*, FiberInterface* active) const;
-  void NotifyImpl(const Callback&, FiberInterface* active) const;
+  bool NotifyImpl(FiberInterface*, FiberInterface* active) const;
+  bool NotifyImpl(const Callback&, FiberInterface* active) const;
 
   std::variant<FiberInterface*, Callback> cntx_;
   bool persistent_ = false;
+  bool claimable_ = false;  // see FiberInterface::CreateClaimableWaiter
 };
 
 // Intrusive list of non-owned waiter objects.
@@ -98,7 +102,7 @@ class WaitQueue {
     wait_list_.erase(it);
   }
 
-  // Return true if a waiter exitsted and was notified
+  // Return true if a waiter exitsted and was notified. Skips waiters whose wait timed out.
   bool NotifyOne(FiberInterface* active);
 
   // Return true if any waiter was notified

@@ -881,7 +881,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
       ResetBusyPoll();
     }
 
-    scheduler->ProcessRemoteReady(nullptr);
+    scheduler->ProcessRemoteReady();
 
     uint32_t cqe_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
     if (cqe_count) {
