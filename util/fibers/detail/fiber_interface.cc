@@ -325,6 +325,11 @@ void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size)
   // and on fresh memory page-fault, every stack page whenever a fiber is created.
   stack_fill_ = std::min<uint32_t>({absl::GetFlag(FLAGS_fiber_safety_margin), stack_size, 8192u});
   if (stack_fill_ > 0) {
+    // TODO: Since #680, stack pages are no longer all faulted in here, but on first use. This
+    // reduces RSS, but may degrade stack locality since their physical pages are allocated later
+    // and scattered. A saturated single-thread benchmark with long-lived connections ran ~8%
+    // slower without the full fill. Consider prefaulting stacks, e.g. with
+    // madvise(MADV_POPULATE_WRITE) or a dedicated stack pool, if this is confirmed.
     memset(stack_bottom_, 0xAB, stack_fill_);
   }
 }
