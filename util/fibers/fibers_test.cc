@@ -630,17 +630,17 @@ TEST_F(FiberTest, Remote) {
   t1.join();
 }
 
-// A fiber woken from another thread waits for the dispatcher's turn to be queued. With a remote
-// check interval, the first fiber that switches out after the interval ends the round, so it is
+// A fiber woken from another thread waits for the dispatcher's turn to be queued. With
+// poll_min_cycles, the first fiber that switches out after the interval ends the round, so it is
 // queued ahead of fibers launched later.
 TEST_F(FiberTest, RemoteWakeCheckInterval) {
   detail::Scheduler* sched = detail::FiberActive()->scheduler();
-  absl::Cleanup restore = [sched, prev = sched->config().remote_check_cycles] {
-    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles, prev);
+  absl::Cleanup restore = [sched, prev = sched->config().poll_min_cycles] {
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, prev);
   };
 
   for (uint32_t usec : {0u, 1u}) {
-    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles,
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles,
                         base::CycleClock::FromUsec(usec));
     string order;
     detail::FiberInterface* sleeper = nullptr;
