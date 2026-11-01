@@ -62,7 +62,11 @@ class ParkHandle {
 // Intrusive queue node for a ParkHandle.
 class ParkNode : public ParkHandle {
  public:
-  ParkNode() noexcept = default;
+  // With `wake_to_front`, WakeList queues the woken fiber ahead of the ready fibers of its
+  // priority on its thread instead of behind them. Use it for waiters that others wait for, such
+  // as a fiber that is handed a lock when it is woken.
+  explicit ParkNode(bool wake_to_front = false) noexcept : wake_to_front_(wake_to_front) {
+  }
 
   ParkNode(const ParkNode&) = delete;
   ParkNode& operator=(const ParkNode&) = delete;
@@ -72,6 +76,7 @@ class ParkNode : public ParkHandle {
   friend class WakeList;
 
   ParkNode* next_ = nullptr;
+  bool wake_to_front_ = false;
 };
 
 // Activations collected while a lock is held. Not thread-safe; usually lives on the waker's

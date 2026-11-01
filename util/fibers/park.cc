@@ -26,10 +26,11 @@ void WakeList::Wake() noexcept {
     // Clear the link so the node can be published again after Park() returns.
     ParkNode* next = std::exchange(node->next_, nullptr);
     detail::FiberInterface* fiber = node->fiber_;
+    bool to_front = node->wake_to_front_;
     DCHECK(fiber != active) << "A fiber cannot wake its own node";
 
     // `node` may be destroyed once `fiber` runs.
-    active->ActivateOther(fiber);
+    active->ActivateOther(fiber, to_front);
     node = next;
   } while (node);
 }

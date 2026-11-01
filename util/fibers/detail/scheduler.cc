@@ -347,7 +347,7 @@ void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
 }
 
 // Is called only from ActivateOther.
-void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
+void Scheduler::ScheduleFromRemote(FiberInterface* cntx, bool to_front) {
   // This function is called from FiberInterface::ActivateOther from a remote scheduler.
   // But the fiber belongs to this scheduler.
   DCHECK(cntx->scheduler_ == this);
@@ -357,8 +357,11 @@ void Scheduler::ScheduleFromRemote(FiberInterface* cntx) {
   // exactly once, and a fiber that resumes on its own first waits for the activation it is
   // owed (see FiberInterface::AwaitRemoteWake), so the bit can not be set here. We still check
   // it because pushing `cntx` twice would corrupt the intrusive queue.
-  if ((cntx->flags_.fetch_or(FiberInterface::kScheduleRemote, memory_order_acquire) &
-       FiberInterface::kScheduleRemote) != 0) {
+  // kWakeToFront is set together with kScheduleRemote, before the push, because `cntx` must not
+  // be accessed after the push. ProcessRemoteReady() clears both.
+  const uint16_t bits =
+      FiberInterface::kScheduleRemote | (to_front ? FiberInterface::kWakeToFront : 0);
+  if ((cntx->flags_.fetch_or(bits, memory_order_acquire) & FiberInterface::kScheduleRemote) != 0) {
     LOG(DFATAL) << "Already scheduled remotely " << cntx->name() << " " << cntx->DEBUG_use_count();
     return;
   }
@@ -487,8 +490,10 @@ void Scheduler::ProcessRemoteReady() {
     // Marks as free.
     fi->remote_next_.store((FiberInterface*)FiberInterface::kRemoteFree, memory_order_relaxed);
 
-    // clear the bit after we pulled from the queue.
-    fi->flags_.fetch_and(~FiberInterface::kScheduleRemote, memory_order_release);
+    // clear the bits after we pulled from the queue.
+    uint16_t prev_flags = fi->flags_.fetch_and(
+        ~(FiberInterface::kScheduleRemote | FiberInterface::kWakeToFront), memory_order_release);
+    bool to_front = (prev_flags & FiberInterface::kWakeToFront) || fi->prio_ == FiberPriority::HIGH;
 
     DVLOG(2) << "Pulled " << fi->name() << " " << fi->DEBUG_use_count();
 
@@ -499,7 +504,7 @@ void Scheduler::ProcessRemoteReady() {
     // absorbed. Otherwise `fi` is suspended in its wait or in FiberInterface::AwaitRemoteWake().
     if (!fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
-      AddReady(fi, fi->prio_ == FiberPriority::HIGH /* to_front */);
+      AddReady(fi, to_front);
     }
   }
 }
