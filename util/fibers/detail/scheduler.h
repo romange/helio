@@ -142,6 +142,10 @@ class Scheduler {
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
+  // Called by Preempt(): takes the dispatcher out of the ready queue and switches to it, so it
+  // ends the round. See Config::remote_check_cycles.
+  ::boost::context::fiber_context EndRoundEarly();
+
   // For HIGH priority fibers, we still use NORMAL(0) queue.
   static constexpr unsigned GetQueueIndex(FiberPriority prio) {
     return prio == FiberPriority::HIGH ? 0 : unsigned(prio);

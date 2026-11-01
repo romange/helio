@@ -284,23 +284,30 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     AddReady(active_fiber);
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
-  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
 
   // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
   // woken fibers and processes I/O before it starts the next round.
   if (config_.remote_check_cycles &&
       round_robin_run_.last_cycles - last_remote_check_cycles_ >= config_.remote_check_cycles &&
       !remote_ready_queue_.Empty()) {
-    FiberInterface* dispatcher = dispatch_cntx_.get();
-    DCHECK(dispatcher->list_hook.is_linked());
-    rq.erase(rq.iterator_to(*dispatcher));
-    round_robin_run_.end_round = true;
-    return dispatcher->SwitchTo();
+    return EndRoundEarly();
   }
 
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
   FiberInterface* fi = &rq.front();
   rq.pop_front();
   return fi->SwitchTo();
+}
+
+// A separate function, because Preempt() runs on the stack of every fiber that switches out,
+// and in unoptimized sanitizer builds this code adds hundreds of bytes to its frame.
+ctx::fiber_context Scheduler::EndRoundEarly() {
+  FiberInterface* dispatcher = dispatch_cntx_.get();
+  DCHECK(dispatcher->list_hook.is_linked());
+  auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
+  rq.erase(rq.iterator_to(*dispatcher));
+  round_robin_run_.end_round = true;
+  return dispatcher->SwitchTo();
 }
 
 void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
