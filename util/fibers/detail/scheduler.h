@@ -41,8 +41,9 @@ class Scheduler {
   void AddReady(FiberInterface* fibi, bool to_front = false);
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
-  // fibi must exist during the run of this function.
-  void ScheduleFromRemote(FiberInterface* fibi);
+  // fibi must exist during the run of this function. With `to_front`, this thread queues fibi
+  // ahead of the ready fibers of its priority when it pulls fibi from the remote queue.
+  void ScheduleFromRemote(FiberInterface* fibi, bool to_front = false);
 
   void Attach(FiberInterface* fibi);
   void DetachWorker(FiberInterface* cntx);

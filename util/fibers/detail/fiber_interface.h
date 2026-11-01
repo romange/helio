@@ -148,8 +148,9 @@ class FiberInterface {
   bool WaitUntil(std::chrono::steady_clock::time_point tp);
 
   // Schedules another fiber without switching to it.
-  // other can belong to another thread.
-  void ActivateOther(FiberInterface* other);
+  // other can belong to another thread. With `to_front`, other is queued ahead of the ready
+  // fibers of its priority on its thread.
+  void ActivateOther(FiberInterface* other, bool to_front = false);
 
   void Suspend();
 
@@ -298,6 +299,10 @@ class FiberInterface {
 
   // used to set up a critical section when scheduling a fiber from another thread.
   static constexpr uint16_t kScheduleRemote = 0x4;
+
+  // Set with kScheduleRemote by ScheduleFromRemote(fibi, true): the owning thread queues the
+  // fiber at the front when it pulls it from the remote queue.
+  static constexpr uint16_t kWakeToFront = 0x8;
 
   ::boost::context::fiber_context Terminate();
   void InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size);
