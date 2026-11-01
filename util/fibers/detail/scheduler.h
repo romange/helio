@@ -142,6 +142,10 @@ class Scheduler {
     return worker_stack_size_;
   }
 
+  const Config& config() const {
+    return config_;
+  }
+
   // Update config field with provided value
   void UpdateConfig(uint64_t Config::* field, uint64_t value);
 
