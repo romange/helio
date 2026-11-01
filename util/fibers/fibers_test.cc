@@ -4,6 +4,7 @@
 
 #include "util/fibers/fibers.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 #include <gmock/gmock.h>
@@ -613,9 +614,14 @@ TEST_F(FiberTest, Remote) {
 // check interval, the first fiber that switches out after the interval ends the round, so it is
 // queued ahead of fibers launched later.
 TEST_F(FiberTest, RemoteWakeCheckInterval) {
+  detail::Scheduler* sched = detail::FiberActive()->scheduler();
+  absl::Cleanup restore = [sched, prev = sched->config().remote_check_cycles] {
+    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles, prev);
+  };
+
   for (uint32_t usec : {0u, 1u}) {
-    detail::FiberActive()->scheduler()->UpdateConfig(
-        &detail::Scheduler::Config::remote_check_cycles, base::CycleClock::FromUsec(usec));
+    sched->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles,
+                        base::CycleClock::FromUsec(usec));
     string order;
     detail::FiberInterface* sleeper = nullptr;
     Fiber fb_sleeper("sleeper", [&] {
@@ -647,8 +653,6 @@ TEST_F(FiberTest, RemoteWakeCheckInterval) {
     fb3.Join();
     EXPECT_EQ(usec ? "12s3" : "123s", order) << usec;
   }
-  detail::FiberActive()->scheduler()->UpdateConfig(&detail::Scheduler::Config::remote_check_cycles,
-                                                   0);
 }
 
 TEST_F(FiberTest, Dispatch) {
