@@ -199,6 +199,14 @@ class LinuxSocketBase : public FiberSocketBase {
 
   error_code Shutdown(int how) override;
 
+  // Cancels all pending async operations (reads and writes) submitted on this socket's fd,
+  // forcing them to fail immediately instead of waiting to resolve naturally. Unlike
+  // Shutdown()/Close(), this can interrupt an operation that is already in flight - e.g. a
+  // write stalled because the peer isn't draining its receive buffer, which Shutdown()/Close()
+  // cannot force to complete, since io_uring holds its own reference to a submitted operation
+  // until it resolves on its own.
+  virtual error_code CancelInFlightOps() = 0;
+
   // UINT32_MAX to disable timeout.
   void set_timeout(uint32_t msec) final override {
     timeout_ = msec;
