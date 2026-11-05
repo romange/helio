@@ -16,9 +16,6 @@
 #include "base/spinlock.h"
 #include "util/fibers/detail/wait_queue.h"
 
-// Split out of synchronization.h so that FiberInterface (fiber_interface.h) can embed an
-// EmbeddedBlockingCounter without creating an include cycle. Fiber-dependent method bodies stay
-// in synchronization.h/.cc.
 namespace util {
 namespace fb2 {
 
