@@ -5,16 +5,17 @@
 #pragma once
 
 #include <atomic>
+#include <cassert>
+#include <chrono>
 #include <condition_variable>  // for cv_status
+#include <cstdint>
 #include <mutex>
 #include <optional>
+#include <utility>
 
 #include "base/spinlock.h"
 #include "util/fibers/detail/wait_queue.h"
 
-// Declarations only - split out of synchronization.h so that FiberInterface (fiber_interface.h)
-// can embed an EmbeddedBlockingCounter without creating an include cycle. Method bodies that
-// need the full FiberInterface definition stay out-of-line in synchronization.h/.cc.
 namespace util {
 namespace fb2 {
 
@@ -174,6 +175,99 @@ class EventCount {
   static constexpr uint64_t kAddEpoch = 1ULL << kEpochShift;
   static constexpr uint64_t kWaiterMask = kAddEpoch - 1;
 };
+
+template <typename Condition> bool EventCount::await(Condition condition) {
+  if (condition()) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return false;  // fast path
+  }
+
+  // condition() is the only thing that may throw; Key cleans up the waiter state on exit.
+  bool preempt = false;
+  while (true) {
+    Key key = prepareWait();
+    if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      break;
+    }
+    preempt |= wait(key.epoch());
+  }
+
+  return preempt;
+}
+
+template <typename Mutex, typename Condition>
+bool EventCount::await(std::unique_lock<Mutex>& lock, Condition condition) {
+  assert(lock.owns_lock());
+  bool preempt = false;
+  while (!condition()) {
+    {
+      // Drop the waiter registration before relocking, so notifiers do not see a waiter while
+      // we block on the caller's mutex. The condition is rechecked under the lock anyway.
+      Key key = prepareWait();
+      lock.unlock();
+      preempt |= wait(key.epoch());
+    }
+    lock.lock();
+  }
+  // No acquire fence needed: the condition is evaluated under the caller's mutex.
+  return preempt;
+}
+
+template <typename Condition>
+std::optional<EventCount::SubKey> EventCount::check_or_subscribe(Condition condition,
+                                                                 detail::Waiter* w) {
+  if (condition()) {
+    std::atomic_thread_fence(std::memory_order_acquire);
+    return {};
+  }
+
+  while (true) {
+    auto key = prepareWait();
+    if (condition()) {
+      std::atomic_thread_fence(std::memory_order_acquire);
+      break;
+    }
+
+    if (subscribe(key.epoch(), w))
+      return SubKey{std::move(key), w};
+  }
+  return {};
+}
+
+inline EventCount::SubKey EventCount::subscribe_persistent(detail::Waiter* w) noexcept {
+  assert(!w->IsLinked());
+  w->set_persistent(true);
+  Key key = prepareWait();
+  std::unique_lock lk(lock_);
+
+  // No epoch check needed here (unlike one-shot subscribe()). A notification firing in the
+  // prepareWait()-to-Link() gap IS missed by this waiter, but that is safe because:
+  // 1. Persistent waiters stay linked - the next notify/notifyAll will reach them.
+  // 2. The caller MUST check its predicate after subscribing (standard EventCount contract),
+  //    which catches any state change from the missed notification immediately.
+  wait_queue_.Link(w);
+  return SubKey{std::move(key), w};
+}
+
+template <typename Condition>
+std::cv_status EventCount::await_until(Condition condition,
+                                       const std::chrono::steady_clock::time_point& tp) {
+  if (condition())
+    return std::cv_status::no_timeout;  // fast path
+
+  cv_status status = std::cv_status::no_timeout;
+  while (true) {
+    Key key = prepareWait();
+    if (condition()) {
+      break;
+    }
+    status = wait_until(key.epoch(), tp);
+    if (status == std::cv_status::timeout)
+      break;
+  }
+  return status;
+}
 
 // Use `BlockingCounter` unless certain that the counters lifetime is managed properly.
 // Because the decrement of Dec() can be observed before notify is called, the counter can be still
