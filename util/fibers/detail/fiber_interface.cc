@@ -341,13 +341,13 @@ void FiberInterface::Start(Launch launch) {
   switch (launch) {
     case Launch::post:
       // Activate but do not switch to it.
-      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */);
+      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */, CycleClock::Now());
       break;
     case Launch::dispatch:
       // Add the active fiber to the ready queue and switch to the new fiber.
-      fb_init.sched->AddReady(fb_init.active);
+      fb_init.sched->AddReady(fb_init.active, false, CycleClock::Now());
       {
-        auto fc = SwitchTo();
+        auto fc = SwitchTo(CycleClock::Now());
         DCHECK(!fc);
       }
       break;
@@ -418,7 +418,8 @@ void FiberInterface::ActivateOther(FiberInterface* other, bool to_front) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked()) {
-      scheduler_->AddReady(other, to_front || other->prio_ == FiberPriority::HIGH);
+      scheduler_->AddReady(other, to_front || other->prio_ == FiberPriority::HIGH,
+                           CycleClock::Now());
     }
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
@@ -439,7 +440,7 @@ void FiberInterface::AttachScheduler() {
   scheduler_ = detail::FbInitializer().sched;
   scheduler_->Attach(this);
 
-  scheduler_->AddReady(this);
+  scheduler_->AddReady(this, false, CycleClock::Now());
 }
 
 ctx::fiber_context FiberInterface::SwitchTo(uint64_t tsc) {

@@ -194,13 +194,17 @@ class UringProactor : public ProactorBase {
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
 
-  // Counts unsubmitted SQEs and unprocessed CQEs. Under DEFER_TASKRUN, completions are posted
+  ABSL_MUST_USE_RESULT int SubmitPending();
+  ABSL_MUST_USE_RESULT bool FlushSubmissions() final;
+
+  // Counts unsubmitted SQEs separately from CQEs. Under DEFER_TASKRUN, completions are posted
   // only when we enter the kernel, which flags that some wait without telling how many, so
   // they count as one.
   DispatchPolicy::PendingWork GetPendingWork() const final {
     DispatchPolicy::PendingWork res = ProactorBase::GetPendingWork();
     unsigned kflags = IO_URING_READ_ONCE(*ring_.sq.kflags);
-    res.io_events = io_uring_sq_ready(&ring_) + io_uring_cq_ready(&ring_) +
+    res.submissions = io_uring_sq_ready(&ring_);
+    res.io_events = io_uring_cq_ready(&ring_) +
                     ((kflags & (IORING_SQ_TASKRUN | IORING_SQ_CQ_OVERFLOW)) ? 1 : 0);
     return res;
   }
@@ -213,9 +217,9 @@ class UringProactor : public ProactorBase {
   uint8_t bundle_f_ : 1;
   uint8_t incremental_buf_ring_f_ : 1;
   // IORING_SETUP_TASKRUN_FLAG + COOP_TASKRUN enabled: kernel publishes
-  // IORING_SQ_TASKRUN in sq_flags, so io_uring_submit can safely skip the
-  // syscall when SQ is empty and no taskrun is pending. Otherwise we must use
-  // io_uring_submit_and_get_events to always enter the kernel.
+  // IORING_SQ_TASKRUN in sq_flags, so SubmitPending can skip the syscall when
+  // SQ is empty and no task work or CQ overflow is pending. Otherwise we must
+  // always enter the kernel.
   uint8_t taskrun_flag_f_ : 1;
   uint8_t : 2;
 

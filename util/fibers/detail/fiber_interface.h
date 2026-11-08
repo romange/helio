@@ -126,7 +126,7 @@ class FiberInterface {
   virtual ~FiberInterface();
 
   // Switch functions
-  ::boost::context::fiber_context SwitchTo(uint64_t tsc = base::CycleClock::Now());
+  ::boost::context::fiber_context SwitchTo(uint64_t tsc);
   void SwitchToAndExecute(std::function<void()> fn);
 
   using PrintFn = std::function<void(FiberInterface*)>;
@@ -300,7 +300,7 @@ class FiberInterface {
 
   uint64_t GetRunningTimeCycles() const;
 
-  void SetReadyStart(uint64_t tsc = base::CycleClock::Now()) {
+  void SetReadyStart(uint64_t tsc) {
     ready_tsc_ = tsc;
   }
 

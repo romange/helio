@@ -41,8 +41,10 @@ class Scheduler {
     //   1. remotely woken fibers or tasks wait, or
     //   2. at least poll_min_events I/O events wait, or
     //   3. any I/O event waits and poll_max_cycles passed since the last poll.
+    // Queued submissions are flushed from the current fiber at most once per poll_min_cycles,
+    // independently of the I/O event threshold. Completion callbacks still run on the dispatcher.
     // I/O events are counted by the dispatch policy, see DispatchPolicy::GetPendingWork().
-    // poll_min_cycles == 0 disables it, so pending work waits for the dispatcher's turn.
+    // poll_min_cycles == 0 disables early polling and flushing.
     // Cycles are CycleClock cycles. Default to the --scheduler_poll_* flags.
     uint64_t poll_min_cycles = 0;
     uint64_t poll_max_cycles = 0;
@@ -52,8 +54,7 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void AddReady(FiberInterface* fibi, bool to_front = false,
-                uint64_t tsc = base::CycleClock::Now());
+  void AddReady(FiberInterface* fibi, bool to_front, uint64_t tsc);
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
   // fibi must exist during the run of this function. With `to_front`, this thread queues fibi
@@ -154,8 +155,9 @@ class Scheduler {
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
-  // Checks pending work after Preempt() has checked poll_min_cycles.
-  bool ShouldPollEarly(uint64_t since_poll);
+  // Flushes submissions if needed and returns whether the dispatcher should run.
+  // Refreshes now and runtime accounting after a flush.
+  bool ServicePendingWork(uint64_t& now);
 
   // Called by Preempt(): takes the dispatcher out of the ready queue and switches to it, so it
   // ends the round. See Config::poll_min_cycles.
@@ -229,6 +231,7 @@ class Scheduler {
   } round_robin_run_;
 
   uint64_t last_poll_cycles_ = 0;  // CycleClock of the last ProcessRemoteReady().
+  uint64_t last_submit_cycles_ = 0;
 
   RuntimeCounter runtime_cycles_;  // total running times of fibers in cycles
   FI_Queue ready_queue_[2 /* FiberPriority */], terminate_queue_;
@@ -254,14 +257,21 @@ class DispatchPolicy {
   virtual void Notify() = 0;
 
   struct PendingWork {
-    bool tasks = false;      // work queued by other threads, such as brief tasks.
-    uint32_t io_events = 0;  // a lower bound on the number of I/O events that wait.
+    bool tasks = false;        // work queued by other threads, such as brief tasks.
+    uint32_t submissions = 0;  // queued I/O requests not yet submitted to the kernel.
+    uint32_t io_events = 0;    // a lower bound on the number of I/O events that wait.
   };
 
-  // Returns the work that waits for the next poll of the dispatcher. Called by the scheduler
+  // Returns pending submissions and work waiting for the dispatcher. Called by the scheduler
   // while fibers run, see Scheduler::Config::poll_min_cycles, so it must be cheap.
   virtual PendingWork GetPendingWork() {
     return {};
+  }
+
+  // Flushes submissions without suspending or running completion callbacks.
+  // Returns false if the dispatcher must take over, e.g. to make room in a full completion queue.
+  ABSL_MUST_USE_RESULT virtual bool FlushSubmissions() {
+    return false;
   }
 };
 

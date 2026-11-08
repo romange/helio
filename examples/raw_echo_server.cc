@@ -114,7 +114,7 @@ struct Worker {
   unique_ptr<base::mpmc_bounded_queue<int>> queue;
   pthread_t pid;
 
-  Worker() : queue(new base::mpmc_bounded_queue<int>(256)){};
+  Worker() : queue(new base::mpmc_bounded_queue<int>(256)) {};
 };
 
 std::vector<Worker> workers;
@@ -335,9 +335,9 @@ void RunEventLoop(int worker_id, io_uring* ring, fb2::detail::Scheduler* sched) 
     if (sched->HasReady(fb2::FiberPriority::NORMAL)) {
       do {
         FiberInterface* fi = sched->PopReady();
-        sched->AddReady(dispatcher);
+        sched->AddReady(dispatcher, false, base::CycleClock::Now());
 
-        auto fc = fi->SwitchTo();
+        auto fc = fi->SwitchTo(base::CycleClock::Now());
         DCHECK(!fc);
       } while (sched->HasReady(fb2::FiberPriority::NORMAL));
       continue;

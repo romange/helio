@@ -20,7 +20,8 @@ ABSL_FLAG(uint32_t, scheduler_poll_min_usec, 0,
           "If greater than 0, a fiber that switches out at least this many usec after the "
           "dispatcher last polled switches to the dispatcher, which ends the round and polls, if "
           "remote wakes or tasks wait, or if enough I/O events wait (see "
-          "scheduler_poll_min_events and scheduler_poll_max_usec). 0 disables it.");
+          "scheduler_poll_min_events and scheduler_poll_max_usec). Queued I/O requests are flushed "
+          "from the current fiber at most once per this interval. 0 disables both.");
 ABSL_FLAG(uint32_t, scheduler_poll_max_usec, 200,
           "With scheduler_poll_min_usec, a single I/O event ends the round once this many usec "
           "passed since the dispatcher last polled.");
@@ -134,7 +135,7 @@ ctx::fiber DispatcherImpl::Run(ctx::fiber&& c) {
   // Like with worker fibers, we switch to another fiber, but in this case to the main fiber.
   // We will come back here during the deallocation of DispatcherImpl from intrusive_ptr_release
   // in order to return from Run() and come back to main context.
-  auto fc = scheduler_->main_context()->SwitchTo();
+  auto fc = scheduler_->main_context()->SwitchTo(CycleClock::Now());
 
   DCHECK(fc);  // Should bring us back to main, into intrusive_ptr_release.
   return fc;
@@ -206,14 +207,14 @@ Scheduler::~Scheduler() {
     while (HasReady(prio)) {
       FiberInterface* fi = PopReady(prio);
       DCHECK(!fi->sleep_hook.is_linked());
-      fi->SwitchTo();
+      fi->SwitchTo(CycleClock::Now());
     }
   }
 
   DispatcherImpl* dimpl = static_cast<DispatcherImpl*>(dispatch_cntx_.get());
   if (!dimpl->is_terminating()) {
     DVLOG(1) << "~Scheduler switching to dispatch " << dispatch_cntx_->IsDefined();
-    auto fc = dispatch_cntx_->SwitchTo();
+    auto fc = dispatch_cntx_->SwitchTo(CycleClock::Now());
     CHECK(!fc);
     CHECK(dimpl->is_terminating());
   }
@@ -299,7 +300,7 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
     // woken fibers and processes I/O before it starts the next round.
     uint64_t since_poll = now - last_poll_cycles_;
-    if (since_poll >= config_.poll_min_cycles && ShouldPollEarly(since_poll))
+    if (since_poll >= config_.poll_min_cycles && ServicePendingWork(now))
       return EndRoundEarly(now);
   }
 
@@ -441,7 +442,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
-bool Scheduler::ShouldPollEarly(uint64_t since_poll) {
+bool Scheduler::ServicePendingWork(uint64_t& now) {
   if (!remote_ready_queue_.Empty())
     return true;
 
@@ -454,13 +455,25 @@ bool Scheduler::ShouldPollEarly(uint64_t since_poll) {
   if (pending.tasks)
     return true;
 
-  return pending.io_events > 0 &&
-         (pending.io_events >= config_.poll_min_events || since_poll >= config_.poll_max_cycles);
+  if (pending.io_events > 0 && (pending.io_events >= config_.poll_min_events ||
+                                now - last_poll_cycles_ >= config_.poll_max_cycles)) {
+    return true;
+  }
+
+  if (pending.submissions > 0 && now - last_submit_cycles_ >= config_.poll_min_cycles) {
+    bool flushed = custom_policy_->FlushSubmissions();
+    now = CycleClock::Now();
+    last_submit_cycles_ = now;
+    round_robin_run_.last_cycles = now;
+    round_robin_run_.took_cycles = now - round_robin_run_.start_cycles;
+    return !flushed;
+  }
+  return false;
 }
 
 void Scheduler::ProcessRemoteReady() {
   if (config_.poll_min_cycles)
-    last_poll_cycles_ = CycleClock::Now();
+    last_submit_cycles_ = last_poll_cycles_ = CycleClock::Now();
   unsigned iteration = 0;
 
   while (true) {
@@ -492,7 +505,7 @@ void Scheduler::ProcessRemoteReady() {
     // absorbed. Otherwise `fi` is suspended in its wait or in FiberInterface::AwaitRemoteWake().
     if (!fi->list_hook.is_linked()) {
       DVLOG(2) << "set ready " << fi->name();
-      AddReady(fi, to_front);
+      AddReady(fi, to_front, CycleClock::Now());
     }
   }
 }
@@ -517,7 +530,7 @@ unsigned Scheduler::ProcessSleep() {
       continue;
 
     fi.tp_ = chrono::steady_clock::time_point::max();  // meaning it has timed out.
-    fi.SetReadyStart();
+    fi.SetReadyStart(CycleClock::Now());
     ready_queue_[GetQueueIndex(fi.prio_)].push_back(fi);
     FIBER_TRACE(&fi, TRACE_SLEEP_WAKE);
     ++result;
@@ -666,7 +679,7 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
     // Switch to fiber, next logic is determined by Preempt()
     fi->SwitchTo(now);
 
-    // Preempt() switched here ahead of our turn because work waits, see ShouldPollEarly().
+    // Preempt() switched here ahead of our turn because work waits, see ServicePendingWork().
     if (round_robin_run_.end_round)
       break;
 

@@ -266,10 +266,14 @@ class ProactorBase {
   virtual void WakeRing() = 0;
   virtual void MainLoop(detail::Scheduler* sched) = 0;
 
-  // Returns the work that waits for the next iteration of MainLoop(), see
+  // Returns pending submissions and work waiting for the next iteration of MainLoop(), see
   // DispatchPolicy::GetPendingWork(). Proactors add the I/O events they can count cheaply.
   virtual DispatchPolicy::PendingWork GetPendingWork() const {
     return {.tasks = !task_queue_.empty()};
+  }
+
+  ABSL_MUST_USE_RESULT virtual bool FlushSubmissions() {
+    return false;
   }
 
   void WakeupIfNeeded();
@@ -397,6 +401,10 @@ class ProactorDispatcher : public DispatchPolicy {
 
   PendingWork GetPendingWork() final {
     return proactor_->GetPendingWork();
+  }
+
+  ABSL_MUST_USE_RESULT bool FlushSubmissions() final {
+    return proactor_->FlushSubmissions();
   }
 
   ProactorBase* proactor_;
