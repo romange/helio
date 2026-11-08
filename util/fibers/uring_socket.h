@@ -36,6 +36,8 @@ class UringSocket : public LinuxSocketBase {
                                           std::function<void(int)> on_pre_connect) final;
   ABSL_MUST_USE_RESULT error_code Close() final;
 
+  error_code CancelInFlightOps() final;
+
   io::Result<size_t> WriteSome(const iovec* v, uint32_t len) override;
   void AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) override;
   void AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) override;
