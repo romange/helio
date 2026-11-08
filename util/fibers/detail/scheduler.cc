@@ -250,7 +250,8 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
     }
   }
 
-  uint64_t last = exchange(round_robin_run_.last_cycles, base::CycleClock::Now());
+  uint64_t now = base::CycleClock::Now();
+  uint64_t last = exchange(round_robin_run_.last_cycles, now);
   round_robin_run_.yields += yield ? 1 : 0;
   round_robin_run_.took_cycles = round_robin_run_.last_cycles - round_robin_run_.start_cycles;
 
@@ -280,51 +281,52 @@ ctx::fiber_context Scheduler::Preempt(bool yield) {
         active_fiber->tp_ = steady_clock::now() + chrono::microseconds(sleep_us);
         sleep_queue_.insert(*active_fiber);
       } else {
-        AddReady(active_fiber);
+        AddReady(active_fiber, false, now);
       }
     }
 
     // Background fibers always return to the dispatcher
-    return dispatch_cntx_->SwitchTo();
+    return dispatch_cntx_->SwitchTo(now);
   }
 
   if (yield)
-    AddReady(active_fiber);
+    AddReady(active_fiber, false, now);
 
   DCHECK(HasReady(FiberPriority::NORMAL));  // dispatcher fiber is always in the ready queue.
 
   // The dispatcher waits for its turn in RunReadyFibersInternal(), so the round is ours to end.
-  if (round_robin_run_.in_normal_round) {
+  if (config_.poll_min_cycles != 0 && round_robin_run_.in_normal_round) {
     // Switch to the dispatcher ahead of its turn, so it ends the round: its loop pulls remotely
     // woken fibers and processes I/O before it starts the next round.
-    if (ShouldPollEarly(round_robin_run_.last_cycles))
-      return EndRoundEarly();
+    uint64_t since_poll = now - last_poll_cycles_;
+    if (since_poll >= config_.poll_min_cycles && ShouldPollEarly(since_poll))
+      return EndRoundEarly(now);
   }
 
   auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
   FiberInterface* fi = &rq.front();
   rq.pop_front();
-  return fi->SwitchTo();
+  return fi->SwitchTo(now);
 }
 
 // A separate function, because Preempt() runs on the stack of every fiber that switches out,
 // and in unoptimized sanitizer builds this code adds hundreds of bytes to its frame.
-ctx::fiber_context Scheduler::EndRoundEarly() {
+ctx::fiber_context Scheduler::EndRoundEarly(uint64_t tsc) {
   FiberInterface* dispatcher = dispatch_cntx_.get();
   DCHECK(dispatcher->list_hook.is_linked());
   auto& rq = ready_queue_[GetQueueIndex(FiberPriority::NORMAL)];
   rq.erase(rq.iterator_to(*dispatcher));
   round_robin_run_.end_round = true;
-  return dispatcher->SwitchTo();
+  return dispatcher->SwitchTo(tsc);
 }
 
-void Scheduler::AddReady(FiberInterface* fibi, bool to_front) {
+void Scheduler::AddReady(FiberInterface* fibi, bool to_front, uint64_t tsc) {
   DCHECK(!fibi->list_hook.is_linked());
   DVLOG(2) << "Adding " << fibi->name() << " to ready_queue_";
 
   unsigned q_idx = GetQueueIndex(fibi->prio_);
 
-  fibi->SetReadyStart();
+  fibi->SetReadyStart(tsc);
   if (to_front) {
     ready_queue_[q_idx].push_front(*fibi);
   } else {
@@ -439,14 +441,7 @@ bool Scheduler::WaitUntil(chrono::steady_clock::time_point tp, FiberInterface* m
   return has_timed_out;
 }
 
-bool Scheduler::ShouldPollEarly(uint64_t now) {
-  if (config_.poll_min_cycles == 0)
-    return false;
-
-  uint64_t since_poll = now - last_poll_cycles_;
-  if (since_poll < config_.poll_min_cycles)
-    return false;
-
+bool Scheduler::ShouldPollEarly(uint64_t since_poll) {
   if (!remote_ready_queue_.Empty())
     return true;
 
@@ -662,13 +657,14 @@ RunFiberResult Scheduler::RunReadyFibersInternal(FiberPriority priority) {
 
     // Run round robin only with normal priority, returing to the dispatcher after every round.
     // Background fibers switch back directly to dispatcher
+    uint64_t now = base::CycleClock::Now();
     if (priority == FiberPriority::NORMAL)
-      AddReady(dispatch_cntx_.get());
+      AddReady(dispatch_cntx_.get(), false, now);
 
     DVLOG(2) << "Switching to " << fi->name();
 
     // Switch to fiber, next logic is determined by Preempt()
-    fi->SwitchTo();
+    fi->SwitchTo(now);
 
     // Preempt() switched here ahead of our turn because work waits, see ShouldPollEarly().
     if (round_robin_run_.end_round)

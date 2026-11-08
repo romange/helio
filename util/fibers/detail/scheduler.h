@@ -52,7 +52,8 @@ class Scheduler {
   Scheduler(FiberInterface* main);
   ~Scheduler();
 
-  void AddReady(FiberInterface* fibi, bool to_front = false);
+  void AddReady(FiberInterface* fibi, bool to_front = false,
+                uint64_t tsc = base::CycleClock::Now());
 
   // ScheduleFromRemote is called from a different thread than the one that runs the scheduler.
   // fibi must exist during the run of this function. With `to_front`, this thread queues fibi
@@ -153,12 +154,12 @@ class Scheduler {
   // Run fibers from ready queue with given priority.
   RunFiberResult RunReadyFibersInternal(FiberPriority priority);
 
-  // Returns true if the dispatcher should end the round and poll, see Config::poll_min_cycles.
-  bool ShouldPollEarly(uint64_t now);
+  // Checks pending work after Preempt() has checked poll_min_cycles.
+  bool ShouldPollEarly(uint64_t since_poll);
 
   // Called by Preempt(): takes the dispatcher out of the ready queue and switches to it, so it
   // ends the round. See Config::poll_min_cycles.
-  ::boost::context::fiber_context EndRoundEarly();
+  ::boost::context::fiber_context EndRoundEarly(uint64_t tsc);
 
   // For HIGH priority fibers, we still use NORMAL(0) queue.
   static constexpr unsigned GetQueueIndex(FiberPriority prio) {

@@ -354,6 +354,15 @@ void RecordSwitchHookEvent(FiberSwitchHookEvent event) noexcept {
   switch_hook_events.push_back(event);
 }
 
+uint64_t suspend_hook_end_cycles = 0;
+
+void DelaySuspendHook(FiberSwitchHookEvent event) noexcept {
+  if (event == FiberSwitchHookEvent::SUSPEND) {
+    SpinForUsec(100);
+    suspend_hook_end_cycles = base::CycleClock::Now();
+  }
+}
+
 }  // namespace
 
 TEST_F(FiberTest, SwitchHook) {
@@ -373,6 +382,23 @@ TEST_F(FiberTest, SwitchHook) {
   ASSERT_EQ(2u, switch_hook_events.size());
   EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, switch_hook_events[0]);
   EXPECT_EQ(FiberSwitchHookEvent::RESUME, switch_hook_events[1]);
+}
+
+TEST_F(FiberTest, SuspendHookRuntimeStaysWithOutgoingFiber) {
+  suspend_hook_end_cycles = 0;
+  Fiber yielding("switch-hook", [] {
+    auto original = ThisFiber::SetSwitchHook({DelaySuspendHook});
+    ThisFiber::Yield();
+    ThisFiber::SetSwitchHook(original);
+  });
+  Fiber next("next", [] {
+    ASSERT_NE(suspend_hook_end_cycles, 0u);
+    uint64_t runtime = detail::FiberActive()->GetRunningTimeCycles();
+    uint64_t now = base::CycleClock::Now();
+    EXPECT_LE(runtime, now - suspend_hook_end_cycles);
+  });
+  yielding.Join();
+  next.Join();
 }
 
 TEST_F(FiberTest, OnIdleRunStatsAccumulateUntilUnregistered) {
@@ -639,9 +665,8 @@ TEST_F(FiberTest, RemoteWakeCheckInterval) {
     sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, prev);
   };
 
-  for (uint32_t usec : {0u, 1u}) {
-    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles,
-                        base::CycleClock::FromUsec(usec));
+  for (uint64_t cycles : {uint64_t{0}, base::CycleClock::FromUsec(1), uint64_t{UINT64_MAX}}) {
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, cycles);
     string order;
     detail::FiberInterface* sleeper = nullptr;
     Fiber fb_sleeper("sleeper", [&] {
@@ -671,7 +696,7 @@ TEST_F(FiberTest, RemoteWakeCheckInterval) {
     fb1.Join();
     fb2.Join();
     fb3.Join();
-    EXPECT_EQ(usec ? "12s3" : "123s", order) << usec;
+    EXPECT_EQ(cycles == base::CycleClock::FromUsec(1) ? "12s3" : "123s", order) << cycles;
   }
 }
 

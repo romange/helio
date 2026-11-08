@@ -442,9 +442,9 @@ void FiberInterface::AttachScheduler() {
   scheduler_->AddReady(this);
 }
 
-ctx::fiber_context FiberInterface::SwitchTo() {
+ctx::fiber_context FiberInterface::SwitchTo(uint64_t tsc) {
   DCHECK(entry_) << name();
-  FiberInterface* prev = SwitchSetup();
+  FiberInterface* prev = SwitchSetup(tsc);
   FiberSwitchHook resume_hook = switch_hook_;
 
   // pass pointer to the context that resumes `this`
@@ -469,7 +469,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 }
 
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
-  FiberInterface* prev = SwitchSetup();
+  FiberInterface* prev = SwitchSetup(CycleClock::Now());
   FiberSwitchHook resume_hook = switch_hook_;
 
   void* fake_stack_save = nullptr;
@@ -527,12 +527,16 @@ void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
   });
 }
 
-FiberInterface* FiberInterface::SwitchSetup() {
+FiberInterface* FiberInterface::SwitchSetup(uint64_t tsc) {
   auto& fb_initializer = FbInitializer();
 
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
-  to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
+  if (to_suspend->switch_hook_) {
+    to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
+    // Attribute the hook's runtime to the outgoing fiber, not the incoming one.
+    tsc = CycleClock::Now();
+  }
   fb_initializer.active = this;
 
 #if RECORD_FIBER_NAMES
@@ -540,8 +544,6 @@ FiberInterface* FiberInterface::SwitchSetup() {
   fb_initializer.past_fiber_names[index] = to_suspend->name_;
 #endif
   fb_initializer.fiber_run_seq++;
-
-  uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
   // We ignore such cases (and they are very rare).
