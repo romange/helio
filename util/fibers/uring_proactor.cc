@@ -366,11 +366,37 @@ void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
   sqe_avail_.notifyAll();
 }
 
+int UringProactor::SubmitPending() {
+  // GETEVENTS also runs deferred kernel task work. It does not execute our completion callbacks.
+  if (taskrun_flag_f_ && io_uring_sq_ready(&ring_) == 0) {
+    unsigned kflags = IO_URING_READ_ONCE(*ring_.sq.kflags);
+    if ((kflags & (IORING_SQ_TASKRUN | IORING_SQ_CQ_OVERFLOW)) == 0)
+      return 0;
+  }
+
+  ++stats_.uring_submit_calls;
+  int submitted = io_uring_submit_and_get_events(&ring_);
+  if (submitted > 0) {
+    stats_.uring_submit_sqes += submitted;
+    DVLOG(3) << "Submitted " << submitted;
+  } else if (submitted == -EBUSY) {
+    VLOG(1) << "EBUSY " << io_uring_sq_ready(&ring_);
+  } else if (submitted < 0 && submitted != -ETIME) {
+    LOG(DFATAL) << "Error submitting to iouring: " << -submitted;
+  }
+  return submitted;
+}
+
+bool UringProactor::FlushSubmissions() {
+  int submitted = SubmitPending();
+  return submitted >= 0 && io_uring_sq_ready(&ring_) == 0;
+}
+
 SubmitEntry UringProactor::GetSubmitEntry(CbType cb, uint32_t submit_tag) {
   io_uring_sqe* res = io_uring_get_sqe(&ring_);
   if (res == NULL) {
     ++get_entry_sq_full_;
-    int submitted = io_uring_submit(&ring_);
+    int submitted = SubmitPending();
     if (submitted > 0) {
       res = io_uring_get_sqe(&ring_);
     } else {
@@ -820,37 +846,16 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     ++stats_.loop_cnt;
     bool has_cpu_work = false;
 
-    // Under DEFER_TASKRUN, task work runs only when we enter the kernel with
-    // IORING_ENTER_GETEVENTS. io_uring_submit does NOT set that flag unless
-    // SQ_TASKRUN is observed at the moment of the call, so it can submit SQEs
-    // without draining pending completions and add request latency.
-    // Therefore, unlike with io_uring_submit, we always set GET_EVENTS when calling io_uring_enter
-    // but similarly to io_uring_submit we check on whether we need to enter at all.
-    int num_submitted = 0;
-    bool call_submit = true;
-    if (taskrun_flag_f_) {
-      unsigned sq_ready = io_uring_sq_ready(&ring_);
-      bool taskrun_pending = IO_URING_READ_ONCE(*ring_.sq.kflags) & IORING_SQ_TASKRUN;
-      call_submit = (sq_ready > 0) || taskrun_pending;
-    }
-    if (call_submit) {
-      stats_.uring_submit_calls++;
-      num_submitted = io_uring_submit_and_get_events(&ring_);
-    }
+    int num_submitted = SubmitPending();
     bool ring_busy = false;
 
-    if (num_submitted > 0) {
-      stats_.uring_submit_sqes += num_submitted;
-      DVLOG(3) << "Submitted " << num_submitted;
-    } else if (num_submitted == -EBUSY) {
-      VLOG(1) << "EBUSY " << io_uring_sq_ready(&ring_);
+    if (num_submitted == -EBUSY) {
       ring_busy = true;
       num_submitted = 0;
       ++busy_sq_cnt;
     } else if (num_submitted == 0) {
       jump_counts[jump_from]++;
-    } else if (num_submitted != -ETIME) {
-      LOG(DFATAL) << "Error submitting to iouring: " << -num_submitted;
+    } else if (num_submitted < 0 && num_submitted != -ETIME) {
       continue;
     }
 
@@ -889,6 +894,9 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
 
       ReapCompletions(cqe_count, cqes, dispatcher);
 
+      // TODO: while fibers keep the loop busy, sleeping fibers wake only here, at most once per
+      // 2.5ms and only after completions. Without completions they wait until the loop runs
+      // out of work. Consider expired sleep deadlines in Scheduler::ServicePendingWork() as well.
       if (ShouldPollL2Tasks()) {
         RunL2Tasks(scheduler);
       }

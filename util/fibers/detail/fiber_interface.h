@@ -126,7 +126,7 @@ class FiberInterface {
   virtual ~FiberInterface();
 
   // Switch functions
-  ::boost::context::fiber_context SwitchTo();
+  ::boost::context::fiber_context SwitchTo(uint64_t tsc);
   void SwitchToAndExecute(std::function<void()> fn);
 
   using PrintFn = std::function<void(FiberInterface*)>;
@@ -300,8 +300,8 @@ class FiberInterface {
 
   uint64_t GetRunningTimeCycles() const;
 
-  void SetReadyStart() {
-    ready_tsc_ = base::CycleClock::Now();
+  void SetReadyStart(uint64_t tsc) {
+    ready_tsc_ = tsc;
   }
 
   // Sets the start of the CPU time measurement for active fiber.
@@ -396,7 +396,7 @@ class FiberInterface {
 
   // Handles all the stats and also updates the involved data structure before actually switching
   // the fiber context. Returns the active fiber before the context switch.
-  FiberInterface* SwitchSetup();
+  FiberInterface* SwitchSetup(uint64_t tsc);
 };
 
 template <typename Fn, typename... Arg> class WorkerFiberImpl : public FiberInterface {

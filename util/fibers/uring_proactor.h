@@ -128,7 +128,6 @@ class UringProactor : public ProactorBase {
   std::optional<RegisteredSlice> RequestRegisteredSlice(size_t size);
   void ReturnRegisteredSlice(RegisteredSlice buf);
 
-
   // Registers an iouring buffer ring (see io_uring_register_buf_ring(3)).
   // Available from kernel 5.19. nentries must be less than 2^15 and should be power of 2.
   // Registers a buffer ring with specified buffer group_id.
@@ -145,7 +144,8 @@ class UringProactor : public ProactorBase {
 
   // Tracks the recv completion position. Required to synchronizing bundles or incremental buffers.
   // Returns the next bufid to use in case of bundles.
-  uint16_t BufRingTrackRecvCompletion(uint16_t group_id, unsigned size, uint16_t bufid, bool incremental);
+  uint16_t BufRingTrackRecvCompletion(uint16_t group_id, unsigned size, uint16_t bufid,
+                                      bool incremental);
 
   // Returns bufring entry size for the given group_id.
   // -1 if group_id is invalid.
@@ -194,6 +194,21 @@ class UringProactor : public ProactorBase {
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
 
+  ABSL_MUST_USE_RESULT int SubmitPending();
+  ABSL_MUST_USE_RESULT bool FlushSubmissions() final;
+
+  // Counts unsubmitted SQEs separately from CQEs. Under DEFER_TASKRUN, completions are posted
+  // only when we enter the kernel, which flags that some wait without telling how many, so
+  // they count as one.
+  DispatchPolicy::PendingWork GetPendingWork() const final {
+    DispatchPolicy::PendingWork res = ProactorBase::GetPendingWork();
+    unsigned kflags = IO_URING_READ_ONCE(*ring_.sq.kflags);
+    res.submissions = io_uring_sq_ready(&ring_);
+    res.io_events = io_uring_cq_ready(&ring_) +
+                    ((kflags & (IORING_SQ_TASKRUN | IORING_SQ_CQ_OVERFLOW)) ? 1 : 0);
+    return res;
+  }
+
   io_uring ring_;
 
   uint8_t msgring_supported_f_ : 1;
@@ -202,9 +217,9 @@ class UringProactor : public ProactorBase {
   uint8_t bundle_f_ : 1;
   uint8_t incremental_buf_ring_f_ : 1;
   // IORING_SETUP_TASKRUN_FLAG + COOP_TASKRUN enabled: kernel publishes
-  // IORING_SQ_TASKRUN in sq_flags, so io_uring_submit can safely skip the
-  // syscall when SQ is empty and no taskrun is pending. Otherwise we must use
-  // io_uring_submit_and_get_events to always enter the kernel.
+  // IORING_SQ_TASKRUN in sq_flags, so SubmitPending can skip the syscall when
+  // SQ is empty and no task work or CQ overflow is pending. Otherwise we must
+  // always enter the kernel.
   uint8_t taskrun_flag_f_ : 1;
   uint8_t : 2;
 

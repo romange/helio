@@ -33,7 +33,7 @@ template <typename T> class MPSCIntrusiveQueue {
   // The tail of the queue. It is the last item pushed to the queue.
   alignas(cache_alignment) std::atomic<T*> tail_;
 
-  alignas(cache_alignment) typename std::aligned_storage<sizeof(T), alignof(T)>::type storage_{};
+  alignas(cache_alignment) alignas(alignof(T)) std::byte storage_[sizeof(T)]{};
 
   T* stub() {
     return reinterpret_cast<T*>(&storage_);

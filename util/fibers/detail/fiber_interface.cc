@@ -325,6 +325,11 @@ void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size)
   // and on fresh memory page-fault, every stack page whenever a fiber is created.
   stack_fill_ = std::min<uint32_t>({absl::GetFlag(FLAGS_fiber_safety_margin), stack_size, 8192u});
   if (stack_fill_ > 0) {
+    // TODO: Since #680, stack pages are no longer all faulted in here, but on first use. This
+    // reduces RSS, but may degrade stack locality since their physical pages are allocated later
+    // and scattered. A saturated single-thread benchmark with long-lived connections ran ~8%
+    // slower without the full fill. Consider prefaulting stacks, e.g. with
+    // madvise(MADV_POPULATE_WRITE) or a dedicated stack pool, if this is confirmed.
     memset(stack_bottom_, 0xAB, stack_fill_);
   }
 }
@@ -336,13 +341,13 @@ void FiberInterface::Start(Launch launch) {
   switch (launch) {
     case Launch::post:
       // Activate but do not switch to it.
-      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */);
+      fb_init.sched->AddReady(this, prio_ == FiberPriority::HIGH /* to_front */, CycleClock::Now());
       break;
     case Launch::dispatch:
       // Add the active fiber to the ready queue and switch to the new fiber.
-      fb_init.sched->AddReady(fb_init.active);
+      fb_init.sched->AddReady(fb_init.active, false, CycleClock::Now());
       {
-        auto fc = SwitchTo();
+        auto fc = SwitchTo(CycleClock::Now());
         DCHECK(!fc);
       }
       break;
@@ -413,7 +418,8 @@ void FiberInterface::ActivateOther(FiberInterface* other, bool to_front) {
     // In case `other` times out on wait, it could be added to the ready queue already by
     // ProcessSleep.
     if (!other->list_hook.is_linked()) {
-      scheduler_->AddReady(other, to_front || other->prio_ == FiberPriority::HIGH);
+      scheduler_->AddReady(other, to_front || other->prio_ == FiberPriority::HIGH,
+                           CycleClock::Now());
     }
   } else {
     // The fiber belongs to another thread. We need to schedule it on that thread.
@@ -434,12 +440,12 @@ void FiberInterface::AttachScheduler() {
   scheduler_ = detail::FbInitializer().sched;
   scheduler_->Attach(this);
 
-  scheduler_->AddReady(this);
+  scheduler_->AddReady(this, false, CycleClock::Now());
 }
 
-ctx::fiber_context FiberInterface::SwitchTo() {
+ctx::fiber_context FiberInterface::SwitchTo(uint64_t tsc) {
   DCHECK(entry_) << name();
-  FiberInterface* prev = SwitchSetup();
+  FiberInterface* prev = SwitchSetup(tsc);
   FiberSwitchHook resume_hook = switch_hook_;
 
   // pass pointer to the context that resumes `this`
@@ -464,7 +470,7 @@ ctx::fiber_context FiberInterface::SwitchTo() {
 }
 
 void FiberInterface::SwitchToAndExecute(std::function<void()> fn) {
-  FiberInterface* prev = SwitchSetup();
+  FiberInterface* prev = SwitchSetup(CycleClock::Now());
   FiberSwitchHook resume_hook = switch_hook_;
 
   void* fake_stack_save = nullptr;
@@ -522,12 +528,16 @@ void FiberInterface::ExecuteOnFiberStack(PrintFn fn) {
   });
 }
 
-FiberInterface* FiberInterface::SwitchSetup() {
+FiberInterface* FiberInterface::SwitchSetup(uint64_t tsc) {
   auto& fb_initializer = FbInitializer();
 
   // switch the active fiber and set to_suspend to the previously active fiber.
   FiberInterface* to_suspend = fb_initializer.active;
-  to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
+  if (to_suspend->switch_hook_) {
+    to_suspend->switch_hook_.Run(FiberSwitchHookEvent::SUSPEND);
+    // Attribute the hook's runtime to the outgoing fiber, not the incoming one.
+    tsc = CycleClock::Now();
+  }
   fb_initializer.active = this;
 
 #if RECORD_FIBER_NAMES
@@ -535,8 +545,6 @@ FiberInterface* FiberInterface::SwitchSetup() {
   fb_initializer.past_fiber_names[index] = to_suspend->name_;
 #endif
   fb_initializer.fiber_run_seq++;
-
-  uint64_t tsc = CycleClock::Now();
 
   // When a kernel suspends we may get a negative delta because TSC is reset.
   // We ignore such cases (and they are very rare).

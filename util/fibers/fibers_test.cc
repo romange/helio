@@ -4,6 +4,7 @@
 
 #include "util/fibers/fibers.h"
 
+#include <absl/cleanup/cleanup.h>
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 #include <arpa/inet.h>
@@ -17,12 +18,14 @@
 #include <shared_mutex>
 #include <thread>
 
+#include "base/cycle_clock.h"
 #include "base/flags.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "base/mpmc_bounded_queue.h"
 #include "base/spinlock.h"
 #include "util/fibers/detail/fiber_interface.h"
+#include "util/fibers/detail/scheduler.h"
 #include "util/fibers/detail/wait_queue.h"
 #include "util/fibers/dns_resolve.h"
 #include "util/fibers/epoll_proactor.h"
@@ -351,6 +354,15 @@ void RecordSwitchHookEvent(FiberSwitchHookEvent event) noexcept {
   switch_hook_events.push_back(event);
 }
 
+uint64_t suspend_hook_end_cycles = 0;
+
+void DelaySuspendHook(FiberSwitchHookEvent event) noexcept {
+  if (event == FiberSwitchHookEvent::SUSPEND) {
+    SpinForUsec(100);
+    suspend_hook_end_cycles = base::CycleClock::Now();
+  }
+}
+
 }  // namespace
 
 TEST_F(FiberTest, SwitchHook) {
@@ -370,6 +382,23 @@ TEST_F(FiberTest, SwitchHook) {
   ASSERT_EQ(2u, switch_hook_events.size());
   EXPECT_EQ(FiberSwitchHookEvent::SUSPEND, switch_hook_events[0]);
   EXPECT_EQ(FiberSwitchHookEvent::RESUME, switch_hook_events[1]);
+}
+
+TEST_F(FiberTest, SuspendHookRuntimeStaysWithOutgoingFiber) {
+  suspend_hook_end_cycles = 0;
+  Fiber yielding("switch-hook", [] {
+    auto original = ThisFiber::SetSwitchHook({DelaySuspendHook});
+    ThisFiber::Yield();
+    ThisFiber::SetSwitchHook(original);
+  });
+  Fiber next("next", [] {
+    ASSERT_NE(suspend_hook_end_cycles, 0u);
+    uint64_t runtime = detail::FiberActive()->GetRunningTimeCycles();
+    uint64_t now = base::CycleClock::Now();
+    EXPECT_LE(runtime, now - suspend_hook_end_cycles);
+  });
+  yielding.Join();
+  next.Join();
 }
 
 TEST_F(FiberTest, OnIdleRunStatsAccumulateUntilUnregistered) {
@@ -626,6 +655,118 @@ TEST_F(FiberTest, Remote) {
   LOG(INFO) << "fb1 joined";
   t1.join();
 }
+
+// A fiber woken from another thread waits for the dispatcher's turn to be queued. With
+// poll_min_cycles, the first fiber that switches out after the interval ends the round, so it is
+// queued ahead of fibers launched later.
+TEST_F(FiberTest, RemoteWakeCheckInterval) {
+  detail::Scheduler* sched = detail::FiberActive()->scheduler();
+  absl::Cleanup restore = [sched, prev = sched->config().poll_min_cycles] {
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, prev);
+  };
+
+  for (uint64_t cycles : {uint64_t{0}, base::CycleClock::FromUsec(1), uint64_t{UINT64_MAX}}) {
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, cycles);
+    string order;
+    detail::FiberInterface* sleeper = nullptr;
+    Fiber fb_sleeper("sleeper", [&] {
+      sleeper = detail::FiberActive();
+      ThisFiber::SleepFor(1h);
+      order += 's';
+    });
+
+    // Resume from the sleep queue, so the dispatcher starts a round with only this fiber ready
+    // and queues itself behind it. f1 and f2 are then queued behind the dispatcher.
+    ThisFiber::SleepFor(1ms);
+    ASSERT_TRUE(sleeper);
+    Fiber fb3;
+    Fiber fb1("f1", [&] {
+      thread([&] { detail::FiberActive()->ActivateOther(sleeper); }).join();
+      uint64_t start = base::CycleClock::Now();
+      while (base::CycleClock::Now() - start < base::CycleClock::FromUsec(20)) {
+      }
+      order += '1';
+    });
+    Fiber fb2("f2", [&] {
+      order += '2';
+      fb3 = Fiber("f3", [&] { order += '3'; });
+    });
+
+    fb_sleeper.Join();
+    fb1.Join();
+    fb2.Join();
+    fb3.Join();
+    EXPECT_EQ(cycles == base::CycleClock::FromUsec(1) ? "12s3" : "123s", order) << cycles;
+  }
+}
+
+static void BM_FiberYieldRing(benchmark::State& state) {
+  bool stop = false;
+  vector<Fiber> fibers;
+  for (int64_t i = 1; i < state.range(0); ++i) {
+    fibers.emplace_back([&] {
+      while (!stop)
+        ThisFiber::Yield();
+    });
+  }
+  ThisFiber::Yield();
+
+  uint64_t before = FiberSwitchEpoch();
+  for (auto _ : state)
+    ThisFiber::Yield();
+  uint64_t switches = FiberSwitchEpoch() - before;
+
+  stop = true;
+  for (auto& fiber : fibers)
+    fiber.Join();
+  state.counters["switches"] = benchmark::Counter(switches, benchmark::Counter::kIsRate);
+  state.SetItemsProcessed(state.iterations() * state.range(0));
+}
+BENCHMARK(BM_FiberYieldRing)->Arg(2)->Arg(64)->UseRealTime();
+
+// Measures response handoff latency, including responses observed without suspending.
+static void BM_FiberRemoteWake(benchmark::State& state) {
+  EventCount request_ec, response_ec;
+  atomic<uint64_t> requested{0}, completed{0};
+  uint64_t wake_cycles = 0;
+  atomic<bool> stop{false};
+  thread peer([&] {
+    uint64_t seen = 0;
+    while (true) {
+      request_ec.await([&] { return stop.load() || requested.load() != seen; });
+      if (stop.load())
+        break;
+      seen = requested.load();
+      wake_cycles = base::CycleClock::Now();
+      completed.store(seen, memory_order_release);
+      response_ec.notify();
+    }
+  });
+
+  bool load_stop = false;
+  vector<Fiber> fibers;
+  for (int64_t i = 0; i < state.range(0); ++i) {
+    fibers.emplace_back([&] {
+      while (!load_stop)
+        ThisFiber::Yield();
+    });
+  }
+  for (auto _ : state) {
+    uint64_t sequence = requested.fetch_add(1) + 1;
+    request_ec.notify();
+    response_ec.await([&] { return completed.load(memory_order_acquire) == sequence; });
+    uint64_t elapsed = base::CycleClock::Now() - wake_cycles;
+    state.SetIterationTime(double(elapsed) / base::CycleClock::Frequency());
+  }
+
+  stop.store(true);
+  request_ec.notify();
+  peer.join();
+  load_stop = true;
+  for (auto& fiber : fibers)
+    fiber.Join();
+}
+BENCHMARK(BM_FiberRemoteWake)->Arg(64)->Arg(256)->UseManualTime();
 
 TEST_F(FiberTest, Dispatch) {
   int val1 = 0, val2 = 0;
@@ -1090,6 +1231,63 @@ TEST_F(FiberTest, AsyncEvent) {
   done.Wait();
 }
 
+TEST_F(FiberTest, FlushSubmissionsWithoutDispatcher) {
+  ProactorThread pth(0, ProactorBase::IOURING);
+  auto* proactor = static_cast<UringProactor*>(pth.get());
+  proactor->Await([&] {
+    auto* sched = detail::FiberActive()->scheduler();
+    absl::Cleanup restore = [sched, prev = sched->config()] {
+      sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, prev.poll_min_cycles);
+      sched->UpdateConfig(&detail::Scheduler::Config::poll_max_cycles, prev.poll_max_cycles);
+      sched->UpdateConfig(&detail::Scheduler::Config::poll_min_events, prev.poll_min_events);
+    };
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_max_cycles, UINT64_MAX);
+    sched->UpdateConfig(&detail::Scheduler::Config::poll_min_events, UINT64_MAX);
+
+    for (uint64_t cycles : {uint64_t{0}, uint64_t{UINT64_MAX}, base::CycleClock::FromUsec(1)}) {
+      sched->UpdateConfig(&detail::Scheduler::Config::poll_min_cycles, cycles);
+      for (unsigned count : {1u, 3u}) {
+        SCOPED_TRACE(StrCat("cycles=", cycles, " count=", count));
+        Done done;
+        unsigned callbacks = 0;
+        uint64_t submitted = 0, epoch = 0, loops = 0;
+        Fiber producer("producer", [&] {
+          submitted = proactor->stats().uring_submit_sqes;
+          for (unsigned i = 0; i < count; ++i) {
+            auto se = proactor->GetSubmitEntry(
+                [&](detail::FiberInterface* active, int res, uint32_t, uint32_t) {
+                  EXPECT_EQ(active, detail::FiberActive());
+                  EXPECT_EQ(active->type(), detail::FiberInterface::DISPATCH);
+                  EXPECT_EQ(res, 0);
+                  if (++callbacks == count)
+                    done.Notify();
+                });
+            se.sqe()->opcode = IORING_OP_NOP;
+          }
+          SpinForUsec(20);
+          epoch = FiberSwitchEpoch();
+          loops = proactor->stats().loop_cnt;
+          ThisFiber::Yield();
+        });
+        Fiber observer("observer", [&] {
+          EXPECT_EQ(FiberSwitchEpoch(), epoch + 1);
+          EXPECT_EQ(proactor->stats().loop_cnt, loops);
+          EXPECT_EQ(callbacks, 0u);
+          if (cycles == base::CycleClock::FromUsec(1)) {
+            EXPECT_GE(proactor->stats().uring_submit_sqes, submitted + count);
+          } else {
+            EXPECT_EQ(proactor->stats().uring_submit_sqes, submitted);
+          }
+        });
+        producer.Join();
+        observer.Join();
+        done.Wait();
+        EXPECT_EQ(callbacks, count);
+      }
+    }
+  });
+}
+
 TEST_F(FiberTest, RegisteredBuffers) {
   ProactorThread pth(0, ProactorBase::IOURING);
   pth.get()->DispatchBrief([&] {
@@ -1184,7 +1382,7 @@ TEST_F(FiberTest, SwitchAndExecute) {
     detail::FiberInterface* other = first.Get();
 
     for (unsigned i = 0; i < 10; ++i) {
-      other->SwitchTo();
+      other->SwitchTo(base::CycleClock::Now());
       ++cnt2;
     }
 
