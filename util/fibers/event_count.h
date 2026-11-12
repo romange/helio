@@ -136,7 +136,7 @@ class EventCount {
   // IMPORTANT: The callback must NOT call unsubscribe() or destroy SubKey, because
   // notification runs under EventCount's internal spinlock and re-entering it would
   // deadlock. The callback should only set a flag or perform a non-blocking signal.
-  SubKey subscribe_persistent(detail::Waiter* w) noexcept;
+  inline SubKey subscribe_persistent(detail::Waiter* w) noexcept;
 
   // Advanced API, most use-cases will require await function.
   Key prepareWait() noexcept {
@@ -144,13 +144,15 @@ class EventCount {
     return Key(this, prev >> kEpochShift);
   }
 
-  void finishWait() noexcept;
+  // The inline members are declared inline here too, so that the compiler reports a translation
+  // unit that uses them without their definition (see event_count_test.cc).
+  inline void finishWait() noexcept;
 
   bool wait(uint32_t epoch) noexcept;
   cv_status wait_until(uint32_t epoch, const std::chrono::steady_clock::time_point& tp) noexcept;
 
-  bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
-  void unsubscribe(detail::Waiter* w) noexcept;
+  inline bool subscribe(uint32_t epoch, detail::Waiter* w) noexcept;
+  inline void unsubscribe(detail::Waiter* w) noexcept;
 
  private:
   friend class Key;
@@ -161,7 +163,14 @@ class EventCount {
   EventCount& operator=(EventCount&&) = delete;
 
   // Run notify function on wait queue if any waiter is active
-  bool NotifyInternal(bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept;
+  bool NotifyInternal(bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept {
+    uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
+    return (prev & kWaiterMask) && NotifyWaiters(f);
+  }
+
+  // Runs `f` on the wait queue under lock_. Defined in synchronization.cc, like wait(), because it
+  // needs FiberInterface, whose header includes this one.
+  bool NotifyWaiters(bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept;
 
   // val_ stores the epoch in the most significant 32 bits and the
   // waiter count in the least significant 32 bits.
@@ -175,6 +184,32 @@ class EventCount {
   static constexpr uint64_t kAddEpoch = 1ULL << kEpochShift;
   static constexpr uint64_t kWaiterMask = kAddEpoch - 1;
 };
+
+// Defined here, not in synchronization.h, so that every translation unit that uses the inline and
+// template members above also sees their definitions.
+inline bool EventCount::subscribe(uint32_t epoch, detail::Waiter* w) noexcept {
+  std::unique_lock lk(lock_);
+  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+    wait_queue_.Link(w);
+    return true;
+  }
+  return false;
+}
+
+inline void EventCount::unsubscribe(detail::Waiter* w) noexcept {
+  std::unique_lock lk(lock_);
+  if (w->IsLinked())
+    wait_queue_.Unlink(w);
+}
+
+inline void EventCount::finishWait() noexcept {
+  // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
+  // This is necessary because we want to avoid the case where continue to wait for
+  // another eventcount/condition_variable and have two notify functions waking up the same
+  // fiber at the same time.
+  lock_.lock();
+  lock_.unlock();
+}
 
 template <typename Condition> bool EventCount::await(Condition condition) {
   if (condition()) {
@@ -288,7 +323,7 @@ class EmbeddedBlockingCounter {
   }
 
   // Returns true on success (reaching 0), false when cancelled. Acquire semantics
-  bool Wait();
+  inline bool Wait();
 
   // Same as Wait(), but with timeout
   bool WaitFor(const std::chrono::steady_clock::duration& duration) {
@@ -324,6 +359,12 @@ class EmbeddedBlockingCounter {
   EventCount ec_;
   std::atomic<uint64_t> count_;
 };
+
+inline bool EmbeddedBlockingCounter::Wait() {
+  uint64_t cnt;
+  ec_.await(WaitCondition(&cnt));
+  return (cnt & kCancelFlag) == 0;
+}
 
 }  // namespace fb2
 }  // namespace util

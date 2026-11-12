@@ -363,58 +363,6 @@ class ABSL_LOCKABLE SharedMutex {
   std::atomic_uint32_t state_{0};
 };
 
-inline bool EventCount::NotifyInternal(
-    bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept {
-  uint64_t prev = val_.fetch_add(kAddEpoch, std::memory_order_release);
-  if (prev & kWaiterMask) {
-    detail::FiberInterface* active = detail::FiberActive();
-    std::unique_lock lk(lock_);
-    return (wait_queue_.*f)(active);
-  }
-  return false;
-}
-
-// Atomically checks for epoch and waits on cond_var.
-inline bool EventCount::wait(uint32_t epoch) noexcept {
-  detail::FiberInterface* active = detail::FiberActive();
-
-  std::unique_lock lk(lock_);
-  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
-    detail::Waiter waiter(active->CreateWaiter());
-    wait_queue_.Link(&waiter);
-    lk.unlock();
-    active->Suspend();
-
-    finishWait();
-    return true;
-  }
-  return false;
-}
-
-inline bool EventCount::subscribe(uint32_t epoch, detail::Waiter* w) noexcept {
-  std::unique_lock lk(lock_);
-  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
-    wait_queue_.Link(w);
-    return true;
-  }
-  return false;
-}
-
-inline void EventCount::unsubscribe(detail::Waiter* w) noexcept {
-  std::unique_lock lk(lock_);
-  if (w->IsLinked())
-    wait_queue_.Unlink(w);
-}
-
-inline void EventCount::finishWait() noexcept {
-  // We need this barrier to ensure that notify()/notifyAll() has finished before we return.
-  // This is necessary because we want to avoid the case where continue to wait for
-  // another eventcount/condition_variable and have two notify functions waking up the same
-  // fiber at the same time.
-  lock_.lock();
-  lock_.unlock();
-}
-
 // For synchronizing fibers in single-threaded environment.
 // Can be used together with `CondVarAny` to implement local-thread `CondVar` which is more
 // efficient than EventCount.
@@ -545,12 +493,6 @@ std::cv_status CondVarAny::wait_until(LockType& lt, std::chrono::steady_clock::t
     wait_queue_.Unlink(&waiter);
   }
   return timed_out ? std::cv_status::timeout : std::cv_status::no_timeout;
-}
-
-inline bool EmbeddedBlockingCounter::Wait() {
-  uint64_t cnt;
-  ec_.await(WaitCondition(&cnt));
-  return (cnt & kCancelFlag) == 0;
 }
 
 }  // namespace fb2

@@ -22,4 +22,14 @@ endif()
 cxx_link(fibers2 base io ${FB_LINUX_LIBS} Boost::context Boost::headers TRDP::cares)
 
 helio_cxx_test(fibers_test fibers2 LABELS CI)
+
+# Turns a use of an inline member without its definition into a build error in every build type,
+# see event_count_test.cc. clang names the warning, so only it becomes an error: macOS CI passes
+# linker flags to every compile, which clang warns about. GCC's warning has no name.
+helio_cxx_test(event_count_test fibers2 LABELS CI)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(event_count_test PRIVATE -Werror=undefined-inline)
+else()
+  target_compile_options(event_count_test PRIVATE -Werror)
+endif()
 helio_cxx_test(fiber_socket_test fibers2 LABELS CI)
