@@ -11,6 +11,29 @@ namespace fb2 {
 
 using namespace std;
 
+bool EventCount::NotifyWaiters(bool (detail::WaitQueue::*f)(detail::FiberInterface*)) noexcept {
+  detail::FiberInterface* active = detail::FiberActive();
+  std::unique_lock lk(lock_);
+  return (wait_queue_.*f)(active);
+}
+
+// Atomically checks for epoch and waits on cond_var.
+bool EventCount::wait(uint32_t epoch) noexcept {
+  detail::FiberInterface* active = detail::FiberActive();
+
+  std::unique_lock lk(lock_);
+  if ((val_.load(std::memory_order_relaxed) >> kEpochShift) == epoch) {
+    detail::Waiter waiter(active->CreateWaiter());
+    wait_queue_.Link(&waiter);
+    lk.unlock();
+    active->Suspend();
+
+    finishWait();
+    return true;
+  }
+  return false;
+}
+
 std::cv_status EventCount::wait_until(uint32_t epoch,
                                       const std::chrono::steady_clock::time_point& tp) noexcept {
   detail::FiberInterface* active = detail::FiberActive();
