@@ -232,9 +232,7 @@ void ListenerInterface::RunAcceptLoop() {
 
 ListenerInterface::~ListenerInterface() {
   if (sock_ && sock_->IsOpen()) {
-    sock_->proactor()->Await([this] {
-      std::ignore = this->sock_->Close();
-    });
+    sock_->proactor()->Await([this] { std::ignore = this->sock_->Close(); });
   }
   VLOG(1) << "Destroying ListenerInterface " << this;
 }
@@ -318,17 +316,19 @@ Connection* ListenerInterface::TraverseConnectionsOnThread(TraverseCB cb, uint32
   DCHECK(ProactorBase::IsProactorThread());
   unsigned index = ProactorBase::me()->GetPoolIndex();
 
-  auto it = listener_map.find(this);
-  if (it == listener_map.end()) {
-    return nullptr;
-  }
-
   // Unlike with migrations we do not rollback this counter in case of contention.
   // We wait until all migrations finish before we proceed.
   uint64_t gate = migrate_traversal_state_.fetch_add(1, memory_order_acquire);
   while ((gate >> 32)) {
     ThisFiber::SleepFor(1us);
     gate = migrate_traversal_state_.load(memory_order_acquire);
+  }
+
+  // Look up after the wait: Stop() may delete this thread's list while we sleep above.
+  auto it = listener_map.find(this);
+  if (it == listener_map.end()) {
+    migrate_traversal_state_.fetch_sub(1, memory_order_release);
+    return nullptr;
   }
 
   auto& conn_list = it->second->list;
