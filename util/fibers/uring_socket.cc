@@ -257,7 +257,7 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   DCHECK(ProactorBase::me() == proactor);
 
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
-                                        uint32_t flags, uint32_t) {
+                                        uint32_t flags, uint32_t) noexcept {
     delete msg;
 
     if (res >= 0) {
@@ -289,7 +289,7 @@ void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressC
   DCHECK(ProactorBase::me() == proactor);
 
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
-                                        uint32_t flags, uint32_t) {
+                                        uint32_t flags, uint32_t) noexcept {
     delete msg;
 
     if (res >= 0) {
@@ -399,7 +399,7 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   Proactor* p = GetProactor();
   error_cb_wrapper_ = ErrorCbRefWrapper::New(std::move(cb));
   auto se_cb = [data = error_cb_wrapper_](detail::FiberInterface*, Proactor::IoResult res,
-                                          uint32_t flags, uint32_t) {
+                                          uint32_t flags, uint32_t) noexcept {
     // Mark the poll id invalid before Destroy so a subsequent CancelOnErrorCb
     // on the socket skips PrepPollRemove on what may now be a reused
     // centries_ slot.
@@ -462,7 +462,7 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
   int fd = ShiftedFd();
   if (enable_multi_shot_) {
     auto recv_cb = [this, cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                              uint32_t flags, uint32_t bufring_id) {
+                                              uint32_t flags, uint32_t bufring_id) noexcept {
       UringProactor* up = static_cast<UringProactor*>(ProactorBase::me());
 
       if (flags & IORING_CQE_F_BUFFER) {

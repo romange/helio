@@ -35,6 +35,7 @@
 #include "util/fibers/park.h"
 #include "util/fibers/pool.h"
 #include "util/fibers/simple_channel.h"
+#include "util/fibers/spinlock.h"
 #include "util/fibers/synchronization.h"
 
 #if defined(__linux__) || defined(__FreeBSD__)
@@ -1214,7 +1215,7 @@ TEST_F(FiberTest, TestCounterSubscribe) {
 TEST_F(FiberTest, AsyncEvent) {
   Done done;
 
-  auto cb = [done](auto*, UringProactor::IoResult, uint32_t, uint32_t) mutable {
+  auto cb = [done](auto*, UringProactor::IoResult, uint32_t, uint32_t) mutable noexcept {
     done.Notify();
     LOG(INFO) << "notify";
   };
@@ -1229,6 +1230,64 @@ TEST_F(FiberTest, AsyncEvent) {
 
   LOG(INFO) << "DispatchBrief";
   done.Wait();
+}
+
+TEST_F(FiberTest, BoundedWorkSubmitsPending) {
+  ProactorThread pth(0, ProactorBase::IOURING);
+  auto* proactor = static_cast<UringProactor*>(pth.get());
+  proactor->Await([&] {
+    auto completed = make_shared<atomic_bool>(false);
+    auto submitted = proactor->stats().uring_submit_sqes;
+    proactor
+        ->GetSubmitEntry([completed](auto*, int res, uint32_t, uint32_t) noexcept {
+          completed->store(res == 0, memory_order_relaxed);
+        })
+        .PrepNOP();
+
+    EXPECT_TRUE(proactor->RunBoundedWork(1));
+    EXPECT_GT(proactor->stats().uring_submit_sqes, submitted);
+    EXPECT_FALSE(completed->load(memory_order_relaxed));  // The flush used the one-item budget.
+
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(2);
+    while (!completed->load(memory_order_relaxed) && chrono::steady_clock::now() < deadline)
+      proactor->RunBoundedWork(1);
+    EXPECT_TRUE(completed->load(memory_order_relaxed));
+  });
+}
+
+TEST_F(FiberTest, SpinLockRunsWorkOnAcquiringProactor) {
+  ProactorThread first(0, ProactorBase::IOURING);
+  ProactorThread second(1, ProactorBase::IOURING);
+  TTASSpinLock lock;
+  for (auto* base : {first.get(), second.get()}) {
+    auto* proactor = static_cast<UringProactor*>(base);
+    auto completed = make_shared<atomic_bool>(false);
+    Done done;
+    lock.lock();
+    proactor->Dispatch([&lock, proactor, completed, done]() mutable {
+      proactor
+          ->GetSubmitEntry([completed](auto*, int res, uint32_t, uint32_t) noexcept {
+            EXPECT_EQ(res, 0);
+            completed->store(true, memory_order_relaxed);
+          })
+          .PrepNOP();
+      auto epoch = FiberSwitchEpoch();
+      {
+        lock_guard guard(lock);
+        EXPECT_EQ(FiberSwitchEpoch(), epoch);
+        EXPECT_TRUE(completed->load(memory_order_relaxed));
+      }
+      done.Notify();
+    });
+
+    auto deadline = chrono::steady_clock::now() + chrono::seconds(2);
+    while (!completed->load(memory_order_relaxed) && chrono::steady_clock::now() < deadline)
+      ProactorBase::Pause();
+    bool completed_while_locked = completed->load(memory_order_relaxed);
+    lock.unlock();
+    done.Wait();
+    EXPECT_TRUE(completed_while_locked);
+  }
 }
 
 TEST_F(FiberTest, FlushSubmissionsWithoutDispatcher) {
@@ -1255,7 +1314,7 @@ TEST_F(FiberTest, FlushSubmissionsWithoutDispatcher) {
           submitted = proactor->stats().uring_submit_sqes;
           for (unsigned i = 0; i < count; ++i) {
             auto se = proactor->GetSubmitEntry(
-                [&](detail::FiberInterface* active, int res, uint32_t, uint32_t) {
+                [&](detail::FiberInterface* active, int res, uint32_t, uint32_t) noexcept {
                   EXPECT_EQ(active, detail::FiberActive());
                   EXPECT_EQ(active->type(), detail::FiberInterface::DISPATCH);
                   EXPECT_EQ(res, 0);

@@ -330,6 +330,22 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
   }
 }
 
+bool ProactorBase::RunBoundedWork(unsigned max_items) {
+  DCHECK(InMyThread());
+  DCHECK(detail::FiberActive()->type() != detail::FiberInterface::DISPATCH);
+
+  if (max_items == 0 || running_bounded_work_)
+    return false;
+
+  running_bounded_work_ = true;
+  unsigned count = RunBoundedIoWork(max_items);
+  if (count)
+    ResetBusyPoll();
+
+  running_bounded_work_ = false;
+  return count != 0;
+}
+
 uint64_t ProactorBase::GetCurrentBusyCycles() const {
   return base::CycleClock::Now() - io_wait_end_cycle_;
 }

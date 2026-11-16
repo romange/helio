@@ -344,18 +344,27 @@ void UringProactor::ProcessCqeBatch(unsigned count, io_uring_cqe** cqes,
   }
 }
 
-void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
-                                    detail::FiberInterface* current) {
+unsigned UringProactor::ReapCompletions(unsigned init_count, unsigned max_items,
+                                        io_uring_cqe** cqes, detail::FiberInterface* current) {
   DCHECK_GT(init_count, 0U);
   unsigned batch_count = init_count;
+  unsigned total = 0;
   do {
     ProcessCqeBatch(batch_count, cqes, current);
     io_uring_cq_advance(&ring_, batch_count);
     stats_.num_completions += batch_count;
+    total += batch_count;
+    if (total >= max_items)
+      break;
 
     // There could be completions added during the processing of the batch,
     // so we check again.
-    batch_count = io_uring_peek_batch_cqe(&ring_, cqes, kCqeBatchLen);
+    // A bounded slice only consumes visible CQEs here. The initial poll already serviced
+    // deferred task work, so avoid another implicit GETEVENTS on an empty CQ.
+    if (max_items != UINT_MAX && io_uring_cq_ready(&ring_) == 0)
+      break;
+    batch_count =
+        io_uring_peek_batch_cqe(&ring_, cqes, std::min<unsigned>(kCqeBatchLen, max_items - total));
   } while (batch_count > 0);
 
   // In case some of the timer completions filled schedule_periodic_list_.
@@ -363,7 +372,49 @@ void UringProactor::ReapCompletions(unsigned init_count, io_uring_cqe** cqes,
     SchedulePeriodic(task_pair.first, task_pair.second);
   }
   schedule_periodic_list_.clear();
-  sqe_avail_.notifyAll();
+  // Waking all SQ waiters is unbounded; leave it to the dispatcher.
+  if (max_items == UINT_MAX)
+    sqe_avail_.notifyAll();
+  else
+    deferred_sqe_notify_ = true;
+  return total;
+}
+
+unsigned UringProactor::RunBoundedIoWork(unsigned max_items) {
+  max_items = std::min<unsigned>(max_items, kCqeBatchLen);
+  unsigned handled = 0;
+  if (io_uring_sq_ready(&ring_) != 0) {
+    int submitted = SubmitPending();
+    if (submitted > 0) {
+      // One nonwaiting submission batch counts as one work item. The ring may contain many SQEs.
+      handled = 1;
+      if (handled == max_items)
+        return handled;
+    }
+  }
+
+  if (io_uring_cq_ready(&ring_) == 0) {
+    // SubmitPending() already entered the kernel; let the next slice check for its completions.
+    if (handled)
+      return handled;
+    unsigned flags = IO_URING_READ_ONCE(*ring_.sq.kflags);
+    if ((flags & (IORING_SQ_TASKRUN | IORING_SQ_CQ_OVERFLOW)) == 0)
+      return 0;
+    // min_complete is zero: service deferred kernel work, without waiting or submitting SQEs.
+    int res = io_uring_get_events(&ring_);
+    if (res < 0) {
+      LOG_IF(DFATAL, res != -EINTR && res != -EBUSY) << "get_events failed: " << -res;
+      return 0;
+    }
+    if (io_uring_cq_ready(&ring_) == 0)
+      return 0;
+  }
+  io_uring_cqe* cqes[kCqeBatchLen];
+  unsigned count = io_uring_peek_batch_cqe(&ring_, cqes, max_items - handled);
+  if (!count)
+    return handled;
+  ++stats_.completions_fetches;
+  return handled + ReapCompletions(count, max_items - handled, cqes, detail::FiberActive());
 }
 
 int UringProactor::SubmitPending() {
@@ -619,7 +670,8 @@ UringProactor::EpollIndex UringProactor::EpollAdd(int fd, EpollCB cb, uint32_t e
 }
 
 void UringProactor::RearmEpoll(EpollEntry* entry) {
-  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags, uint32_t) {
+  auto uring_cb = [entry, this](detail::FiberInterface* p, IoResult res, uint32_t flags,
+                                uint32_t) noexcept {
 #if DBG_EPOLL
     LOG(INFO) << "Epoll CB " << entry << " res:" << res << " flags " << flags;
 #endif
@@ -714,9 +766,10 @@ void UringProactor::ArmWakeupEvent() {
 void UringProactor::SchedulePeriodic(uint32_t id, PeriodicItem* item) {
   VPRO(2) << "SchedulePeriodic " << id;
 
-  SubmitEntry se =
-      GetSubmitEntry([this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags,
-                                      uint32_t) { this->PeriodicCb(res, id, std::move(item)); });
+  SubmitEntry se = GetSubmitEntry(
+      [this, id, item](detail::FiberInterface*, IoResult res, uint32_t flags, uint32_t) noexcept {
+        this->PeriodicCb(res, id, std::move(item));
+      });
 
   se.PrepTimeout(&item->period, false);
   DVLOG(2) << "Scheduling timer " << item << " userdata: " << se.sqe()->user_data;
@@ -742,7 +795,7 @@ void UringProactor::PeriodicCb(IoResult res, uint32 task_id, PeriodicItem* item)
 
 void UringProactor::CancelPeriodicInternal(PeriodicItem* item) {
   auto* me = detail::FiberActive();
-  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags, uint32_t) {
+  auto cb = [me](detail::FiberInterface* current, IoResult res, uint32_t flags, uint32_t) noexcept {
     ActivateSameThread(current, me);
   };
   uint32_t val1 = item->val1;
@@ -847,6 +900,8 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     bool has_cpu_work = false;
 
     int num_submitted = SubmitPending();
+    if (std::exchange(deferred_sqe_notify_, false))
+      sqe_avail_.notifyAll();
     bool ring_busy = false;
 
     if (num_submitted == -EBUSY) {
@@ -892,7 +947,7 @@ void UringProactor::MainLoop(detail::Scheduler* scheduler) {
     if (cqe_count) {
       ++stats_.completions_fetches;
 
-      ReapCompletions(cqe_count, cqes, dispatcher);
+      ReapCompletions(cqe_count, UINT_MAX, cqes, dispatcher);
 
       // TODO: while fibers keep the loop busy, sleeping fibers wake only here, at most once per
       // 2.5ms and only after completions. Without completions they wait until the loop runs
@@ -1100,12 +1155,15 @@ void UringProactor::WakeRing() {
 
 FiberCall::FiberCall(UringProactor* proactor, uint32_t timeout_msec) : me_(detail::FiberActive()) {
   auto waker = [this](detail::FiberInterface* current, UringProactor::IoResult res, uint32_t flags,
-                      uint32_t) {
+                      uint32_t) noexcept {
     io_res_ = res;
     res_flags_ = flags;
     was_run_ = true;
     DCHECK(me_) << io_res_ << " " << res_flags_;
-    ActivateSameThread(current, me_);
+
+    // RunBoundedWork might complete this call before its owner enters Get().
+    if (current != me_)
+      ActivateSameThread(current, me_);
   };
 
   if (timeout_msec != UINT32_MAX) {
@@ -1137,10 +1195,13 @@ auto FiberCall::Get() -> IoResult {
   // wake this suspended fiber via its completion callback. In that case this fiber will wake up
   // even though the waker of this call was not run yet.
   // To avoid this, we suspend until we make sure our own waker runs.
-  do {
+  //
+  // was_run_ can be set by the completion callback before this fiber enters Get().
+  // Because of RunBoundedWork call.
+  while (!was_run_) {
     me_->Suspend();
     LOG_IF(DFATAL, !was_run_) << "Woken up by the wrong notifier";
-  } while (!was_run_);
+  }
   me_ = nullptr;
 
   return io_res_;
