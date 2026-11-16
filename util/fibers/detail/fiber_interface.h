@@ -41,7 +41,9 @@ enum class FiberSwitchHookEvent : uint8_t {
   RESUME,
 };
 
-// Runs inside the fiber context switch path. The callback must not preempt.
+// Runs inside the fiber context switch path. The callback must not preempt. It must not run
+// proactor completions either (ProactorBase::RunBoundedWork, or waiting on fb2::IoSpinLock):
+// on SUSPEND the suspending fiber is still active, so a completion that wakes it is dropped.
 struct FiberSwitchHook {
   using Callback = void (*)(FiberSwitchHookEvent) noexcept;
 

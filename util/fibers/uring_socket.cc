@@ -299,7 +299,7 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   DCHECK(ProactorBase::me() == proactor);
 
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
-                                        uint32_t flags, uint32_t) {
+                                        uint32_t flags, uint32_t) noexcept {
     delete msg;
 
     if (res >= 0) {
@@ -331,7 +331,7 @@ void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressC
   DCHECK(ProactorBase::me() == proactor);
 
   auto mycb = [msg, cb = std::move(cb)](detail::FiberInterface*, Proactor::IoResult res,
-                                        uint32_t flags, uint32_t) {
+                                        uint32_t flags, uint32_t) noexcept {
     delete msg;
 
     if (res >= 0) {
@@ -451,7 +451,8 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
 // a half-close would complete immediately again. error_cb_id identifies the poll until its final
 // completion, so it never refers to a reused centries_ slot.
 void UringSocket::ErrorCbRefWrapper::ArmErrorPoll(Proactor* proactor) {
-  auto se_cb = [this](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags, uint32_t) {
+  auto se_cb = [this](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags,
+                      uint32_t) noexcept {
     // A multishot callback runs in place, and any submission below (also from the user callback)
     // may relocate it while it runs, so copy the capture before calling anything.
     ErrorCbRefWrapper* data = this;
@@ -522,7 +523,7 @@ void UringSocket::ErrorCbRefWrapper::RemoveErrorPoll(Proactor* proactor) {
   ++ref_count;
   uint32_t poll_id = error_cb_id;
   auto se_cb = [this, poll_id](detail::FiberInterface*, Proactor::IoResult res, uint32_t,
-                               uint32_t) {
+                               uint32_t) noexcept {
     ErrorCbRefWrapper* data = this;
     Proactor* proactor = static_cast<Proactor*>(ProactorBase::me());
 
@@ -566,7 +567,7 @@ void UringSocket::RegisterOnRecv(OnRecvCb cb) {
   int fd = ShiftedFd();
   if (enable_multi_shot_) {
     auto recv_cb = [this, cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                              uint32_t flags, uint32_t bufring_id) {
+                                              uint32_t flags, uint32_t bufring_id) noexcept {
       UringProactor* up = static_cast<UringProactor*>(ProactorBase::me());
 
       if (flags & IORING_CQE_F_BUFFER) {

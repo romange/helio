@@ -49,6 +49,7 @@ class EpollProactor : public ProactorBase {
  private:
   void DispatchCompletions(const void* cevents, unsigned count);
 
+  unsigned RunBoundedIoWork(unsigned max_items) final;
   void MainLoop(detail::Scheduler* sched) final;
 
   // epoll can not tell whether events are ready without a syscall, so it assumes one is.

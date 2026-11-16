@@ -124,7 +124,9 @@ error_code EpollSocket::PendingReq::Suspend(uint32_t timeout) {
 void EpollSocket::PendingReq::Activate(error_code ec) {
   ec_ = ec;
 
-  ActivateSameThread(detail::FiberActive(), context_);
+  auto* active = detail::FiberActive();
+  if (active != context_)
+    ActivateSameThread(active, context_);
 }
 
 std::pair<bool, EpollSocket::Result<size_t>> EpollSocket::AsyncReq::Run(int fd, bool is_send) {

@@ -330,6 +330,26 @@ void ProactorBase::ClearSignal(std::initializer_list<uint16_t> signals, bool ins
   }
 }
 
+bool ProactorBase::RunBoundedWork(unsigned max_items) {
+  DCHECK(InMyThread());
+
+  // The dispatcher may be in the middle of a completion batch whose CQ head has not advanced yet,
+  // so bounded work must not run there. Callers must not wait on an IoSpinLock in the dispatcher
+  // fiber; release builds fall back to plain spinning.
+  bool in_dispatcher = detail::FiberActive()->type() == detail::FiberInterface::DISPATCH;
+  DCHECK(!in_dispatcher);
+  if (in_dispatcher || max_items == 0 || running_bounded_work_)
+    return false;
+
+  running_bounded_work_ = true;
+  unsigned count = RunBoundedIoWork(max_items);
+  if (count)
+    ResetBusyPoll();
+
+  running_bounded_work_ = false;
+  return count != 0;
+}
+
 uint64_t ProactorBase::GetCurrentBusyCycles() const {
   return base::CycleClock::Now() - io_wait_end_cycle_;
 }

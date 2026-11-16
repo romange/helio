@@ -58,8 +58,8 @@ int EpollCreate() {
   return res;
 }
 
-int EpollWait(int epoll_fd, EventsBatch* batch, int timeout) {
-  return epoll_wait(epoll_fd, batch->cqe, kEvBatchSize, timeout);
+int EpollWait(int epoll_fd, EventsBatch* batch, int timeout, unsigned max_events = kEvBatchSize) {
+  return epoll_wait(epoll_fd, batch->cqe, max_events, timeout);
 }
 
 void EpollDel(int epoll_fd, int fd, uint32_t /*event_mask*/) {
@@ -88,10 +88,10 @@ int EpollCreate() {
   return res;
 }
 
-int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms) {
+int EpollWait(int epoll_fd, EventsBatch* batch, int tm_ms, unsigned max_events = kEvBatchSize) {
   struct timespec ts{.tv_sec = tm_ms / 1000, .tv_nsec = (tm_ms % 1000) * 1000000};
 
-  int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, kEvBatchSize, tm_ms < 0 ? NULL : &ts);
+  int epoll_res = kevent(epoll_fd, NULL, 0, batch->cqe, max_events, tm_ms < 0 ? NULL : &ts);
   return epoll_res;
 }
 
@@ -191,6 +191,26 @@ void EpollProactor::Init(unsigned pool_index) {
   };
   Arm(wake_fd_, std::move(cb), EPOLLIN);
 #endif
+}
+
+// Every call costs an epoll_wait/kevent syscall, even when nothing is ready. Level-triggered fds
+// are reported again until their consumer fiber runs, which a spinning waiter cannot let happen.
+// EpollSocket arms with EPOLLET, and the wake eventfd and timerfd callbacks drain their fd, so
+// in practice only fds armed level-triggered by other callers (e.g. c-ares DNS sockets) repeat.
+unsigned EpollProactor::RunBoundedIoWork(unsigned max_items) {
+  EventsBatch events;
+  int count = EpollWait(epoll_fd_, &events, 0, std::min<unsigned>(max_items, kEvBatchSize));
+  if (count < 0) {
+    LOG_IF(DFATAL, errno != EINTR)
+        << "epoll/kevent failed: " << util::detail::SafeErrorMessage(errno);
+    return 0;
+  }
+  if (count) {
+    ++stats_.completions_fetches;
+    DispatchCompletions(&events, count);
+    stats_.num_completions += count;
+  }
+  return count;
 }
 
 void EpollProactor::MainLoop(detail::Scheduler* scheduler) {
