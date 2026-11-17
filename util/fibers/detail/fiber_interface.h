@@ -277,6 +277,15 @@ class FiberInterface {
     return std::exchange(switch_hook_, hook);
   }
 
+  // Nesting depth of NoStallGuard, see fibers.h. Unlike the atomic section, it is kept per
+  // fiber, because the guard stays alive while the fiber suspends or migrates to another thread.
+  void EnterNoStall();
+  void LeaveNoStall();
+
+  unsigned no_stall_depth() const {
+    return no_stall_depth_;
+  }
+
   // Assigns a print callback that is called by Scheduler::PrintAllFiberStackTraces.
   // Please note that there can be at most one callback at any time during the lifetime of fiber.
   void SetPrintStacktraceCb(std::function<std::string()> cb) {
@@ -379,6 +388,9 @@ class FiberInterface {
 
   char name_[24];
   FiberPriority prio_;
+
+  // Fills the padding after prio_.
+  uint8_t no_stall_depth_ = 0;
 
   // Number of bytes at the stack bottom filled with a pattern for CheckStackMargin.
   uint16_t stack_fill_ = 0;

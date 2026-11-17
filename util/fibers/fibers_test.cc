@@ -1489,6 +1489,39 @@ TEST_F(FiberTest, AtomicGuard) {
 #endif
 }
 
+TEST_F(FiberTest, NoStallGuard) {
+  EventCount ec;
+  bool ready = false;
+
+  Fiber guarded("guarded", [&] {
+    NoStallGuard guard;
+    EXPECT_FALSE(ThisFiber::CanStall());
+    ThisFiber::Yield();
+    EXPECT_FALSE(ThisFiber::CanStall());
+
+    // Waits inside the process are allowed.
+    ec.await([&] { return ready; });
+    EXPECT_FALSE(ThisFiber::CanStall());
+
+    {
+      NoStallGuard nested;
+    }
+    EXPECT_FALSE(ThisFiber::CanStall());
+  });
+
+  Fiber other("other", [&] {
+    EXPECT_TRUE(ThisFiber::CanStall());
+    ThisFiber::Yield();
+    EXPECT_TRUE(ThisFiber::CanStall());
+    ready = true;
+    ec.notify();
+  });
+
+  guarded.Join();
+  other.Join();
+  EXPECT_TRUE(ThisFiber::CanStall());
+}
+
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(ProactorBase::IsProactorThread());
 
@@ -1768,6 +1801,17 @@ TEST_P(ProactorTest, Migrate) {
     proactor()->Migrate(pth.get());
     LOG(INFO) << "After migrate";
     ASSERT_EQ(dest_tid, my_gettid());
+  });
+  fb.Join();
+}
+
+TEST_P(ProactorTest, NoStallGuardMigrate) {
+  ProactorThread pth(0, proactor()->GetKind());
+
+  Fiber fb = proactor()->LaunchFiber([&] {
+    NoStallGuard guard;
+    proactor()->Migrate(pth.get());
+    EXPECT_FALSE(ThisFiber::CanStall());
   });
   fb.Join();
 }

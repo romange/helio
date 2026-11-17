@@ -43,7 +43,8 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
+      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn),
+              std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
@@ -220,6 +221,11 @@ inline uint64_t GetPreemptCount() {
   return fb2::detail::FiberActive()->preempt_cnt();
 }
 
+// Returns false inside NoStallGuard, see below.
+inline bool CanStall() {
+  return fb2::detail::FiberActive()->no_stall_depth() == 0;
+}
+
 // Installs a hook on the active fiber.
 inline fb2::FiberSwitchHook SetSwitchHook(fb2::FiberSwitchHook hook) noexcept {
   return fb2::detail::FiberActive()->SetSwitchHook(hook);
@@ -238,6 +244,18 @@ class PrintLocalsCallback {
 
 };  // namespace ThisFiber
 
+// Two guards restrict how the calling fiber may wait while they are alive:
+//
+// FiberAtomicGuard forbids any suspension. It protects code that must not yield at all, for
+// example state under spinlocks. It is tracked per thread, and suspending inside it fails.
+//
+// NoStallGuard forbids stalls: waits whose length is controlled by something outside the
+// process, e.g. a socket peer. Use it while the fiber holds something that other fibers wait for,
+// e.g. a token that a global operation drains or an object borrowed from a small per-thread pool:
+// a client that stops reading would otherwise stall all of them. Waits inside the process
+// (mutexes, EventCount, timers, Yield(), file I/O) stay allowed. It is tracked per fiber, so it
+// stays in effect across suspensions and migrations. The guard only marks the section: code that
+// may stall checks it, e.g. DCHECK(ThisFiber::CanStall()) before a blocking socket write.
 class FiberAtomicGuard {
   FiberAtomicGuard(const FiberAtomicGuard&) = delete;
 
@@ -249,6 +267,22 @@ class FiberAtomicGuard {
   ~FiberAtomicGuard() {
     fb2::detail::LeaveFiberAtomicSection();
   }
+};
+
+class NoStallGuard {
+  NoStallGuard(const NoStallGuard&) = delete;
+
+ public:
+  NoStallGuard() : fiber_(fb2::detail::FiberActive()) {
+    fiber_->EnterNoStall();
+  }
+
+  ~NoStallGuard() {
+    fiber_->LeaveNoStall();
+  }
+
+ private:
+  fb2::detail::FiberInterface* fiber_;
 };
 
 }  // namespace util
