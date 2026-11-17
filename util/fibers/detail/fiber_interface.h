@@ -113,6 +113,7 @@ class FiberInterface {
 
  public:
   enum Type : uint8_t { MAIN, DISPATCH, WORKER };
+  constexpr static int kScopeCount = 4;
 
   // public hooks for intrusive data structures.
   FI_ListHook list_hook;  // used to add to ready/terminate queues.
@@ -277,13 +278,20 @@ class FiberInterface {
     return std::exchange(switch_hook_, hook);
   }
 
-  // Nesting depth of NoStallGuard, see fibers.h. Unlike the atomic section, it is kept per
+  // Nesting depths of ScopeGuard, see fibers.h. Unlike the atomic section, they are kept per
   // fiber, because the guard stays alive while the fiber suspends or migrates to another thread.
-  void EnterNoStall();
-  void LeaveNoStall();
+  void EnterScope(uint8_t scope_id) {
+    assert(scope_id < kScopeCount && scope_depth_[scope_id] < 255u);
+    ++scope_depth_[scope_id];
+  }
 
-  unsigned no_stall_depth() const {
-    return no_stall_depth_;
+  void LeaveScope(uint8_t scope_id) {
+    assert(scope_id < kScopeCount && scope_depth_[scope_id] > 0u);
+    --scope_depth_[scope_id];
+  }
+
+  unsigned scope_depth(uint8_t scope_id) const {
+    return scope_depth_[scope_id];
   }
 
   // Assigns a print callback that is called by Scheduler::PrintAllFiberStackTraces.
@@ -389,12 +397,10 @@ class FiberInterface {
   char name_[24];
   FiberPriority prio_;
 
-  // Fills the padding after prio_.
-  uint8_t no_stall_depth_ = 0;
-
   // Number of bytes at the stack bottom filled with a pattern for CheckStackMargin.
   uint16_t stack_fill_ = 0;
   uint32_t stack_size_ = 0;
+  uint8_t scope_depth_[kScopeCount] = {0};
   uint8_t* stack_bottom_ = nullptr;
 
   static __thread struct TL {

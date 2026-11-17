@@ -221,9 +221,11 @@ inline uint64_t GetPreemptCount() {
   return fb2::detail::FiberActive()->preempt_cnt();
 }
 
-// Returns false inside NoStallGuard, see below.
-inline bool CanStall() {
-  return fb2::detail::FiberActive()->no_stall_depth() == 0;
+inline constexpr uint8_t kScopeCount = fb2::detail::FiberInterface::kScopeCount;
+
+// Returns the nesting depth of ScopeGuard<scope_id>, see below.
+inline unsigned GetScopeDepth(uint8_t scope_id) {
+  return fb2::detail::FiberActive()->scope_depth(scope_id);
 }
 
 // Installs a hook on the active fiber.
@@ -244,18 +246,14 @@ class PrintLocalsCallback {
 
 };  // namespace ThisFiber
 
-// Two guards restrict how the calling fiber may wait while they are alive:
-//
 // FiberAtomicGuard forbids any suspension. It protects code that must not yield at all, for
 // example state under spinlocks. It is tracked per thread, and suspending inside it fails.
 //
-// NoStallGuard forbids stalls: waits whose length is controlled by something outside the
-// process, e.g. a socket peer. Use it while the fiber holds something that other fibers wait for,
-// e.g. a token that a global operation drains or an object borrowed from a small per-thread pool:
-// a client that stops reading would otherwise stall all of them. Waits inside the process
-// (mutexes, EventCount, timers, Yield(), file I/O) stay allowed. It is tracked per fiber, so it
-// stays in effect across suspensions and migrations. The guard only marks the section: code that
-// may stall checks it, e.g. DCHECK(ThisFiber::CanStall()) before a blocking socket write.
+// ScopeGuard<scope_id> marks a section with a caller-defined scope id, e.g. one where the fiber
+// must not perform potentially blocking operations. Callers check it at their chosen call sites,
+// e.g. DCHECK_EQ(ThisFiber::GetScopeDepth(scope_id), 0). The guard itself does not restrict
+// Yield(), synchronization, or I/O. Depths are tracked per fiber, so they stay in effect across
+// suspensions and migrations.
 class FiberAtomicGuard {
   FiberAtomicGuard(const FiberAtomicGuard&) = delete;
 
@@ -269,16 +267,18 @@ class FiberAtomicGuard {
   }
 };
 
-class NoStallGuard {
-  NoStallGuard(const NoStallGuard&) = delete;
+template <uint8_t scope_id> class ScopeGuard {
+  static_assert(scope_id < ThisFiber::kScopeCount);
+  ScopeGuard(const ScopeGuard&) = delete;
+  ScopeGuard& operator=(const ScopeGuard&) = delete;
 
  public:
-  NoStallGuard() : fiber_(fb2::detail::FiberActive()) {
-    fiber_->EnterNoStall();
+  ScopeGuard() : fiber_(fb2::detail::FiberActive()) {
+    fiber_->EnterScope(scope_id);
   }
 
-  ~NoStallGuard() {
-    fiber_->LeaveNoStall();
+  ~ScopeGuard() {
+    fiber_->LeaveScope(scope_id);
   }
 
  private:

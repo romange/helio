@@ -318,16 +318,6 @@ uint64_t FiberInterface::GetRunningTimeCycles() const {
   return now > cpu_tsc_ ? now - cpu_tsc_ : 0;
 }
 
-void FiberInterface::EnterNoStall() {
-  DCHECK_LT(no_stall_depth(), unsigned{UINT8_MAX}) << name_;
-  ++no_stall_depth_;
-}
-
-void FiberInterface::LeaveNoStall() {
-  DCHECK_GT(no_stall_depth(), 0u) << name_;
-  --no_stall_depth_;
-}
-
 void FiberInterface::InitStackBottom(uint8_t* stack_bottom, uint32_t stack_size) {
   stack_bottom_ = stack_bottom;
 
