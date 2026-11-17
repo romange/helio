@@ -397,7 +397,7 @@ error_code LinuxFile::Read(const iovec* iov, unsigned iovcnt, off_t offset, unsi
 
 SubmitEntry LinuxFile::PrepareAsync(AsyncCb cb) {
   auto adapt_cb = [cb = std::move(cb)](detail::FiberInterface*, UringProactor::IoResult res,
-                                       uint32_t, uint32_t) { cb(res); };
+                                       uint32_t, uint32_t) noexcept { cb(res); };
 
   SubmitEntry se = proactor_->GetSubmitEntry(std::move(adapt_cb));
 

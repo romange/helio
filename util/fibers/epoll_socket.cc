@@ -123,7 +123,9 @@ error_code EpollSocket::PendingReq::Suspend(uint32_t timeout) {
 void EpollSocket::PendingReq::Activate(error_code ec) {
   ec_ = ec;
 
-  ActivateSameThread(detail::FiberActive(), context_);
+  auto* active = detail::FiberActive();
+  if (active != context_)
+    ActivateSameThread(active, context_);
 }
 
 std::pair<bool, EpollSocket::Result<size_t>> EpollSocket::AsyncReq::Run(int fd, bool is_send) {
@@ -347,7 +349,8 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   Result<size_t> res = TrySend(v, len);
 
   if (res || res.error().value() != EAGAIN) {
-    GetProactor()->DispatchLocalBrief([cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
+    GetProactor()->DispatchLocalBrief(
+        [cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
     return;
   }
 

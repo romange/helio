@@ -48,8 +48,8 @@ class UringProactor : public ProactorBase {
   // uint32_t - the user tag supplied during event submission. See GetSubmitEntry below.
   using CbType =
       fu2::function_base<true /*owns*/, false /*non-copyable*/, fu2::capacity_fixed<16, 8>,
-                         false /* non-throwing*/, false /* strong exceptions guarantees*/,
-                         void(detail::FiberInterface*, IoResult, uint32_t, uint32_t)>;
+                         false /* aborts on undefined*/, false /* strong exceptions guarantees*/,
+                         void(detail::FiberInterface*, IoResult, uint32_t, uint32_t) noexcept>;
   /**
    * @brief Get the Submit Entry object in order to issue I/O request.
    *
@@ -180,7 +180,8 @@ class UringProactor : public ProactorBase {
   void RearmEpoll(EpollEntry* entry);
 
   void ProcessCqeBatch(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
-  void ReapCompletions(unsigned count, io_uring_cqe** cqes, detail::FiberInterface* current);
+  unsigned ReapCompletions(unsigned count, unsigned max_items, io_uring_cqe** cqes,
+                           detail::FiberInterface* current);
 
   void RegrowCentries();
 
@@ -191,6 +192,7 @@ class UringProactor : public ProactorBase {
 
   void PeriodicCb(IoResult res, uint32_t task_id, PeriodicItem* item);
 
+  unsigned RunBoundedIoWork(unsigned max_items) final;
   void MainLoop(detail::Scheduler* sched) final;
   void WakeRing() final;
 
@@ -224,6 +226,7 @@ class UringProactor : public ProactorBase {
   uint8_t : 2;
 
   EventCount sqe_avail_;
+  bool deferred_sqe_notify_ = false;
 
   struct CompletionEntry {
     CbType cb;

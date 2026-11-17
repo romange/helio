@@ -240,6 +240,15 @@ class ProactorBase {
     return adaptive_poll_stats_;
   }
 
+  // Processes at most max_items I/O work items on this thread, without
+  // switching fibers or waiting for I/O. One queued-submission flush counts as one item,
+  // regardless of the number of SQEs submitted. Callbacks are atomic and run on the caller's stack.
+  // The caller must hold no spinlock or other lock needed by a callback.
+  // The caller must not hold an unprepared SubmitEntry, since queued SQEs may be submitted.
+  // Does not run tasklets or perform L2 cleanup. This bounds processed item count, not callback,
+  // submission, or kernel execution time. Returns whether any work was done.
+  bool RunBoundedWork(unsigned max_items = 16);
+
   // Issues a single CPU spin-wait hint (pause on x86, sb/isb on ARM).
   static void Pause();
 
@@ -275,6 +284,9 @@ class ProactorBase {
   ABSL_MUST_USE_RESULT virtual bool FlushSubmissions() {
     return false;
   }
+
+  // Handles at most max_items I/O work items without waiting or switching fibers.
+  virtual unsigned RunBoundedIoWork(unsigned max_items) = 0;
 
   void WakeupIfNeeded();
 
@@ -385,6 +397,7 @@ class ProactorBase {
     return false;
   }
 
+  bool running_bounded_work_ = false;
   uint64_t last_level2_cycle_ = 0;
   uint64_t cpu_measure_cycle_start_ = 0, cpu_idle_cycles_ = 0;
   uint64_t load_numerator_ = 0, load_denominator_ = 1;
