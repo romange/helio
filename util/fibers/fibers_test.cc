@@ -17,6 +17,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <type_traits>
 
 #include "base/cycle_clock.h"
 #include "base/flags.h"
@@ -1489,6 +1490,82 @@ TEST_F(FiberTest, AtomicGuard) {
 #endif
 }
 
+TEST_F(FiberTest, ScopeGuard) {
+  using Guard = ScopeGuard<0>;
+  static_assert(!is_copy_constructible_v<Guard>);
+  static_assert(!is_copy_assignable_v<Guard>);
+  static_assert(!is_move_constructible_v<Guard>);
+  static_assert(!is_move_assignable_v<Guard>);
+
+  EventCount ec;
+  bool ready = false;
+
+  Fiber guarded("guarded", [&] {
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    {
+      ScopeGuard<0> guard;
+      EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+      ThisFiber::Yield();
+      EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+
+      EXPECT_FALSE(ready);
+      ec.await([&] { return ready; });
+      EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+
+      {
+        ScopeGuard<0> nested;
+        EXPECT_EQ(ThisFiber::GetScopeDepth(0), 2);
+      }
+      EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+    }
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+  });
+
+  Fiber other("other", [&] {
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    ThisFiber::Yield();
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    ready = true;
+    ec.notify();
+  });
+
+  guarded.Join();
+  other.Join();
+  EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+}
+
+TEST_F(FiberTest, ScopeGuardIndependentScopes) {
+  constexpr uint8_t kLastScope = ThisFiber::kScopeCount - 1;
+  {
+    ScopeGuard<0> first;
+    {
+      ScopeGuard<kLastScope> last;
+      for (uint8_t id = 0; id < ThisFiber::kScopeCount; ++id) {
+        EXPECT_EQ(ThisFiber::GetScopeDepth(id), id == 0 || id == kLastScope ? 1 : 0);
+      }
+    }
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+    EXPECT_EQ(ThisFiber::GetScopeDepth(kLastScope), 0);
+  }
+  EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+}
+
+TEST_F(FiberTest, ScopeGuardCallerCheck) {
+  auto potentially_blocking_operation = [] {
+    DCHECK_EQ(ThisFiber::GetScopeDepth(0), 0) << "Stall forbidden";
+  };
+  potentially_blocking_operation();
+  {
+    ScopeGuard<1> unrelated;
+    potentially_blocking_operation();
+    ScopeGuard<0> guard;
+#ifndef NDEBUG
+    EXPECT_DEATH(potentially_blocking_operation(), "Stall forbidden");
+#endif
+  }
+  potentially_blocking_operation();
+}
+
 TEST_P(ProactorTest, AsyncCall) {
   ASSERT_FALSE(ProactorBase::IsProactorThread());
 
@@ -1768,6 +1845,30 @@ TEST_P(ProactorTest, Migrate) {
     proactor()->Migrate(pth.get());
     LOG(INFO) << "After migrate";
     ASSERT_EQ(dest_tid, my_gettid());
+  });
+  fb.Join();
+}
+
+TEST_P(ProactorTest, ScopeGuardMigrate) {
+  ProactorThread pth(0, proactor()->GetKind());
+  constexpr uint8_t kLastScope = ThisFiber::kScopeCount - 1;
+
+  Fiber fb = proactor()->LaunchFiber([&] {
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    EXPECT_EQ(ThisFiber::GetScopeDepth(kLastScope), 0);
+    {
+      ScopeGuard<0> first;
+      ScopeGuard<kLastScope> last;
+      proactor()->Migrate(pth.get());
+      EXPECT_EQ(ProactorBase::me(), pth.get());
+      EXPECT_EQ(ThisFiber::GetScopeDepth(0), 1);
+      EXPECT_EQ(ThisFiber::GetScopeDepth(kLastScope), 1);
+    }
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    EXPECT_EQ(ThisFiber::GetScopeDepth(kLastScope), 0);
+    pth.get()->Migrate(proactor());
+    EXPECT_EQ(ThisFiber::GetScopeDepth(0), 0);
+    EXPECT_EQ(ThisFiber::GetScopeDepth(kLastScope), 0);
   });
   fb.Join();
 }

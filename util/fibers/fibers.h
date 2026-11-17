@@ -43,7 +43,8 @@ class Fiber {
 
   template <typename Fn, typename... Arg>
   Fiber(Launch policy, std::string_view name, Fn&& fn, Arg&&... arg)
-      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn), std::forward<Arg>(arg)...) {
+      : Fiber(Opts{.launch = policy, .name = std::string{name}}, std::forward<Fn>(fn),
+              std::forward<Arg>(arg)...) {
   }
 
   template <typename Fn, typename StackAlloc, typename... Arg>
@@ -220,6 +221,13 @@ inline uint64_t GetPreemptCount() {
   return fb2::detail::FiberActive()->preempt_cnt();
 }
 
+inline constexpr uint8_t kScopeCount = fb2::detail::FiberInterface::kScopeCount;
+
+// Returns the nesting depth of ScopeGuard<scope_id>, see below.
+inline unsigned GetScopeDepth(uint8_t scope_id) {
+  return fb2::detail::FiberActive()->scope_depth(scope_id);
+}
+
 // Installs a hook on the active fiber.
 inline fb2::FiberSwitchHook SetSwitchHook(fb2::FiberSwitchHook hook) noexcept {
   return fb2::detail::FiberActive()->SetSwitchHook(hook);
@@ -238,6 +246,14 @@ class PrintLocalsCallback {
 
 };  // namespace ThisFiber
 
+// FiberAtomicGuard forbids any suspension. It protects code that must not yield at all, for
+// example state under spinlocks. It is tracked per thread, and suspending inside it fails.
+//
+// ScopeGuard<scope_id> marks a section with a caller-defined scope id, e.g. one where the fiber
+// must not perform potentially blocking operations. Callers check it at their chosen call sites,
+// e.g. DCHECK_EQ(ThisFiber::GetScopeDepth(scope_id), 0). The guard itself does not restrict
+// Yield(), synchronization, or I/O. Depths are tracked per fiber, so they stay in effect across
+// suspensions and migrations.
 class FiberAtomicGuard {
   FiberAtomicGuard(const FiberAtomicGuard&) = delete;
 
@@ -249,6 +265,24 @@ class FiberAtomicGuard {
   ~FiberAtomicGuard() {
     fb2::detail::LeaveFiberAtomicSection();
   }
+};
+
+template <uint8_t scope_id> class ScopeGuard {
+  static_assert(scope_id < ThisFiber::kScopeCount);
+  ScopeGuard(const ScopeGuard&) = delete;
+  ScopeGuard& operator=(const ScopeGuard&) = delete;
+
+ public:
+  ScopeGuard() : fiber_(fb2::detail::FiberActive()) {
+    fiber_->EnterScope(scope_id);
+  }
+
+  ~ScopeGuard() {
+    fiber_->LeaveScope(scope_id);
+  }
+
+ private:
+  fb2::detail::FiberInterface* fiber_;
 };
 
 }  // namespace util
