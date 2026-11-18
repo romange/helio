@@ -95,6 +95,7 @@ class EpollSocket : public LinuxSocketBase {
       uint8_t async_read_pending_ : 1;
       uint8_t recv_hook_registered_ : 1;
       uint8_t read_notified_ : 1;
+      uint8_t rdhup_reported_ : 1;  // The error callback was called for a read half-close.
     };
     uint8_t flags_;
   };

@@ -3,15 +3,15 @@
 //
 #include "util/accept_server.h"
 
-#include <thread>
-
 #include <boost/beast/http/dynamic_body.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>
+#include <thread>
 
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/asio_stream_adapter.h"
+#include "util/fibers/epoll_proactor.h"
 #include "util/fibers/pool.h"
 #include "util/listener_interface.h"
 
@@ -106,7 +106,9 @@ class AcceptServerTest : public testing::TestWithParam<bool> {
   static void SetUpTestCase() {
   }
 
-  bool UseIPv6() const { return GetParam(); }
+  bool UseIPv6() const {
+    return GetParam();
+  }
 
   FiberSocketBase::endpoint_type ep_;
 
@@ -120,7 +122,7 @@ class AcceptServerTest : public testing::TestWithParam<bool> {
 
 // Add parameterization to run tests with both IPv4 and IPv6
 INSTANTIATE_TEST_SUITE_P(IPVersions, AcceptServerTest, testing::Values(false, true),
-    [](const auto& info) { return info.param ? "IPv6" : "IPv4"; });
+                         [](const auto& info) { return info.param ? "IPv6" : "IPv4"; });
 
 const uint16_t kPort = 1234;
 
@@ -137,9 +139,8 @@ void AcceptServerTest::SetUp() {
   listener_ = new TestListener();
 
   // Add appropriate listener based on the parameter
-  auto ec = UseIPv6()
-      ? as_->AddListener("::1", kPort, listener_)  // IPv6
-      : as_->AddListener("localhost", kPort, listener_);  // IPv4
+  auto ec = UseIPv6() ? as_->AddListener("::1", kPort, listener_)         // IPv6
+                      : as_->AddListener("localhost", kPort, listener_);  // IPv4
   CHECK(!ec) << ec;
   as_->Run();
 
@@ -292,12 +293,11 @@ TEST_P(AcceptServerTest, Shutdown) {
   listener_->SetMaxClients(1 << 16);
   auto* proactor = client_sock_->proactor();
 
-
   proactor->Await([proactor, this] {
 #ifdef __linux__
-  constexpr auto kHupMask = POLLHUP | POLLRDHUP;
+    constexpr auto kHupMask = POLLHUP | POLLRDHUP;
 #else
-  constexpr auto kHupMask = POLLHUP;
+    constexpr auto kHupMask = POLLHUP;
 #endif
 
     constexpr unsigned kNumSocks = 2000;
@@ -314,7 +314,12 @@ TEST_P(AcceptServerTest, Shutdown) {
       EXPECT_FALSE(ec);
 
       socks.back()->RegisterOnErrorCb([&, i](int err) {
+#ifdef __linux__
         EXPECT_EQ(err, kHupMask);
+#else
+        // kqueue reports each direction separately, so the read half-close can come first.
+        EXPECT_TRUE(err & (kHupMask | fb2::EpollProactor::kReadHangup)) << err;
+#endif
 
         // MacOs can send multiple notifications per socket.
         if (!error_notification[i]) {
@@ -329,7 +334,7 @@ TEST_P(AcceptServerTest, Shutdown) {
       std::ignore = socks[i]->Shutdown(SHUT_RDWR);
     }
     fb2::NoOpLock lock;
-    ASSERT_TRUE(cond.wait_for(lock, 1s, [&] {return called == kNumSocks;})) << called;
+    ASSERT_TRUE(cond.wait_for(lock, 1s, [&] { return called == kNumSocks; })) << called;
 
     // Please note that in perfect conditions like with this unit test,
     // we will get ErrorCb trigerred for every socket because both the server and the client

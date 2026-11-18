@@ -27,6 +27,10 @@ class EpollProactor : public ProactorBase {
   // int error is kevent specific.
   using CbType = std::function<void(uint32_t, int, EpollProactor*)>;
 
+  // Event bit for a read half-close: EPOLLRDHUP on Linux. On kqueue, set with EPOLL_IN for EV_EOF
+  // without an error on the read filter.
+  static constexpr uint32_t kReadHangup = 0x2000;
+
   // Returns the handler id for the armed event.
   unsigned Arm(int fd, CbType cb, uint32_t event_mask);
   void Disarm(int fd, unsigned arm_index);

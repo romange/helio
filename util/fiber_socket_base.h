@@ -61,7 +61,7 @@ class FiberSocketBase : public io::Sink,
 
   virtual ::io::Result<size_t> Recv(const io::MutableBytes& mb, int flags = 0) = 0;
 
-  enum ProvidedType : uint8_t { kHeapType = 1, kBufRingType = 2};
+  enum ProvidedType : uint8_t { kHeapType = 1, kBufRingType = 2 };
 
   struct ProvidedBuffer {
     union {
@@ -72,9 +72,9 @@ class FiberSocketBase : public io::Sink,
       };
     };
 
-    int res_len;   // positive len, negative errno.
+    int res_len;  // positive len, negative errno.
     uint32_t allocated;
-    ProvidedType type;   // Buffer type.
+    ProvidedType type;  // Buffer type.
 
     void SetError(uint16_t err) {
       res_len = -int(err);
@@ -112,6 +112,8 @@ class FiberSocketBase : public io::Sink,
 
   //! Registers a callback that will be called if the socket is closed or has an error.
   //! Should not be called if a callback is already registered.
+  //! A read half-close (peer FIN) calls it once with POLLRDHUP and keeps it registered.
+  //! POLLERR or POLLHUP calls it once more, after which it is unregistered.
   virtual void RegisterOnErrorCb(std::function<void(uint32_t)> cb) = 0;
 
   //! Cancels a callback that was registered with RegisterOnErrorCb. Must be reentrant.
@@ -126,7 +128,7 @@ class FiberSocketBase : public io::Sink,
     std::variant<RecvCompletion, std::error_code, io::MutableBytes> read_result;
   };
 
-  using OnRecvCb = std::function<void (const RecvNotification&)>;
+  using OnRecvCb = std::function<void(const RecvNotification&)>;
   virtual void RegisterOnRecv(OnRecvCb cb) = 0;
   virtual void ResetOnRecvHook() = 0;
 
@@ -264,6 +266,5 @@ void SetCloexec(int fd);
 bool posix_err_wrap(ssize_t res, FiberSocketBase::error_code* ec);
 
 nonstd::unexpected<std::error_code> MakeUnexpected(std::errc code);
-
 
 }  // namespace util

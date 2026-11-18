@@ -114,6 +114,9 @@ uint32_t KevMask(const struct kevent& kev) {
            << kev.fflags << ") d" << kev.data;
 
   if (kev.flags & EV_EOF) {
+    // EV_EOF on the read filter without an error is a read half-close, like EPOLLRDHUP on Linux.
+    if (kev.filter == EVFILT_READ && kev.fflags == 0)
+      return EpollProactor::EPOLL_IN | EpollProactor::kReadHangup;
     return POLLHUP;
   }
   uint32_t ev_mask = 0;

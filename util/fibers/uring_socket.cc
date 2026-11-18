@@ -27,6 +27,50 @@ constexpr bool kEnableDirect = false;
 
 }  // namespace
 
+struct UringSocket::ErrorCbRefWrapper {
+  static constexpr uint32_t kInvalidErrorCbId = UINT32_MAX;
+
+  uint32_t error_cb_id = kInvalidErrorCbId;
+  uint32_t ref_count = 2;       // one for the socket reference, one for the completion lambda.
+  bool rdhup_reported = false;  // The callback was called for a read half-close.
+
+  const uint8_t sqe_flags;
+  const int fd;
+  std::function<void(uint32_t)> cb;
+
+  // True while the poll is active and the callback has neither fired nor been cancelled.
+  bool IsArmed() const {
+    return error_cb_id != kInvalidErrorCbId && cb;
+  }
+
+  static ErrorCbRefWrapper* New(std::function<void(uint32_t)> cb, int fd, uint8_t sqe_flags) {
+    return new ErrorCbRefWrapper(std::move(cb), fd, sqe_flags);
+  }
+
+  void Destroy() {
+    cb = {};
+    if (--ref_count == 0)
+      delete this;
+  }
+
+  // Called on the poll's final completion: the poll id is no longer valid.
+  void PollDone() {
+    error_cb_id = kInvalidErrorCbId;
+    Destroy();
+  }
+
+  // Submits the multishot poll that reports socket errors to the callback.
+  void ArmErrorPoll(Proactor* proactor);
+
+  // Asynchronously removes the active poll. Holds a reference until done.
+  void RemoveErrorPoll(Proactor* proactor);
+
+ private:
+  ErrorCbRefWrapper(std::function<void(uint32_t)> _cb, int socket_fd, uint8_t flags)
+      : sqe_flags(flags), fd(socket_fd), cb(std::move(_cb)) {
+  }
+};
+
 UringSocket::UringSocket(int fd, Proactor* p) : LinuxSocketBase(fd, p), flags_(0) {
   if (p) {
     // This flag has a clear positive impact of the CPU usage for server side sockets.
@@ -75,7 +119,7 @@ auto UringSocket::Close() -> error_code {
 
   if (error_cb_wrapper_) {
     LOG(DFATAL) << "Error callback still registered in Close";
-    ErrorCbRefWrapper::Destroy(error_cb_wrapper_);
+    error_cb_wrapper_->Destroy();
     error_cb_wrapper_ = nullptr;
   }
 
@@ -394,62 +438,110 @@ void UringSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   DCHECK(IsOpen());
   DCHECK(cb);
 
-  uint32_t event_mask = POLLERR | POLLHUP;
+  error_cb_wrapper_ = ErrorCbRefWrapper::New(std::move(cb), ShiftedFd(), register_flag());
+  error_cb_wrapper_->ArmErrorPoll(GetProactor());
+}
 
-  Proactor* p = GetProactor();
-  error_cb_wrapper_ = ErrorCbRefWrapper::New(std::move(cb));
-  auto se_cb = [data = error_cb_wrapper_](detail::FiberInterface*, Proactor::IoResult res,
-                                          uint32_t flags, uint32_t) {
-    // Mark the poll id invalid before Destroy so a subsequent CancelOnErrorCb
-    // on the socket skips PrepPollRemove on what may now be a reused
-    // centries_ slot.
-    data->error_cb_id = ErrorCbRefWrapper::kInvalidErrorCbId;
-    auto cb = std::move(data->cb);
-    ErrorCbRefWrapper::Destroy(data);
+// A read half-close (POLLRDHUP) is reported once, and the callback stays registered until POLLERR
+// or POLLHUP. The poll is multishot: it is edge-triggered, while a single-shot poll re-armed after
+// a half-close would complete immediately again. error_cb_id identifies the poll until its final
+// completion, so it never refers to a reused centries_ slot.
+void UringSocket::ErrorCbRefWrapper::ArmErrorPoll(Proactor* proactor) {
+  auto se_cb = [this](detail::FiberInterface*, Proactor::IoResult res, uint32_t flags, uint32_t) {
+    // A multishot callback runs in place, and any submission below (also from the user callback)
+    // may relocate it while it runs, so copy the capture before calling anything.
+    ErrorCbRefWrapper* data = this;
+    bool more = (flags & IORING_CQE_F_MORE) != 0;
+
     if (res < 0) {
       res = -res;
       LOG_IF(WARNING, res != ECANCELED) << "Unexpected error result " << res;
-    } else if (cb) {
-      cb(res);
+
+      data->PollDone();
+      return;
     }
+
+    if (data->cb) {
+      if (res & (POLLERR | POLLHUP)) {
+        auto cb = std::move(data->cb);
+        if (more) {
+          Proactor* proactor = static_cast<Proactor*>(ProactorBase::me());
+          data->RemoveErrorPoll(proactor);
+        } else {
+          data->PollDone();
+        }
+        cb(res);
+        return;
+      }
+
+      if ((res & POLLRDHUP) && !data->rdhup_reported) {
+        // Call a copy, since the callback may cancel itself.
+        data->rdhup_reported = true;
+        auto cb = data->cb;
+        cb(res);
+      }
+    }
+
+    if (more)
+      return;
+
+    if (!data->cb) {
+      data->PollDone();
+      return;
+    }
+
+    // The kernel stopped the poll before a final socket error, so arm a fresh poll.
+    Proactor* proactor = static_cast<Proactor*>(ProactorBase::me());
+    data->ArmErrorPoll(proactor);
   };
 
-  SubmitEntry se = p->GetSubmitEntry(std::move(se_cb));
-  se.PrepPollAdd(ShiftedFd(), event_mask);
-  se.sqe()->flags |= register_flag();
+  SubmitEntry se = proactor->GetSubmitEntry(std::move(se_cb));
+  se.PrepPollAdd(fd, POLLERR | POLLHUP | POLLRDHUP);
+  se.sqe()->len = IORING_POLL_ADD_MULTI;
+  se.sqe()->flags |= sqe_flags;
 
   // user_data is 32 bits because submit_tag is 0.
-  error_cb_wrapper_->error_cb_id = se.sqe()->user_data;
+  error_cb_id = se.sqe()->user_data;
+}
+
+void UringSocket::ErrorCbRefWrapper::RemoveErrorPoll(Proactor* proactor) {
+  DCHECK(error_cb_id != kInvalidErrorCbId);
+
+  ++ref_count;
+  uint32_t poll_id = error_cb_id;
+  auto se_cb = [this, poll_id](detail::FiberInterface*, Proactor::IoResult res, uint32_t,
+                               uint32_t) {
+    ErrorCbRefWrapper* data = this;
+    Proactor* proactor = static_cast<Proactor*>(ProactorBase::me());
+
+    // EALREADY means the poll is being processed and stays active, so retry while the same poll
+    // is still active. ENOENT means it has already completed.
+    if (res == -EALREADY && data->error_cb_id == poll_id) {
+      data->RemoveErrorPoll(proactor);
+    } else {
+      LOG_IF(WARNING, res < 0 && res != -ENOENT && res != -EALREADY)
+          << "Error canceling error cb " << -res;
+    }
+    data->Destroy();
+  };
+
+  SubmitEntry se = proactor->GetSubmitEntry(std::move(se_cb));
+  se.PrepPollRemove(poll_id);
 }
 
 void UringSocket::CancelOnErrorCb() {
   if (!error_cb_wrapper_)
     return;
 
-  // If the error-poll completion already fired, the centries_ slot identified
-  // by error_cb_id has been freed and may have been reused by a subsequent
-  // submission on this proactor. Issuing PrepPollRemove on that user_data now
-  // would cancel an unrelated request. Just release our reference.
-  if (!error_cb_wrapper_->IsArmed()) {
-    ErrorCbRefWrapper::Destroy(error_cb_wrapper_);
-    error_cb_wrapper_ = nullptr;
-    return;
+  // The callback must not run after this call, so clear it before the poll is removed
+  // asynchronously. If the callback has already fired, its poll is being removed already.
+  if (error_cb_wrapper_->IsArmed()) {
+    error_cb_wrapper_->cb = {};
+    error_cb_wrapper_->RemoveErrorPoll(GetProactor());
   }
 
-  FiberCall fc(GetProactor());
-  fc->PrepPollRemove(error_cb_wrapper_->error_cb_id);
-
-  ErrorCbRefWrapper::Destroy(error_cb_wrapper_);
+  error_cb_wrapper_->Destroy();
   error_cb_wrapper_ = nullptr;
-
-  IoResult io_res = fc.Get();
-  if (io_res < 0) {
-    io_res = -io_res;
-
-    // The callback could have been already called or being in process of calling.
-    LOG_IF(WARNING, io_res != ENOENT && io_res != EALREADY)
-        << "Error canceling error cb " << io_res;
-  }
 }
 
 void UringSocket::RegisterOnRecv(OnRecvCb cb) {

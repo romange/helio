@@ -374,12 +374,11 @@ TEST_P(FiberSocketTest, PollCancel) {
   EXPECT_EQ(0, conn_sock_err_mask_);
 }
 
-// Regression test for EpollSocket::Wakey(): a staged peer disconnect can
-// deliver multiple error edges (for example EPOLLRDHUP followed by POLLHUP),
-// but RegisterOnErrorCb must stay single-shot.
-TEST_P(FiberSocketTest, PollSingleShot) {
+// A staged peer disconnect: the read half-close (EPOLLRDHUP) is reported once and keeps the
+// error callback registered, so the following reset is reported too, as the final call.
+TEST_P(FiberSocketTest, PollReadHalfCloseStaysArmed) {
   if (UseIPv6()) {
-    GTEST_SKIP() << "PollSingleShot is limited to IPv4";
+    GTEST_SKIP() << "PollReadHalfCloseStaysArmed is limited to IPv4";
   }
 
   int fd = ConnectClient(listen_port_);
@@ -390,6 +389,7 @@ TEST_P(FiberSocketTest, PollSingleShot) {
   ASSERT_EQ(0, ::shutdown(fd, SHUT_WR));
   ASSERT_TRUE(error_cb_called_.WaitFor(1s)) << "first callback did not fire";
   error_cb_called_.Reset();
+  EXPECT_FALSE(conn_sock_err_mask_ & (POLLHUP | POLLERR)) << "mask=" << conn_sock_err_mask_;
   LOG(INFO) << "First callback fired, now activating the second one";
 
   // We enforce RST event on server socket by setting linger option with timeout=0.
@@ -399,15 +399,17 @@ TEST_P(FiberSocketTest, PollSingleShot) {
   CHECK_EQ(0, setsockopt(fd, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
   CHECK_EQ(0, ::close(fd));
 
-  ASSERT_FALSE(error_cb_called_.WaitFor(100ms))
-      << "second callback fired, but should have been single-shot";
+  ASSERT_TRUE(error_cb_called_.WaitFor(1s)) << "second callback did not fire";
+  error_cb_called_.Reset();
+  ASSERT_FALSE(error_cb_called_.WaitFor(100ms)) << "callback fired after the final call";
 
-  EXPECT_EQ(1u, conn_sock_err_count_.load())
+  EXPECT_EQ(2u, conn_sock_err_count_.load())
       << "error callback fired " << conn_sock_err_count_.load()
       << " times, mask=" << conn_sock_err_mask_;
 #ifdef __linux__
   EXPECT_TRUE(conn_sock_err_mask_ & POLLRDHUP) << "mask=" << conn_sock_err_mask_;
 #endif
+  EXPECT_TRUE(conn_sock_err_mask_ & (POLLHUP | POLLERR)) << "mask=" << conn_sock_err_mask_;
 }
 
 // Regression test for uring stale callback-slot cancellation: after socket A's
