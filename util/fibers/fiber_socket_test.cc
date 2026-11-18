@@ -376,6 +376,22 @@ TEST_P(FiberSocketTest, PollCancel) {
   EXPECT_EQ(0, conn_sock_err_mask_);
 }
 
+// Close() ends the error-callback registration on every backend, so CancelOnErrorCb() is not
+// needed before it.
+TEST_P(FiberSocketTest, CloseEndsErrorCb) {
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+  proactor_->Await([&] { EXPECT_FALSE(sock->Connect(listen_ep_)); });
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+
+  // conn_socket_ has the fixture's error callback registered; close it without cancelling.
+  proactor_->Await([&] { EXPECT_FALSE(conn_socket_->Close()); });
+  proactor_->Await([&] { std::ignore = sock->Close(); });
+
+  EXPECT_FALSE(error_cb_called_.WaitFor(100ms)) << "callback fired after Close";
+  EXPECT_EQ(0u, conn_sock_err_count_.load());
+}
+
 // A staged peer disconnect: the read half-close (EPOLLRDHUP) is reported once and keeps the
 // error callback registered, so the following reset is reported too, as the final call.
 TEST_P(FiberSocketTest, PollReadHalfCloseStaysArmed) {

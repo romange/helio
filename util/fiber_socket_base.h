@@ -115,9 +115,9 @@ class FiberSocketBase : public io::Sink,
   //! A read half-close (peer FIN) calls it once with the POLLRDHUP bit (0x2000, also on kqueue,
   //! where it is EpollProactor::kReadHangup), and it stays armed. POLLERR or POLLHUP is the
   //! final call, which can also be the first one, e.g. after a reset. The callback is not called
-  //! after the final call. On io_uring the registration lasts until CancelOnErrorCb() (epoll ends
-  //! it at the final call or Close()), so call CancelOnErrorCb() before registering again or
-  //! closing the socket. The two calls may reach different copies of the callback, so it must
+  //! after the final call. Close() ends the registration. On io_uring it otherwise lasts until
+  //! CancelOnErrorCb() (epoll ends it at the final call), so call CancelOnErrorCb() before
+  //! registering again. The two calls may reach different copies of the callback, so it must
   //! not rely on state kept between calls.
   virtual void RegisterOnErrorCb(std::function<void(uint32_t)> cb) = 0;
 

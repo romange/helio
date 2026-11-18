@@ -117,11 +117,9 @@ auto UringSocket::Close() -> error_code {
   DCHECK(!proactor() || proactor()->InMyThread());
   DVSOCK(1) << "Closing socket";
 
-  if (error_cb_wrapper_) {
-    LOG(DFATAL) << "Error callback still registered in Close";
-    error_cb_wrapper_->Destroy();
-    error_cb_wrapper_ = nullptr;
-  }
+  // Closing ends the error-callback registration, as on epoll. CancelOnErrorCb() does not
+  // suspend: it only queues the removal of the poll, which would otherwise keep the file open.
+  CancelOnErrorCb();
 
   ResetOnRecvHook();
 
