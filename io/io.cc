@@ -113,6 +113,13 @@ void AsyncReadState::OnCb(Result<size_t> res) {
     }
   }
 
+  // cur now has bytes pending, so a zero-byte read is EOF: reading again would make no progress.
+  if (*res == 0) {
+    cb(make_error_code(errc::connection_aborted));
+    delete this;
+    return;
+  }
+
   char* base = (char*)cur->iov_base;
   cur->iov_len -= sz;
   cur->iov_base = base + sz;

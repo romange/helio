@@ -12,7 +12,9 @@
 
 #include <atomic>
 #include <thread>
+#include <utility>
 
+#include "absl/cleanup/cleanup.h"
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "util/fiber_socket_base.h"
@@ -427,10 +429,27 @@ TEST_P(FiberSocketTest, PollCancelSlotReuse) {
   // fixture installs its own error callback, so we immediately cancel it below
   // and re-arm the socket under the precise sequence this regression needs.
   int fd_a = ConnectClient(listen_port_);
+  absl::Cleanup close_fd_a = [&] {
+    if (fd_a >= 0)
+      ::close(fd_a);
+  };
   accept_fb_.Join();
   ASSERT_FALSE(accept_ec_);
   std::unique_ptr<FiberSocketBase> sock_a = std::move(conn_socket_);
   ASSERT_TRUE(sock_a);
+
+  // The fixture no longer owns the accepted sockets: cancel and close them on every exit path.
+  std::unique_ptr<FiberSocketBase> sock_b;
+  absl::Cleanup close_socks = [&] {
+    proactor_->Await([&] {
+      for (FiberSocketBase* s : {sock_a.get(), sock_b.get()}) {
+        if (s) {
+          s->CancelOnErrorCb();
+          std::ignore = s->Close();
+        }
+      }
+    });
+  };
 
   proactor_->Await([&] { sock_a->CancelOnErrorCb(); });
 
@@ -439,9 +458,13 @@ TEST_P(FiberSocketTest, PollCancelSlotReuse) {
   // completion slot and weaken the repro.
   LaunchAcceptFiber(false);
   int fd_b = ConnectClient(listen_port_);
+  absl::Cleanup close_fd_b = [&] {
+    if (fd_b >= 0)
+      ::close(fd_b);
+  };
   accept_fb_.Join();
   ASSERT_FALSE(accept_ec_);
-  std::unique_ptr<FiberSocketBase> sock_b = std::move(conn_socket_);
+  sock_b = std::move(conn_socket_);
   ASSERT_TRUE(sock_b);
 
   // Arm A. The callback only records that A fired; the interesting part is what
@@ -453,20 +476,25 @@ TEST_P(FiberSocketTest, PollCancelSlotReuse) {
     });
   });
 
-  // Trigger A's callback. In the buggy uring path, the callback completion slot
-  // is returned to the free-list before the callback runs, and `fired` is not
-  // marked, so a later stale CancelOnErrorCb() can target a reused slot.
-  ASSERT_EQ(0, ::shutdown(fd_a, SHUT_WR)) << strerror(errno);
+  // Trigger A's final callback with a reset (a FIN alone keeps A's poll armed). After it, A's poll
+  // ends and its completion slot returns to the free-list, so a later stale CancelOnErrorCb() could
+  // target a reused slot.
+  struct linger ling;
+  ling.l_onoff = 1;
+  ling.l_linger = 0;
+  ASSERT_EQ(0, setsockopt(fd_a, SOL_SOCKET, SO_LINGER, &ling, sizeof(ling)));
+  ASSERT_EQ(0, ::close(std::exchange(fd_a, -1)));
   ASSERT_TRUE(done.WaitFor(1s)) << "A callback did not fire";
   done.Reset();
 
   EXPECT_EQ(1u, a_count.load());
 
   // This is the critical sequence:
-  // 1. Register B so it reuses A's just-freed poll slot.
+  // 1. Let A's poll finish, then register B so it can reuse A's freed poll slot.
   // 2. Immediately cancel A.
-  // Without `data->fired = true`, A's stale cancel may remove B's live poll.
+  // A's stale cancel must not remove B's live poll.
   proactor_->Await([&] {
+    ThisFiber::SleepFor(10ms);
     sock_b->RegisterOnErrorCb([&](uint32_t) {
       b_count.fetch_add(1, memory_order_relaxed);
       done.Notify();
@@ -480,17 +508,7 @@ TEST_P(FiberSocketTest, PollCancelSlotReuse) {
   bool b_fired = done.WaitFor(100ms);
   unsigned b_count_val = b_count.load();
 
-  // Cleanup runs regardless of outcome so the fixture tears down cleanly even
-  // when the repro succeeds and B never fires.
-  proactor_->Await([&] {
-    sock_a->CancelOnErrorCb();
-    sock_b->CancelOnErrorCb();
-    std::ignore = sock_a->Close();
-    std::ignore = sock_b->Close();
-  });
-
-  EXPECT_EQ(0, ::close(fd_a));
-  EXPECT_EQ(0, ::close(fd_b));
+  EXPECT_EQ(0, ::close(std::exchange(fd_b, -1)));
 
   ASSERT_TRUE(b_fired) << "stale cancel removed a reused poll slot";
   EXPECT_EQ(1u, b_count_val);
@@ -924,6 +942,55 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
 
   fb.Join();
   proactor_->Await([&] { std::ignore = sock->Close(); });
+}
+
+// AsyncRead must stop at EOF, after the peer's FIN or a local read-side shutdown, instead of
+// reissuing reads that make no progress.
+TEST_P(FiberSocketTest, AsyncReadEof) {
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+  absl::Cleanup close_sock = [&] { proactor_->Await([&] { std::ignore = sock->Close(); }); };
+  proactor_->Await([&] { ASSERT_FALSE(sock->Connect(listen_ep_)); });
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+
+  // Outside the lambda, so a read still pending after a failed wait does not outlive them.
+  uint8_t buf[16];
+  Done done;
+  error_code ec;
+
+  // Runs `shutdown` and then AsyncRead on `reader`, and expects the read to end with EOF.
+  auto expect_eof = [&](FiberSocketBase* reader, auto shutdown) {
+    done.Reset();
+    ec.clear();
+    proactor_->Await([&] {
+      // The timeout ends a read that never sees EOF on epoll, where AsyncReadSome reads inline.
+      reader->set_timeout(1000);
+      shutdown();
+      reader->AsyncRead(io::MutableBytes(buf), [&](error_code e) {
+        ec = e;
+        done.Notify();
+      });
+    });
+
+    bool completed = done.WaitFor(2s);
+    if (!completed) {
+      // Unblock the pending read before the test ends.
+      proactor_->Await([&] { std::ignore = reader->Shutdown(SHUT_RDWR); });
+      EXPECT_TRUE(done.WaitFor(2s)) << "AsyncRead did not complete after SHUT_RDWR either";
+    }
+    ASSERT_TRUE(completed) << "AsyncRead did not complete";
+    EXPECT_EQ(ec, errc::connection_aborted) << ec.message();
+  };
+
+  // The server shuts down its own read side first, while no Shutdown has been called on it yet;
+  // the client never sent a FIN.
+  expect_eof(conn_socket_.get(), [&] { EXPECT_FALSE(conn_socket_->Shutdown(SHUT_RD)); });
+
+  // The client reads after the server's FIN. It is sent with ::shutdown directly, since a socket
+  // that already shut down its read side ignores a later Shutdown(SHUT_WR).
+  expect_eof(sock.get(), [&] {
+    EXPECT_EQ(0, ::shutdown(conn_socket_->native_handle(), SHUT_WR)) << strerror(errno);
+  });
 }
 
 TEST_P(FiberSocketTest, LeakAsyncWrite) {

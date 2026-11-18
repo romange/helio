@@ -319,6 +319,8 @@ TEST_P(AcceptServerTest, Shutdown) {
 #else
         // kqueue reports each direction separately, so the read half-close can come first.
         EXPECT_TRUE(err & (kHupMask | fb2::EpollProactor::kReadHangup)) << err;
+        if ((err & kHupMask) == 0)
+          return;  // Wait for the hangup.
 #endif
 
         // MacOs can send multiple notifications per socket.
@@ -334,7 +336,7 @@ TEST_P(AcceptServerTest, Shutdown) {
       std::ignore = socks[i]->Shutdown(SHUT_RDWR);
     }
     fb2::NoOpLock lock;
-    ASSERT_TRUE(cond.wait_for(lock, 1s, [&] { return called == kNumSocks; })) << called;
+    EXPECT_TRUE(cond.wait_for(lock, 1s, [&] { return called == kNumSocks; })) << called;
 
     // Please note that in perfect conditions like with this unit test,
     // we will get ErrorCb trigerred for every socket because both the server and the client
