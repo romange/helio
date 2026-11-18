@@ -47,7 +47,7 @@ class UringSocket : public LinuxSocketBase {
 
   // Precondition: the callback must not be empty and must not throw.
   // It will be called from the proactor thread when an error event is detected on the socket.
-  // See FiberSocketBase::RegisterOnErrorCb for when it is called and unregistered.
+  // See FiberSocketBase::RegisterOnErrorCb for when it is called and how long it stays registered.
   void RegisterOnErrorCb(std::function<void(uint32_t)> cb) final;
 
   void CancelOnErrorCb() final;

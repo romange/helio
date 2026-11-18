@@ -461,9 +461,17 @@ void UringSocket::ErrorCbRefWrapper::ArmErrorPoll(Proactor* proactor) {
       return;
     }
 
+    // Without IORING_CQE_F_MORE this is the poll's last completion, and the proactor has already
+    // freed its slot. Retire the id before any user code runs, so that nothing removes a reused
+    // slot by it.
+    if (!more)
+      data->error_cb_id = kInvalidErrorCbId;
+
     if (data->cb) {
       if (res & (POLLERR | POLLHUP)) {
+        // Clear explicitly: IsArmed() relies on it, and a moved-from std::function is unspecified.
         auto cb = std::move(data->cb);
+        data->cb = {};
         if (more) {
           Proactor* proactor = static_cast<Proactor*>(ProactorBase::me());
           data->RemoveErrorPoll(proactor);

@@ -159,6 +159,7 @@ EpollSocket::~EpollSocket() {
 
 auto EpollSocket::Close() -> error_code {
   error_code ec;
+  error_cb_ = {};  // Closing ends the error-callback registration.
   if (fd_ >= 0) {
     DCHECK(!proactor() || proactor()->InMyThread());
 
