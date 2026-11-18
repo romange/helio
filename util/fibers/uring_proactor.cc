@@ -166,8 +166,8 @@ void UringProactor::Init(unsigned pool_index, size_t ring_size, int wq_fd) {
   base::sys::KernelVersion kver;
   base::sys::GetKernelVersion(&kver);
 
-  CHECK(kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 8))
-      << "Versions 5.8 or higher are supported";
+  CHECK(kver.kernel > 5 || (kver.kernel == 5 && kver.major >= 10))
+      << "Versions 5.10 or higher are supported";
 
   io_uring_params params;
   memset(&params, 0, sizeof(params));

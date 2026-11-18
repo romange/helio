@@ -36,6 +36,7 @@ inline EpollSocket::error_code from_errno() {
 #ifdef __linux__
 constexpr int kEventMask = EPOLLIN | EPOLLOUT | EPOLLET | EPOLLRDHUP;
 constexpr int kErrMask = EPOLLERR | EPOLLHUP | EPOLLRDHUP;
+static_assert(EPOLLRDHUP == EpollProactor::kReadHangup);
 
 int AcceptSock(int fd) {
   sockaddr_storage client_addr;
@@ -50,7 +51,7 @@ int CreateSockFd(int family) {
 #elif defined(__FreeBSD__) || defined(__APPLE__)
 
 constexpr int kEventMask = POLLIN | POLLOUT;
-constexpr int kErrMask = POLLERR | POLLHUP;
+constexpr int kErrMask = POLLERR | POLLHUP | EpollProactor::kReadHangup;
 
 int AcceptSock(int fd) {
   sockaddr_storage client_addr;
@@ -347,7 +348,8 @@ void EpollSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
   Result<size_t> res = TrySend(v, len);
 
   if (res || res.error().value() != EAGAIN) {
-    GetProactor()->DispatchLocalBrief([cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
+    GetProactor()->DispatchLocalBrief(
+        [cb = std::move(cb), res = std::move(res)]() mutable { cb(res); });
     return;
   }
 
@@ -395,7 +397,8 @@ auto EpollSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 
   // ETIMEDOUT can happen if a socket does not have keepalive enabled or for some reason
   // TCP connection did indeed stopped getting tcp keep alive packets.
-  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT})) {
+  // ECANCELED if the operation was cancelled due to timeout, see PendingReq::Suspend().
+  if (!base::_in(ec.value(), {ECONNABORTED, EPIPE, ECONNRESET, ETIMEDOUT, ECANCELED})) {
     LOG(ERROR) << "sock[" << fd << "] Unexpected error " << ec.message() << " " << RemoteEndpoint();
   }
 
@@ -431,6 +434,7 @@ auto EpollSocket::Shutdown(int how) -> error_code {
 void EpollSocket::RegisterOnErrorCb(std::function<void(uint32_t)> cb) {
   DCHECK(!error_cb_);
   error_cb_ = std::move(cb);
+  rdhup_reported_ = 0;
 }
 
 void EpollSocket::CancelOnErrorCb() {
@@ -526,11 +530,20 @@ void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask << " " << error;
 
   HandleAsyncRequest(ev_mask);
-  if (error_cb_ && (ev_mask & kErrMask)) {
-    // Single-shot: a follow-up edge (e.g. POLLHUP after POLLRDHUP) on the
-    // same fd must not invoke the user callback twice.
+  if (!error_cb_ || (ev_mask & kErrMask) == 0)
+    return;
+
+  if (ev_mask & (POLLERR | POLLHUP)) {
+    // The final call: a follow-up edge (e.g. POLLERR followed by POLLHUP) on the
+    // same fd must not invoke the user callback again.
     auto cb = std::move(error_cb_);
     error_cb_ = {};
+    cb(ev_mask);
+  } else if (!rdhup_reported_) {
+    // A read half-close is reported once, and the callback stays registered for a later reset or
+    // hangup. Call a copy, since the callback may cancel itself.
+    rdhup_reported_ = 1;
+    auto cb = error_cb_;
     cb(ev_mask);
   }
 }
