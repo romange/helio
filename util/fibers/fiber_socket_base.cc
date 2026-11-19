@@ -187,14 +187,21 @@ auto LinuxSocketBase::Shutdown(int how) -> error_code {
     return make_error_code(errc::bad_file_descriptor);
 
   // If we shutdown and then try to Send/Recv - the call will stall since no data
-  // is sent/received. Therefore we remember the state to allow consistent API experience.
-  if (fd_ & IS_SHUTDOWN)
+  // is sent/received. Therefore we remember the state of each direction to allow consistent
+  // API experience. SHUT_WR is a half-close: the read side stays open until it is shut down too.
+  int32_t flags = 0;
+  if (how != SHUT_WR)
+    flags |= IS_SHUTDOWN;
+  if (how != SHUT_RD)
+    flags |= IS_WR_SHUTDOWN;
+
+  if ((fd_ & flags) == flags)
     return ec;
 
   int fd = native_handle();
 
   posix_err_wrap(::shutdown(fd, how), &ec);
-  fd_ |= IS_SHUTDOWN;  // Enter shutdown state unrelated to the success of the call.
+  fd_ |= flags;  // Enter shutdown state unrelated to the success of the call.
 
   return ec;
 }
@@ -232,7 +239,7 @@ auto LinuxSocketBase::RemoteEndpoint() const -> endpoint_type {
 }
 
 io::Result<size_t> LinuxSocketBase::TrySend(io::Bytes buf) {
-  if (fd_ & IS_SHUTDOWN)
+  if (fd_ & IS_WR_SHUTDOWN)
     return make_unexpected(make_error_code(errc::broken_pipe));
 
   int fd = ShiftedFd();
@@ -246,7 +253,7 @@ io::Result<size_t> LinuxSocketBase::TrySend(io::Bytes buf) {
 }
 
 io::Result<size_t> LinuxSocketBase::TrySend(const iovec* v, uint32_t len) {
-  if (fd_ & IS_SHUTDOWN)
+  if (fd_ & IS_WR_SHUTDOWN)
     return make_unexpected(make_error_code(errc::broken_pipe));
 
   int fd = ShiftedFd();
@@ -264,7 +271,7 @@ io::Result<size_t> LinuxSocketBase::TrySend(const iovec* v, uint32_t len) {
 
 io::Result<size_t> LinuxSocketBase::TryRecv(io::MutableBytes buf) {
   if (fd_ & IS_SHUTDOWN)
-    return make_unexpected(make_error_code(errc::connection_aborted));
+    return 0;  // EOF, like Recv and RecvMsg after a read-side shutdown.
 
   int fd = ShiftedFd();
   ssize_t res = recv(fd, buf.data(), buf.size(), 0);

@@ -455,9 +455,13 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
   //      MaybeSendEngineOutput() which fails with ECONNRESET; error propagates and read fiber
   //      exits.
   LOG(INFO) << "Closing client connection";
-  { auto _ = std::move(ssl_guard); }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
+  {
+    auto _ = std::move(ssl_guard);
+  }  // SSL_shutdown + SSL_free (non-blocking, may be EAGAIN)
   LOG(INFO) << "ssl_guard destroyed, closing fd";
-  { auto _ = std::move(fd_guard); }  // close() → RST due to unread data
+  {
+    auto _ = std::move(fd_guard);
+  }  // close() → RST due to unread data
   LOG(INFO) << "fd_guard destroyed (RST sent), waiting for server fibers";
 
   // Watchdog: if the server fibers don't unblock within 10s, dump all fiber stacks and abort.
@@ -515,6 +519,47 @@ TEST_P(TlsSocketTest, ShortWrite) {
   client_fb.Join();
   proactor_->Await([&] { std::ignore = client_sock->Close(); });
   server_read_fb.Join();
+}
+
+// TlsSocket::Shutdown waits for in-flight reads, so Shutdown(SHUT_WR) must wake a blocked reader
+// even though a transport write half-close leaves the read side open.
+TEST_P(TlsSocketTest, ShutdownWriteWakesReader) {
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  CreateClientSocket(client_sock);
+  accept_fb_.Join();
+
+  Done pre_read;
+  bool shutdown_started = false;
+  auto read_fb = proactor_->LaunchFiber([&] {
+    uint8_t buf[256];
+    iovec iov{buf, sizeof(buf)};
+    pre_read.Notify();
+    auto res = client_sock->ReadSome(&iov, 1);
+    EXPECT_TRUE(shutdown_started) << "the read completed before Shutdown, so it was not blocked";
+    EXPECT_FALSE(res && *res > 0);
+  });
+  pre_read.Wait();
+
+  // Watchdog: if Shutdown() or the reader do not return within 10s, dump fiber stacks and abort.
+  fb2::Done watchdog_done;
+  auto watchdog_fb = proactor_->LaunchFiber("WatchdogFb", [&] {
+    if (!watchdog_done.WaitFor(10s)) {
+      LOG(ERROR) << "Shutdown(SHUT_WR) did not wake the blocked reader";
+      fb2::PrintFiberStackTracesInThread();
+      LOG(FATAL) << "Deadlock — aborting";
+    }
+  });
+
+  proactor_->Await([&] {
+    ThisFiber::SleepFor(10ms);
+    shutdown_started = true;
+    EXPECT_FALSE(client_sock->Shutdown(SHUT_WR));
+  });
+  read_fb.Join();
+
+  watchdog_done.Notify();
+  watchdog_fb.Join();
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
 }
 
 // Validates TryRecv with partial reads after sending a vector.
@@ -1375,30 +1420,26 @@ TEST(TlsAsyncIoTest, PreservesPartialWriteProgressWhenResumingBlockedWriter) {
 
   // Mock the engine (default): OutputPending returns pending_output, PeekOutputBuf returns the
   // corresponding buffer, and ConsumeOutputBuf reduces pending_output.
-  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] {
-    return pending_output;
-  }));
+  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] { return pending_output; }));
   ON_CALL(*engine, PeekOutputBuf()).WillByDefault(testing::Invoke([&] {
     return Engine::Buffer(encrypted_output.data(), pending_output);
   }));
-  ON_CALL(*engine, ConsumeOutputBuf(testing::_))
-      .WillByDefault(testing::Invoke([&](unsigned size) {
-        ASSERT_LE(size, pending_output);
-        pending_output -= size;
-      }));
+  ON_CALL(*engine, ConsumeOutputBuf(testing::_)).WillByDefault(testing::Invoke([&](unsigned size) {
+    ASSERT_LE(size, pending_output);
+    pending_output -= size;
+  }));
 
   // Mock engine I/O: Read may be called multiple times; Write must be called once.
   EXPECT_CALL(*engine, Read(testing::_, testing::_))
       .WillRepeatedly(testing::Invoke([&](uint8_t*, size_t) {
         return read_calls++ == 0 ? Engine::OpResult{Engine::NEED_WRITE} : Engine::OpResult{1};
       }));
-  EXPECT_CALL(*engine, Write(testing::_))
-      .WillOnce(testing::Invoke([&](const Engine::Buffer& data) {
-        // Accept only the first four plaintext bytes and reject any second engine submission.
-        engine_write.assign(reinterpret_cast<const char*>(data.data()), data.size());
-        ++pending_output;
-        return Engine::OpResult{4};
-      }));
+  EXPECT_CALL(*engine, Write(testing::_)).WillOnce(testing::Invoke([&](const Engine::Buffer& data) {
+    // Accept only the first four plaintext bytes and reject any second engine submission.
+    engine_write.assign(reinterpret_cast<const char*>(data.data()), data.size());
+    ++pending_output;
+    return Engine::OpResult{4};
+  }));
 
   // Hold the reader's upstream write, then complete the resumed writer's output write.
   EXPECT_CALL(*mock_next, AsyncWriteSome(testing::_, 1, testing::_))
@@ -1455,9 +1496,7 @@ TEST(TlsAsyncIoTest, PropagatesFailureWhenResumingBlockedWriter) {
   std::optional<std::error_code> reader_error;
   std::optional<std::error_code> writer_error;
 
-  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] {
-    return pending_output;
-  }));
+  ON_CALL(*engine, OutputPending()).WillByDefault(testing::Invoke([&] { return pending_output; }));
   ON_CALL(*engine, PeekOutputBuf()).WillByDefault(testing::Invoke([&] {
     return Engine::Buffer(encrypted_output.data(), pending_output);
   }));
@@ -1812,11 +1851,15 @@ INSTANTIATE_TEST_SUITE_P(
         // Case 6: Graceful Stream EOF from Engine
         // Scenario: The TLS Engine receives a "close_notify" alert.
         // Expected: Return success with 0 bytes to indicate a clean EOF (empty error_code == 0).
-        TryRecvScenario {
-          .test_name = "EngineEOFGraceful_ReturnsZero", .initial_state = 0,
-          .engine_read_ret = Engine::EOF_GRACEFUL, .engine_output_pending = 0,
-          .sock_send_ret = std::nullopt, .sock_recv_ret = std::nullopt,
-          .expected_error = std::error_code{}, .expected_bytes = 0,
+        TryRecvScenario{
+            .test_name = "EngineEOFGraceful_ReturnsZero",
+            .initial_state = 0,
+            .engine_read_ret = Engine::EOF_GRACEFUL,
+            .engine_output_pending = 0,
+            .sock_send_ret = std::nullopt,
+            .sock_recv_ret = std::nullopt,
+            .expected_error = std::error_code{},
+            .expected_bytes = 0,
         }
 
 #if defined(NDEBUG) && !defined(DCHECK_ALWAYS_ON)

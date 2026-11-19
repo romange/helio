@@ -223,7 +223,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
   DCHECK_GT(len, 0U);
   DCHECK_GE(fd_, 0);
 
-  if (fd_ & IS_SHUTDOWN) {
+  if (fd_ & IS_WR_SHUTDOWN) {
     return MakeUnexpected(errc::connection_aborted);
   }
 
@@ -282,7 +282,7 @@ auto UringSocket::WriteSome(const iovec* ptr, uint32_t len) -> Result<size_t> {
 }
 
 void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
-  if (fd_ & IS_SHUTDOWN) {
+  if (fd_ & IS_WR_SHUTDOWN) {
     cb(MakeUnexpected(errc::connection_aborted));
     return;
   }
@@ -317,7 +317,7 @@ void UringSocket::AsyncWriteSome(const iovec* v, uint32_t len, io::AsyncProgress
 
 void UringSocket::AsyncReadSome(const iovec* v, uint32_t len, io::AsyncProgressCb cb) {
   if (fd_ & IS_SHUTDOWN) {
-    cb(MakeUnexpected(errc::connection_aborted));
+    cb(0);  // EOF
     return;
   }
 
@@ -351,7 +351,7 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
   DCHECK_GE(fd_, 0);
 
   if (fd_ & IS_SHUTDOWN) {
-    return MakeUnexpected(errc::connection_aborted);
+    return 0;  // EOF
   }
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
@@ -393,6 +393,12 @@ auto UringSocket::RecvMsg(const msghdr& msg, int flags) -> Result<size_t> {
 }
 
 io::Result<size_t> UringSocket::Recv(const io::MutableBytes& mb, int flags) {
+  DCHECK_GE(fd_, 0);
+
+  if (fd_ & IS_SHUTDOWN) {
+    return 0;  // EOF
+  }
+
   int fd = ShiftedFd();
   Proactor* p = GetProactor();
   DCHECK(ProactorBase::me() == p);

@@ -31,6 +31,9 @@ class EpollProactor : public ProactorBase {
   // without an error on the read filter.
   static constexpr uint32_t kReadHangup = 0x2000;
 
+  // kqueue only: set with EPOLL_OUT for EV_EOF without an error on the write filter.
+  static constexpr uint32_t kWriteHangup = 0x4000;
+
   // Returns the handler id for the armed event.
   unsigned Arm(int fd, CbType cb, uint32_t event_mask);
   void Disarm(int fd, unsigned arm_index);
