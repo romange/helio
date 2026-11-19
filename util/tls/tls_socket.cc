@@ -114,9 +114,11 @@ auto TlsSocket::Shutdown(int how) -> error_code {
   // this socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
   // calling Shutdown(). It's not the best behavior, but it's also not disastrous either, because
   // such interaction happens only during the server shutdown.
+  // TLS shutdown is final and waits for in-flight I/O below, so both directions of the transport
+  // are shut down even for SHUT_WR: a write half-close would leave a pending Recv blocked.
   error_code res;
   if (next_sock_->IsOpen()) {
-    res = next_sock_->Shutdown(how);
+    res = next_sock_->Shutdown(SHUT_RDWR);
   }
   socket_flags.wait_for_io_completion();
 
@@ -732,7 +734,7 @@ io::Result<size_t> TlsSocket::TrySend(const iovec* v, uint32_t len) {
       returned_status = make_error_code(errc::operation_not_permitted);
       break;
     }  // push_result.engine_opcode < 0
-  }    // while
+  }  // while
 
   if (total_bytes_sent > 0) {
     DVSOCK(3) << "TrySend returning " << total_bytes_sent << " bytes";

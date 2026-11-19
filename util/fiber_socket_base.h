@@ -221,7 +221,8 @@ class LinuxSocketBase : public FiberSocketBase {
   }
 
   //! IsOpen does not promise that the socket is TCP connected or live,
-  // just that the file descriptor is valid and its state is open.
+  // just that the file descriptor is valid and its read side is not shut down.
+  // A socket that only shut down its write side with Shutdown(SHUT_WR) is still open.
   bool IsOpen() const final {
     return (fd_ & IS_SHUTDOWN) == 0;
   }
@@ -249,8 +250,9 @@ class LinuxSocketBase : public FiberSocketBase {
   }
 
   enum {
-    IS_SHUTDOWN = 0x1,
+    IS_SHUTDOWN = 0x1,  // The read side is shut down: SHUT_RD or SHUT_RDWR.
     IS_UDS = 0x2,
+    IS_WR_SHUTDOWN = 0x4,  // The write side is shut down: SHUT_WR or SHUT_RDWR.
   };
 
   // Flags which are passed on to peers produced by Accept()

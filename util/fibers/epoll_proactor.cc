@@ -114,10 +114,16 @@ uint32_t KevMask(const struct kevent& kev) {
            << kev.fflags << ") d" << kev.data;
 
   if (kev.flags & EV_EOF) {
-    // EV_EOF on the read filter without an error is a read half-close, like EPOLLRDHUP on Linux.
-    if (kev.filter == EVFILT_READ && kev.fflags == 0)
+    // fflags holds the socket error, e.g. after a reset: the connection is gone, and pending
+    // requests fail like after EPOLLERR on Linux.
+    if (kev.fflags)
+      return POLLHUP | POLLERR;
+
+    // Without an error, EV_EOF closes one direction only. EpollSocket reports a hangup once both
+    // are closed, like EPOLLHUP on Linux.
+    if (kev.filter == EVFILT_READ)
       return EpollProactor::EPOLL_IN | EpollProactor::kReadHangup;
-    return POLLHUP;
+    return EpollProactor::EPOLL_OUT | EpollProactor::kWriteHangup;
   }
   uint32_t ev_mask = 0;
 

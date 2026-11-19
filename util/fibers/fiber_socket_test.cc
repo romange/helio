@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <memory>
 #include <thread>
 #include <utility>
 
@@ -944,6 +945,67 @@ TEST_P(FiberSocketTest, ShutdownWhileReading) {
   proactor_->Await([&] { std::ignore = sock->Close(); });
 }
 
+// Shutdown(SHUT_WR) is a half-close: sends fail, receives still return the peer's data, and the
+// peer's FIN gives a blocked reader EOF and fires the final error callback with POLLHUP.
+TEST_P(FiberSocketTest, ShutdownWrite) {
+  unique_ptr<FiberSocketBase> sock(proactor_->CreateSocket());
+  absl::Cleanup close_sock = [&] { proactor_->Await([&] { std::ignore = sock->Close(); }); };
+  proactor_->Await([&] { ASSERT_FALSE(sock->Connect(listen_ep_)); });
+  accept_fb_.Join();
+  ASSERT_FALSE(accept_ec_);
+
+  // conn_socket_ has the fixture's error callback. The timeouts turn a missing FIN into a
+  // failed read instead of a hang.
+  uint8_t buf[16];
+  iovec vec{buf, sizeof(buf)};
+  proactor_->Await([&] {
+    sock->set_timeout(1000);
+    conn_socket_->set_timeout(1000);
+    ASSERT_FALSE(sock->Write(io::Buffer("hello")));
+    ASSERT_FALSE(conn_socket_->Shutdown(SHUT_WR));
+    EXPECT_TRUE(conn_socket_->IsOpen());
+    EXPECT_TRUE(conn_socket_->Write(io::Buffer("x")));
+
+    auto res = sock->Recv(buf, 0);
+    ASSERT_TRUE(res) << res.error().message();
+    EXPECT_EQ(0u, *res);
+
+    res = conn_socket_->Recv(&vec, 1);
+    ASSERT_TRUE(res) << res.error().message();
+    EXPECT_EQ("hello", string_view(reinterpret_cast<char*>(buf), *res));
+  });
+  ASSERT_FALSE(error_cb_called_.WaitFor(50ms)) << "write half-close fired the error callback";
+
+  bool read_started = false, read_done = false;
+  auto reader = proactor_->LaunchFiber([&] {
+    read_started = true;
+    auto res = conn_socket_->Recv(buf, 0);
+    read_done = true;
+    ASSERT_TRUE(res) << res.error().message();
+    EXPECT_EQ(0u, *res);
+  });
+  proactor_->Await([&] {
+    ThisFiber::SleepFor(10ms);
+
+    // An early EOF after the local SHUT_WR would have ended the read before the peer's FIN.
+    ASSERT_TRUE(read_started);
+    EXPECT_FALSE(read_done) << "Recv returned before the peer's FIN";
+    ASSERT_FALSE(sock->Shutdown(SHUT_WR));
+  });
+  reader.Join();
+  ASSERT_TRUE(error_cb_called_.WaitFor(1s)) << "closing both directions did not fire the callback";
+  EXPECT_TRUE(conn_sock_err_mask_ & POLLHUP) << "mask=" << conn_sock_err_mask_;
+
+  // A later read-side shutdown still takes effect. The kernel may report ENOTCONN, since both
+  // directions are already closed.
+  proactor_->Await([&] {
+    std::ignore = conn_socket_->Shutdown(SHUT_RD);
+    EXPECT_FALSE(conn_socket_->IsOpen());
+    EXPECT_EQ(0u, conn_socket_->Recv(buf, 0).value_or(1));
+    EXPECT_EQ(0u, conn_socket_->Recv(&vec, 1).value_or(1));
+  });
+}
+
 // AsyncRead must stop at EOF, after the peer's FIN or a local read-side shutdown, instead of
 // reissuing reads that make no progress.
 TEST_P(FiberSocketTest, AsyncReadEof) {
@@ -953,41 +1015,41 @@ TEST_P(FiberSocketTest, AsyncReadEof) {
   accept_fb_.Join();
   ASSERT_FALSE(accept_ec_);
 
-  // Outside the lambda, so a read still pending after a failed wait does not outlive them.
-  uint8_t buf[16];
-  Done done;
-  error_code ec;
-
   // Runs `shutdown` and then AsyncRead on `reader`, and expects the read to end with EOF.
   auto expect_eof = [&](FiberSocketBase* reader, auto shutdown) {
-    done.Reset();
-    ec.clear();
+    // Each read has its own state, shared with its callback, so a late completion cannot touch a
+    // later read or freed memory.
+    struct ReadState {
+      uint8_t buf[16];
+      Done done;
+      error_code ec;
+    };
+    auto state = std::make_shared<ReadState>();
     proactor_->Await([&] {
       // The timeout ends a read that never sees EOF on epoll, where AsyncReadSome reads inline.
       reader->set_timeout(1000);
       shutdown();
-      reader->AsyncRead(io::MutableBytes(buf), [&](error_code e) {
-        ec = e;
-        done.Notify();
+      reader->AsyncRead(io::MutableBytes(state->buf), [state](error_code e) {
+        state->ec = e;
+        state->done.Notify();
       });
     });
 
-    bool completed = done.WaitFor(2s);
+    bool completed = state->done.WaitFor(2s);
     if (!completed) {
       // Unblock the pending read before the test ends.
       proactor_->Await([&] { std::ignore = reader->Shutdown(SHUT_RDWR); });
-      EXPECT_TRUE(done.WaitFor(2s)) << "AsyncRead did not complete after SHUT_RDWR either";
     }
     ASSERT_TRUE(completed) << "AsyncRead did not complete";
-    EXPECT_EQ(ec, errc::connection_aborted) << ec.message();
+    EXPECT_EQ(state->ec, errc::connection_aborted) << state->ec.message();
   };
 
   // The server shuts down its own read side first, while no Shutdown has been called on it yet;
   // the client never sent a FIN.
   expect_eof(conn_socket_.get(), [&] { EXPECT_FALSE(conn_socket_->Shutdown(SHUT_RD)); });
 
-  // The client reads after the server's FIN. It is sent with ::shutdown directly, since a socket
-  // that already shut down its read side ignores a later Shutdown(SHUT_WR).
+  // The client reads after the server's FIN. It is sent with ::shutdown directly, so this case
+  // does not depend on how Shutdown() tracks the server's earlier read-side shutdown.
   expect_eof(sock.get(), [&] {
     EXPECT_EQ(0, ::shutdown(conn_socket_->native_handle(), SHUT_WR)) << strerror(errno);
   });

@@ -170,6 +170,7 @@ auto EpollSocket::Close() -> error_code {
     posix_err_wrap(::close(fd), &ec);
     fd_ = -1;
     arm_index_ = -1;
+    read_eof_ = write_eof_ = 0;
 
     // Cleanup pending requests
     if (async_write_pending_) {
@@ -263,6 +264,7 @@ error_code EpollSocket::Connect(const endpoint_type& ep, std::function<void(int)
   CHECK(write_req_ == NULL);
 
   fd_ = (fd << kFdShift);
+  read_eof_ = write_eof_ = 0;
   OnSetProactor();
 
   if (on_pre_connect) {
@@ -427,7 +429,13 @@ auto EpollSocket::Shutdown(int how) -> error_code {
   // In the absence of this wake if the socket closes soon after shutdown without any yields in
   // between, suspended read/write fibers can hang indefinitely because socket close removes the fd
   // from epoll interest set and unsets the callback handler.
-  Wakey(EpollProactor::EPOLL_IN | ProactorBase::EPOLL_OUT, 0, nullptr);
+  // Only the shut down directions are woken: after SHUT_WR, readers keep waiting for peer data.
+  uint32_t mask = 0;
+  if (how != SHUT_WR)
+    mask |= EpollProactor::EPOLL_IN;
+  if (how != SHUT_RD)
+    mask |= ProactorBase::EPOLL_OUT;
+  Wakey(mask, 0, nullptr);
 
   return ec;
 }
@@ -478,12 +486,13 @@ void EpollSocket::HandleAsyncRequest(unsigned epoll_mask) {
     uint8_t async_pending = is_send ? async_write_pending_ : async_read_pending_;
 
     error_code ec;
-    bool close_socket = false;
+    // A hangup closes the connection for the recv hook, with or without an error.
+    bool close_socket = (epoll_mask & POLLHUP) != 0;
 
     if (epoll_mask & POLLERR) {
       ec = make_error_code(errc::connection_aborted);
-    } else if (epoll_mask & POLLHUP) {
-      close_socket = true;
+    } else if ((epoll_mask & POLLHUP) && is_send) {
+      // After a hangup without an error, readers still drain the data and then observe EOF.
       ec = make_error_code(errc::connection_aborted);
     }
 
@@ -529,6 +538,18 @@ void EpollSocket::HandleAsyncRequest(unsigned epoll_mask) {
 
 void EpollSocket::Wakey(uint32_t ev_mask, int error, EpollProactor* cntr) {
   DVSOCK(2) << "Wakey " << ev_mask << " " << error;
+
+#ifndef __linux__
+  // kqueue reports EV_EOF per direction. Like EPOLLHUP on Linux, report a hangup once both
+  // directions are closed, e.g. after our Shutdown(SHUT_WR) and the peer's FIN.
+  if (ev_mask & EpollProactor::kReadHangup)
+    read_eof_ = 1;
+  if (ev_mask & EpollProactor::kWriteHangup)
+    write_eof_ = 1;
+  ev_mask &= ~EpollProactor::kWriteHangup;
+  if (read_eof_ && write_eof_)
+    ev_mask |= POLLHUP;
+#endif
 
   HandleAsyncRequest(ev_mask);
   if (!error_cb_ || (ev_mask & kErrMask) == 0)
