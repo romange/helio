@@ -348,7 +348,9 @@ TEST_P(FiberSocketTest, Poll) {
 
   LOG(INFO) << "Before close";
   proactor_->Await([&] { std::ignore = sock->Close(); });
-  usleep(1000);
+
+  // The callback runs on the proactor thread, so wait for it instead of sleeping.
+  ASSERT_TRUE(error_cb_called_.WaitFor(1s)) << "error callback did not fire";
 
   // POLLRDHUP is linux specific
 #ifdef __linux__
