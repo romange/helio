@@ -1003,6 +1003,7 @@ TEST_P(FiberSocketTest, ShutdownWrite) {
     EXPECT_FALSE(conn_socket_->IsOpen());
     EXPECT_EQ(0u, conn_socket_->Recv(buf, 0).value_or(1));
     EXPECT_EQ(0u, conn_socket_->Recv(&vec, 1).value_or(1));
+    EXPECT_EQ(0u, conn_socket_->TryRecv(buf).value_or(1));
   });
 }
 

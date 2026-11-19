@@ -271,7 +271,7 @@ io::Result<size_t> LinuxSocketBase::TrySend(const iovec* v, uint32_t len) {
 
 io::Result<size_t> LinuxSocketBase::TryRecv(io::MutableBytes buf) {
   if (fd_ & IS_SHUTDOWN)
-    return make_unexpected(make_error_code(errc::connection_aborted));
+    return 0;  // EOF, like Recv and RecvMsg after a read-side shutdown.
 
   int fd = ShiftedFd();
   ssize_t res = recv(fd, buf.data(), buf.size(), 0);
