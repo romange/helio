@@ -34,6 +34,12 @@ class TlsSocket final : public FiberSocketBase {
 
   // --- FiberSocketBase overrides ---
 
+  // Never waits for socket space, for the peer or for in-flight I/O, so it does not hang on a
+  // clogged socket. It may still suspend the fiber for as long as shutting down the underlying
+  // socket does. Queues close_notify and makes a single non-blocking attempt to send it, unless
+  // a write is in flight; if the underlying socket has no room, close_notify is dropped. Then
+  // shuts down both transport directions, even for SHUT_WR, which fails parked and future I/O.
+  // Close() is the one that waits for in-flight I/O.
   error_code Shutdown(int how) final override;
 
   AcceptResult Accept() final override;
@@ -265,9 +271,6 @@ class TlsSocket final : public FiberSocketBase {
     }
     void wait_for_read_completion() {
       wait_until_clear(READ_IN_PROGRESS);
-    }
-    void wait_for_io_completion() {
-      wait_until_clear(WRITE_IN_PROGRESS | READ_IN_PROGRESS);
     }
     void wait_for_io_or_shutdown_completion() {
       wait_until_clear(WRITE_IN_PROGRESS | READ_IN_PROGRESS | SHUTDOWN_IN_PROGRESS);

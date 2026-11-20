@@ -484,6 +484,62 @@ TEST_P(TlsSocketTest, Tls13KeyUpdateNeedWrite) {
 }
 #endif  // #if defined(__linux__)
 
+// Shutdown() must return when the socket is clogged (the peer stopped reading), and it must
+// abort the write that is parked on it.
+TEST_P(TlsSocketTest, ShutdownWakesParkedWrite) {
+  std::unique_ptr<tls::TlsSocket> client_sock;
+  ASSERT_NO_FATAL_FAILURE(CreateClientSocket(client_sock));
+  accept_fb_.JoinIfNeeded();
+  ASSERT_TRUE(server_socket_);
+
+  std::vector<uint8_t> chunk(64 * 1024, 'z');
+  size_t written = 0;
+  bool write_done = false;
+  error_code write_ec;
+
+  // The client never reads, so the flood fills the socket buffers and the write parks.
+  auto write_fb = proactor_->LaunchFiber("WriteFb", [&] {
+    while (true) {
+      write_ec = server_socket_->Write(io::Bytes{chunk.data(), chunk.size()});
+      if (write_ec)
+        break;
+      written += chunk.size();
+    }
+    write_done = true;
+  });
+
+  // Bound the progress check, Shutdown(), and writer join so a regression reports a deadlock.
+  fb2::Done watchdog_done;
+  auto watchdog_fb = proactor_->LaunchFiber("WatchdogFb", [&] {
+    if (!watchdog_done.WaitFor(10s)) {
+      LOG(ERROR) << "ShutdownWakesParkedWrite timed out";
+      proactor_->Await([] { fb2::PrintFiberStackTracesInThread(); });
+      LOG(FATAL) << "ShutdownWakesParkedWrite deadlocked";
+    }
+  });
+
+  proactor_->Await([&] {
+    // Wait until the writer makes no more progress.
+    size_t last;
+    do {
+      last = written;
+      ThisFiber::SleepFor(100ms);
+    } while (last != written);
+    ASSERT_FALSE(write_done);
+
+    // Must return although the socket is clogged and a write is in flight.
+    std::ignore = server_socket_->Shutdown(SHUT_RDWR);
+  });
+
+  write_fb.Join();
+  watchdog_done.Notify();
+  watchdog_fb.Join();
+  EXPECT_TRUE(write_done);
+  EXPECT_TRUE(write_ec);
+
+  proactor_->Await([&] { std::ignore = client_sock->Close(); });
+}
+
 TEST_P(TlsSocketTest, ShortWrite) {
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
@@ -521,8 +577,8 @@ TEST_P(TlsSocketTest, ShortWrite) {
   server_read_fb.Join();
 }
 
-// TlsSocket::Shutdown waits for in-flight reads, so Shutdown(SHUT_WR) must wake a blocked reader
-// even though a transport write half-close leaves the read side open.
+// TLS shutdown is final even for SHUT_WR, so it must wake a blocked reader instead of leaving
+// the transport read side open.
 TEST_P(TlsSocketTest, ShutdownWriteWakesReader) {
   std::unique_ptr<tls::TlsSocket> client_sock;
   CreateClientSocket(client_sock);
@@ -2417,6 +2473,117 @@ TEST_F(TlsSocketShutdownTest, ShutdownRaceCrash) {
 
     // Join the shutdown fiber to ensure all work is done before test exit.
     shutdown_fiber.Join();
+  });
+}
+
+// Shutdown() must not wait for socket space. These tests fail (gmock reports an unexpected call)
+// if it falls back to the blocking WriteSome() path to deliver close_notify.
+
+// A healthy peer gets close_notify: it is sent with a single TrySend() before the underlying
+// socket is shut down.
+TEST_F(TlsSocketShutdownTest, SendsCloseNotify) {
+  proactor_->Await([&] {
+    uint8_t close_notify[24] = {};
+    size_t pending = sizeof(close_notify);
+
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*mock_engine_, OutputPending()).WillRepeatedly(testing::Invoke([&] {
+      return pending;
+    }));
+    EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+        .WillRepeatedly(testing::Return(Engine::Buffer{close_notify, sizeof(close_notify)}));
+    EXPECT_CALL(*mock_next_sock_, WriteSome(testing::_, testing::_)).Times(0);
+
+    testing::InSequence seq;
+    EXPECT_CALL(*mock_engine_, Shutdown()).WillOnce(testing::Return(Engine::OpResult{0}));
+    EXPECT_CALL(*mock_next_sock_, TrySend(testing::An<io::Bytes>()))
+        .WillOnce(testing::Invoke([&](io::Bytes buf) -> io::Result<size_t> {
+          EXPECT_EQ(buf.data(), close_notify);
+          return buf.size();
+        }));
+    EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(sizeof(close_notify)))
+        .WillOnce(testing::Invoke([&](unsigned sz) { pending -= sz; }));
+    EXPECT_CALL(*mock_next_sock_, Shutdown(SHUT_RDWR)).WillOnce(testing::Return(std::error_code{}));
+
+    EXPECT_FALSE(sock_->Shutdown(SHUT_RDWR));
+
+    // The second call is a no-op.
+    EXPECT_FALSE(sock_->Shutdown(SHUT_RDWR));
+  });
+}
+
+// A partial non-blocking send consumes only the accepted bytes. The unsent alert tail is dropped
+// when the transport shuts down, without a second send attempt.
+TEST_F(TlsSocketShutdownTest, DropsCloseNotifyTailAfterPartialSend) {
+  proactor_->Await([&] {
+    uint8_t close_notify[24] = {};
+    size_t pending = sizeof(close_notify);
+
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*mock_engine_, OutputPending()).WillRepeatedly(testing::Invoke([&] {
+      return pending;
+    }));
+    EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+        .WillOnce(testing::Return(Engine::Buffer{close_notify, sizeof(close_notify)}));
+    EXPECT_CALL(*mock_next_sock_, WriteSome(testing::_, testing::_)).Times(0);
+
+    testing::InSequence seq;
+    EXPECT_CALL(*mock_engine_, Shutdown()).WillOnce(testing::Return(Engine::OpResult{0}));
+    EXPECT_CALL(*mock_next_sock_, TrySend(testing::An<io::Bytes>()))
+        .WillOnce(testing::Invoke([&](io::Bytes buf) -> io::Result<size_t> {
+          EXPECT_EQ(buf.size(), sizeof(close_notify));
+          return 10;
+        }));
+    EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(10)).WillOnce(testing::Invoke([&](unsigned sz) {
+      pending -= sz;
+    }));
+    EXPECT_CALL(*mock_next_sock_, Shutdown(SHUT_RDWR)).WillOnce(testing::Return(std::error_code{}));
+
+    EXPECT_FALSE(sock_->Shutdown(SHUT_WR));
+    EXPECT_EQ(pending, 14u);
+  });
+}
+
+// The underlying socket is full and no write is in flight: close_notify is dropped and the
+// underlying socket is shut down anyway.
+TEST_F(TlsSocketShutdownTest, DropsCloseNotifyWhenSocketIsFull) {
+  proactor_->Await([&] {
+    uint8_t close_notify[24] = {};
+
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*mock_engine_, OutputPending())
+        .WillRepeatedly(testing::Return(sizeof(close_notify)));
+    EXPECT_CALL(*mock_engine_, PeekOutputBuf())
+        .WillRepeatedly(testing::Return(Engine::Buffer{close_notify, sizeof(close_notify)}));
+    EXPECT_CALL(*mock_next_sock_, WriteSome(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*mock_engine_, ConsumeOutputBuf(testing::_)).Times(0);
+
+    testing::InSequence seq;
+    EXPECT_CALL(*mock_engine_, Shutdown()).WillOnce(testing::Return(Engine::OpResult{0}));
+    EXPECT_CALL(*mock_next_sock_, TrySend(testing::An<io::Bytes>()))
+        .WillOnce(testing::Return(nonstd::make_unexpected(
+            std::make_error_code(std::errc::resource_unavailable_try_again))));
+    EXPECT_CALL(*mock_next_sock_, Shutdown(SHUT_RDWR)).WillOnce(testing::Return(std::error_code{}));
+
+    EXPECT_FALSE(sock_->Shutdown(SHUT_RDWR));
+  });
+}
+
+// A write is in flight: it owns the engine's output buffer, so Shutdown() does not send
+// anything. It shuts down the underlying socket and returns without waiting for that write.
+TEST_F(TlsSocketShutdownTest, DoesNotWaitForWriteInFlight) {
+  proactor_->Await([&] {
+    TestDelegator::SetState(sock_.get(), TestDelegator::GetWriteInProgress());
+
+    EXPECT_CALL(*mock_next_sock_, IsOpen()).WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*mock_engine_, OutputPending()).WillRepeatedly(testing::Return(24));
+    EXPECT_CALL(*mock_engine_, Shutdown()).WillOnce(testing::Return(Engine::OpResult{0}));
+    EXPECT_CALL(*mock_next_sock_, TrySend(testing::An<io::Bytes>())).Times(0);
+    EXPECT_CALL(*mock_next_sock_, WriteSome(testing::_, testing::_)).Times(0);
+    EXPECT_CALL(*mock_next_sock_, Shutdown(SHUT_RDWR)).WillOnce(testing::Return(std::error_code{}));
+
+    // With WRITE_IN_PROGRESS never cleared, this call would hang if Shutdown() waited for I/O.
+    EXPECT_FALSE(sock_->Shutdown(SHUT_RDWR));
   });
 }
 
