@@ -86,41 +86,44 @@ void TlsSocket::InitSSL(SSL_CTX* context, Buffer prefix) {
   }
 }
 
+// Shutdown() can be called to abort a connection whose peer stopped reading, so it must not wait
+// for socket space or for in-flight I/O (Close() waits for the latter). It may suspend only inside
+// next_sock_->Shutdown(), which is why SHUTDOWN_IN_PROGRESS is kept for a concurrent Close().
 auto TlsSocket::Shutdown(int how) -> error_code {
   DCHECK(engine_);
   auto& socket_flags = flags_;
   if (socket_flags.shutdown_done() || socket_flags.shutdown_in_progress()) {
     return {};
   }
-
   socket_flags.set_shutdown_in_progress();
-  Engine::OpResult op_result = engine_->Shutdown();
 
-  // TODO: this flow is hacky and should be reworked.
-  // 1. If we are blocked on writes, then MaybeSendEngineOutput() will block as well and shutdown
-  // might deadlock. but if we do not call MaybeSendEngineOutput, then the peer will not get
-  // the close_notify message.
-  // Furthermore, the call `next_sock_->Shutdown` below can race with sending close_notify
-  // message.
-  // For now we just try to call MaybeSendEngineOutput only if there is no ongoing write.
-  if (op_result && !socket_flags.write_in_progress()) {
-    // engine_ could send notification messages to the peer.
-    std::ignore = MaybeSendEngineOutput();
+  // Queues close_notify into the engine's output buffer.
+  std::ignore = engine_->Shutdown();
+
+  // Send close_notify as best effort: a single non-blocking attempt. If the socket has no room,
+  // the alert (or its tail) is dropped and the peer sees a plain TCP shutdown instead.
+  // With a write in flight we skip the attempt, as that write owns the output buffer and
+  // interleaving with it would corrupt the TLS stream. It fails once next_sock_ is shut down.
+  if (!socket_flags.write_in_progress() && engine_->OutputPending() > 0 && next_sock_->IsOpen()) {
+    Engine::Buffer buffer = engine_->PeekOutputBuf();
+    io::Result<size_t> send_res = next_sock_->TrySend(buffer);
+    if (send_res) {
+      DCHECK_LE(*send_res, buffer.size());
+      upstream_write_ += *send_res;
+      engine_->ConsumeOutputBuf(*send_res);
+      DVSOCK(1) << "Shutdown: sent " << *send_res << " TLS bytes, " << engine_->OutputPending()
+                << " still pending";
+    } else {
+      DVSOCK(1) << "Shutdown: TrySend failed: " << send_res.error().message();
+    }
   }
 
-  // In any case we should also shutdown the underlying TCP socket without relying on the
-  // the peer. This unblocks any sync operations (like Recv) that are waiting for data. It could be
-  // that when we are in the middle of MaybeSendEngineOutput, and the other fiber calls Close() on
-  // this socket. In this case next_sock_ will be closed by the time we reach this line, so we omit
-  // calling Shutdown(). It's not the best behavior, but it's also not disastrous either, because
-  // such interaction happens only during the server shutdown.
-  // TLS shutdown is final and waits for in-flight I/O below, so both directions of the transport
-  // are shut down even for SHUT_WR: a write half-close would leave a pending Recv blocked.
+  // TLS shutdown is final, so close both transport directions even for SHUT_WR. This wakes
+  // parked reads and writes without waiting for the peer.
   error_code res;
   if (next_sock_->IsOpen()) {
     res = next_sock_->Shutdown(SHUT_RDWR);
   }
-  socket_flags.wait_for_io_completion();
 
   socket_flags.complete_shutdown();
   return res;
