@@ -1,5 +1,5 @@
 diff --git a/absl/container/flat_hash_map.h b/absl/container/flat_hash_map.h
-index bc86ced9..6914de19 100644
+index f8c3ba7..b536784 100644
 --- a/absl/container/flat_hash_map.h
 +++ b/absl/container/flat_hash_map.h
 @@ -34,6 +34,7 @@
@@ -10,22 +10,23 @@ index bc86ced9..6914de19 100644
  #include <type_traits>
  #include <utility>
  
-@@ -661,10 +662,10 @@ struct FlatHashMapPolicy {
+@@ -692,10 +693,11 @@ struct FlatHashMapPolicy {
    }
  
-   template <class Hash>
+   template <class Hash, bool kIsDefault>
 -  static constexpr HashSlotFn get_hash_slot_fn() {
 +  static constexpr std::optional<HashSlotFn> get_hash_slot_fn() {
      return memory_internal::IsLayoutCompatible<K, V>::value
--               ? &TypeErasedApplyToSlotFn<Hash, K>
+-               ? &TypeErasedApplyToSlotFn<Hash, K, kIsDefault>
 -               : nullptr;
-+               ? std::optional<HashSlotFn>(&TypeErasedApplyToSlotFn<Hash, K>)
++               ? std::optional<HashSlotFn>(
++                     &TypeErasedApplyToSlotFn<Hash, K, kIsDefault>)
 +               : std::nullopt;
    }
  
    static size_t space_used(const slot_type*) { return 0; }
 diff --git a/absl/container/flat_hash_set.h b/absl/container/flat_hash_set.h
-index bf63eb59..9f2c9639 100644
+index bd24dde..989171d 100644
 --- a/absl/container/flat_hash_set.h
 +++ b/absl/container/flat_hash_set.h
 @@ -34,6 +34,7 @@
@@ -36,37 +37,37 @@ index bf63eb59..9f2c9639 100644
  #include <type_traits>
  #include <utility>
  
-@@ -559,8 +560,8 @@ struct FlatHashSetPolicy {
+@@ -589,8 +590,9 @@ struct FlatHashSetPolicy {
    static size_t space_used(const T*) { return 0; }
  
-   template <class Hash>
+   template <class Hash, bool kIsDefault>
 -  static constexpr HashSlotFn get_hash_slot_fn() {
--    return &TypeErasedApplyToSlotFn<Hash, T>;
+-    return &TypeErasedApplyToSlotFn<Hash, T, kIsDefault>;
 +  static constexpr std::optional<HashSlotFn> get_hash_slot_fn() {
-+    return std::optional<HashSlotFn>(&TypeErasedApplyToSlotFn<Hash, T>);
++    return std::optional<HashSlotFn>(
++        &TypeErasedApplyToSlotFn<Hash, T, kIsDefault>);
    }
  };
  }  // namespace container_internal
 diff --git a/absl/container/internal/hash_policy_traits.h b/absl/container/internal/hash_policy_traits.h
-index cd6b42f9..9d54017d 100644
+index e469d71..ce947c8 100644
 --- a/absl/container/internal/hash_policy_traits.h
 +++ b/absl/container/internal/hash_policy_traits.h
-@@ -156,9 +156,10 @@ struct hash_policy_traits : common_policy_traits<Policy> {
+@@ -155,9 +155,9 @@ template <class Policy, class = void>
  // silent error: the address of * will never be NULL [-Werror=address]
  #pragma GCC diagnostic ignored "-Waddress"
  #endif
--    return Policy::template get_hash_slot_fn<Hash>() == nullptr
--               ? &hash_slot_fn_non_type_erased<Hash>
--               : Policy::template get_hash_slot_fn<Hash>();
-+    return Policy::template get_hash_slot_fn<Hash>()
-+               ? Policy::template get_hash_slot_fn<Hash>().value()
-+               : &hash_slot_fn_non_type_erased<Hash>;
-+
+-    return Policy::template get_hash_slot_fn<Hash, kIsDefault>() == nullptr
+-               ? &hash_slot_fn_non_type_erased<Hash, kIsDefault>
+-               : Policy::template get_hash_slot_fn<Hash, kIsDefault>();
++    return Policy::template get_hash_slot_fn<Hash, kIsDefault>()
++               ? *Policy::template get_hash_slot_fn<Hash, kIsDefault>()
++               : &hash_slot_fn_non_type_erased<Hash, kIsDefault>;
  #if defined(__GNUC__) && !defined(__clang__)
  #pragma GCC diagnostic pop
  #endif
 diff --git a/absl/container/node_hash_map.h b/absl/container/node_hash_map.h
-index 8aed18b2..c043017f 100644
+index d58feed..4c5b6db 100644
 --- a/absl/container/node_hash_map.h
 +++ b/absl/container/node_hash_map.h
 @@ -40,6 +40,7 @@
@@ -77,22 +78,25 @@ index 8aed18b2..c043017f 100644
  #include <type_traits>
  #include <utility>
  
-@@ -664,10 +665,10 @@ class NodeHashMapPolicy
+@@ -686,11 +687,12 @@ class NodeHashMapPolicy
    static const Value& value(const value_type* elem) { return elem->second; }
  
-   template <class Hash>
+   template <class Hash, bool kIsDefault>
 -  static constexpr HashSlotFn get_hash_slot_fn() {
 +  static constexpr std::optional<HashSlotFn> get_hash_slot_fn() {
      return memory_internal::IsLayoutCompatible<Key, Value>::value
--               ? &TypeErasedDerefAndApplyToSlotFn<Hash, Key>
+-               ? &TypeErasedDerefAndApplyToSlotFirstFn<Hash, value_type,
+-                                                       kIsDefault>
 -               : nullptr;
-+               ? std::optional<HashSlotFn>(&TypeErasedDerefAndApplyToSlotFn<Hash, Key>)
++               ? std::optional<HashSlotFn>(
++                     &TypeErasedDerefAndApplyToSlotFirstFn<Hash, value_type,
++                                                           kIsDefault>)
 +               : std::nullopt;
    }
  };
  }  // namespace container_internal
 diff --git a/absl/container/node_hash_set.h b/absl/container/node_hash_set.h
-index 6240e2d9..1d137274 100644
+index 55568b7..3a10cf0 100644
 --- a/absl/container/node_hash_set.h
 +++ b/absl/container/node_hash_set.h
 @@ -39,6 +39,7 @@
@@ -103,14 +107,15 @@ index 6240e2d9..1d137274 100644
  #include <type_traits>
  
  #include "absl/algorithm/container.h"
-@@ -558,8 +559,8 @@ struct NodeHashSetPolicy
+@@ -583,8 +584,9 @@ struct NodeHashSetPolicy
    static size_t element_space_used(const T*) { return sizeof(T); }
  
-   template <class Hash>
+   template <class Hash, bool kIsDefault>
 -  static constexpr HashSlotFn get_hash_slot_fn() {
--    return &TypeErasedDerefAndApplyToSlotFn<Hash, T>;
+-    return &TypeErasedDerefAndApplyToSlotFn<Hash, T, kIsDefault>;
 +  static constexpr std::optional<HashSlotFn> get_hash_slot_fn() {
-+    return std::optional<HashSlotFn>(&TypeErasedApplyToSlotFn<Hash, T>);
++    return std::optional<HashSlotFn>(
++        &TypeErasedDerefAndApplyToSlotFn<Hash, T, kIsDefault>);
    }
  };
  }  // namespace container_internal
