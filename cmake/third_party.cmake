@@ -269,14 +269,14 @@ if (NOT benchmark_POPULATED)
 endif ()
 
 # Fetch abseil with retry policy
-set(ABSEIL_URL https://github.com/abseil/abseil-cpp/releases/download/20250512.1/abseil-cpp-20250512.1.tar.gz)
-set(ABSEIL_TARBALL "${CMAKE_BINARY_DIR}/abseil-cpp-20250512.1.tar.gz")
+set(ABSEIL_URL https://github.com/abseil/abseil-cpp/releases/download/20260817.0/abseil-cpp-20260817.0.tar.gz)
+set(ABSEIL_TARBALL "${CMAKE_BINARY_DIR}/abseil-cpp-20260817.0.tar.gz")
 fetch_tarball_with_retry(abseil-cpp "${ABSEIL_URL}" "${ABSEIL_TARBALL}")
 
 FetchContent_Declare(
   abseil_cpp
   URL "${ABSEIL_TARBALL}"
-  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20250512.1.patch"
+  PATCH_COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-20260817.0.patch"
   COMMAND patch -p1 < "${CMAKE_CURRENT_LIST_DIR}/../patches/abseil-gcc-undefined-sanitizer-compilation-fix.patch"
 )
 

@@ -50,15 +50,15 @@ class ABSL_LOCKABLE SpinLock {
   SpinLock& operator=(const SpinLock&) = delete;
 
   void lock() ABSL_EXCLUSIVE_LOCK_FUNCTION() {
-    lock_.Lock();
+    lock_.lock();
   }
 
   void unlock() ABSL_UNLOCK_FUNCTION() {
-    lock_.Unlock();
+    lock_.unlock();
   }
 
   bool try_lock() ABSL_EXCLUSIVE_TRYLOCK_FUNCTION(true) {
-    return lock_.TryLock();
+    return lock_.try_lock();
   }
 
  private:
