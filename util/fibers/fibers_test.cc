@@ -45,7 +45,9 @@ ABSL_DECLARE_FLAG(std::string, proactor_tail_cpus);
 #endif
 
 #ifdef __linux__
+#include <poll.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/syscall.h>
 
 #include "util/fibers/uring_proactor.h"
@@ -1230,6 +1232,43 @@ TEST_F(FiberTest, AsyncEvent) {
 
   LOG(INFO) << "DispatchBrief";
   done.Wait();
+}
+
+// Once the CQ ring is full, the kernel ends a multishot poll and queues its last CQE without
+// IORING_CQE_F_MORE. POLL_REMOVE then gets ENOENT, and no queued CQE may call back or re-arm.
+TEST_F(FiberTest, EpollDelAfterKernelEndedPoll) {
+  unsigned calls = 0;
+  ProactorThread pth(0, ProactorBase::IOURING);
+  auto* proactor = static_cast<UringProactor*>(pth.get());
+  int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+  ASSERT_GE(efd, 0);
+
+  proactor->Await([&] {
+    auto cb = [&calls](uint32_t) { ++calls; };
+    auto id = proactor->EpollAdd(efd, std::move(cb), POLLIN);
+    ThisFiber::SleepFor(1ms);  // the dispatcher arms the poll
+
+    // GetSubmitEntry submits a full SQ, which also runs the kernel task work, and this fiber does
+    // not yield, so nothing is reaped. 2 * kRingDepth + 1 entries fill the CQ ring with NOPs.
+    auto submit_nops = [proactor](unsigned count) {
+      for (unsigned i = 0; i < count; ++i)
+        proactor->GetSubmitEntry(nullptr).PrepNOP();
+    };
+    submit_nops(2 * kRingDepth + 1);
+
+    // The poll can't post into the full ring, so the next submission makes the kernel end it.
+    const uint64_t one = 1;
+    ASSERT_EQ(write(efd, &one, sizeof(one)), static_cast<ssize_t>(sizeof(one)));
+    submit_nops(kRingDepth);
+
+    proactor->EpollDel(id);
+    EXPECT_EQ(calls, 0u);
+
+    ASSERT_EQ(write(efd, &one, sizeof(one)), static_cast<ssize_t>(sizeof(one)));
+    ThisFiber::SleepFor(10ms);
+    EXPECT_EQ(calls, 0u);
+  });
+  close(efd);
 }
 
 TEST_F(FiberTest, FlushSubmissionsWithoutDispatcher) {

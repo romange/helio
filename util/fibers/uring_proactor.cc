@@ -623,6 +623,18 @@ void UringProactor::RearmEpoll(EpollEntry* entry) {
 #if DBG_EPOLL
     LOG(INFO) << "Epoll CB " << entry << " res:" << res << " flags " << flags;
 #endif
+
+    // EpollDel was called: no more notifications. The request's last CQE frees the entry, be it
+    // ECANCELED from POLL_REMOVE or a multishot poll that the kernel ended, e.g. on CQ overflow.
+    if (!entry->cb) {
+      if ((flags & IORING_CQE_F_MORE) == 0) {
+        LOG_IF(ERROR, res < 0 && res != -ECANCELED) << "EpollDel: unexpected error " << -res;
+        pending_epoll_removals_--;
+        delete entry;
+      }
+      return;
+    }
+
     if (res >= 0) {
       CHECK(entry->cb);
       entry->cb(res);
@@ -664,6 +676,10 @@ void UringProactor::EpollDel(EpollIndex id) {
   IoResult res;
   pending_epoll_removals_++;
 
+  // No notifications from now on. The request's last CQE frees the entry, possibly before
+  // POLL_REMOVE completes, so the entry is not touched below.
+  entry->cb = nullptr;
+
   do {
     FiberCall fc(this);
     fc->PrepPollRemove(uid);
@@ -674,10 +690,13 @@ void UringProactor::EpollDel(EpollIndex id) {
 #endif
     res = fc.Get();
   } while (res == -EALREADY);
-  LOG_IF(ERROR, res < 0) << "EpollDel: unexpected result " << fd << " " << res;
+
+  // ENOENT: the kernel already ended the multishot poll; its queued last CQE frees the entry.
+  VLOG_IF(1, res == -ENOENT) << "EpollDel: poll already ended " << fd;
+  LOG_IF(ERROR, res < 0 && res != -ENOENT) << "EpollDel: unexpected result " << fd << " " << res;
 
 #ifdef DBG_EPOLL
-  LOG(INFO) << "EpollDel fd: " << fd << " uid: " << entry->index << " entry: " << entry;
+  LOG(INFO) << "EpollDel fd: " << fd << " uid: " << uid << " entry: " << entry;
 #endif
 }
 
