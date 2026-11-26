@@ -209,8 +209,13 @@ error_code RobustSender::Send(unsigned num_iterations, detail::HttpRequestBase* 
 
   for (unsigned i = 0; i < num_iterations; ++i) {  // Iterate for possible token refresh.
     auto res = pool_->GetHandle();
-    if (!res)
-      return res.error();
+
+    if (!res) {
+      VLOG(1) << "Retrying. Could not get a connection: " << res.error().message();
+      ec = res.error();
+      ThisFiber::SleepFor(100ms);
+      continue;
+    }
 
     result->client_handle = std::move(res.value());
     auto* client_handle = result->client_handle.get();
