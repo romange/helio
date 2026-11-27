@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <absl/base/attributes.h>
 #include <sys/stat.h>   // statx
 #include <sys/types.h>  // for mode_t
 #include <sys/uio.h>    // RWF_XXX
@@ -127,6 +128,16 @@ io::Result<std::unique_ptr<LinuxFile>> OpenLinux(std::string_view path, int flag
 
 // Equivalent to statx() call
 std::error_code StatX(const char* filepath, struct statx* stat, int fd);
+
+// Equivalent to unlinkat(2) relative to the current directory. Suspends only the calling fiber.
+// Must be called from a uring proactor thread.
+// flags: 0 to remove a file or AT_REMOVEDIR to remove an empty directory.
+ABSL_MUST_USE_RESULT std::error_code Unlink(const char* path, int flags = 0);
+
+// Equivalent to linkat(2) relative to the current directory: creates newpath as a hard link to
+// oldpath. Suspends only the calling fiber. Must be called from a uring proactor thread.
+// flags: 0 or AT_SYMLINK_FOLLOW to dereference oldpath if it is a symbolic link.
+ABSL_MUST_USE_RESULT std::error_code Link(const char* oldpath, const char* newpath, int flags = 0);
 
 }  // namespace fb2
 }  // namespace util

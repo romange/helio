@@ -35,6 +35,22 @@ class SubmitEntry {
     sqe_->len = mode;
   }
 
+  // flags: 0 to remove a file or AT_REMOVEDIR to remove an empty directory.
+  void PrepUnlinkAt(int dfd, const char* path, int flags) {
+    PrepFd(IORING_OP_UNLINKAT, dfd);
+    sqe_->addr = (__u64)path;
+    sqe_->unlink_flags = flags;
+  }
+
+  // flags: 0 or AT_SYMLINK_FOLLOW to dereference oldpath if it is a symbolic link.
+  void PrepLinkAt(int olddfd, const char* oldpath, int newdfd, const char* newpath, int flags) {
+    PrepFd(IORING_OP_LINKAT, olddfd);
+    sqe_->addr = (__u64)oldpath;
+    sqe_->len = newdfd;
+    sqe_->addr2 = (__u64)newpath;
+    sqe_->hardlink_flags = flags;
+  }
+
   // mask is a bit-OR of POLLXXX flags.
   void PrepPollAdd(int fd, unsigned mask) {
     PrepFd(IORING_OP_POLL_ADD, fd);

@@ -266,6 +266,57 @@ TEST_F(UringFileDirectTest, AsyncDurability) {
   });
 }
 
+TEST_F(UringFileTest, Unlink) {
+  string path = base::GetTestTempPath("unlink.log");
+  string dir = base::GetTestTempPath("unlink_dir");
+  proactor_->Await([&] {
+    auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    ASSERT_TRUE(res);
+    EXPECT_FALSE((*res)->Close());
+
+    EXPECT_FALSE(Unlink(path.c_str()));
+    struct statx stat;
+    EXPECT_EQ(ENOENT, StatX(path.c_str(), &stat, -1).value());
+    EXPECT_EQ(ENOENT, Unlink(path.c_str()).value());
+
+    ASSERT_EQ(0, mkdir(dir.c_str(), 0755));
+    EXPECT_EQ(EISDIR, Unlink(dir.c_str()).value());
+    EXPECT_FALSE(Unlink(dir.c_str(), AT_REMOVEDIR));
+  });
+}
+
+TEST_F(UringFileTest, Link) {
+  string path = base::GetTestTempPath("link_src.log");
+  string link = base::GetTestTempPath("link_dst.log");
+  proactor_->Await([&] {
+    auto res = OpenLinux(path, O_RDWR | O_CREAT | O_TRUNC, 0666);
+    ASSERT_TRUE(res);
+    unique_ptr<LinuxFile> lf = std::move(*res);
+    ASSERT_FALSE(lf->Write(AsBytes("hello"), 0, 0));
+    EXPECT_FALSE(lf->Close());
+
+    ASSERT_FALSE(Link(path.c_str(), link.c_str()));
+    EXPECT_EQ(EEXIST, Link(path.c_str(), link.c_str()).value());
+
+    // Both names refer to the same inode, and the data survives removing the original name.
+    struct statx src_stat, dst_stat;
+    ASSERT_FALSE(StatX(path.c_str(), &src_stat, -1));
+    ASSERT_FALSE(StatX(link.c_str(), &dst_stat, -1));
+    EXPECT_EQ(src_stat.stx_ino, dst_stat.stx_ino);
+    EXPECT_EQ(2u, dst_stat.stx_nlink);
+
+    EXPECT_FALSE(Unlink(path.c_str()));
+    res = OpenLinux(link, O_RDONLY, 0);
+    ASSERT_TRUE(res);
+    lf = std::move(*res);
+    EXPECT_EQ("hello", ReadAllContents(lf.get()));
+    EXPECT_FALSE(lf->Close());
+    EXPECT_FALSE(Unlink(link.c_str()));
+
+    EXPECT_EQ(ENOENT, Link(path.c_str(), link.c_str()).value());
+  });
+}
+
 TEST_F(UringFileTest, WriteFixedAsyncFlags) {
   string path = base::GetTestTempPath("fixed.log");
   proactor_->Await([&] {
