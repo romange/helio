@@ -496,5 +496,33 @@ std::error_code StatX(const char* filepath, struct statx* stat, int fd) {
   return {};
 }
 
+std::error_code Unlink(const char* path, int flags) {
+  ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+  Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
+
+  FiberCall fc(p);
+  fc->PrepUnlinkAt(AT_FDCWD, path, flags);
+  FiberCall::IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    return {-io_res, system_category()};
+  }
+  return {};
+}
+
+std::error_code Link(const char* oldpath, const char* newpath, int flags) {
+  ProactorBase* me = ProactorBase::me();
+  DCHECK(me->GetKind() == ProactorBase::IOURING);
+  Proactor* p = static_cast<Proactor*>(CHECK_NOTNULL(me));
+
+  FiberCall fc(p);
+  fc->PrepLinkAt(AT_FDCWD, oldpath, AT_FDCWD, newpath, flags);
+  FiberCall::IoResult io_res = fc.Get();
+  if (io_res < 0) {
+    return {-io_res, system_category()};
+  }
+  return {};
+}
+
 }  // namespace fb2
 }  // namespace util
